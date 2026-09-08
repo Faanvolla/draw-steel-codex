@@ -2106,6 +2106,16 @@ setting{
 }
 
 setting{
+	id = "lightanimations",
+	description = "Animated Lights",
+	help = "Plays the animated light styles (pulse, waves, shimmering water and so on) that map makers put on lights. Turn off to reduce motion or GPU work; those lights then render as plain static lights.",
+	storage = "preference",
+	section = "Graphics",
+	editor = "check",
+	default = true,
+}
+
+setting{
 	id = "dice:motionblur",
 	description = "Dice Motion Blur",
 	help = "Blurs fast-moving dice so a hard throw reads as a continuous streak instead of a series of discrete stamps. The dice roll is rendered several times per frame at sub-frame positions and averaged; resting and slow dice are unaffected. Slightly more GPU work while dice are in flight.",
