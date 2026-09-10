@@ -4292,10 +4292,17 @@ local function AbilityHeading(args)
                     for _, entry in ipairs(costInfo.details) do
                         if entry.description ~= nil and (not entry.canAfford) then
                             --this means there is an 'anonymous' cost, e.g. number of times they can use per round.
-                            if entry.refreshType == "long" then
+                            local refreshBase, refreshCount = CharacterResource.ParseRefreshType(entry.refreshType)
+                            if refreshBase == "long" then
                                 element.text = "Already used since respite"
+                            elseif refreshBase == "victory" then
+                                if (refreshCount or 1) > 1 then
+                                    element.text = string.format("Already used; needs %d Victories", refreshCount)
+                                else
+                                    element.text = "Already used until next Victory"
+                                end
                             else
-                                element.text = string.format("Already used this %s", entry.refreshType)
+                                element.text = string.format("Already used this %s", refreshBase)
                             end
                             return
                         end

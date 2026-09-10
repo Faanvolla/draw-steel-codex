@@ -264,24 +264,22 @@ function CharacterModifier:UsageLimitEditor(options)
 	local args = {
 		classes = {'formPanel', 'formPanel-inline'},
 		children = {
-			gui.Dropdown{
-				styles = ThemeEngine.GetStyles(),
-				selfStyle = {
-					height = 30,
-					width = 160,
-					fontSize = 16,
-				},
-
+			CharacterResource.RefreshTypeEditor{
 				options = cond(perspell, CharacterResource.usageLimitOptionsWithPerSpell, CharacterResource.usageLimitOptions),
-				idChosen = self:GetResourceRefreshType(),
-
-				events = {
-					change = function(element)
-						self.resourceRefreshType = element.idChosen
-						resultPanel:FireEvent("change")
-						element.parent:FireEventTree('create')
-					end,
+				value = self:GetResourceRefreshType(),
+				dropdown = {
+					styles = ThemeEngine.GetStyles(),
+					selfStyle = {
+						height = 30,
+						width = 160,
+						fontSize = 16,
+					},
 				},
+				change = function(refreshType, editorPanel)
+					self.resourceRefreshType = refreshType
+					resultPanel:FireEvent("change")
+					editorPanel.parent:FireEventTree('create')
+				end,
 			},
 			gui.Label{
 				classes = {'formLabel'},
@@ -3754,7 +3752,7 @@ function CharacterModifier:DescribeResourceAvailability(creature, charges, expec
 
 	local used = creature:GetResourceUsage(self:GetResourceRefreshId(), refreshType)
 	local available = self:GetNumberOfCharges(creature)
-	return string.format("%d/%d available, refreshes %s", available - used, available, CharacterResource.usageLimitMap[refreshType].refreshDescription)
+	return string.format("%d/%d available, refreshes %s", available - used, available, CharacterResource.DescribeRefresh(refreshType))
 end
 
 function CharacterModifier:IsResourceCostUpcastable()
