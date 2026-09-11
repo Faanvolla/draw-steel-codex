@@ -66,6 +66,7 @@ docs/superpowers/
 # Tooling caches
 .superpowers/
 .understand-anything/
+node_modules/
 
 # Agent scratch and local working files
 .agents/
