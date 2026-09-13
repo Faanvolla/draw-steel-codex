@@ -57,6 +57,7 @@ function CreateInfoBubble(info)
 		interactable = info.floorid == game.currentFloorId,
 		bgimage = 'panels/square.png',
 		styles = styles,
+		inworld = true,
 		--blocksGameInteraction = false,
 
 		create = function(element)
