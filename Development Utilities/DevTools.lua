@@ -924,6 +924,35 @@ local g_audioSetting = setting{
     default = true,
 }
 
+local g_cursorSetting = setting{
+    id = "recorder:cursor",
+    description = "Game Recorder: draw the mouse cursor into the capture",
+    storage = "preference",
+    default = true,
+}
+
+local g_cursorRingSetting = setting{
+    id = "recorder:cursorRing",
+    description = "Game Recorder: draw a highlight ring around the cursor",
+    storage = "preference",
+    default = false,
+}
+
+-- Hex with alpha ("#RRGGBBAA"); shared by the highlight ring and the click pulse.
+local g_cursorColorSetting = setting{
+    id = "recorder:cursorColor",
+    description = "Game Recorder: highlight ring and click pulse color",
+    storage = "preference",
+    default = "#FFD54FBF",
+}
+
+local g_cursorPulseSetting = setting{
+    id = "recorder:cursorPulse",
+    description = "Game Recorder: pulse a ring at each mouse click",
+    storage = "preference",
+    default = false,
+}
+
 local g_fpsSetting = setting{
     id = "recorder:fps",
     description = "Game Recorder: fps override (blank = default)",
@@ -1000,6 +1029,19 @@ CreateGameRecorderPanel = function()
         local options = {}
         options.ui = g_includeUISetting:Get()
         options.audio = g_audioSetting:Get()
+        -- The OS draws the real cursor outside the game's frame, so the engine
+        -- paints one in. "ring" adds a highlight ring under it. Needs Include UI.
+        if not g_cursorSetting:Get() then
+            options.cursor = "none"
+        elseif g_cursorRingSetting:Get() then
+            options.cursor = "ring"
+        else
+            options.cursor = "cursor"
+        end
+        -- The engine also accepts diameter/thickness/fill here and duration/scale on a
+        -- clickPulse table; the panel only exposes color and on/off.
+        options.ring = { color = g_cursorColorSetting:Get() }
+        options.clickPulse = g_cursorPulseSetting:Get() == true
         options.complete = function(path)
             m_lastSavedPath = path
             m_startTime = nil
@@ -1185,6 +1227,41 @@ CreateGameRecorderPanel = function()
         return row
     end
 
+    -- Same layout as ToggleRow: the 16px swatch plus margins fills the 30px
+    -- indicator column so labels line up. The picker's alpha bar sets opacity.
+    local function ColorRow(labelText, settingObj)
+        return gui.Panel{
+            width = "auto",
+            height = "auto",
+            flow = "horizontal",
+            halign = "left",
+            valign = "center",
+            vmargin = 2,
+            gui.ColorPicker{
+                width = 16,
+                height = 16,
+                hmargin = 7,
+                valign = "center",
+                border = 2,
+                borderColor = "white",
+                hasAlpha = true,
+                value = settingObj:Get(),
+                change = function(element)
+                    settingObj:Set(element.value.tostring)
+                end,
+            },
+            gui.Label{
+                width = "auto",
+                height = "auto",
+                halign = "left",
+                valign = "center",
+                fontSize = 14,
+                color = "#dddddd",
+                text = labelText,
+            },
+        }
+    end
+
     local function OptionsZone()
         return gui.Panel{
             classes = {"recorder-zone"},
@@ -1208,6 +1285,10 @@ CreateGameRecorderPanel = function()
             },
             ToggleRow("Include UI", g_includeUISetting),
             ToggleRow("Record audio", g_audioSetting),
+            ToggleRow("Show mouse cursor", g_cursorSetting),
+            ToggleRow("Highlight ring around cursor", g_cursorRingSetting),
+            ToggleRow("Pulse on click", g_cursorPulseSetting),
+            ColorRow("Highlight color", g_cursorColorSetting),
         }
     end
 
