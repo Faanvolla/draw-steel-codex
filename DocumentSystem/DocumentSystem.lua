@@ -7416,6 +7416,16 @@ local ICON_RAIL_MAX_SLOT = 16
 --                         player's character. Unevaluable = enabled,
 --                         so an error never locks a button out. The
 --                         hover label and right-click menu stay
+--  @face script           the script draws its OWN rail face: at rail
+--                         build time it runs once more with the global
+--                         scriptButtonEvent = "face" and
+--                         scriptButtonElement = the face panel to fill
+--                         (scripts read both with rawget -- globals are
+--                         strict; see ToolkitCluster.ScriptButtonFace). Lua at
+--                         render time, so it carries the click path's
+--                         trust posture (kill switch + watchdog for
+--                         pack buttons) rather than @label's data-only
+--                         one; a face that errors falls back to the icon
 local function ScriptButtonHexColor(c)
     return c ~= nil and (string.match(c, "^#%x%x%x%x%x%x$") ~= nil or string.match(c, "^#%x%x%x%x%x%x%x%x$") ~= nil)
 end
@@ -7474,6 +7484,8 @@ local function ScriptButtonStyle(def)
             if value ~= nil and value ~= "" then
                 style.disabled = value
             end
+        elseif key == "face" then
+            style.face = (tok == "script")
         end
     end
     return style
@@ -12889,8 +12901,12 @@ local function RunToolkitScriptButton(item, element)
     --button (element.popupPositioning/element.popup). Saved and restored
     --around the call so a script that triggers another button mid-run
     --cannot leave a stale element behind.
+    --scriptButtonEvent tells a "-- @face script" button which of its
+    --two runs this is ("click" here, "face" at rail build).
     local prevScriptButtonElement = rawget(_G, "scriptButtonElement")
+    local prevScriptButtonEvent = rawget(_G, "scriptButtonEvent")
     scriptButtonElement = element
+    scriptButtonEvent = "click"
     if chunk == nil then
         ok, err = false, loadErr
     elseif packid ~= nil then
@@ -12904,6 +12920,7 @@ local function RunToolkitScriptButton(item, element)
         ok, err = pcall(chunk)
     end
     scriptButtonElement = prevScriptButtonElement
+    scriptButtonEvent = prevScriptButtonEvent
     if ok then
         return
     end
@@ -12922,6 +12939,74 @@ local function RunToolkitScriptButton(item, element)
         title = "Script button error",
         message = tostring(err),
     }
+end
+
+--The rail face of a "-- @face script" button. The script runs once
+--with scriptButtonEvent = "face" and scriptButtonElement = a full-size
+--non-interactable panel over the button, and fills it with children
+--(its own icons, live values, monitorGame refreshes); the click path
+--later runs the same script with scriptButtonEvent = "click". Same
+--trust posture as a click -- kill switch and instruction watchdog for
+--pack buttons. Returns nil when the face cannot be drawn (killed pack,
+--load or runtime error): the caller shows the plain icon and the error
+--goes to the console rather than a modal, since rails rebuild often.
+--Rides ToolkitCluster because the main chunk is at the 200-local cap.
+ToolkitCluster.ScriptButtonFace = function(def)
+    if type(def) ~= "table" then
+        return nil
+    end
+    local packid = def.pack
+    if packid ~= nil then
+        if g_buttonPackKilled == nil then
+            RefreshButtonPackKilled()
+        end
+        if g_buttonPackKilled ~= nil and g_buttonPackKilled[packid] ~= nil then
+            return nil
+        end
+    end
+    local chunk, loadErr = load(ScriptButtonCode(def.script or ""), "script-button-face:" .. (def.name or "button"))
+    if chunk == nil then
+        print("Script button face error: " .. tostring(loadErr))
+        return nil
+    end
+    local face = gui.Panel{
+        width = "100%",
+        height = "100%",
+        flow = "none",
+        interactable = false,
+    }
+    local prevScriptButtonElement = rawget(_G, "scriptButtonElement")
+    local prevScriptButtonEvent = rawget(_G, "scriptButtonEvent")
+    scriptButtonElement = face
+    scriptButtonEvent = "face"
+    local ok, err
+    if packid ~= nil then
+        debug.sethook(function()
+            debug.sethook()
+            error("this button exceeded its execution budget and was stopped", 2)
+        end, "", SCRIPT_BUTTON_INSTRUCTION_BUDGET)
+        ok, err = pcall(chunk)
+        debug.sethook()
+    else
+        ok, err = pcall(chunk)
+    end
+    scriptButtonElement = prevScriptButtonElement
+    scriptButtonEvent = prevScriptButtonEvent
+    if not ok then
+        print("Script button face error: " .. tostring(err))
+        return nil
+    end
+    return face
+end
+
+--Shared cloud state for script buttons: a document every client in the
+--game sees, keyed by any id the script chooses (mod:GetDocumentSnapshot
+--needs a mod handle, which button scripts do not have). Read doc.data;
+--write inside doc:BeginChange() / doc:CompleteChange(description);
+--set monitorGame = doc.path on a panel to get refreshGame when any
+--client writes. A global so button code can reach it.
+function ScriptButtonDocument(id)
+    return mod:GetDocumentSnapshot("scriptbutton-" .. tostring(id))
 end
 
 --Toggle a panel from a toolkit button: the same open/close/raise the
@@ -13856,6 +13941,14 @@ chat.Send("Hello from my new button!")
 --                          grey the button out and disable clicking
 --                          while the condition (GoblinScript, on your
 --                          character) is true
+--   -- @face script        draw the button's face yourself: your code
+--                          also runs when the rail is built. Check
+--                          rawget(_G, "scriptButtonEvent") == "face"
+--                          (globals are strict, so read it with rawget)
+--                          and fill rawget(_G, "scriptButtonElement")
+--                          with children; on a click the event is
+--                          "click". ScriptButtonDocument("my-id") gives
+--                          a shared document every player can see.
 --
 -- A bare form works too ("@slots 2" on its own line, no leading --),
 -- but your editor's Lua checker will underline it; the -- form keeps
@@ -18106,12 +18199,20 @@ local function CreateIconRail(side, entries)
         --current without its own polling. The face itself is shared with
         --the drag-preview ghost (CreateCharacterCardVisual).
         local buttonContent
+        --a "-- @face script" button draws its own face; nil means it
+        --could not (error, killed pack) and the icon face stands in.
+        local sbuttonFace = nil
+        if sbuttonStyle ~= nil and sbuttonStyle.face then
+            sbuttonFace = ToolkitCluster.ScriptButtonFace((dmhub.GetSettingValue("iconrailscriptbuttons") or {})[sbuttonid])
+        end
         --`not missing`: the card reads stamina and hero resources off the
         --token, so with the token gone there is nothing to draw. The
         --tombstone falls through to the plain icon path, which the skull
         --face above has already been chosen for.
         if charid ~= nil and not missing then
             buttonContent = CreateCharacterCardVisual(charid)
+        elseif sbuttonFace ~= nil then
+            buttonContent = sbuttonFace
         elseif sbuttonStyle ~= nil and sbuttonStyle.label ~= nil then
             --@label: a live value instead of the icon. The directive is a
             --GoblinScript formula (data, never Lua code) evaluated against
