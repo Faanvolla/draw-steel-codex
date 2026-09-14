@@ -321,7 +321,10 @@ CreateDebugLogPanel = function()
     -- Build scroll panel args with all children inline
     local scrollArgs = {
         height = "100%-70",
-        width = "100%",
+        --Inset on the right only (halign left pins the left edge): the host
+        --window's resize strip floats 3px inside the frame, over the scrollbar.
+        width = "100%-8",
+        halign = "left",
         flow = "vertical",
         vscroll = true,
         vscrollLockToBottom = true,

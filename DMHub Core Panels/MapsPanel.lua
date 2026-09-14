@@ -1203,11 +1203,13 @@ local CreatePlayerMapDialog = function()
 
 	local treeScrollPanel = gui.Panel{
 		idprefix = "player-map-scroll-panel",
-		width = "100%",
+		--Inset on the right only (halign left pins the left edge): the host
+		--window's resize strip floats 3px inside the frame, over the scrollbar.
+		width = "100%-8",
 		--fill whatever height the host gives us, minus the search input row
 		--(24 tall + 8/8 vmargins).
 		height = "100%-48",
-		halign = "center",
+		halign = "left",
 		valign = "top",
 		vscroll = true,
 		listPanel,
@@ -1300,12 +1302,14 @@ CreateMapDialog = function()
 	local treeScrollPanel
 	treeScrollPanel = gui.Panel{
 		idprefix = "map-tree-scroll-panel",
-		width = "100%",
+		--Inset on the right only (halign left pins the left edge): the host
+		--window's resize strip floats 3px inside the frame, over the scrollbar.
+		width = "100%-8",
 		--fill the host height minus the search input row (24 + 8/8 vmargins)
 		--and the floating create-folder/create-map buttons at the bottom
 		--(36 + margins).
 		height = "100%-88",
-		halign = "center",
+		halign = "left",
 		valign = "top",
 		vscroll = true,
 		treeInnerPanel,

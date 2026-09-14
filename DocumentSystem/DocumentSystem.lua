@@ -5529,15 +5529,23 @@ function PanelDocument:CreateInterface(args)
                 idprefix = "panelDocumentScrollParent",
                 classes = {"panelDocumentTabContent"},
                 revealTabContent = revealContent,
-                width = "100%",
+                --8px short on the right, anchored left so the left edge
+                --stays put: the window resize strip floats 3px inside the
+                --frame and would otherwise sit over the scrollbar, making
+                --it hard to grab. Panels that scroll themselves
+                --(vscroll = false) inset their own region by the same 8px,
+                --so every panel in a window puts its scrollbar in the same
+                --place. The dock host needs none of this -- it has no
+                --right-edge strip.
+                width = "100%-8",
+                halign = "left",
                 height = "100%",
                 pad = 2,
-                --without borderBox the pad grew the panel 4px past its
-                --declared size and the centered overflow poked 2px out
-                --each end -- the scrollbar visibly rode over the header
-                --hairline (Venla 2026-08-12). The old width was "100%-4"
-                --purely to cancel that growth; with borderBox the honest
-                --100% is what keeps the scrollbar flush at the right edge.
+                --borderBox keeps the pad INSIDE the declared width. Without
+                --it the pad grew the panel 4px past its declared size and
+                --the centered overflow poked 2px out each end, so the
+                --scrollbar visibly rode over the header hairline
+                --(Venla 2026-08-12).
                 borderBox = true,
                 vscroll = true,
                 hideObjectsOutOfScroll = hideObjectsOutOfScroll,

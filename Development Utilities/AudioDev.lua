@@ -159,7 +159,10 @@ AudioDevPanel = function()
         },
 
         gui.Panel{
-            width = "100%",
+            --Inset on the right only (halign left pins the left edge): the host
+            --window's resize strip floats 3px inside the frame, over the scrollbar.
+            width = "100%-8",
+            halign = "left",
             height = "100%-240",
             vscroll = true,
             flow = "vertical",
@@ -188,7 +191,10 @@ AudioDevPanel = function()
         },
 
         gui.Panel{
-            width = "100%",
+            --Inset on the right only (halign left pins the left edge): the host
+            --window's resize strip floats 3px inside the frame, over the scrollbar.
+            width = "100%-8",
+            halign = "left",
             height = 160,
             flow = "vertical",
             vscroll = true,

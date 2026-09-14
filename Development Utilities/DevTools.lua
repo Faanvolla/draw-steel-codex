@@ -301,7 +301,10 @@ DockablePanel.Register{
             scrollPanel:FireEvent("record", "transmit", method, path, data)
         end
         scrollPanel = gui.Panel{
-            width = "100%",
+            --Inset on the right only (halign left pins the left edge): the host
+            --window's resize strip floats 3px inside the frame, over the scrollbar.
+            width = "100%-8",
+            halign = "left",
             height = "100%-32",
             flow = "vertical",
             vscroll = true,
@@ -532,7 +535,10 @@ DockablePanel.Register{
             height = "100%",
             flow = "vertical",
             gui.Panel{
-                width = "100%",
+                --Inset on the right only (halign left pins the left edge): the host
+                --window's resize strip floats 3px inside the frame, over the scrollbar.
+                width = "100%-8",
+                halign = "left",
                 height = "100%-60",
                 vscroll = true,
                 flow = "vertical",
@@ -599,7 +605,10 @@ DockablePanel.Register{
             dailyLimit = 30,
         })
         local resultPanel = gui.Panel{
-            width = "100%",
+            --Inset on the right only (halign left pins the left edge): the host
+            --window's resize strip floats 3px inside the frame, over the scrollbar.
+            width = "100%-8",
+            halign = "left",
             height = "100%",
             flow = "vertical",
             vscroll = true,

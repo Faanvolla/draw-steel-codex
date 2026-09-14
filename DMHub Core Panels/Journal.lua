@@ -2087,7 +2087,10 @@ CreateJournalPanel = function(options)
         gui.Panel {
             vscroll = true,
             flow = "vertical",
-            width = "100%",
+            --Inset on the right only (halign left pins the left edge): the host
+            --window's resize strip floats 3px inside the frame, over the scrollbar.
+            width = "100%-8",
+            halign = "left",
             height = "100% available",
 
             --TREE LAYOUT MODEL: a classic ladder. Indentation comes from
