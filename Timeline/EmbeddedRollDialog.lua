@@ -1781,7 +1781,9 @@ function GameHud.CreateEmbeddedRollDialog()
             end
             local currentIndex = GetCurrentMultiTarget()
             if currentIndex ~= nil then
-                local currentid = m_multitargets[currentIndex].token.charid
+                --entries hold original targets; a redirected row keeps its originalid.
+                local current = m_multitargets[currentIndex]
+                local currentid = current.originalid or current.token.charid
                 for _, entry in ipairs(m_group) do
                     if entry.targetid == currentid then
                         return entry.row
