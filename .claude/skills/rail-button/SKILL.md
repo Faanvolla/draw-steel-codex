@@ -99,7 +99,42 @@ engine's `@if` preprocessor) but makes `luac -p` and editors complain.
 -- @disabled <gs>         grey + inert while the condition is true on the current
 --                        character; an unevaluable formula = enabled (errors never
 --                        lock a button out)
+-- @face script           the script DRAWS ITS OWN FACE (see below)
 ```
+
+### Scripted faces (`-- @face script`)
+
+The only directive that runs Lua at render time. With it, the rail build runs the
+script once more with two globals set: `scriptButtonEvent = "face"` and
+`scriptButtonElement` = a full-size, non-interactable panel over the button. The
+script fills that panel with children and returns; a click runs the same script
+with `scriptButtonEvent = "click"`, so a face script branches on that global first.
+**Read both globals with `rawget(_G, ...)`** -- Codex globals are strict, so a bare
+`scriptButtonEvent` read raises "Attempt to read uninitialized variable" on any
+path (or older codex) where it is unset:
+```lua
+if rawget(_G, "scriptButtonEvent") == "face" then
+    local face = rawget(_G, "scriptButtonElement")
+    face:AddChild(gui.Panel{ ... })
+    return
+end
+```
+The face replaces the icon and any @label.
+An error in face mode prints to the console and the plain icon stands in (no modal:
+rails rebuild often). Pack buttons get the kill switch + watchdog here too. The face
+panel's children are ordinary panels: give them `monitorGame`/`refreshGame` to
+track a shared document, or `refreshRail` to ride the rail's think cadence, and
+keep expensive rebuilds behind a change check. Children with `hover` tooltips work
+(presses still bubble to the button). The face is baked at rail build like the
+other face directives: rebuild the rail after adding or removing @face.
+
+### Shared state across players
+
+`ScriptButtonDocument(id)` (a global) returns a shared cloud document snapshot for
+any id the script chooses -- every client in the game sees the same data. Read
+`doc.data`, write inside `doc:BeginChange()` / `doc:CompleteChange(desc)`, and put
+`monitorGame = doc.path` on a panel to get `refreshGame` when any client writes.
+Re-fetch the snapshot before each read; do not cache `doc.data` across events.
 
 Semantics worth knowing:
 - With **no character selected**, a button whose @label/@tooltip/@disabled actually

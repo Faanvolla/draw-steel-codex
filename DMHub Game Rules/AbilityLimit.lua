@@ -41,7 +41,7 @@ function ActivatedAbilityLimitBehavior:Cast(ability, casterToken, targets, optio
     print("LIMIT:: CHECKING", casterToken.name, key, "refresh", self.refresh, "id", refreshid)
 
     local abilityUses = casterToken.properties:try_get("abilityUses", {})
-    if abilityUses[key] ~= nil and abilityUses[key].refreshid == refreshid then
+    if abilityUses[key] ~= nil and casterToken.properties:IsResourceUsageCurrent(self.refresh, abilityUses[key].refreshid) then
         --already used this ability in this refresh
         print("LIMIT:: LIMITING ABILITY")
         --TODO: maybe allow a stop count?
@@ -71,11 +71,10 @@ function ActivatedAbilityLimitBehavior:EditorItems(parentPanel)
             classes = {"formLabel"},
             text = "Refresh:",
         },
-        gui.Dropdown{
-            idChosen = self:try_get("refresh", "never"),
-            options = CharacterResource.usageLimitOptions,
-            change = function(element)
-                self.refresh = element.idChosen
+        CharacterResource.RefreshTypeEditor{
+            value = self:try_get("refresh", "never"),
+            change = function(refreshType)
+                self.refresh = refreshType
             end,
         }
     }

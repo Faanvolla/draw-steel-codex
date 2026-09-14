@@ -39,13 +39,13 @@ function ActivatedAbilityCreatureSetBehavior:Cast(ability, casterToken, targets,
                             sets[self.listName] = CreatureSet.new{}
                         end
 
-                        local refreshid = targetCreature:GetResourceRefreshId(self.refresh)
+                        --Only restamp when the list is reset, so window-based refreshes
+                        --(victory) count from the first add rather than the latest.
                         local creatureSet = sets[self.listName]
-                        if creatureSet:try_get("refreshid") ~= refreshid then
+                        if not targetCreature:IsResourceUsageCurrent(self.refresh, creatureSet:try_get("refreshid")) then
                             creatureSet:Clear()
+                            creatureSet.refreshid = targetCreature:GetResourceRefreshId(self.refresh)
                         end
-
-                        creatureSet.refreshid = refreshid
 
                         local added = creatureSet:Add(obj)
                         if added then
@@ -95,11 +95,10 @@ function ActivatedAbilityCreatureSetBehavior:EditorItems(parentPanel)
             classes = {"formLabel"},
             text = "Refresh:",
         },
-        gui.Dropdown{
-            idChosen = self.refresh,
-            options = CharacterResource.usageLimitOptions,
-            change = function(element)
-                self.refresh = element.idChosen
+        CharacterResource.RefreshTypeEditor{
+            value = self.refresh,
+            change = function(refreshType)
+                self.refresh = refreshType
             end,
         }
     }

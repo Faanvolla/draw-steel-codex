@@ -1046,7 +1046,7 @@ TokenHud.RegisterPanel{
                 end
 
                 if m_calculationCache.passesFilter == nil then
-                    m_calculationCache.passesFilter = token.properties:TargetPassesFilter("opportunityattack", movingToken.properties)
+                    m_calculationCache.passesFilter = token.properties:CanOpportunityAttack(token, movingToken)
                 end
                 if m_calculationCache.passesFilter == false then
                     return

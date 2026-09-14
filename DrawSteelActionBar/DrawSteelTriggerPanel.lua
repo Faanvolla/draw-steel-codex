@@ -51,7 +51,7 @@ local function BuildRetargetCandidates(powerMod, symbols)
             targets[#targets+1] = potential
             for _,reasonedFilter in ipairs(reasonedFilters) do
                 if trim(reasonedFilter.formula or "") ~= "" and not GoblinScriptTrue(ExecuteGoblinScript(reasonedFilter.formula, potential.properties:LookupSymbol(symbols), 1)) then
-                    reasons[potential.charid] = StringInterpolateGoblinScript(reasonedFilter.reason, symbols)
+                    reasons[potential.charid] = ActivatedAbility.FormatFilterReason(reasonedFilter, symbols)
                     break
                 end
             end

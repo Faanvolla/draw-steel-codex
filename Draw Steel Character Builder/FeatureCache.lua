@@ -32,6 +32,7 @@ local typeOrderTable = {
     CharacterLanguageChoice             = 180,
     CharacterForgetLanguageChoice       = 181,
     CharacterFeatChoice                 = 190,
+    CharacterTreasureGrantChoice        = 195,
     CharacterIncidentChoice             = 200,
 }
 
@@ -240,7 +241,8 @@ function CBFeatureCache._processFeatures(opts, hero, features)
         end
     end
 
-    local function addFeature(feature, level)
+    local addFeature
+    addFeature = function(feature, level)
         if not passesPrereq(feature) then return end
         if level == nil or level == 0 then
             level = levelFromPrereq(feature) or level
@@ -252,6 +254,16 @@ function CBFeatureCache._processFeatures(opts, hero, features)
             sorted[#sorted+1] = { guid = guid, order = cacheFeature:GetOrder() }
             if opts.allFeaturesComplete then opts.allFeaturesComplete = cacheFeature:IsComplete() end
         end
+        --A plain feature can still owe the player a choice through one of its
+        --modifiers (a Grant Treasure benefit). Those choices join the cache
+        --like any other; pcall because choice-typed features have no modifiers.
+        pcall(function()
+            for _,modifier in ipairs(feature:try_get("modifiers", {})) do
+                for _,choice in ipairs(modifier:BuilderChoices(hero, feature)) do
+                    addFeature(choice, level)
+                end
+            end
+        end)
     end
 
     opts.allFeaturesComplete = true

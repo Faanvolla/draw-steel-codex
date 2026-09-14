@@ -267,6 +267,12 @@ local MODIFIER_METADATA = {
         group = "narrative",
     },
 
+    granttreasure = {
+        description = "Let the bearer choose and claim one treasure matching a category, echelon, and keyword filter.",
+        tags = {"treasure", "trinket", "item", "grant", "claim", "inventory", "leveled"},
+        group = "narrative",
+    },
+
     -- Monster Specific
     monstermodes = {
         description = "Give the monster multiple modes (e.g. before/after its True Name is spoken); other modifiers gate on Monster Mode.",

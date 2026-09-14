@@ -8277,6 +8277,22 @@ local function FeaturesIndexPanel()
             end
         end
 
+        --Modifier behaviors may add their own controls to the row (a Grant
+        --Treasure modifier's picker and Claim button). pcall: choice-slot
+        --entries are game-typed without a modifiers field.
+        pcall(function()
+            for _,modifier in ipairs(entry.feature:try_get("modifiers", {})) do
+                local panel = modifier:CreateSheetPanel(creature, {
+                    refresh = function()
+                        CharacterSheet.instance:FireEvent("refreshAll")
+                    end,
+                })
+                if panel ~= nil then
+                    children[#children+1] = panel
+                end
+            end
+        end)
+
         body.children = children
     end
 

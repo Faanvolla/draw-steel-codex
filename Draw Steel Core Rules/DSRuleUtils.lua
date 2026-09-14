@@ -79,6 +79,17 @@ local function SamplePoints(locs)
     return pts
 end
 
+--Filter modifiers registered under this id take a creature's line of effect away from a
+--set of other creatures -- "no line of effect to any lightbender". Carried by the blinded
+--creature itself, unlike "Block Enemy Line of Effect", which is about standing in the way.
+local g_lineOfEffectFilterId = "lineofeffect"
+
+CreatureFilter.Register{
+    id = g_lineOfEffectFilterId,
+    text = "Has Line Of Effect",
+    description = "This filter controls whether a creature has line of effect to a target. If any of the filters are false, the creature has no line of effect to that target: it cannot target it, and the target is greyed out with the reason why.",
+}
+
 RuleUtils = {
     --- Finds an enemy creature standing between the source and the target that carries the
     --- "Block Enemy Line of Effect" custom attribute. Only enemies of the source block, and
@@ -198,7 +209,43 @@ RuleUtils = {
         return "Another creature"
     end,
 
-    HasLineOfEffect = function(toka, tokb)
+    --- Why `sourceToken` cannot see `targetToken`, when an effect has taken its line of
+    --- effect away (the "Has Line Of Effect" creature filter above). Returns nil while the
+    --- source can still see the target, so one call serves as both the test and the tooltip.
+    --- Directional: only the creature carrying the effect loses sight, not the creatures it
+    --- has been blinded to.
+    --- @param sourceToken CharacterToken the creature doing the looking
+    --- @param targetToken CharacterToken
+    --- @return nil|string
+    LineOfEffectDenialReason = function(sourceToken, targetToken)
+        if sourceToken == nil or targetToken == nil then return nil end
+        if not sourceToken.valid or not targetToken.valid then return nil end
+        if sourceToken.charid == targetToken.charid then return nil end
+        if sourceToken.properties == nil or targetToken.properties == nil then return nil end
+
+        --Objects are not creatures: their properties carry neither the filter modifiers nor
+        --the symbols the filter script reads, so leave them out of this entirely.
+        if sourceToken.isObject or targetToken.isObject then return nil end
+
+        local passes, modifier = sourceToken.properties:TargetPassesFilter(g_lineOfEffectFilterId, targetToken.properties)
+        if passes then
+            return nil
+        end
+
+        local name = nil
+        if modifier ~= nil then
+            name = modifier:try_get("name")
+        end
+
+        if name ~= nil and name ~= "" then
+            return string.format("You have no line of effect to this creature (%s).", name)
+        end
+
+        return "You have no line of effect to this creature."
+    end,
+
+    --- @param ability nil|ActivatedAbility the ability being used, when there is one
+    HasLineOfEffect = function(toka, tokb, ability)
         --Honor a per-creature line-of-effect square cap (the "Line Of Effect Limit"
         --custom attribute, used by the Dazzled condition). When > 0 on either
         --token, sight is severed once the two tokens are more than that many
@@ -219,6 +266,14 @@ RuleUtils = {
         --A creature carrying "Block Enemy Line of Effect" severs its enemies' line of
         --effect through its own space. Directional: only enemies of `toka` are blocked.
         if RuleUtils.LineOfEffectBlocker(toka, tokb) ~= nil then
+            return false
+        end
+
+        --An effect on toka may have taken its line of effect to creatures like tokb away.
+        --Areas are exempt: they need line of effect to where the area lands, not to each
+        --creature in it. Callers with no ability (opportunity attacks) are never areas.
+        local isAreaAbility = ability ~= nil and (ability:HasKeyword("Area") or ability.targetType == "map")
+        if (not isAreaAbility) and RuleUtils.LineOfEffectDenialReason(toka, tokb) ~= nil then
             return false
         end
 

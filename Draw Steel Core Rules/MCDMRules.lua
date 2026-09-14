@@ -1038,6 +1038,15 @@ CharacterResource.RegisterRefreshOptions{
 		refreshDescription = 'on level up',
 	},
 	{
+		--"Can't use again until you earn N or more Victories". countLabel makes the
+		--editor show a count box, stored as "victory:N" (plain "victory" means 1).
+		id = 'victory',
+		text = 'Per Victory',
+		refreshDescription = 'when you earn a Victory',
+		refreshDescriptionCount = 'after you earn %d Victories',
+		countLabel = 'Victories that must be earned before this refreshes',
+	},
+	{
 		id = 'never',
 		text = 'Manual Refresh',
 		refreshDescription = 'manually',
@@ -1052,6 +1061,31 @@ CharacterResource.RegisterRefreshOptions{
 		text = 'Global',
 		refreshDescription = 'global',
 	},
+}
+
+--Victory refreshes can't use the usual "id changed" test because the count only
+--climbs; a use is spent until the hero has earned enough Victories since it (or
+--took a respite, which zeroes Victories and stamps a new rest id). The stamp is
+--"<longRestId>:<victories at use>" so both parts can be compared later.
+CharacterResource.RegisterCustomRefreshType{
+	id = "victory",
+
+	getRefreshId = function(c, count)
+		local victories = math.floor(tonumber(c:GetVictories()) or 0)
+		return string.format("%s:%d", tostring(c.longRestId), victories)
+	end,
+
+	isCurrent = function(c, storedId, currentId, count)
+		local needed = count or 1
+		local storedRest, storedVictories = string.match(tostring(storedId or ""), "^(.*):(%-?%d+)$")
+		local currentRest, currentVictories = string.match(currentId, "^(.*):(%-?%d+)$")
+		if storedRest == nil or storedRest ~= currentRest then
+			return false
+		end
+
+		--A Director lowering Victories makes this negative; that stays spent on purpose.
+		return (tonumber(currentVictories) - tonumber(storedVictories)) < needed
+	end,
 }
 
 --always just use squares for measurements.

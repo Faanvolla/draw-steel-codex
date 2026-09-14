@@ -2,10 +2,12 @@ local mod = dmhub.GetModLoading()
 
 --Field mappings for the official MCDM Draw Steel character sheet PDFs. Four sheets are
 --supported, all sharing a common core (BaseFields/BaseChecks/BaseMulti):
---  * Simple    -- DrawSteel_CharacterSheetBlank.pdf
---  * Expanded  -- Expanded Character Sheet (Form Fillable).pdf   (core + list blocks)
---  * Summoner  -- Summoner Character Sheet (Form Fillable).pdf   (expanded, class-matched)
---  * Beastheart-- Beastheart Expanded Character Sheet (Form Fillable).pdf (expanded, class-matched)
+--  * Simple    -- DS_CharacterSheet_Standard
+--  * Expanded  -- DS_CharacterSheet_Expanded    (core + list blocks)
+--  * Summoner  -- DS_CharacterSheet_Summoner    (expanded, class-matched)
+--  * Beastheart-- DS_CharacterSheet_Beastheart  (expanded, class-matched)
+--These names come from draw-steel-data, which the editor loads as Local Assets. Retail
+--clients only see them once that module is redeployed, so ship the two together.
 --
 --Field names come from each PDF's AcroForm dictionary; use
 --CharSheetPDFExport.DumpFields("<templateid>") against the imported asset to audit them.
@@ -122,6 +124,41 @@ local function FeatureNamesFromOrigin(creature, originKey)
             end
         end
     end
+    return names
+end
+
+--Names of the perks a hero has taken. A perk is a level choice on a CharacterFeatChoice,
+--and that choice emits the perk's inner features but never the perk itself, so the name
+--has to be looked up from the choice guid. Mirrors the builder's cachePerks.
+local function PerkNames(creature)
+    local levelChoices = creature:GetLevelChoices() or {}
+    local featTable = dmhub.GetTable(CharacterFeat.tableName) or {}
+    local names = {}
+    local seen = {}
+
+    local function Add(featid)
+        local featInfo = featTable[featid]
+        if featInfo ~= nil and featInfo.name ~= nil and not seen[featInfo.name] then
+            seen[featInfo.name] = true
+            names[#names+1] = featInfo.name
+        end
+    end
+
+    for _,entry in ipairs(creature:GetClassFeaturesAndChoicesWithDetails()) do
+        local feature = entry.feature
+        if feature ~= nil and feature.typeName == "CharacterFeatChoice" then
+            for _,featid in ipairs(levelChoices[feature.guid] or {}) do
+                Add(featid)
+            end
+        end
+    end
+
+    --Heroes built before perks became level choices still store them in a flat array.
+    for _,featid in ipairs(creature:try_get("creatureFeats", {})) do
+        Add(featid)
+    end
+
+    table.sort(names)
     return names
 end
 
@@ -415,8 +452,25 @@ local BaseFields = {
     ["Career Benefit"] = function(token, creature)
         return Join(FeatureNamesFromOrigin(creature, "background"), "\n")
     end,
-    --Career Inciting Incident: the incident is one of the career's choices; resolving
-    --the chosen option's display name is deferred to a follow-up.
+    --The incident is saved as a hero note, not a feature: CharacterIncidentChoice has an
+    --empty FillFeaturesRecursive, so it never reaches the feature list. Read the note back
+    --the way the builder does, minus the bold markers the roll-table rows carry.
+    ["Career Inciting Incident"] = function(token, creature)
+        local career = creature:Background()
+        if career == nil then
+            return nil
+        end
+
+        for _,characteristic in ipairs(career:try_get("characteristics", {})) do
+            for _,note in ipairs(creature:GetNotesForTable(characteristic.tableid) or {}) do
+                if note.text ~= nil and note.text ~= "" then
+                    return (string.gsub(note.text, "%*%*", ""))
+                end
+            end
+        end
+
+        return nil
+    end,
     ["Complication Name"] = function(token, creature)
         local complications = creature:Complications()
         if #complications == 0 then
@@ -474,15 +528,7 @@ local BaseMulti = {
         fields["Titles 1"], fields["Titles 2"] = SplitIntoTwo(names, 120)
     end,
     function(token, creature, fields)
-        local names = {}
-        local featTable = dmhub.GetTable(CharacterFeat.tableName) or {}
-        for _,featid in ipairs(creature:try_get("creatureFeats", {})) do
-            local featInfo = featTable[featid]
-            if featInfo ~= nil then
-                names[#names+1] = featInfo.name
-            end
-        end
-        fields["Perks 1"], fields["Perks 2"] = SplitIntoTwo(names, 120)
+        fields["Perks 1"], fields["Perks 2"] = SplitIntoTwo(PerkNames(creature), 120)
     end,
 
     --Class features across the sheet's two Class Features boxes.
@@ -1097,6 +1143,19 @@ end
 
 local AbilityMulti = { MakeAbilityFiller(BaseAbilityLayout) }
 
+--The Simple sheet prints one "Ancestry Traits and Perks" box and backs it with only the
+--Perks widgets, so both lists have to share them. The expanded sheets carry the traits in
+--their own Traits List instead, so this runs after BaseMulti and only for Simple.
+local SimpleMulti = {
+    function(token, creature, fields)
+        local names = FeatureNamesFromOrigin(creature, "race")
+        for _,name in ipairs(PerkNames(creature)) do
+            names[#names+1] = name
+        end
+        fields["Perks 1"], fields["Perks 2"] = SplitIntoTwo(names, 120)
+    end,
+}
+
 --------------------------------------------------------------------------------
 -- Template registration
 --------------------------------------------------------------------------------
@@ -1105,17 +1164,17 @@ CharSheetPDFExport.RegisterTemplate{
     id = "mcdm-hero-sheet",
     name = "Simple Sheet",
     variant = "simple",
-    docName = "draw steel character sheet",
+    docName = "DS_CharacterSheet_Standard",
     fields = BaseFields,
     checks = BaseChecks,
-    multi = ConcatMulti(BaseMulti, AbilityMulti),
+    multi = ConcatMulti(BaseMulti, SimpleMulti, AbilityMulti),
 }
 
 CharSheetPDFExport.RegisterTemplate{
     id = "mcdm-hero-sheet-expanded",
     name = "Expanded Sheet",
     variant = "expanded",
-    docName = "expanded character sheet",
+    docName = "DS_CharacterSheet_Expanded",
     fields = BaseFields,
     checks = BaseChecks,
     multi = ConcatMulti(BaseMulti, ExpandedMulti, AbilityMulti),
@@ -1126,7 +1185,7 @@ CharSheetPDFExport.RegisterTemplate{
     name = "Summoner Sheet",
     variant = "expanded",
     classMatch = "Summoner",
-    docName = "summoner character sheet",
+    docName = "DS_CharacterSheet_Summoner",
     fields = MergeFields(BaseFields, SummonerFields),
     checks = BaseChecks,
     multi = ConcatMulti(BaseMulti, ExpandedMulti, AbilityMulti),
@@ -1137,7 +1196,7 @@ CharSheetPDFExport.RegisterTemplate{
     name = "Beastheart Sheet",
     variant = "expanded",
     classMatch = "Beastheart",
-    docName = "beastheart expanded character sheet",
+    docName = "DS_CharacterSheet_Beastheart",
     fields = MergeFields(BaseFields, BeastheartFields),
     checks = MergeFields(BaseChecks, BeastheartChecks),
     multi = ConcatMulti(BaseMulti, ExpandedMulti, BeastheartMulti, AbilityMulti),

@@ -3394,7 +3394,7 @@ end
 
 -- Build a minion-to-target adjacency table. adjacency[minionIdx] is a list of
 -- target indices that minion can reach (range overlap + line of effect).
-local function BuildSquadAdjacency(squadTokens, squadTargetsPerToken, targets, targetLocsOccupying)
+local function BuildSquadAdjacency(squadTokens, squadTargetsPerToken, targets, targetLocsOccupying, ability)
     local adjacency = {}
     for i, tok in ipairs(squadTokens) do
         adjacency[i] = {}
@@ -3406,7 +3406,7 @@ local function BuildSquadAdjacency(squadTokens, squadTargetsPerToken, targets, t
                     break
                 end
             end
-            if canReach and RuleUtils.HasLineOfEffect(tok, target.token) then
+            if canReach and RuleUtils.HasLineOfEffect(tok, target.token, ability) then
                 adjacency[i][#adjacency[i] + 1] = j
             end
         end
@@ -3584,7 +3584,7 @@ function ActivatedAbility:GetTargetingRays(casterToken, range, symbols, targets)
             end
         end
 
-        local adjacency = BuildSquadAdjacency(squadTokens, possibleTargetsForEachToken, targets, targetLocsOccupying)
+        local adjacency = BuildSquadAdjacency(squadTokens, possibleTargetsForEachToken, targets, targetLocsOccupying, self)
 
         -- Build committed assignments. Player locks (g_squadLocks) are hard
         -- commitments: each claims its target creature's earliest free slot so
@@ -3899,7 +3899,7 @@ function ActivatedAbility:CustomTargetShape(casterToken, range, symbols, targets
         if #targets == 0 then
             usableSquadMembers = squadTokens
         else
-            local adjacency = BuildSquadAdjacency(squadTokens, possibleTargetsForEachToken, targets, targetLocsOccupying)
+            local adjacency = BuildSquadAdjacency(squadTokens, possibleTargetsForEachToken, targets, targetLocsOccupying, self)
 
             -- Baseline: how many targets can the full squad cover at most.
             local baselineMatch = BipartiteMatch(adjacency, #squadTokens, #targets)
@@ -4556,11 +4556,9 @@ ActivatedAbility.RegisterProperty {
     description = "If true, push/pull/slide effects from this ability use the original caster as the source for size-difference calculations (Big Versus Little), rather than this ability's caster. Generally only used within Invoked Abilities",
 }
 
---"Block Enemy Line of Effect": a creature carrying this custom attribute stands in the way
---of its enemies' targeting -- an enemy can't pick a target it can only reach by drawing a
---line through the blocker's space. Reported as a reasoned failure (false plus a message) so
---the action bar greys the target out with a tooltip saying who is in the way, rather than
---silently dropping it from the candidate list.
+--Line-of-effect gates on targeting: an effect denying the caster line of effect to a set of
+--creatures, and an enemy standing in the way with "Block Enemy Line of Effect". Both return
+--a reason, so the action bar greys the target out with a tooltip instead of hiding it.
 local g_baseTargetPassesFilter = ActivatedAbility.TargetPassesFilter
 function ActivatedAbility:TargetPassesFilter(casterToken, targetToken, symbols, filterOverride)
     local result, reason = g_baseTargetPassesFilter(self, casterToken, targetToken, symbols, filterOverride)
@@ -4570,6 +4568,17 @@ function ActivatedAbility:TargetPassesFilter(casterToken, targetToken, symbols, 
 
     if casterToken == nil or targetToken == nil or targetToken.isObject then
         return result, reason
+    end
+
+    --Area abilities are exempt from the caster's own line-of-effect denial: they need line
+    --of effect to where the area lands, not to each creature caught in it, which the base
+    --filter already checks against the area's origin.
+    local isAreaAbility = self:HasKeyword("Area") or self.targetType == "map"
+    if not isAreaAbility then
+        local denialReason = RuleUtils.LineOfEffectDenialReason(casterToken, targetToken)
+        if denialReason ~= nil then
+            return false, denialReason
+        end
     end
 
     --An area ability's line of effect runs from wherever the area is centred, not from the

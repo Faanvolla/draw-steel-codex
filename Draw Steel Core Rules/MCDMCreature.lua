@@ -8176,3 +8176,15 @@ CharacterModifier.TypeInfo.monstermodes = {
         Refresh()
     end,
 }
+
+--An opportunity attack is a free strike, so it needs line of effect like any other strike.
+--Only effect-driven denial counts here, not cover or walls: gating every opportunity attack
+--in the game on geometry would be a far larger rules change.
+local g_baseCanOpportunityAttack = creature.CanOpportunityAttack
+function creature:CanOpportunityAttack(observerToken, moverToken)
+    if not g_baseCanOpportunityAttack(self, observerToken, moverToken) then
+        return false
+    end
+
+    return RuleUtils.LineOfEffectDenialReason(observerToken, moverToken) == nil
+end

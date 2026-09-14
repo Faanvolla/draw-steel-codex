@@ -436,6 +436,159 @@ function CharacterResource.RegisterRefreshOptions(options)
 	end
 end
 
+--Refresh types whose id is computed rather than a fixed value, keyed by base id.
+--Game systems register these (e.g. Draw Steel's "victory") so the generic
+--resource code never has to know about system-specific concepts.
+CharacterResource.customRefreshTypes = {}
+
+--- Registers a computed refresh type. info fields:
+---   id: base refresh type id, e.g. "victory".
+---   getRefreshId(creature, count): the id to stamp on a usage right now.
+---   isCurrent(creature, storedId, currentId, count): true while a usage
+---     stamped with storedId still counts as spent. Omit for plain equality.
+--- Refresh types written as "<id>:<count>" (e.g. "victory:2") pass count through.
+function CharacterResource.RegisterCustomRefreshType(info)
+	CharacterResource.customRefreshTypes[info.id] = info
+end
+
+--- Splits "victory:2" into "victory", 2. Plain ids come back unchanged with a nil count.
+--- @param refreshType string
+--- @return string, number|nil
+function CharacterResource.ParseRefreshType(refreshType)
+	if type(refreshType) ~= "string" then
+		return refreshType, nil
+	end
+
+	local base, count = string.match(refreshType, "^([^:]+):(%d+)$")
+	if base == nil then
+		return refreshType, nil
+	end
+
+	return base, tonumber(count)
+end
+
+--- Builds the encoded refresh type for a base id and optional count ("victory", 2 -> "victory:2").
+--- A count of 1 or nil is left off so the common case stays the plain id.
+function CharacterResource.MakeRefreshType(base, count)
+	if count == nil or count <= 1 then
+		return base
+	end
+
+	return string.format("%s:%d", base, count)
+end
+
+--- The dropdown option for a refresh type, tolerating the "<id>:<count>" form.
+--- @return table|nil
+function CharacterResource.GetRefreshOption(refreshType)
+	local base = CharacterResource.ParseRefreshType(refreshType)
+	return CharacterResource.usageLimitMap[base]
+end
+
+--- Human readable "refreshes ..." text for a refresh type, e.g. "each encounter"
+--- or "after you earn 2 Victories". Options may give refreshDescriptionCount, a
+--- format string used when the type carries a count above 1.
+--- @return string
+function CharacterResource.DescribeRefresh(refreshType)
+	local base, count = CharacterResource.ParseRefreshType(refreshType)
+	local option = CharacterResource.usageLimitMap[base]
+	if option == nil then
+		return tostring(refreshType)
+	end
+
+	if count ~= nil and count > 1 and option.refreshDescriptionCount ~= nil then
+		return string.format(option.refreshDescriptionCount, count)
+	end
+
+	return option.refreshDescription or option.text or base
+end
+
+--- A refresh type picker: the usual dropdown plus a small count box that only
+--- shows for types whose option declares countLabel (e.g. "victory" -> "victory:2").
+--- args.value is the current encoded refresh type; args.change(newRefreshType, panel)
+--- fires with the fully encoded id. args.options defaults to usageLimitOptions and
+--- args.dropdown is merged into the dropdown's constructor args for styling.
+--- @return Panel
+function CharacterResource.RefreshTypeEditor(args)
+	local options = args.options or CharacterResource.usageLimitOptions
+	local base, count = CharacterResource.ParseRefreshType(args.value or "none")
+	local change = args.change
+
+	local resultPanel
+	local countInput
+
+	local function OptionTakesCount(id)
+		local option = CharacterResource.usageLimitMap[id]
+		return option ~= nil and option.countLabel ~= nil
+	end
+
+	local function Fire()
+		if change ~= nil then
+			change(CharacterResource.MakeRefreshType(base, count), resultPanel)
+		end
+	end
+
+	local dropdownArgs = {
+		idChosen = base,
+		options = options,
+		change = function(element)
+			base = element.idChosen
+			if not OptionTakesCount(base) then
+				count = nil
+			end
+			countInput:FireEvent("refreshCount")
+			Fire()
+		end,
+	}
+
+	for k,v in pairs(args.dropdown or {}) do
+		dropdownArgs[k] = v
+	end
+
+	countInput = gui.Input{
+		width = 40,
+		height = 26,
+		halign = "left",
+		valign = "center",
+		hmargin = 4,
+		textAlignment = "center",
+		characterLimit = 3,
+		text = tostring(count or 1),
+		linger = function(element)
+			local option = CharacterResource.usageLimitMap[base]
+			if option ~= nil and option.countLabel ~= nil then
+				gui.Tooltip(option.countLabel)(element)
+			end
+		end,
+		refreshCount = function(element)
+			element:SetClass("collapsed", not OptionTakesCount(base))
+			element.text = tostring(count or 1)
+		end,
+		change = function(element)
+			local n = math.floor(tonumber(element.text) or 1)
+			if n < 1 then
+				n = 1
+			end
+			count = n
+			element.text = tostring(n)
+			Fire()
+		end,
+	}
+
+	resultPanel = gui.Panel{
+		flow = "horizontal",
+		width = "auto",
+		height = "auto",
+		halign = "left",
+		valign = "center",
+		gui.Dropdown(dropdownArgs),
+		countInput,
+	}
+
+	countInput:FireEvent("refreshCount")
+
+	return resultPanel
+end
+
 --different types of usage limit options as presentable in a dropdown.
 CharacterResource.RegisterRefreshOptions{
 	{
@@ -518,6 +671,12 @@ creature.longRestId = 'none'
 
 function creature:GetResourceRefreshId(refreshType)
 
+	local base, count = CharacterResource.ParseRefreshType(refreshType)
+	local custom = CharacterResource.customRefreshTypes[base]
+	if custom ~= nil then
+		return custom.getRefreshId(self, count)
+	end
+
     if refreshType == 'turn' then
 		if dmhub.initiativeQueue then
 			return dmhub.initiativeQueue:GetTurnId()
@@ -560,12 +719,28 @@ function creature:GetResourceUsage(key, refreshType)
 		return 0
 	end
 
-	local refreshid = self:GetResourceRefreshId(refreshType)
-	if resource.refreshid ~= refreshid then
+	if not self:IsResourceUsageCurrent(refreshType, resource.refreshid) then
 		return 0
 	end
 
 	return resource.used
+end
+
+--- True while a usage stamped with storedId still counts as spent for this
+--- refresh type. Most types refresh when the id changes (new turn, encounter,
+--- rest...); computed types such as "victory" decide with their own window logic.
+--- @param refreshType string
+--- @param storedId string|nil
+--- @return boolean
+function creature:IsResourceUsageCurrent(refreshType, storedId)
+	local currentId = self:GetResourceRefreshId(refreshType)
+	local base, count = CharacterResource.ParseRefreshType(refreshType)
+	local custom = CharacterResource.customRefreshTypes[base]
+	if custom ~= nil and custom.isCurrent ~= nil then
+		return custom.isCurrent(self, storedId, currentId, count) == true
+	end
+
+	return storedId == currentId
 end
 
 --can afford the exact resource provided (not a leveled version).
@@ -751,10 +926,10 @@ function creature:ConsumeResource(key, refreshType, quantity, note)
             return 0
         end
 	else
-		local refreshid = self:GetResourceRefreshId(refreshType)
-
-		if resource.refreshid ~= refreshid then
-			resource.refreshid = refreshid
+		--A stale stamp starts a fresh count. A still-current stamp is kept as-is so
+		--window-based types (victory) measure from the first use, not the latest.
+		if not self:IsResourceUsageCurrent(refreshType, resource.refreshid) then
+			resource.refreshid = self:GetResourceRefreshId(refreshType)
 			resource.used = 0
 		end
 
@@ -892,9 +1067,8 @@ function creature:RefreshResource(key, refreshType, quantity, note)
 			return 0
 		end
 
-		local refreshid = self:GetResourceRefreshId(refreshType)
-		if resourceEntry.refreshid ~= refreshid then
-			resourceEntry.refreshid = refreshid
+		if not self:IsResourceUsageCurrent(refreshType, resourceEntry.refreshid) then
+			resourceEntry.refreshid = self:GetResourceRefreshId(refreshType)
 			resourceEntry.used = 0
 		elseif resourceEntry.used > 0 then
 			if quantity and type(quantity) ~= "number" then

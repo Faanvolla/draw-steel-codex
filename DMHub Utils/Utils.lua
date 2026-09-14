@@ -1278,10 +1278,11 @@ function FindObjectPathByGuid(guid, obj, path)
         return true
     end
     
-    -- Recursively search nested tables
+    -- _tmp fields are skipped: they hold live runtime state (tokens, caches)
+    -- that can be cyclic, and never the stored copy of a compendium object.
     if type(obj) == "table" and #path < 16 then
         for k, v in pairs(obj) do
-            if k ~= "_luaTable" and type(v) == "table" then
+            if k ~= "_luaTable" and type(v) == "table" and not string.starts_with(tostring(k), "_tmp") then
                 path[#path+1] = k
                 local found = FindObjectPathByGuid(guid, v, path)
                 if found then
@@ -1325,6 +1326,89 @@ function SetObjectAtPath(obj, path, value)
     
     current[path[#path]] = value
     return true
+end
+
+--Tables that can own an ability, most likely first, so the common cases (class
+--features, band malice, kit signatures) don't walk every table in the game.
+local g_abilityOwnerTables = {
+    "classes",
+    "standardAbilities",
+    "MonsterGroup",
+    "kits",
+    "titles",
+    "races",
+    "careers",
+    "cultures",
+    "cultureAspects",
+    "complications",
+    "feats",
+    "tbl_Gear",
+    "charConditions",
+    "characterOngoingEffects",
+    "backgrounds",
+    "featurePrefabs",
+    "downtimeActivities",
+}
+
+--- Finds the compendium entry that owns the object with the given guid.
+--- Returns the TOP-LEVEL table item -- what dmhub.SetAndUploadTableItem expects --
+--- plus the path down to the match, so an edit can be written back. Use this
+--- rather than FindAbilityParentByGuid, which needs a domain hint and so only
+--- ever resolved class abilities.
+--- @param guid string guid (or id) of the object to locate
+--- @return nil|table item top-level compendium entry that owns the guid
+--- @return nil|string tableid the data table the entry lives in
+--- @return nil|string key the entry's key within that table
+--- @return nil|table path field names leading from the entry to the match
+function FindCompendiumItemOwningGuid(guid)
+    if guid == nil then
+        return nil, nil, nil, nil
+    end
+
+    local searched = {}
+
+    local function SearchTable(tableid)
+        if searched[tableid] then
+            return nil
+        end
+        searched[tableid] = true
+
+        local t = dmhub.GetTable(tableid)
+        if t == nil then
+            return nil
+        end
+
+        for key, obj in unhidden_pairs(t) do
+            if type(obj) == "table" and not string.starts_with(tostring(key), "_tmp") then
+                if key == guid or rawget(obj, "guid") == guid or rawget(obj, "id") == guid then
+                    return obj, tableid, key, {}
+                end
+
+                local path = {}
+                if FindObjectPathByGuid(guid, obj, path) then
+                    return obj, tableid, key, path
+                end
+            end
+        end
+
+        return nil
+    end
+
+    for _, tableid in ipairs(g_abilityOwnerTables) do
+        local obj, resultTable, key, path = SearchTable(tableid)
+        if obj ~= nil then
+            return obj, resultTable, key, path
+        end
+    end
+
+    for _, tableid in ipairs(dmhub.GetTableTypes()) do
+        local obj, resultTable, key, path = SearchTable(tableid)
+        if obj ~= nil then
+            return obj, resultTable, key, path
+        end
+    end
+
+    return nil, nil, nil, nil
 end
 
 function FindAbilityParentByGuid(guid)

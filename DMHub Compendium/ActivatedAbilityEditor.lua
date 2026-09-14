@@ -4126,3 +4126,103 @@ function ActivatedAbility:ShowEditActivatedAbilityDialog(options)
 	return resultPanel
 end
 
+
+--Abilities handed to UI are usually temporary clones, so an edit has to be
+--written back to the entry that stores them. Finding that entry scans the
+--compendium, so results are memoised per guid.
+local g_abilitySourceCache = {}
+
+--Turns a cached source record back into the stored ability and the top-level
+--compendium entry holding it. Returns nil if the compendium has changed such
+--that the record no longer points at this ability.
+local function ResolveAbilitySource(source, abilityGuid)
+	if source == nil then
+		return nil, nil
+	end
+
+	local t = dmhub.GetTable(source.tableid)
+	local item = t ~= nil and t[source.key] or nil
+	if type(item) ~= "table" then
+		return nil, nil
+	end
+
+	local ability = GetObjectAtPath(item, source.path)
+	if type(ability) ~= "table" then
+		return nil, nil
+	end
+
+	--An empty path means the row itself is the ability, so the row key identifies
+	--it. Otherwise a guid mismatch means it has moved or been replaced.
+	local matches = rawget(ability, "guid") == abilityGuid
+		or (#source.path == 0 and source.key == abilityGuid)
+	if not matches then
+		return nil, nil
+	end
+
+	return ability, item
+end
+
+--- Locates the compendium entry that stores this ability.
+--- @return nil|table source {tableid, key, path} record, or nil if this ability has
+---   no compendium source (a generated free strike, or an ability that lives only
+---   on a creature -- see creature:IsActivatedAbilityInnate for that case).
+function ActivatedAbility:FindCompendiumSource()
+	local guid = self:try_get("guid")
+	if guid == nil then
+		return nil
+	end
+
+	local cached = g_abilitySourceCache[guid]
+	if cached ~= nil then
+		if cached == false then
+			return nil
+		end
+		if ResolveAbilitySource(cached, guid) ~= nil then
+			return cached
+		end
+	end
+
+	local item, tableid, key, path = FindCompendiumItemOwningGuid(guid)
+	if item == nil then
+		g_abilitySourceCache[guid] = false
+		return nil
+	end
+
+	local source = { tableid = tableid, key = key, path = path }
+	g_abilitySourceCache[guid] = source
+	return source
+end
+
+--- Opens the ability editor on the STORED copy of this ability and uploads the
+--- owning compendium entry when the dialog closes. The dialog is parented to
+--- parentElement's root.
+--- @param parentElement Panel any live panel; used to find the dialog's root
+--- @return boolean true if the source was found and the editor opened
+function ActivatedAbility:ShowEditCompendiumSourceDialog(parentElement)
+	local guid = self:try_get("guid")
+	local source = self:FindCompendiumSource()
+	local original, item = ResolveAbilitySource(source, guid)
+
+	if original == nil then
+		gui.ModalMessage{
+			title = "Edit Ability",
+			message = "Could not find where this ability is stored in the compendium.",
+		}
+		return false
+	end
+
+	parentElement.root:AddChild(original:ShowEditActivatedAbilityDialog{
+		close = function()
+			--The editor mutates the ability in place, so this only re-seats it.
+			--Uploading the whole owning entry is what persists the edit, since the
+			--compendium stores abilities nested inside their owner.
+			if #source.path > 0 then
+				SetObjectAtPath(item, source.path, original)
+			end
+
+			dmhub.SetAndUploadTableItem(source.tableid, item)
+		end,
+	})
+
+	return true
+end

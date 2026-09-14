@@ -426,6 +426,26 @@ local g_animationStyles = {
 		scale = 0.1,
 	},
 
+	--loseItem: the giveItem float in reverse. Starts resting on the token,
+	--then drifts up while fading and shrinking away.
+	gui.Style{
+		classes = {"animatedItemLose"},
+		opacity = 1,
+		scale = 1,
+		bgcolor = "white",
+		width = 40,
+		height = 40,
+	},
+	gui.Style{
+		classes = {"animatedItemLose", "leave"},
+		transitionTime = 0.6,
+		easing = "easeOutCubic",
+		opacity = 0,
+		brightness = 5,
+		scale = 1.5,
+		y = -80,
+	},
+
 	gui.Style{
 		classes = {"refreshResource"},
 		opacity = 0,
@@ -1583,6 +1603,40 @@ function CreateTokenHud(token)
 
 					delay = delay + 0.35
 
+				end
+
+				element.children = children
+			elseif anim.animType == "loseItem" then
+				--Reverse of giveItem: queued by code that takes an item away
+				--(e.g. a manifested treasure vanishing).
+				local children = element.children
+
+				local delay = 0
+
+				local gearTable = dmhub.GetTable('tbl_Gear')
+				for itemid,quantity in pairs(anim.items) do
+					local itemInfo = gearTable[itemid]
+					if itemInfo ~= nil then
+						local panel = gui.Panel{
+							classes = {"animatedItemLose"},
+							bgimage = itemInfo:GetIcon(),
+
+							leave = function(element)
+								element:SetClass("leave", true)
+								audio.FireSoundEvent("UI.Inv_Place")
+							end,
+							die = function(element)
+								element:DestroySelf()
+							end,
+						}
+
+						panel:ScheduleEvent("leave", delay + 0.01)
+						panel:ScheduleEvent("die", delay + 0.6 + 0.1)
+
+						children[#children+1] = panel
+
+						delay = delay + 0.35
+					end
 				end
 
 				element.children = children

@@ -1971,12 +1971,13 @@ local ShowResourcesPanel = function(parentPanel)
 				classes = {"formStacked"},
 				text = "Refresh:",
 			},
-			gui.Dropdown{
-				classes = {"formStacked"},
-				options = CharacterResource.usageLimitOptions,
-				idChosen = resource.usageLimit,
-				change = function(element)
-					resource.usageLimit = element.idChosen
+			CharacterResource.RefreshTypeEditor{
+				value = resource.usageLimit,
+				dropdown = {
+					classes = {"formStacked"},
+				},
+				change = function(refreshType)
+					resource.usageLimit = refreshType
 					UploadResource()
 
 					quantityLabelPreview:FireEvent("create")

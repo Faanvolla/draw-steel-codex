@@ -84,7 +84,7 @@ modeList:                            # only if multipleModes: true
 # Limited use (optional)
 usageLimitOptions:
   charges: "1"
-  resourceRefreshType: encounter     # encounter, turn
+  resourceRefreshType: encounter     # encounter, turn, round, long (respite), victory, victory:N (until N Victories earned)
   resourceid: "uuid"
 
 # Behaviors -- the ordered list that defines what the ability does

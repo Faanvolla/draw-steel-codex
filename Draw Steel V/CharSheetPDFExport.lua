@@ -120,16 +120,16 @@ function CharSheetPDFExport.AvailableVariants(creature)
 end
 
 --Reduces a name to lowercase alphanumerics so asset descriptions match loosely:
---"DrawSteel_CharacterSheetBlank" matches docName "draw steel character sheet".
+--"DS_CharacterSheet_Standard" matches docName "ds character sheet standard".
 local function NormalizeName(name)
     return string.gsub(string.lower(name or ""), "[^a-z0-9]", "")
 end
 
 --Finds the PDF document asset backing a template: by asset id first, then by a
---normalized prefix match on the asset description. Prefix (not substring) matching
---keeps the generic "expanded character sheet" from grabbing the "beastheart expanded
---character sheet" PDF -- the beastheart description does not START with the generic
---docName. Set docid to an asset guid for an exact, unambiguous match.
+--normalized prefix match on the asset description, so a description may carry a suffix.
+--Prefix (not substring) matching is what keeps one sheet's docName from claiming
+--another's PDF: under the older names "expanded character sheet" was a substring of the
+--beastheart description, but never its prefix. Set docid for an exact, unambiguous match.
 function CharSheetPDFExport.ResolveDocumentAsset(template)
     local docsTable = assets.pdfDocumentsTable
     if docsTable == nil then
@@ -146,7 +146,7 @@ function CharSheetPDFExport.ResolveDocumentAsset(template)
             for _,doc in pairs(docsTable) do
                 local description = NormalizeName(doc.description)
                 --description begins with the docName (target), e.g.
-                --"drawsteelcharactersheetblank" begins with "drawsteelcharactersheet".
+                --"dscharactersheetstandardv2" begins with "dscharactersheetstandard".
                 if description ~= "" and string.sub(description, 1, #target) == target then
                     return doc
                 end
@@ -561,9 +561,9 @@ function CharSheetPDFExport.GetExportOptions(token)
     return options
 end
 
---The character sheet's corner button. Visible for any hero. Clicking offers the
---available PDF sheet variants (Expanded picks the Summoner/Beastheart layout for those
---classes) plus a Codex JSON download; a single option exports directly.
+--The character sheet's corner button. Visible for any hero. Clicking offers the available
+--PDF sheet variants (Expanded picks the Summoner/Beastheart layout) plus a Codex JSON
+--download. Always a menu: a lone entry means the sheet PDFs failed to resolve, not a shortcut.
 CharSheet.RegisterSheetAction{
     id = "pdfexport",
     --A pure-white icon mask so the theme tints it identically to the neighboring
@@ -594,11 +594,6 @@ CharSheet.RegisterSheetAction{
                     message = string.match(tostring(err), "[^\r\n]+") or "Unknown error.",
                 }
             end
-        end
-
-        if #options == 1 then
-            RunOption(options[1])
-            return
         end
 
         local entries = {}

@@ -264,24 +264,22 @@ function CharacterModifier:UsageLimitEditor(options)
 	local args = {
 		classes = {'formPanel', 'formPanel-inline'},
 		children = {
-			gui.Dropdown{
-				styles = ThemeEngine.GetStyles(),
-				selfStyle = {
-					height = 30,
-					width = 160,
-					fontSize = 16,
-				},
-
+			CharacterResource.RefreshTypeEditor{
 				options = cond(perspell, CharacterResource.usageLimitOptionsWithPerSpell, CharacterResource.usageLimitOptions),
-				idChosen = self:GetResourceRefreshType(),
-
-				events = {
-					change = function(element)
-						self.resourceRefreshType = element.idChosen
-						resultPanel:FireEvent("change")
-						element.parent:FireEventTree('create')
-					end,
+				value = self:GetResourceRefreshType(),
+				dropdown = {
+					styles = ThemeEngine.GetStyles(),
+					selfStyle = {
+						height = 30,
+						width = 160,
+						fontSize = 16,
+					},
 				},
+				change = function(refreshType, editorPanel)
+					self.resourceRefreshType = refreshType
+					resultPanel:FireEvent("change")
+					editorPanel.parent:FireEventTree('create')
+				end,
 			},
 			gui.Label{
 				classes = {'formLabel'},
@@ -3352,6 +3350,39 @@ function CharacterModifier:DescribeModification(creature, attribute, currentValu
 	return nil
 end
 
+--- Player-facing controls a modifier adds to its feature's row on the character
+--- sheet (e.g. a treasure grant's picker and Claim button). Returns nil when the
+--- behavior has none. The sheet owns the upload lifecycle, so implementations
+--- write creature fields directly and call options.refresh() to redraw.
+--- @param creature creature
+--- @param options {refresh: fun()|nil}
+--- @return Panel|nil
+function CharacterModifier:CreateSheetPanel(creature, options)
+	local typeInfo = CharacterModifier.TypeInfo[self.behavior] or {}
+	local fn = typeInfo.createSheetPanel
+	if fn ~= nil then
+		return fn(self, creature, options or {})
+	end
+
+	return nil
+end
+
+--- Builder choices a modifier owes the player (e.g. a treasure grant's pick).
+--- The character builder's feature cache wraps whatever is returned like any
+--- CharacterChoice feature, so it gets a nav button, target slot and options list.
+--- @param hero character
+--- @param feature CharacterFeature the feature carrying this modifier
+--- @return CharacterChoice[]
+function CharacterModifier:BuilderChoices(hero, feature)
+	local typeInfo = CharacterModifier.TypeInfo[self.behavior] or {}
+	local fn = typeInfo.builderChoices
+	if fn ~= nil then
+		return fn(self, hero, feature) or {}
+	end
+
+	return {}
+end
+
 function CharacterModifier:ModifySkillProficiencyBonus(modContext, creature, skillInfo, currentValue, descriptionTable)
 	local typeInfo = CharacterModifier.TypeInfo[self.behavior]
 	local skillProficiencyBonus = typeInfo.skillProficiencyBonus
@@ -3754,7 +3785,7 @@ function CharacterModifier:DescribeResourceAvailability(creature, charges, expec
 
 	local used = creature:GetResourceUsage(self:GetResourceRefreshId(), refreshType)
 	local available = self:GetNumberOfCharges(creature)
-	return string.format("%d/%d available, refreshes %s", available - used, available, CharacterResource.usageLimitMap[refreshType].refreshDescription)
+	return string.format("%d/%d available, refreshes %s", available - used, available, CharacterResource.DescribeRefresh(refreshType))
 end
 
 function CharacterModifier:IsResourceCostUpcastable()

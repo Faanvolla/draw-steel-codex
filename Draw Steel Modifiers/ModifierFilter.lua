@@ -94,8 +94,12 @@ CharacterModifier.TypeInfo.filter = {
     end,
 }
 
+--- Runs every Filter modifier registered under `filterid` against a prospective target.
+--- The second return is the modifier that rejected it, so callers can name the effect
+--- responsible in a tooltip.
 --- @param targetCreature creature
 --- @param filterid string
+--- @return boolean, nil|CharacterModifier
 function creature:TargetPassesFilter(filterid, targetCreature)
     local modifiers = self:GetActiveModifiers()
     for _,mod in ipairs(modifiers) do
@@ -105,7 +109,7 @@ function creature:TargetPassesFilter(filterid, targetCreature)
             }
             local passFilter = GoblinScriptTrue(ExecuteGoblinScript(mod.mod.filter, self:LookupSymbol(symbols), 1, "Filter targets"))
             if not passFilter then
-                return false
+                return false, mod.mod
             end
         end
     end

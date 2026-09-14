@@ -3924,73 +3924,46 @@ local function AbilityHeading(args)
             end
 
             if dmhub.isDM then
-                local addedEditEntry = false
-                for domain, _ in pairs(m_ability.domains or {}) do
-                    if addedEditEntry then
-                        break
-                    end
-                    if domain ~= "_luaTable" then
-                        --parse domain information
-                        local tableType, guid = string.match(domain, "^([^:]+):(.+)$")
-                        if tableType and guid then
-                            -- Find the parent object (class/feat/etc) that contains this ability
-                            local obj, tableid = FindAbilityParentByGuid(guid)
-                            if obj and tableid then
-                                local path = {}
-                                --Find the path to the ability within the parent object
-                                local found = FindObjectPathByGuid(m_ability.guid, obj, path)
-                                --if a path is found create an edit option
-                                if found then
-                                    entries[#entries + 1] = {
-                                        text = 'Edit Ability',
-                                        click = function()
-                                            element.popup = nil
-
-                                            -- Get the original ability from the parent object
-                                            local originalAbility = GetObjectAtPath(obj, path)
-
-                                            element.root:AddChild(originalAbility:ShowEditActivatedAbilityDialog{
-                                                close = function()
-                                                    --Use found path to save edited ability back to parent object
-                                                    SetObjectAtPath(obj, path, originalAbility)
-
-                                                    -- Upload the parent object
-                                                    dmhub.SetAndUploadTableItem(tableid, obj)
-                                                end
-                                            })
-                                        end,
-                                    }
-                                    addedEditEntry = true
-                                end
-                            end
-                        end
-                    end
+                --The chip renders a temporary clone, so the edit has to reach the
+                --stored copy: an innate ability is this creature's alone and is
+                --edited on the token, anything else in the shared compendium entry.
+                local casterToken = CasterToken()
+                local innateAbility = nil
+                if casterToken ~= nil and casterToken.properties ~= nil then
+                    innateAbility = casterToken.properties:IsActivatedAbilityInnate(m_ability)
                 end
 
-                local casterToken = CasterToken()
-                if not addedEditEntry and casterToken ~= nil and casterToken.properties ~= nil then
-                    local innateAbility = casterToken.properties:IsActivatedAbilityInnate(m_ability)
-                    if innateAbility then
-                        entries[#entries + 1] = {
-                            text = 'Edit Ability',
-                            click = function()
-                                element.popup = nil
+                if innateAbility then
+                    entries[#entries + 1] = {
+                        text = 'Edit Ability',
+                        click = function()
+                            element.popup = nil
 
-                                element.root:AddChild(innateAbility:ShowEditActivatedAbilityDialog{
-                                    close = function()
-                                        --resolved at close time, as the original g_token read was.
-                                        local tok = CasterToken()
-                                        tok:ModifyProperties{
-                                            description = "Edit Innate Ability",
-                                            execute = function()
-                                                tok.properties.innateActivatedAbilities = tok.properties.innateActivatedAbilities
-                                            end,
-                                        }
-                                    end,
-                                })
-                            end,
-                        }
-                    end
+                            element.root:AddChild(innateAbility:ShowEditActivatedAbilityDialog{
+                                close = function()
+                                    --resolved at close time, as the original g_token read was.
+                                    local tok = CasterToken()
+                                    tok:ModifyProperties{
+                                        description = "Edit Innate Ability",
+                                        execute = function()
+                                            tok.properties.innateActivatedAbilities = tok.properties.innateActivatedAbilities
+                                        end,
+                                    }
+                                end,
+                            })
+                        end,
+                    }
+                elseif m_ability:FindCompendiumSource() ~= nil then
+                    --Captured now, not read at click time: this panel is pooled
+                    --and m_ability is re-pointed on every bar refresh.
+                    local editAbility = m_ability
+                    entries[#entries + 1] = {
+                        text = 'Edit Ability',
+                        click = function()
+                            element.popup = nil
+                            editAbility:ShowEditCompendiumSourceDialog(element)
+                        end,
+                    }
                 end
             end
 
@@ -4319,10 +4292,17 @@ local function AbilityHeading(args)
                     for _, entry in ipairs(costInfo.details) do
                         if entry.description ~= nil and (not entry.canAfford) then
                             --this means there is an 'anonymous' cost, e.g. number of times they can use per round.
-                            if entry.refreshType == "long" then
+                            local refreshBase, refreshCount = CharacterResource.ParseRefreshType(entry.refreshType)
+                            if refreshBase == "long" then
                                 element.text = "Already used since respite"
+                            elseif refreshBase == "victory" then
+                                if (refreshCount or 1) > 1 then
+                                    element.text = string.format("Already used; needs %d Victories", refreshCount)
+                                else
+                                    element.text = "Already used until next Victory"
+                                end
                             else
-                                element.text = string.format("Already used this %s", entry.refreshType)
+                                element.text = string.format("Already used this %s", refreshBase)
                             end
                             return
                         end

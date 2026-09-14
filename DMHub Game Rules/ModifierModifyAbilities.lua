@@ -203,8 +203,20 @@ CharacterModifier.RegisterAbilityModifier
 
 		local existingFilters = ability:get_or_add("reasonedFilters", {})
 
+		--Remember which effect added the filter so the greyed-out target's tooltip can say
+		--so -- "...no line of effect (Everything The Light Touches)". Copied rather than
+		--stamped in place: the table we are handed belongs to the modifier's saved data.
+		local sourceName = modifier:try_get("name", "")
+		if sourceName == "UNKNOWN" then
+			sourceName = ""
+		end
+
 		for _, filter in pairs(reasonedFilters) do
-			existingFilters[#existingFilters + 1] = filter
+			local entry = table.shallow_copy(filter)
+			if sourceName ~= "" then
+				entry.sourceName = sourceName
+			end
+			existingFilters[#existingFilters + 1] = entry
 		end
 
 		ability.reasonedFilters = existingFilters

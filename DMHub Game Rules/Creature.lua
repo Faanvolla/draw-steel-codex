@@ -6336,6 +6336,7 @@ function creature:CaptureTeleportOpportunityAttackers(originLoc)
                and p._tmp_grabbedby ~= ourCharid
                and p:CanUseTriggeredAbilities()
                and p:CanMakeOpportunityAttacks()
+               and p:CanOpportunityAttack(tok, ourToken)
                and tok.loc ~= nil
                and originLoc:DistanceInTiles(tok.loc) <= 1 then
                 result = result or {}
@@ -6365,7 +6366,7 @@ function creature:DispatchTeleportOpportunityAttacks(observers)
            and (not tok:IsFriend(self))
            and not tok.properties:HasBanesOnGenericFreeStrike(ourToken)
            and tok.properties:CanMakeOpportunityAttacks()
-           and tok.properties:TargetPassesFilter("opportunityattack", self) then
+           and tok.properties:CanOpportunityAttack(tok, ourToken) then
             tok.properties:DispatchEvent("leaveadjacent", { movingcreature = self })
         end
     end
@@ -6384,6 +6385,22 @@ end
 --or an opportunity-attack preview is being decided.
 function creature:CanMakeOpportunityAttacks()
     return self:CalculateNamedCustomAttribute("Cannot Make Opportunity Attacks") == 0
+end
+
+--- Whether this creature (the observer) may make an opportunity attack against the
+--- creature leaving its reach. Every gate asks this one question -- the stepped move
+--- path, teleports, and the HUD preview -- so they cannot drift apart. The base rule is
+--- just the "Can Opportunity Attack" filter; game systems override this to add their own
+--- requirements (Draw Steel adds line of effect).
+--- @param observerToken CharacterToken this creature's own token
+--- @param moverToken CharacterToken the creature leaving our reach
+--- @return boolean
+function creature:CanOpportunityAttack(observerToken, moverToken)
+    if moverToken == nil or moverToken.properties == nil then
+        return false
+    end
+
+    return self:TargetPassesFilter("opportunityattack", moverToken.properties)
 end
 
 CreatureFilter.Register{
@@ -6665,7 +6682,7 @@ function creature:OnMove(path)
                     local notImmuneForThisObserver = (not immuneFromOpportunityAttacks) or anyMovementObserver
                     local departureNotImmuneForThisObserver = (not immuneFromDeparture) or anyMovementObserver
 
-                    if withinVerticalReach and (not tok:IsFriend(self)) and tok.properties._tmp_grabbedby ~= ourCharid and not tok.properties:HasBanesOnGenericFreeStrike(ourToken) and tok.properties:TargetPassesFilter("opportunityattack", self) then
+                    if withinVerticalReach and (not tok:IsFriend(self)) and tok.properties._tmp_grabbedby ~= ourCharid and not tok.properties:HasBanesOnGenericFreeStrike(ourToken) and tok.properties:CanOpportunityAttack(tok, ourToken) then
                         if notImmuneForThisObserver and tok.properties:CanMakeOpportunityAttacks() then
                             tok.properties:DispatchEvent("leaveadjacent", MovementEventInfo{ movingcreature = self })
                             self._tmp_triggeredOpportunityAttacks = self._tmp_triggeredOpportunityAttacks + 1
@@ -6701,7 +6718,7 @@ function creature:OnMove(path)
         -- space counts too. Deal Might damage to the first such enemy, once per turn.
         if reapingActive and not rawget(self, "_tmp_reapingScytheDealt") then
             for k,tok in pairs(adjacentTokens) do
-                if (not previousAdjacent[k]) and tok.loc ~= nil and (not IsFriendForTargeting(ourToken, tok)) then
+                if (not previousAdjacent[k]) and tok.loc ~= nil and IsFriendForTargeting(ourToken, tok) == false then
                     tok.properties:InflictDamageInstance(reapDamage, "", {}, "Reaping Scythe", { attacker = self })
                     self._tmp_reapingScytheDealt = true
                     break
@@ -7566,13 +7583,18 @@ function creature:GetCustomAttribute(attrInfo)
 	return result
 end
 
--- Returns whether casterToken treats targetToken as a friend for TARGETING purposes.
--- Mirrors casterToken:IsFriend, except a creature with the "Count Allies as Enemies"
--- attribute treats allies within N squares (N = attribute value) as enemies, and a
--- creature with the "Count As Ally To Enemies" attribute forces everyone (even actual
--- enemies) to treat it as a friend. The target-side "cannot be treated as enemy" check
--- runs first and wins over both the base relationship and the caster-side attribute,
--- since it represents an effect the target is actively using to protect itself.
+-- TRI-STATE: how casterToken views targetToken for TARGETING purposes.
+--   true  = a friend (valid ally target)
+--   false = an enemy (valid enemy target)
+--   nil   = NEITHER -- not targetable as an ally, but not an enemy either
+-- Callers must treat "enemy" as a strict == false check and "friend" as a strict
+-- == true check; `not result` wrongly reads neutral (nil) as an enemy.
+-- Mirrors casterToken:IsFriend, with three attribute-driven overrides: the target-side
+-- "Count As Ally To Enemies" (Guise) forces friend and runs first since the target is
+-- actively protecting itself; caster-side "Count Allies as Enemies" makes allies within
+-- N squares read as enemies; caster-side "Count Allies as Neutral" (Memory Thief tier 1)
+-- makes allies within N squares read as neither. Enemies wins over Neutral when a
+-- creature somehow carries both.
 function IsFriendForTargeting(casterToken, targetToken)
     if casterToken == nil or targetToken == nil then
         return false
@@ -7590,7 +7612,7 @@ function IsFriendForTargeting(casterToken, targetToken)
         return false
     end
 
-    -- Never treat self as an enemy.
+    -- Never treat self as an enemy or as neutral.
     if casterToken.properties == targetToken.properties then
         return true
     end
@@ -7604,7 +7626,35 @@ function IsFriendForTargeting(casterToken, targetToken)
         end
     end
 
+    if IsNeutralizedAlly(casterToken, targetToken) then
+        return nil -- an ally, but not treatable as one: neither friend nor enemy
+    end
+
     return true
+end
+
+-- True when casterToken's "Count Allies as Neutral" attribute (Memory Thief tier 1)
+-- covers targetToken: within N squares (N = attribute value), casterToken cannot treat
+-- targetToken as an ally -- but targetToken does not become an enemy either. Self is
+-- never neutralized. IsFriendForTargeting returns nil off this. Targeting only for
+-- now: trigger eligibility, flanking, and auras stay on raw IsFriend by design.
+function IsNeutralizedAlly(casterToken, targetToken)
+    if casterToken == nil or targetToken == nil
+            or casterToken.properties == nil or targetToken.properties == nil
+            or casterToken.properties == targetToken.properties then
+        return false
+    end
+
+    local n = casterToken.properties:CalculateNamedCustomAttribute("Count Allies as Neutral")
+    if n ~= nil and n > 0 then
+        local casterLoc = casterToken.loc
+        local targetLoc = targetToken.loc
+        if casterLoc ~= nil and targetLoc ~= nil and casterLoc:DistanceInTiles(targetLoc) <= n then
+            return true
+        end
+    end
+
+    return false
 end
 
 --Derived states like "winded" that aren't conditions, but which we still want to be
@@ -7625,12 +7675,14 @@ function creature:MatchesString(viewingToken, token, str)
     str = string.lower(tostring(str))
 
     if viewingToken ~= nil then
+        --IsFriendForTargeting is tri-state (nil = neither): a neutralized ally
+        --matches neither "enemy" nor "ally", so both use strict comparisons.
         if str == "enemy" then
-            return not IsFriendForTargeting(viewingToken, token)
+            return IsFriendForTargeting(viewingToken, token) == false
         end
 
         if str == "ally" or str == "friend" then
-            return IsFriendForTargeting(viewingToken, token)
+            return IsFriendForTargeting(viewingToken, token) == true
         end
     end
 
