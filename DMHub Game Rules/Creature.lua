@@ -10379,6 +10379,8 @@ end
 --- @field hostile boolean
 --- @field heroicResourceCost number
 --- @field targets string[]
+--- @field candidateTargets boolean True when targets are candidates of which the reactor picks one, rather than all being affected.
+--- @field chosenTargetId false|string With candidateTargets, the candidate the reactor picked.
 --- @field powerRollModifier false|CharacterModifier
 --- @field triggered boolean|number
 --- @field dismissed boolean
@@ -10415,6 +10417,11 @@ ActiveTrigger.dismissOnTrigger = false
 ActiveTrigger.powerRollModifier = false
 ActiveTrigger.noDeduplicate = false
 ActiveTrigger.targets = {}
+--With candidateTargets set, targets are options the reactor picks one of (e.g.
+--Parry when one strike damages three allies) and chosenTargetId records the
+--pick. Otherwise every target is affected. See NeedsTargetChoice / GetTargetId.
+ActiveTrigger.candidateTargets = false
+ActiveTrigger.chosenTargetId = false
 ActiveTrigger.triggered = false
 ActiveTrigger.dismissed = false
 ActiveTrigger.ping = false
@@ -10705,6 +10712,22 @@ end
 
 function ActiveTrigger:DismissOnTrigger()
     return self.dismissOnTrigger
+end
+
+--True while the prompt has several candidate targets and none has been picked.
+function ActiveTrigger:NeedsTargetChoice()
+    return self.candidateTargets and #self.targets > 1 and not self.chosenTargetId
+end
+
+--The charid this prompt applies to: the reactor's pick when there were several
+--candidates, otherwise its only target. A multi-candidate prompt accepted
+--without a pick (e.g. by the Monster AI) falls back to the first candidate.
+--- @return string|nil
+function ActiveTrigger:GetTargetId()
+    if self.chosenTargetId then
+        return self.chosenTargetId
+    end
+    return self.targets[1]
 end
 
 function ActiveTrigger:GetText()

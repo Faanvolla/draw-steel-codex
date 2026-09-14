@@ -65,11 +65,13 @@ end
 -- serialized triggerBeforeRetarget flag, set by the trigger's own nested
 -- ability -- e.g. Devilish Charm tier 1). Mirrors the immediate changeTarget
 -- press flow below, but re-fetches the live trigger by id when the choice is
--- made so a stale snapshot can never be dispatched.
-local function RunTriggerRetargetChoice(element, triggerToken, trigger)
+-- made so a stale snapshot can never be dispatched. targetId is the target
+-- being redirected away from.
+local function RunTriggerRetargetChoice(element, triggerToken, trigger, targetId)
+    targetId = targetId or trigger:GetTargetId()
     local targetToken = nil
-    if #trigger.targets > 0 then
-        targetToken = dmhub.GetTokenById(trigger.targets[1])
+    if targetId ~= nil then
+        targetToken = dmhub.GetTokenById(targetId)
     end
     local casterToken = nil
     if trigger.casterid then
@@ -157,6 +159,45 @@ local function RunTriggerRetargetChoice(element, triggerToken, trigger)
                     end
                 end,
             }
+        end,
+    })
+end
+
+-- A triggered action offered against several targets of one roll (Parry when a
+-- strike damages three allies) is a single prompt. Pressing it first asks, on
+-- the map, which target it is for; the card's press then runs again with the
+-- picked charid as its second argument.
+local function ChooseTriggerTarget(element, triggerToken, trigger)
+    local candidates = {}
+    for _,targetid in ipairs(trigger.targets) do
+        local tok = dmhub.GetTokenById(targetid)
+        if tok ~= nil and tok.valid then
+            candidates[#candidates+1] = tok
+        end
+    end
+
+    local controller = element:Get("abilityController")
+    if #candidates == 0 or controller == nil then
+        return
+    end
+
+    controller:FireEventTree("chooseTarget", {
+        sourceToken = triggerToken,
+        targets = candidates,
+        prompt = string.format("Choose a target for %s", tostring(trigger:GetText())),
+        choose = function(targetToken)
+            --deferred: the picker tears itself down (focus, prompt, token
+            --highlights) right after this returns, which would clobber any
+            --picker or movement prompt the press opens next.
+            local charid = targetToken.charid
+            dmhub.Schedule(0.1, function()
+                if mod.unloaded or not element.valid then
+                    return
+                end
+                element:FireEvent("press", charid)
+            end)
+        end,
+        cancel = function()
         end,
     })
 end
@@ -574,7 +615,15 @@ mod.shared.CreateTriggerPanel = function()
 				for key,trigger in pairs(availableTriggers) do
 					if not trigger.dismissed then
 						local panel = m_activeTriggerPanels[key]
-						
+
+						--A shared prompt's candidate targets can change mid-roll (a
+						--target's roll stops meeting the trigger's requirement), so
+						--rebuild its card to keep the portraits and the picker current.
+						local targetsKey = table.concat(trigger.targets, ",")
+						if panel ~= nil and panel.data.targetsKey ~= targetsKey then
+							panel = nil
+						end
+
 						if panel == nil then
 							--A trigger with several modes draws one card per mode. The
 							--trigger's own name and prompt then move to heading boxes
@@ -600,6 +649,11 @@ mod.shared.CreateTriggerPanel = function()
 									width = 48,
 									height = 48,
 									hmargin = 2,
+									--of several candidates, only the one picked stays shown.
+									refresh = function(element)
+										local live = availableTriggers ~= nil and availableTriggers[key] or nil
+										element:SetClass("collapsed", live ~= nil and live.chosenTargetId ~= false and live.chosenTargetId ~= target)
+									end,
 									gui.CreateTokenImage(token, {
 										width = 40,
 										height = 40,
@@ -1122,14 +1176,25 @@ mod.shared.CreateTriggerPanel = function()
                                     end
                                 end,
 
-                                press = function(element)
+                                --chosenTargetId is only passed when ChooseTriggerTarget re-runs
+                                --this press with the target picked on the map.
+                                press = function(element, chosenTargetId)
+                                    if chosenTargetId == nil and (not trigger.triggered) then
+                                        local live = availableTriggers ~= nil and availableTriggers[key] or trigger
+                                        if live:NeedsTargetChoice() then
+                                            ChooseTriggerTarget(element, g_token, live)
+                                            return
+                                        end
+                                    end
+                                    local targetId = chosenTargetId or trigger:GetTargetId()
+
                                     print("TRIGGER:: PRESS")
 
                                     audio.DispatchSoundEvent("Notify.TriggerUse", {})
 
                                     if (not trigger.triggered) and #trigger.targets > 0 and trigger.powerRollModifier and trigger.powerRollModifier.powerRollModifier:try_get("changeTarget") and not trigger.powerRollModifier.powerRollModifier:try_get("hasTriggerBefore") then
                                         --this changes the target of the trigger.
-								        local targetToken = dmhub.GetTokenById(trigger.targets[1])
+								        local targetToken = dmhub.GetTokenById(targetId)
                                         local casterToken = dmhub.GetTokenById(trigger.casterid)
                                         if targetToken == nil then
                                             return
@@ -1174,6 +1239,9 @@ mod.shared.CreateTriggerPanel = function()
                                                     execute = function()
                                                         trigger.triggered = true
                                                         trigger.retargetid = newTargetToken.charid
+                                                        if chosenTargetId ~= nil then
+                                                            trigger.chosenTargetId = chosenTargetId
+                                                        end
                                                         --choosing the new target commits the trigger, so the card leaves the drawer.
                                                         trigger.dismissed = true
 
@@ -1225,11 +1293,12 @@ mod.shared.CreateTriggerPanel = function()
                                                         return
                                                     end
 
+                                                    --e.g. Parry: did the shift end adjacent to the target it was used for?
                                                     local condition = trigger.powerRollModifier and trigger.powerRollModifier.powerRollModifier:try_get("triggerBeforeCondition", "")
                                                     if trim(condition) ~= "" and triggerToken.valid then
                                                         local target = nil
-                                                        if #trigger.targets > 0 then
-                                                            target = dmhub.GetTokenById(trigger.targets[1])
+                                                        if targetId ~= nil then
+                                                            target = dmhub.GetTokenById(targetId)
                                                         end
                                                         local caster = dmhub.GetTokenById(trigger.casterid)
                                                         if target == nil or caster == nil then
@@ -1270,7 +1339,7 @@ mod.shared.CreateTriggerPanel = function()
                                                                 and freshTrigger.powerRollModifier.powerRollModifier:try_get("changeTarget")
                                                                 and not freshTrigger.retargetid then
                                                             handedOffToRetarget = true
-                                                            RunTriggerRetargetChoice(parentElement, triggerToken, freshTrigger)
+                                                            RunTriggerRetargetChoice(parentElement, triggerToken, freshTrigger, targetId)
                                                         end
                                                     end
                                                 end
@@ -1309,8 +1378,13 @@ mod.shared.CreateTriggerPanel = function()
                                             if trigger.triggered then
                                                 trigger.triggered = false
                                                 trigger.retargetid = nil
+                                                trigger.chosenTargetId = false
                                             else
                                                 trigger.triggered = true
+                                                --the pick tells the roll dialog which target's roll this changes.
+                                                if chosenTargetId ~= nil then
+                                                    trigger.chosenTargetId = chosenTargetId
+                                                end
                                             end
 
                                             --the trigger-before action (e.g. Parry's shift) is still
@@ -1629,7 +1703,9 @@ mod.shared.CreateTriggerPanel = function()
 
 
 
-									press = function(element)
+									--chosenTargetId is only passed when ChooseTriggerTarget re-runs
+									--this press with the target picked on the map.
+									press = function(element, chosenTargetId)
 
                                         --Strict action economy makes an unavailable mode truly
                                         --unavailable: players cannot press it to override.
@@ -1639,11 +1715,20 @@ mod.shared.CreateTriggerPanel = function()
                                             return
                                         end
 
+                                        if chosenTargetId == nil and (not trigger.triggered) then
+                                            local live = availableTriggers ~= nil and availableTriggers[key] or trigger
+                                            if live:NeedsTargetChoice() then
+                                                ChooseTriggerTarget(element, g_token, live)
+                                                return
+                                            end
+                                        end
+                                        local targetId = chosenTargetId or trigger:GetTargetId()
+
                                         audio.DispatchSoundEvent("Notify.TriggerUse", {})
 
                                         if (not trigger.triggered) and #trigger.targets > 0 and trigger.powerRollModifier and trigger.powerRollModifier.powerRollModifier:try_get("changeTarget") and not trigger.powerRollModifier.powerRollModifier:try_get("hasTriggerBefore") then
                                             --this changes the target of the trigger.
-                                            local targetToken = dmhub.GetTokenById(trigger.targets[1])
+                                            local targetToken = dmhub.GetTokenById(targetId)
                                             local casterToken = dmhub.GetTokenById(trigger.casterid)
                                             if targetToken == nil then
                                                 return
@@ -1689,6 +1774,9 @@ mod.shared.CreateTriggerPanel = function()
 
                                                             trigger.triggered = index
                                                             trigger.retargetid = newTargetToken.charid
+                                                            if chosenTargetId ~= nil then
+                                                                trigger.chosenTargetId = chosenTargetId
+                                                            end
                                                             --choosing the new target commits the trigger, so the card leaves the drawer.
                                                             trigger.dismissed = true
 
@@ -1717,6 +1805,11 @@ mod.shared.CreateTriggerPanel = function()
                                                     trigger.triggered = index
                                                 end
 
+                                                --the pick tells the roll dialog which target's roll this changes.
+                                                if chosenTargetId ~= nil then
+                                                    trigger.chosenTargetId = chosenTargetId
+                                                end
+
                                                 --just always dismiss on click?
                                                 if trigger.powerRollModifier then --and trigger.powerRollModifier:try_get("forceReroll", false) then
                                                     trigger.dismissed = true
@@ -1742,6 +1835,9 @@ mod.shared.CreateTriggerPanel = function()
                                 height = "auto",
                                 flow = "vertical",
                                 vmargin = 4,
+                                data = {
+                                    targetsKey = targetsKey,
+                                },
                                 children = children,
                             }
 						end

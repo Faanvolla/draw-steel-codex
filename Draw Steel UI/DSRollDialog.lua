@@ -739,6 +739,18 @@ function GameHud.CreateRollDialog(self)
             valign = "top",
         })
 
+        --Call after a click changes this row. A triggered action offered against
+        --several targets can only be active on one of them, and its shared prompt
+        --record has to hear about the new pick.
+        local AfterRowChanged = function()
+            DuplicateTriggerToMultiTargets(m_info)
+            ActiveTrigger.ClearOtherSharedPowerRollRows(m_multitargets, m_info)
+            RecalculateMultiTargets()
+            if CharacterModifier.PowerRollTriggerChoosesTarget(m_info.modifier) then
+                resultPanel:FireEventTree("dispatchTriggerUpdates")
+            end
+        end
+
         local label = gui.Label {
             fontSize = 14,
             bold = true,
@@ -763,8 +775,7 @@ function GameHud.CreateRollDialog(self)
                         m_info.triggered = true
                         m_info.augmentations = m_info.augmentations or {}
                         m_info.augmentations[index] = not m_info.augmentations[index]
-                        DuplicateTriggerToMultiTargets(m_info)
-                        RecalculateMultiTargets()
+                        AfterRowChanged()
                     end
                 end,
                 rightClick = function(element)
@@ -784,8 +795,7 @@ function GameHud.CreateRollDialog(self)
                                     m_info.triggered = true
                                     m_info.augmentations = m_info.augmentations or {}
                                     m_info.augmentations[index] = not m_info.augmentations[index]
-                                    DuplicateTriggerToMultiTargets(m_info)
-                                    RecalculateMultiTargets()
+                                    AfterRowChanged()
                                 end,
                             }
                         }
@@ -911,8 +921,7 @@ function GameHud.CreateRollDialog(self)
                     --it's this creature's trigger so it can click directly.
                     m_info.triggered = not m_info.triggered
                     m_info.augmentations = {}
-                    DuplicateTriggerToMultiTargets(m_info)
-                    RecalculateMultiTargets()
+                    AfterRowChanged()
                 else
                     local text = "Pinging trigger controller."
                     local token = info.charid and dmhub.GetTokenById(info.charid)
@@ -960,8 +969,7 @@ function GameHud.CreateRollDialog(self)
                                 element.popup = nil
                                 m_info.triggered = not m_info.triggered
                                 m_info.augmentations = {}
-                                DuplicateTriggerToMultiTargets(m_info)
-                                RecalculateMultiTargets()
+                                AfterRowChanged()
                             end,
                         }
                     }
@@ -1098,23 +1106,44 @@ function GameHud.CreateRollDialog(self)
                 return
             end
 
+            --The rows behind each shared prompt (a triggered action offered once
+            --for several targets), rebuilt every tick from the rows that pass
+            --their roll requirements, so the prompt's candidate list stays current.
+            local sharedEntries = {}
+            for targetIndex, target in ipairs(m_multitargets) do
+                for triggerIndex, trigger in ipairs(target.triggers) do
+                    if CharacterModifier.PowerRollTriggerChoosesTarget(trigger.modifier) and not trigger.failsRequirement then
+                        --Candidates are original targets, so a retarget that swaps a
+                        --row to a new creature does not drop the prompt's pick.
+                        local targetid = target.originalid or target.token.charid
+                        local key = ActiveTrigger.PowerRollRecordKey(trigger, targetid)
+                        local entries = sharedEntries[key] or {}
+                        sharedEntries[key] = entries
+                        entries[#entries + 1] = {
+                            targetIndex = targetIndex,
+                            triggerIndex = triggerIndex,
+                            targetid = targetid,
+                        }
+                    end
+                end
+            end
+
             for targetIndex, target in ipairs(m_multitargets) do
                 for triggerIndex, trigger in ipairs(target.triggers) do
                     local targetAll = (trigger.modifier:try_get("multitarget", "one") == "all")
+                    local choosesTarget = CharacterModifier.PowerRollTriggerChoosesTarget(trigger.modifier)
                     if m_openedTriggers == nil then
                         m_openedTriggers = {}
                     end
 
                     -- Keyed by the original target so a row swapped to its redirect
                     -- target keeps talking to the same trigger record.
-                    local key = trigger.modifier.guid .. (trigger.charid or "")
-                    if not targetAll then
-                        key = key .. (target.originalid or target.token.charid)
-                    end
+                    local key = ActiveTrigger.PowerRollRecordKey(trigger, target.originalid or target.token.charid)
 
-                    -- Skip triggers that fail roll requirements
+                    -- Skip triggers that fail roll requirements. A shared prompt
+                    -- only drops out once none of its candidates pass.
                     if trigger.failsRequirement then
-                        if m_openedTriggers[key] ~= nil then
+                        if m_openedTriggers[key] ~= nil and not (choosesTarget and sharedEntries[key] ~= nil) then
                             local activeTrigger = m_openedTriggers[key]
                             activeTrigger.dismissed = true
                             activeTrigger._tmp_refreshTime = 0
@@ -1123,29 +1152,29 @@ function GameHud.CreateRollDialog(self)
                     end
 
                     if m_openedTriggers[key] == nil then
-                        local triggerIndexes = {}
-                        triggerIndexes[#triggerIndexes + 1] = {
-                            targetIndex = targetIndex,
-                            triggerIndex = triggerIndex
-                        }
-                        local targets
-                        if targetAll then
-                            targets = { casterToken.charid }
+                        local triggerIndexes
+                        local targets = {}
+                        if choosesTarget then
+                            triggerIndexes = sharedEntries[key]
+                            for _, entry in ipairs(triggerIndexes) do
+                                targets[#targets + 1] = entry.targetid
+                            end
                         else
-                            targets = { target.token.charid }
-                        end
-
-                        local triggered = trigger.triggered
-                        if triggered then
-                            local augmentations = trigger.augmentations
-                            if augmentations ~= nil then
-                                for k, val in pairs(augmentations) do
-                                    if val and type(k) == "number" then
-                                        triggered = k
-                                    end
-                                end
+                            triggerIndexes = {
+                                {
+                                    targetIndex = targetIndex,
+                                    triggerIndex = triggerIndex,
+                                    targetid = target.originalid or target.token.charid,
+                                },
+                            }
+                            if targetAll then
+                                targets = { casterToken.charid }
+                            else
+                                targets = { target.token.charid }
                             end
                         end
+
+                        local triggered = ActiveTrigger.PowerRollRowTriggered(trigger)
 
                         local activeTrigger = ActiveTrigger.new {
                             id = dmhub.GenerateGuid(),
@@ -1167,16 +1196,25 @@ function GameHud.CreateRollDialog(self)
                         activeTrigger._tmp_tokenid = trigger.charid
                         activeTrigger._tmp_refreshTime = 0
                         activeTrigger._tmp_triggerIndexes = triggerIndexes
+                        if choosesTarget then
+                            activeTrigger.candidateTargets = true
+                            activeTrigger.triggered, activeTrigger.chosenTargetId = ActiveTrigger.PowerRollRowsState(activeTrigger, m_multitargets)
+                        end
                         trigger.forceupdate = false
 
                         m_openedTriggers[key] = activeTrigger
-                    elseif trigger.forceupdate then
-                        trigger.forceupdate = false
-
+                    else
                         local activeTrigger = m_openedTriggers[key]
-                        activeTrigger.triggered = trigger.triggered
-                        activeTrigger.dismissed = trigger.dismissed
-                        trigger._tmp_refreshTime = 0
+                        if choosesTarget and ActiveTrigger.SyncPowerRollCandidates(activeTrigger, sharedEntries[key]) then
+                            activeTrigger._tmp_refreshTime = 0
+                        end
+
+                        if trigger.forceupdate then
+                            trigger.forceupdate = false
+                            activeTrigger.triggered = trigger.triggered
+                            activeTrigger.dismissed = trigger.dismissed
+                            trigger._tmp_refreshTime = 0
+                        end
                     end
                     ::continueTriggerThink::
                 end
@@ -1195,6 +1233,10 @@ function GameHud.CreateRollDialog(self)
                 end
                 local strikeTargetsKey = table.concat(strikeTargets, ",")
 
+                --Activated prompts go out last: accepting a triggered action
+                --withdraws the reactor's other triggered-action prompts, and a
+                --stale copy of one of those sent afterwards would bring it back.
+                local due = {}
                 for key, activeTrigger in pairs(m_openedTriggers) do
                     if activeTrigger:try_get("_tmp_strikeTargetsKey") ~= strikeTargetsKey then
                         activeTrigger._tmp_strikeTargetsKey = strikeTargetsKey
@@ -1202,16 +1244,23 @@ function GameHud.CreateRollDialog(self)
                         activeTrigger._tmp_refreshTime = 0
                     end
                     if activeTrigger._tmp_refreshTime == 0 or dmhub.Time() > activeTrigger._tmp_refreshTime + 20 then
-                        activeTrigger._tmp_refreshTime = dmhub.Time()
-                        local token = dmhub.GetTokenById(activeTrigger._tmp_tokenid)
-                        if token ~= nil then
-                            token:ModifyProperties {
-                                description = "Set Trigger",
-                                execute = function()
-                                    token.properties:DispatchAvailableTrigger(activeTrigger)
-                                end,
-                            }
-                        end
+                        due[#due + 1] = activeTrigger
+                    end
+                end
+                table.sort(due, function(a, b)
+                    return cond(a.triggered, 1, 0) < cond(b.triggered, 1, 0)
+                end)
+
+                for _, activeTrigger in ipairs(due) do
+                    activeTrigger._tmp_refreshTime = dmhub.Time()
+                    local token = dmhub.GetTokenById(activeTrigger._tmp_tokenid)
+                    if token ~= nil then
+                        token:ModifyProperties {
+                            description = "Set Trigger",
+                            execute = function()
+                                token.properties:DispatchAvailableTrigger(activeTrigger)
+                            end,
+                        }
                     end
                 end
             end
@@ -1227,38 +1276,23 @@ function GameHud.CreateRollDialog(self)
             local haveUpdates = false
 
             for key, activeTrigger in pairs(m_openedTriggers) do
-                for _, indexes in ipairs(activeTrigger._tmp_triggerIndexes) do
-                    local target = m_multitargets[indexes.targetIndex]
-                    if target ~= nil then
-                        local triggerInfo = target.triggers[indexes.triggerIndex]
-                        if triggerInfo ~= nil then
-                            local triggered = triggerInfo.triggered
-                            if triggered then
-                                local augmentations = triggerInfo.augmentations
-                                if augmentations ~= nil then
-                                    for k, val in pairs(augmentations) do
-                                        if val and type(k) == "number" then
-                                            triggered = k
-                                        end
-                                    end
-                                end
-                            end
+                local triggered, chosenTargetId, ping = ActiveTrigger.PowerRollRowsState(activeTrigger, m_multitargets)
+                if not activeTrigger.candidateTargets then
+                    --only a shared prompt records a pick; the rest have one target.
+                    chosenTargetId = activeTrigger.chosenTargetId
+                end
 
-                            local ping = triggerInfo.ping or false
-
-                            if triggered ~= activeTrigger.triggered or ping ~= activeTrigger.ping then
-                                if triggered and activeTrigger.powerRollModifier and activeTrigger.powerRollModifier:try_get("forceReroll") then
-                                    --this is a once-only trigger
-                                    activeTrigger.dismissed = true
-                                end
-
-                                activeTrigger.triggered = triggered
-                                activeTrigger.ping = ping
-                                activeTrigger._tmp_refreshTime = 0 --this will force it to re-send.
-                                haveUpdates = true
-                            end
-                        end
+                if triggered ~= activeTrigger.triggered or ping ~= activeTrigger.ping or chosenTargetId ~= activeTrigger.chosenTargetId then
+                    if triggered and activeTrigger.powerRollModifier and activeTrigger.powerRollModifier:try_get("forceReroll") then
+                        --this is a once-only trigger
+                        activeTrigger.dismissed = true
                     end
+
+                    activeTrigger.triggered = triggered
+                    activeTrigger.ping = ping
+                    activeTrigger.chosenTargetId = chosenTargetId
+                    activeTrigger._tmp_refreshTime = 0 --this will force it to re-send.
+                    haveUpdates = true
                 end
             end
 
@@ -1279,37 +1313,25 @@ function GameHud.CreateRollDialog(self)
                 if token ~= nil then
                     local tokenTriggers = token.properties:GetAvailableTriggers() or {}
                     local tokenTrigger = tokenTriggers[trigger.id]
-                    --retargetid is part of the change detection: a trigger-before
-                    --flow (e.g. Devilish Charm) picks the new target after
-                    --activation without flipping triggered.
-                    if tokenTrigger ~= nil and (tokenTrigger.triggered ~= trigger.triggered or tokenTrigger.retargetid ~= trigger.retargetid or tokenTrigger.resolving ~= trigger.resolving) then
+                    --retargetid and chosenTargetId can change without triggered flipping
+                    --(a Devilish Charm redirect, a map pick), and dismissed must sync so our
+                    --periodic re-dispatch doesn't revive a prompt the reactor withdrew.
+                    if tokenTrigger ~= nil and (tokenTrigger.triggered ~= trigger.triggered or tokenTrigger.retargetid ~= trigger.retargetid or tokenTrigger.resolving ~= trigger.resolving or tokenTrigger.dismissed ~= trigger.dismissed or tokenTrigger.chosenTargetId ~= trigger.chosenTargetId) then
                         trigger.triggered = tokenTrigger.triggered
                         trigger.retargetid = tokenTrigger.retargetid
                         --carry resolving into our copy so the periodic re-dispatch
                         --of this record can't clobber the owner's in-progress flag.
                         trigger.resolving = tokenTrigger.resolving
                         trigger.dismissed = tokenTrigger.dismissed
+                        trigger.chosenTargetId = tokenTrigger.chosenTargetId
                         needUpdate = true
 
-                        --update any triggers to match.
+                        --update any triggers to match; a shared prompt only
+                        --activates the row of the target it was used on.
                         if m_multitargets ~= nil then
-                            for _, indexes in ipairs(trigger._tmp_triggerIndexes) do
-                                local target = m_multitargets[indexes.targetIndex]
-                                if target ~= nil then
-                                    local triggerInfo = target.triggers[indexes.triggerIndex]
-                                    if triggerInfo ~= nil then
-                                        triggerInfo.augmentations = {}
-                                        triggerInfo.triggered = cond(trigger.triggered, true, false)
-                                        triggerInfo.retargetid = trigger.retargetid
-
-                                        if type(trigger.triggered) == "number" then
-                                            triggerInfo.augmentations[trigger.triggered] = true
-                                        end
-
-                                        DuplicateTriggerToMultiTargets(triggerInfo)
-                                    end
-                                end
-                            end
+                            ActiveTrigger.ApplyPowerRollStateToRows(trigger, m_multitargets, function(target, triggerInfo)
+                                DuplicateTriggerToMultiTargets(triggerInfo)
+                            end)
                         end
                     end
                 end
