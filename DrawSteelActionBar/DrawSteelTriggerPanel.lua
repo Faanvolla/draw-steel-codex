@@ -86,6 +86,7 @@ local function RunTriggerRetargetChoice(element, triggerToken, trigger)
     }
     local powerMod = trigger.powerRollModifier.powerRollModifier
     local targets, retargetReasons = BuildRetargetCandidates(powerMod, symbols)
+    RuleUtils.RemoveRetargetStrikeTargets(targets, trigger)
 
     local sourceToken = triggerToken
     local range = tonumber(ExecuteGoblinScript(trigger.powerRollModifier.range, triggerToken.properties:LookupSymbol(symbols), 10))
@@ -679,6 +680,7 @@ mod.shared.CreateTriggerPanel = function()
                                             caster = casterToken.properties:LookupSymbol{},
                                         }
                                         local targets, retargetReasons = BuildRetargetCandidates(trigger.powerRollModifier.powerRollModifier, symbols)
+                                        RuleUtils.RemoveRetargetStrikeTargets(targets, trigger)
 
                                         local sourceToken = g_token
                                         local range = tonumber(ExecuteGoblinScript(trigger.powerRollModifier.range, g_token.properties:LookupSymbol(symbols), 10))
@@ -909,6 +911,7 @@ mod.shared.CreateTriggerPanel = function()
                                                 caster = casterToken.properties:LookupSymbol{},
                                             }
                                             local targets, retargetReasons = BuildRetargetCandidates(trigger.powerRollModifier.powerRollModifier, symbols)
+                                            RuleUtils.RemoveRetargetStrikeTargets(targets, trigger)
 
                                             local sourceToken = g_token
                                             local range = tonumber(ExecuteGoblinScript(trigger.powerRollModifier.range, g_token.properties:LookupSymbol(symbols), 10))
@@ -1137,6 +1140,7 @@ mod.shared.CreateTriggerPanel = function()
                                             caster = casterToken.properties:LookupSymbol{},
                                         }
                                         local targets, retargetReasons = BuildRetargetCandidates(trigger.powerRollModifier.powerRollModifier, symbols)
+                                        RuleUtils.RemoveRetargetStrikeTargets(targets, trigger)
 
                                         local sourceToken = g_token
                                         local range = tonumber(ExecuteGoblinScript(trigger.powerRollModifier.range, g_token.properties:LookupSymbol(symbols), 10))
@@ -1650,6 +1654,7 @@ mod.shared.CreateTriggerPanel = function()
                                                 caster = casterToken.properties:LookupSymbol{},
                                             }
                                             local targets, retargetReasons = BuildRetargetCandidates(trigger.powerRollModifier.powerRollModifier, symbols)
+                                            RuleUtils.RemoveRetargetStrikeTargets(targets, trigger)
 
                                             local sourceToken = g_token
                                             local range = tonumber(ExecuteGoblinScript(trigger.powerRollModifier.range, g_token.properties:LookupSymbol(symbols), 10))

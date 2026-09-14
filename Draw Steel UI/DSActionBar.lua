@@ -4794,6 +4794,8 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
                                             end
                                         end
 
+                                        RuleUtils.RemoveRetargetStrikeTargets(targets, trigger)
+
                                         local sourceToken = token
                                         local range = tonumber(ExecuteGoblinScript(trigger.powerRollModifier.range, token.properties:LookupSymbol(symbols), 10))
                                         local rangeType = trigger.powerRollModifier.powerRollModifier:try_get("changeTargetRange", "none")
@@ -4991,6 +4993,8 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
                                                     targets[#targets+1] = potential
                                                 end
                                             end
+
+                                            RuleUtils.RemoveRetargetStrikeTargets(targets, trigger)
 
                                             local sourceToken = token
                                             local range = tonumber(ExecuteGoblinScript(trigger.powerRollModifier.range, token.properties:LookupSymbol(symbols), 10))

@@ -527,6 +527,17 @@ function GameHud.CreateEmbeddedRollDialog()
 
     local m_symbols = nil
 
+    -- True if a row other than `row` already targets charid. A strike is never
+    -- redirected onto a creature it already hits.
+    local function IsOtherStrikeTarget(rows, charid, row)
+        for _, other in ipairs(rows or {}) do
+            if other ~= row and other.token ~= nil and other.token.charid == charid then
+                return true
+            end
+        end
+        return false
+    end
+
     -- Records a trigger-chosen retarget as soon as it arrives, so the next
     -- recalculation rebuilds that row for the new creature (its own flanking,
     -- cover and conditions). A withdrawn retarget swings the row back.
@@ -542,7 +553,7 @@ function GameHud.CreateEmbeddedRollDialog()
                 local powerMod = trigger.modifier:try_get("powerRollModifier")
                 if powerMod ~= nil and powerMod:try_get("changeTarget") and powerMod:try_get("changeTargetEffect", "all") == "all" then
                     hasRedirect = true
-                    if retargetid == nil and trigger.triggered and type(trigger.retargetid) == "string" then
+                    if retargetid == nil and trigger.triggered and type(trigger.retargetid) == "string" and not IsOtherStrikeTarget(m_multitargets, trigger.retargetid, target) then
                         retargetid = trigger.retargetid
                         casterid = trigger.charid
                     end
@@ -2302,7 +2313,22 @@ function GameHud.CreateEmbeddedRollDialog()
             if m_openedTriggers ~= nil then
                 element.monitorGame = "/characters"
 
+                --Publish the strike's current targets (redirects included) on each
+                --trigger, so a retarget picker can grey out creatures already hit.
+                local strikeTargets = {}
+                for _, target in ipairs(m_multitargets) do
+                    if target.token ~= nil then
+                        strikeTargets[#strikeTargets + 1] = target.token.charid
+                    end
+                end
+                local strikeTargetsKey = table.concat(strikeTargets, ",")
+
                 for key, activeTrigger in pairs(m_openedTriggers) do
+                    if activeTrigger:try_get("_tmp_strikeTargetsKey") ~= strikeTargetsKey then
+                        activeTrigger._tmp_strikeTargetsKey = strikeTargetsKey
+                        activeTrigger.strikeTargets = table.shallow_copy(strikeTargets)
+                        activeTrigger._tmp_refreshTime = 0
+                    end
                     if activeTrigger._tmp_refreshTime == 0 or dmhub.Time() > activeTrigger._tmp_refreshTime + 20 then
                         activeTrigger._tmp_refreshTime = dmhub.Time()
                         local token = dmhub.GetTokenById(activeTrigger._tmp_tokenid)
@@ -6104,7 +6130,7 @@ function GameHud.CreateEmbeddedRollDialog()
                     if multitargetsUsed ~= nil then
                         for i, target in ipairs(multitargetsUsed) do
                             for j, trigger in ipairs(target.triggers or {}) do
-                                if trigger.triggered and trigger.modifier.powerRollModifier:try_get("changeTarget") and type(trigger.retargetid) == "string" and m_symbols ~= nil and m_symbols.cast ~= nil then
+                                if trigger.triggered and trigger.modifier.powerRollModifier:try_get("changeTarget") and type(trigger.retargetid) == "string" and m_symbols ~= nil and m_symbols.cast ~= nil and not IsOtherStrikeTarget(multitargetsUsed, trigger.retargetid, target) then
                                     --an "all" retarget is usually already recorded live
                                     --(SyncLiveRetargets), which also swapped this row to
                                     --the new target; record from the original target.
