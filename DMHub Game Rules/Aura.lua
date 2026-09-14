@@ -2921,7 +2921,7 @@ end
 --- @param auraInstance AuraInstance
 --- @param token CharacterToken|nil
 --- @return string|nil
-dmhub.GetAuraLabelTooltip = function(auraInstance, token)
+local function GetAuraLabelTooltip(auraInstance, token)
     if auraInstance == nil then
         return nil
     end
@@ -2963,6 +2963,13 @@ dmhub.GetAuraLabelTooltip = function(auraInstance, token)
 
     return table.concat(lines, "\n")
 end
+
+--Engines older than the one that added this hook have no such property on
+--the dmhub interface, and assigning it there throws -- which would abort the
+--rest of this file. Guard it so those builds simply get no label tooltip.
+pcall(function()
+    dmhub.GetAuraLabelTooltip = GetAuraLabelTooltip
+end)
 
 dmhub.CreateAuraComponent = function()
     return AuraComponent.new{
