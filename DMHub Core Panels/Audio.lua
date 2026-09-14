@@ -1928,6 +1928,12 @@ PollAudioPlaylists = function()
 		local effective = "exploration"
 		if dmhub.initiativeQueue ~= nil then
 			effective = dmhub.initiativeQueue.gameMode or "exploration"
+			--A saved game can still name a mode that has been removed (Downtime), and
+			--its music slot is gone with it, so fall back rather than hunt for it.
+			local IQ = rawget(_G, "InitiativeQueue")
+			if IQ ~= nil and IQ.GameModesById[effective] == nil then
+				effective = "exploration"
+			end
 		end
 
 		local bindings = GetBindingsDoc().data

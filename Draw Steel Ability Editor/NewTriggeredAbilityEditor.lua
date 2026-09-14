@@ -449,12 +449,6 @@ local TRIGGER_METADATA = {
         tags = {"turn", "end"},
         group = "turn",
     },
-    startdowntime = {
-        label = "Start Downtime",
-        description = "Fires when downtime begins.",
-        tags = {"downtime", "start"},
-        group = "turn",
-    },
     beginround = {
         label = "Start of Round",
         description = "Fires at the start of each round.",

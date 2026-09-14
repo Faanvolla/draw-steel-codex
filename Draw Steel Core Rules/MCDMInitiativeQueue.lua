@@ -35,6 +35,13 @@ function InitiativeQueue:GameModeInfo()
     return self.GameModesById[self.gameMode] or self.GameModesById["exploration"]
 end
 
+--The queue's game mode id, normalised. A saved game can still name a mode that
+--has since been removed (Downtime), so anything reading the id rather than the
+--info table goes through here or it acts on a mode that no longer exists.
+function InitiativeQueue:GameModeId()
+    return self:GameModeInfo().id
+end
+
 InitiativeQueue.GameModes = {}
 InitiativeQueue.GameModesById = {}
 InitiativeQueue.gameMode = "exploration"
@@ -73,11 +80,6 @@ InitiativeQueue.RegisterGameMode{
 InitiativeQueue.RegisterGameMode{
     id = "respite",
     text = "Respite",
-}
-
-InitiativeQueue.RegisterGameMode{
-    id = "downtime",
-    text = "Downtime",
 }
 
 dmhub.TokensAreFriendly = function(a,b)

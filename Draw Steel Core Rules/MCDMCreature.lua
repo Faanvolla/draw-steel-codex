@@ -7082,12 +7082,12 @@ creature.RegisterSymbol {
             return "exploration"
         end
 
-        return q.gameMode
+        return q:GameModeId()
     end,
     help = {
         name = "Game Mode",
         type = "string",
-        desc = "The id of the game mode the game is currently in. Can be 'exploration', 'combat', 'respite', or 'downtime'.",
+        desc = "The id of the game mode the game is currently in. Can be 'exploration', 'combat', or 'respite'.",
         seealso = {},
     }
 }

@@ -1189,7 +1189,6 @@ GoblinScriptProse.eventProse = {
     endcombat         = "at the end of combat",
     endrespite        = "when {subject} end{s} a respite",
     endturn           = "at the end of {subject-possessive} turn",
-    startdowntime     = "when {subject} start{s} downtime",
     beginround        = "at the start of each round",
     startrespite      = "when {subject} start{s} a respite",
 

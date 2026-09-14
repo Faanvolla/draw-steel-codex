@@ -3559,12 +3559,6 @@ function GameHud.CreateInitiativeBar(self, info)
 					info.initiativeQueue.hidden = not mod.hasinitiative
 					info.UploadInitiative()
 
-					if info.initiativeQueue.gameMode == "downtime" then
-						for _, token in pairs(dmhub.GetTokens({playerControlled = true})) do
-							token.properties:DispatchEvent("startdowntime", {})
-						end
-					end
-
 				end,
 			}
 		end
