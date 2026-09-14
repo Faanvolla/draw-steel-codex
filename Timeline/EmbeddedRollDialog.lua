@@ -3219,15 +3219,19 @@ function GameHud.CreateEmbeddedRollDialog()
                     m_multitargets[GetCurrentMultiTarget()].surges = surgesOverride
                 end
 
-                --CalculateRollText(options)
-                RecalculateMultiTargets()
-                -- Re-check requirements with the updated surge count
+                -- Re-check requirements with the updated surge count, then
+                -- recalculate LAST. Same order as every modifier toggle: the
+                -- triggers container collapses itself on 'prepare' and is only
+                -- rebuilt by recalculatedMultiTargets, so recalculating first
+                -- and preparing after left the trigger cards hidden behind a
+                -- still-lit Triggers tab (bug report 4J6R4M7W).
                 if rollProperties ~= nil then
                     local rollInfo = dmhub.ParseRoll(rollInput.text, creature)
                     resultPanel:FireEventTree("prepareBeforeRollProperties", rollInfo, GetEnabledModifiers(), rollProperties)
                     resultPanel:FireEventTree('prepare', m_options)
                 end
                 CalculateRollText(options)
+                RecalculateMultiTargets()
             end,
         }
     end

@@ -69,6 +69,7 @@ local function createDrawSteelBanner(options)
         m_document.data.claims = {}
         m_document.data.finished = nil
         m_document.data.delayFinished = nil
+        m_document.data.result = nil
         if options.immediateResult then
             m_document.data.finished = true
             m_document.data.delayFinished = 1
@@ -211,6 +212,23 @@ local function createDrawSteelBanner(options)
 
                 self.thinkTime = nil
 
+                --Resolve the winner from the roller's authoritative die value
+                --(doc.data.result, written alongside 'finished'). m_heroesWin is
+                --only what THIS client's local dice replay reported via
+                --'diceface' -- on a client that is not the roller, that replay
+                --starts after the roller has finished and can still be
+                --tumbling (or never have been subscribed to at all) when the
+                --queue is created, leaving m_heroesWin stale or nil. A nil
+                --written into the queue fell through to the class defaults
+                --(playersGoFirst = true, playersTurn = false): the bar said the
+                --heroes won while the monsters took the first turn.
+                if type(doc.data.result) == "number" then
+                    m_heroesWin = (doc.data.result >= m_initiativeThreshold)
+                elseif m_heroesWin == nil then
+                    print("BANNER:: no die result known when finishing; defaulting to heroes")
+                    m_heroesWin = true
+                end
+
                 dmhub.Coroutine(function()
                     self:SetClassTree("shine", true)
                     local targetPanel = self:Get(cond(m_heroesWin, "heroesText", "monstersText"))
@@ -237,7 +255,7 @@ local function createDrawSteelBanner(options)
                         --goes first this round and refresh the initiative bar.
                         --(See showDrawSteelRerollBanner.)
                         local q = dmhub.initiativeQueue
-                        if q ~= nil and not q.hidden and m_heroesWin ~= nil then
+                        if q ~= nil and not q.hidden then
                             q.playersGoFirst = m_heroesWin
                             q.playersTurn = m_heroesWin
                             dmhub:UploadInitiativeQueue()
@@ -743,6 +761,13 @@ local function createDrawSteelBanner(options)
                                 local doc = mod:GetDocumentSnapshot("drawsteel")
                                 doc:BeginChange()
                                 doc.data.finished = true
+                                --the authoritative die value, so the controller
+                                --does not depend on its own local replay.
+                                local total = nil
+                                pcall(function() total = rollInfo.total end)
+                                if type(total) == "number" then
+                                    doc.data.result = total
+                                end
                                 doc:CompleteChange("Initialize initiative")
                             end
                         end,

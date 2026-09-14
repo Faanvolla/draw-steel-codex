@@ -46,11 +46,30 @@ RegisterGameType("DSVictoryScreen")
 --                BEFORE the normal teardown; return true to swallow the click
 --                (defaultProceed is passed in so the override can invoke the
 --                normal teardown itself). Return false/nil to fall through.
--- Both callbacks run under pcall; a broken override degrades to the normal
+--                The second argument, alreadyEnded, is true when the click
+--                lands on a HELD screen (below): combat is already torn down,
+--                so there is nothing to relay -- the screen just closes locally.
+--   holdUntilLocalProceed = function() return bool end -- optional. When it
+--                returns true, the screen does NOT close when the outcome
+--                leaves the initiative queue (someone else pressed Proceed);
+--                it stays up on this client until the local user presses
+--                Proceed. Used by Encounter of the Week so nobody's screen is
+--                taken away before they are ready.
+-- All callbacks run under pcall; a broken override degrades to the normal
 -- Director-only behavior. Registering replaces any previous override.
 local g_proceedOverride = nil
 function DSVictoryScreen.RegisterProceedOverride(override)
     g_proceedOverride = override
+end
+
+-- True when a shown screen must survive the outcome leaving the queue and
+-- wait for the local Proceed press instead (see holdUntilLocalProceed).
+local function HoldUntilLocalProceed()
+    if g_proceedOverride ~= nil and g_proceedOverride.holdUntilLocalProceed ~= nil then
+        local ok, res = pcall(g_proceedOverride.holdUntilLocalProceed)
+        return ok and res == true
+    end
+    return false
 end
 
 -- True when the local user may press Proceed: the Director always may; the
@@ -2766,15 +2785,31 @@ function DSVictoryScreen.Create()
         },
 
         hover = function(element)
-            gui.Tooltip{ text = "End combat and dismiss the victory screen for everyone." }(element)
+            local text = "End combat and dismiss the victory screen for everyone."
+            if rootPanel ~= nil and rootPanel.valid and rootPanel.data.held then
+                text = "Dismiss the victory screen."
+            end
+            gui.Tooltip{ text = text }(element)
         end,
 
         click = function(element)
+            --a HELD screen (combat already ended elsewhere; this client kept
+            --the screen up until its own Proceed -- see checkVictory): tell
+            --the override, then close locally. Nothing to tear down.
+            if rootPanel ~= nil and rootPanel.valid and rootPanel.data.held then
+                if g_proceedOverride ~= nil and g_proceedOverride.proceed ~= nil then
+                    pcall(g_proceedOverride.proceed, ProceedEndCombat, true)
+                end
+                rootPanel.data.held = false
+                rootPanel.data.shown = false
+                rootPanel:FireEvent("hideVictory")
+                return
+            end
             --a registered override (see RegisterProceedOverride) gets first
             --crack at the click; it returns true to swallow it (e.g. a player
             --relaying the proceed to the Director's client).
             if g_proceedOverride ~= nil and g_proceedOverride.proceed ~= nil then
-                local ok, handled = pcall(g_proceedOverride.proceed, ProceedEndCombat)
+                local ok, handled = pcall(g_proceedOverride.proceed, ProceedEndCombat, false)
                 if ok and handled == true then
                     return
                 end
@@ -2904,6 +2939,9 @@ function DSVictoryScreen.Create()
             -- newer state change has superseded it.
             generation = 0,
             shown = false,
+            -- shown, but the outcome has already left the queue; waiting for the
+            -- local Proceed press (see holdUntilLocalProceed).
+            held = false,
             awardPlayed = false,
             -- The outcome being shown: "victory" or "defeat".
             outcome = "victory",
@@ -3163,10 +3201,26 @@ function DSVictoryScreen.Create()
             local active = live ~= nil
             if active and not element.data.shown then
                 element.data.shown = true
+                element.data.held = false
                 element:FireEvent("showVictory", live, outcome)
             elseif not active and element.data.shown then
+                if HoldUntilLocalProceed() then
+                    --the outcome is gone from the queue (someone else pressed
+                    --Proceed / combat ended), but this client keeps the screen
+                    --until its own Proceed press. The cards are already built,
+                    --so nothing here needs the live encounter any more.
+                    element.data.held = true
+                else
+                    element.data.shown = false
+                    element:FireEvent("hideVictory")
+                end
+            elseif active and element.data.held then
+                --a new outcome landed while an old one was held: show it fresh.
+                element.data.held = false
                 element.data.shown = false
                 element:FireEvent("hideVictory")
+                element.data.shown = true
+                element:FireEvent("showVictory", live, outcome)
             end
 
             --once the Director awards Victories, play the icon-drop animation

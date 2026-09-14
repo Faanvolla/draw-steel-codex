@@ -22,6 +22,8 @@ MonsterAI.deferredTriggerLog = {}
 MonsterAI.paths = false
 MonsterAI.log = {}
 MonsterAI.active = false
+MonsterAI.reactionStatus = false
+MonsterAI.reactionFailure = false
 MonsterAI.maliceAbilityMinimumScore = 0.65
 MonsterAI.maliceAbilityRepeatPenalty = 0.20
 MonsterAI.areaTelegraphBlinks = 3
@@ -508,12 +510,17 @@ end
 
 function MonsterAI:CountPendingActivityReactions(activityId)
     local result = 0
+    local status, failure
     for _,token in ipairs(dmhub.allTokens) do
         if token.valid and token.playerControlled and token.properties ~= nil then
-            result = result + token.properties:CountPendingAIActivityReactions(activityId)
+            local ok, pending, description, err = pcall(token.properties.GetAIActivityReactionStatus, token.properties, activityId)
+            if not ok then err = "could not inspect reaction state: " .. tostring(pending); pending = 1 end
+            result = result + pending
+            if pending > 0 then status = "Waiting for " .. token.name .. "'s " .. (description or "reaction") end
+            if err ~= nil then failure = token.name .. ": " .. tostring(err) end
         end
     end
-    return result
+    return result, status, failure
 end
 
 --Count squad deaths that still need a player confirmation. This mirrors the
@@ -557,9 +564,9 @@ function MonsterAI:WaitForMovementActivity(movementToken, activityId)
         coroutine.yield(0.05)
     end
 
-    local pending = self:CountPendingActivityReactions(activityId)
+    local pending, status, failure = self:CountPendingActivityReactions(activityId)
     local pendingMinionDeaths = self:CountPendingMinionDeathConfirmations()
-    if pending == 0 and pendingMinionDeaths == 0 then
+    if pending == 0 and pendingMinionDeaths == 0 and failure == nil then
         return true
     end
 
@@ -577,12 +584,25 @@ function MonsterAI:WaitForMovementActivity(movementToken, activityId)
         and isAIRunning()
     while true do
         if mod.unloaded or (cancelWhenAIStops and not MonsterAI.active) then
+            MonsterAI.reactionStatus = false
             return false, mod.unloaded and "Monster AI module unloaded"
                 or "Monster AI stop requested"
         end
 
-        pending = self:CountPendingActivityReactions(activityId)
+        pending, status, failure = self:CountPendingActivityReactions(activityId)
+        if failure ~= nil then
+            MonsterAI.reactionStatus = false
+            MonsterAI.reactionFailure = "AI paused: " .. failure .. ". Check the reaction manually before restarting AI."
+            self:LogDecision("PLAYER REACTION FAILED", {activity = activityId,
+                reason = failure, result = "AI stopped; initiative remains on this monster"})
+            MonsterAI.StopAI()
+            pcall(function()
+                gui.ModalMessage{title = "Monster AI Paused", message = MonsterAI.reactionFailure}
+            end)
+            return false, failure
+        end
         pendingMinionDeaths = self:CountPendingMinionDeathConfirmations()
+        MonsterAI.reactionStatus = status or (pendingMinionDeaths > 0 and "Waiting for minion death confirmations") or false
         if pending == 0 and pendingMinionDeaths == 0 then
             idleSince = idleSince or dmhub.Time()
             if dmhub.Time() - idleSince >= 0.3 then
@@ -599,6 +619,7 @@ function MonsterAI:WaitForMovementActivity(movementToken, activityId)
         result = "all player prompts and minion death confirmations resolved",
         duration = dmhub.Time() - startedAt,
     })
+    MonsterAI.reactionStatus = false
     return true
 end
 
@@ -1180,6 +1201,19 @@ function MonsterAI:PlayTurnSafely(initiativeid)
     return false, err
 end
 
+function MonsterAI:FindSquadActionToken()
+    --A critical hit may belong to a different minion than the squad's first actor.
+    for _,member in ipairs(self.squadMembers) do
+        if self.TokenIsLiveCombatant(member.token) then
+            for _,ability in ipairs(member.token.properties:GetActivatedAbilities()) do
+                if ability.categorization == "Signature Ability" and ability:CanAfford(member.token) then
+                    return member.token
+                end
+            end
+        end
+    end
+end
+
 function MonsterAI:PlayTurnCoroutine(initiativeid)
     local queue = dmhub.initiativeQueue
 	self._tmp_abortTurn = nil
@@ -1307,13 +1341,24 @@ function MonsterAI:PlayTurnCoroutine(initiativeid)
                     })
 
                     for cycle=1,6 do
-                        self:SetLogContext(token, {
+                        local actingToken = token
+                        if #self.squadMembers > 0 then
+                            actingToken = self:FindSquadActionToken()
+                            if actingToken == nil then
+                                self:LogDecision("MOVE SEARCH FINISHED", {
+                                    reason = "no surviving squad member has an affordable Signature Ability",
+                                    result = "no legal move",
+                                })
+                                break
+                            end
+                        end
+                        self:SetLogContext(actingToken, {
                             turn = initiativeid,
                             round = queue.round,
                             cycle = cycle,
                         })
-                        self:SetupCombatants(token, queue)
-                        self.paths = self:CalculateRemainingMovementPaths(token)
+                        self:SetupCombatants(actingToken, queue)
+                        self.paths = self:CalculateRemainingMovementPaths(actingToken)
                         self:LogDecision("MOVE CYCLE START", {
                             reachableLocations = #table.values(self.paths),
                         })
@@ -1322,7 +1367,7 @@ function MonsterAI:PlayTurnCoroutine(initiativeid)
                         self:LogDecision("MOVE CYCLE FINISHED", {
                             result = result,
                         })
-                        if squadid ~= nil or self:try_get("_tmp_abortTurn") ~= nil
+                        if self:try_get("_tmp_abortTurn") ~= nil
                             or result == g_moveResultNone or result == g_moveResultUnsafe then
                             break
                         end
@@ -2451,6 +2496,16 @@ function MonsterAI:ExecuteSquadStrike(ability)
     local targetPairs = {}
     local assignedTargets = {}
 
+    local function AffordableMemberAbility(memberToken)
+        if not self.TokenIsLiveCombatant(memberToken) then
+            return nil
+        end
+        local memberAbility = FindAbilityByName(memberToken.properties:GetActivatedAbilities(), abilityName)
+        if memberAbility ~= nil and memberAbility:CanAfford(memberToken) then
+            return memberAbility
+        end
+    end
+
     --Reactions to a later member's movement can kill an attacker that already
     --has a pairing. Keep the shared plan limited to creatures still on the map.
     local function RefreshAssignments()
@@ -2459,7 +2514,7 @@ function MonsterAI:ExecuteSquadStrike(ability)
         for _,pair in ipairs(targetPairs) do
             local attacker = dmhub.GetTokenById(pair.a)
             local target = dmhub.GetTokenById(pair.b)
-            if self.TokenIsLiveCombatant(attacker) and self.TokenIsLiveCombatant(target) then
+            if AffordableMemberAbility(attacker) ~= nil and self.TokenIsLiveCombatant(target) then
                 livePairs[#livePairs+1] = pair
                 liveAssignedTargets[pair.b] = (liveAssignedTargets[pair.b] or 0) + 1
             end
@@ -2471,7 +2526,8 @@ function MonsterAI:ExecuteSquadStrike(ability)
     for _,squadMember in ipairs(self.squadMembers) do
         RefreshAssignments()
         local memberToken = squadMember.token
-        if self.TokenIsLiveCombatant(memberToken) then
+        local memberAbility = AffordableMemberAbility(memberToken)
+        if memberAbility ~= nil then
             local memberName = self.TokenLogName(memberToken)
             local memberId = memberToken.charid
             local queue = dmhub.initiativeQueue
@@ -2480,11 +2536,10 @@ function MonsterAI:ExecuteSquadStrike(ability)
                 --is moving. Rebuild the lists before the next member plans.
                 self:RefreshCombatants(queue, memberToken)
             end
-            local movementToken = self:GetMovementToken(memberToken)
-            squadMember.paths = self:CalculateMovementPaths(memberToken,
-                movementToken.properties:CurrentMovementSpeed()*10)
+            --Extra main actions do not restore movement already spent this turn.
+            squadMember.paths = self:CalculateRemainingMovementPaths(memberToken)
 
-            local options = self:FindSquadMemberStrikeOptions(squadMember, ability)
+            local options = self:FindSquadMemberStrikeOptions(squadMember, memberAbility)
             local bestOption = nil
             local bestScore = nil
             for _,option in pairs(options) do
@@ -2572,8 +2627,8 @@ function MonsterAI:ExecuteSquadStrike(ability)
                 category = "Main Action",
                 move = "Minion Signature Ability",
                 ability = abilityName,
-                reason = "squad member is no longer a live combatant",
-                result = "continuing with surviving squad members",
+                reason = "squad member is dead or cannot afford the signature ability",
+                result = "continuing with eligible squad members",
             })
         end
     end

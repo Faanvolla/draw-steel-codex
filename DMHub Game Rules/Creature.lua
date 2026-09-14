@@ -4946,57 +4946,8 @@ function creature:RefreshToken(token)
 
 	self:RefreshAnimations(token)
 
-	local triggeredEvents = self:try_get("triggeredEvents")
-	if triggeredEvents ~= nil and #triggeredEvents > 0 and triggeredEvents[1] and triggeredEvents[1].userid and triggeredEvents[1].userid == dmhub.userid then
-		local token = dmhub.LookupToken(self)
-		if token ~= nil then
-			local aiReactionDispatchIds = {}
-			for _,eventInfo in ipairs(triggeredEvents) do
-				local serializedInfo = eventInfo.info
-				if serializedInfo ~= nil and type(serializedInfo.aiReactionDispatchId) == "string" then
-					aiReactionDispatchIds[#aiReactionDispatchIds+1] = serializedInfo.aiReactionDispatchId
-				end
-
-				if TimestampAgeInSeconds(eventInfo.timestamp) < 30 then
-                    local info = eventInfo.info
-                    if info ~= nil then
-                        --Resolve "charid:"/"tokenid:" refs back to live objects,
-                        --including refs nested inside tables such as the cast's
-                        --targets list. See DeserializeEventValue.
-                        local deserializedInfo = {}
-                        local visited = {}
-                        for k,v in pairs(info) do
-                            deserializedInfo[k] = DeserializeEventValue(v, visited)
-                        end
-
-                        info = deserializedInfo
-                    end
-
-					--Skip local-only triggers since they already fired on the originating machine.
-                    info = info or {}
-                    info.remote = true
-					self:TriggerEvent(eventInfo.eventName, info, true, "skipLocal")
-				end
-			end
-
-			token:ModifyProperties{
-			description = "Clear Triggers",
-				execute = function()
-					self.triggeredEvents = nil
-
-					local pendingReactions = self:try_get("pendingAIActivityReactions")
-					if pendingReactions ~= nil then
-						for _,reactionId in ipairs(aiReactionDispatchIds) do
-							pendingReactions[reactionId] = nil
-						end
-						if next(pendingReactions) == nil then
-							self.pendingAIActivityReactions = nil
-						end
-					end
-				end,
-			}
-		end
-	end
+	self:PumpAIReactionEvents()
+	self:PumpTriggeredEvents()
 
     if self:HasCondition(g_conditionHiddenId) then
         local q = dmhub.initiativeQueue
@@ -10083,6 +10034,203 @@ function DeserializeEventValue(value, visited)
     return result
 end
 
+--An event is one JSON string, so token diffs cannot recreate a deleted event
+--with only its userdata leaves. Requests and receipts have different writers;
+--stable IDs and retained receipts prevent a retry from firing an ability twice.
+local g_aiReactionDeliverySeconds = 15
+local g_aiReactionRetrySeconds = 3
+
+local function ReadAIReactionMessage(value)
+    if type(value) ~= "string" then return nil end
+    local ok, result = pcall(dmhub.FromJson, value)
+    if ok and type(result) == "table" and result.success and type(result.result) == "table" then return result.result end
+end
+
+local function WriteAIReactionMessage(props, field, id, value)
+    local token = dmhub.LookupToken(props)
+    if token == nil then return end
+    local encoded = dmhub.ToJson(value)
+    token:ModifyProperties{
+        description = "AI Reaction " .. tostring(value.state or "delivery"),
+        undoable = false,
+        execute = function()
+            local messages = props:get_or_add(field, {})
+            messages[id] = encoded
+            for key,bytes in pairs(messages) do
+                local message = ReadAIReactionMessage(bytes)
+                if key ~= id and message ~= nil and type(message.timestamp) == "number"
+                    and TimestampAgeInSeconds(message.timestamp) > g_aiActivityReactionExpirySeconds then
+                    messages[key] = nil
+                end
+            end
+        end,
+    }
+end
+
+--Legacy events can arrive from older clients. Inspect each record separately:
+--a malformed head or a different recipient must not block everyone behind it.
+function creature:PumpTriggeredEvents()
+    local token = dmhub.LookupToken(self)
+    local events = self:try_get("triggeredEvents")
+    if token == nil or events == nil or self:try_get("_tmp_pumpingTriggeredEvents", false) then return end
+    self._tmp_pumpingTriggeredEvents = true
+    local consumed = {}
+    for _,event in pairs(events) do
+        local valid = type(event) == "table" and type(event.userid) == "string"
+            and type(event.eventName) == "string" and type(event.timestamp) == "number"
+        if not valid or TimestampAgeInSeconds(event.timestamp) >= 30 or event.userid == dmhub.userid then
+            consumed[event] = true
+            if valid and event.userid == dmhub.userid and TimestampAgeInSeconds(event.timestamp) < 30 then
+                local ok, err = pcall(function()
+                    local info = DeserializeEventValue(event.info or {})
+                    info.remote = true
+                    self:TriggerEvent(event.eventName, info, true, "skipLocal")
+                end)
+                if not ok then
+                    consumed[event] = tostring(err)
+                    print("AI:: LEGACY EVENT FAILED", event.eventName, tostring(err))
+                end
+            elseif not valid then
+                consumed[event] = "malformed legacy movement event"
+                print("AI:: MALFORMED LEGACY EVENT DISCARDED", token.charid)
+            else
+                consumed[event] = "legacy movement event expired before evaluation"
+            end
+        end
+    end
+    if next(consumed) ~= nil then
+        token:ModifyProperties{
+            description = "Clear Processed Triggers", undoable = false,
+            execute = function()
+                local remaining = {}
+                for _,event in ipairs(self:try_get("triggeredEvents", {})) do
+                    if not consumed[event] then remaining[#remaining+1] = event end
+                end
+                self.triggeredEvents = #remaining > 0 and remaining or nil
+                for event,result in pairs(consumed) do
+                    local info = type(event) == "table" and event.info
+                    if type(info) == "table" and type(info.aiReactionDispatchId) == "string" then
+                        if result == true then
+                            self:CompletePendingAIActivityReaction(info.aiActivityId, info.aiReactionDispatchId)
+                        else
+                            local entry = self:try_get("pendingAIActivityReactions", {})[info.aiReactionDispatchId]
+                            if entry ~= nil then entry.state = "failed"; entry.reason = result end
+                        end
+                    end
+                end
+            end,
+        }
+    end
+    self._tmp_pumpingTriggeredEvents = nil
+end
+
+function creature:QueueAIReactionEvent(eventName, info, controller, abilityNames)
+    local id = dmhub.GenerateGuid()
+    local message = {
+        id = id, activityId = info.aiActivityId, eventName = eventName,
+        userid = controller, timestamp = ServerTimestamp(), attempt = 1,
+        info = SerializeEventValue(info), ability = table.concat(abilityNames, ", "),
+    }
+    --Keep a private intact copy even if the shared request is lost or damaged.
+    local outbox = self:get_or_add("_tmp_aiReactionOutbox", {})
+    for key,bytes in pairs(outbox) do
+        local previous = ReadAIReactionMessage(bytes)
+        if previous ~= nil and TimestampAgeInSeconds(previous.timestamp) > g_aiActivityReactionExpirySeconds then
+            outbox[key] = nil
+        end
+    end
+    outbox[id] = dmhub.ToJson(message)
+    WriteAIReactionMessage(self, "aiReactionRequests", id, message)
+end
+
+function creature:PumpAIReactionEvents()
+    local token = dmhub.LookupToken(self)
+    if token == nil then return end
+    local localReceipts = self:get_or_add("_tmp_aiReactionReceipts", {})
+    for id,bytes in pairs(localReceipts) do
+        local receipt = ReadAIReactionMessage(bytes)
+        if receipt ~= nil and type(receipt.timestamp) == "number"
+            and TimestampAgeInSeconds(receipt.timestamp) > g_aiActivityReactionExpirySeconds then
+            localReceipts[id] = nil
+        end
+    end
+    for id,bytes in pairs(self:try_get("aiReactionRequests", {})) do
+        local request = ReadAIReactionMessage(bytes)
+        if request ~= nil and request.userid == dmhub.userid then
+            local receiptBytes = localReceipts[id] or self:try_get("aiReactionReceipts", {})[id]
+            if receiptBytes ~= nil then
+                localReceipts[id] = receiptBytes
+                --A lost acknowledgment is repaired without repeating evaluation.
+                if self:try_get("aiReactionReceipts", {})[id] ~= receiptBytes then
+                    local receipt = ReadAIReactionMessage(receiptBytes)
+                    if receipt ~= nil then WriteAIReactionMessage(self, "aiReactionReceipts", id, receipt) end
+                end
+            else
+                local receipt = {id = id, activityId = request.activityId,
+                    timestamp = ServerTimestamp(), state = "evaluating"}
+                local valid = request.id == id and type(request.timestamp) == "number"
+                    and type(request.activityId) == "string" and type(request.eventName) == "string"
+                    and type(request.info) == "table" and request.info.aiActivityId == request.activityId
+                if not valid or TimestampAgeInSeconds(request.timestamp) >= g_aiReactionDeliverySeconds then
+                    receipt.state = "failed"
+                    receipt.reason = valid and "movement event arrived after its delivery deadline" or "malformed movement event"
+                end
+                localReceipts[id] = dmhub.ToJson(receipt)
+                WriteAIReactionMessage(self, "aiReactionReceipts", id, receipt)
+                if receipt.state == "evaluating" then
+                    --The claim is written before evaluation. An interrupted claim
+                    --is ambiguous, so a restarted client must never execute it again.
+                    local ok, err = pcall(function()
+                        local info = DeserializeEventValue(request.info)
+                        info.remote = true
+                        self:TriggerEvent(request.eventName, info, true, "skipLocal")
+                    end)
+                    receipt.state = ok and "evaluated" or "failed"
+                    receipt.reason = not ok and tostring(err) or nil
+                    localReceipts[id] = dmhub.ToJson(receipt)
+                    WriteAIReactionMessage(self, "aiReactionReceipts", id, receipt)
+                end
+            end
+        end
+    end
+end
+
+--Called by the host while waiting. Delivery has a short deadline; real player
+--choices and casts remain separate records and are never retried as events.
+function creature:GetAIReactionDeliveryStatus(activityId)
+    local pending, description, failure = 0, nil, nil
+    local requests = table.shallow_copy(self:try_get("aiReactionRequests", {}))
+    for id,bytes in pairs(self:try_get("_tmp_aiReactionOutbox", {})) do requests[id] = bytes end
+    for id,bytes in pairs(requests) do
+        local request = ReadAIReactionMessage(bytes)
+        if request ~= nil and request.activityId == activityId then
+            local receipt = ReadAIReactionMessage(self:try_get("aiReactionReceipts", {})[id])
+            local valid = request.id == id and type(request.timestamp) == "number"
+                and type(request.ability) == "string" and type(request.info) == "table"
+            local age = valid and TimestampAgeInSeconds(request.timestamp) or math.huge
+            if receipt ~= nil and (receipt.id ~= id or receipt.activityId ~= activityId) then receipt = nil end
+            if not valid then
+                failure = "malformed movement delivery record"
+            elseif receipt ~= nil and receipt.state == "failed" then
+                failure = receipt.reason or "movement event evaluation failed"
+            elseif receipt == nil or receipt.state ~= "evaluated" then
+                pending = pending + 1
+                description = "client to evaluate " .. request.ability
+                if age >= g_aiReactionDeliverySeconds then
+                    failure = receipt ~= nil and "movement event evaluation was interrupted"
+                        or "no movement event acknowledgment after 15 seconds"
+                elseif receipt == nil and self:try_get("_tmp_aiReactionOutbox", {})[id] ~= nil
+                    and age >= (request.attempt or 1)*g_aiReactionRetrySeconds then
+                    request.attempt = (request.attempt or 1) + 1
+                    self._tmp_aiReactionOutbox[id] = dmhub.ToJson(request)
+                    WriteAIReactionMessage(self, "aiReactionRequests", id, request)
+                end
+            end
+        end
+    end
+    return pending, description, failure
+end
+
 function creature:DispatchEvent(eventName, info)
 
     local triggeredOnOthers = false
@@ -10110,10 +10258,11 @@ function creature:DispatchEvent(eventName, info)
 
 	-- Check for non-local triggers that need normal dispatch.
 	local hasTrigger = false
+	local abilityNames = {}
 	for i,mod in ipairs(mods) do
 		if mod.mod:HasTriggeredEvent(self, eventName, targetsOther, "skipLocal") then
 			hasTrigger = true
-			break
+			abilityNames[#abilityNames+1] = mod.mod.triggeredAbility.name
 		end
 	end
 
@@ -10138,11 +10287,9 @@ function creature:DispatchEvent(eventName, info)
 	end
 
 	local aiActivityId = info ~= nil and info.aiActivityId or nil
-	local aiReactionDispatchId = nil
 	if token.playerControlled and type(aiActivityId) == "string" and aiActivityId ~= "" then
-		aiReactionDispatchId = dmhub.GenerateGuid()
-		info = table.shallow_copy(info)
-		info.aiReactionDispatchId = aiReactionDispatchId
+		self:QueueAIReactionEvent(eventName, info, activecontroller, abilityNames)
+		return
 	end
 
 
@@ -10200,19 +10347,6 @@ function creature:DispatchEvent(eventName, info)
 				info = info,
 			}
 
-			if aiReactionDispatchId ~= nil then
-				local pendingReactions = self:get_or_add("pendingAIActivityReactions", {})
-				for id,entry in pairs(pendingReactions) do
-					if type(entry) ~= "table" or entry.timestamp == nil
-						or TimestampAgeInSeconds(entry.timestamp) > g_aiActivityReactionExpirySeconds then
-						pendingReactions[id] = nil
-					end
-				end
-				pendingReactions[aiReactionDispatchId] = {
-					activityId = aiActivityId,
-					timestamp = ServerTimestamp(),
-				}
-			end
 		end,
 	}
 end
@@ -10339,7 +10473,7 @@ ActiveTrigger.expiryTimestamp = 0
 --A movement event marker is replaced by one marker per prompt on the player's
 --token. The AI host can see these records, so it can wait across clients without
 --keeping the prompt card alive after the player has made a choice.
-function creature:BeginPendingAIActivityReaction(activityId, reactionId)
+function creature:BeginPendingAIActivityReaction(activityId, reactionId, abilityName)
     if type(activityId) ~= "string" or activityId == "" or type(reactionId) ~= "string" or reactionId == "" then
         return
     end
@@ -10356,14 +10490,16 @@ function creature:BeginPendingAIActivityReaction(activityId, reactionId)
         execute = function()
             local pendingReactions = self:get_or_add("pendingAIActivityReactions", {})
             for id,entry in pairs(pendingReactions) do
-                if type(entry) ~= "table" or entry.timestamp == nil
-                    or TimestampAgeInSeconds(entry.timestamp) > g_aiActivityReactionExpirySeconds then
+                if type(entry) == "table" and entry.state == "completed" and entry.timestamp ~= nil
+                    and TimestampAgeInSeconds(entry.timestamp) > g_aiActivityReactionExpirySeconds then
                     pendingReactions[id] = nil
                 end
             end
             pendingReactions[reactionId] = {
                 activityId = activityId,
                 timestamp = ServerTimestamp(),
+                state = "awaiting_choice",
+                ability = abilityName,
             }
         end,
     }
@@ -10390,18 +10526,50 @@ function creature:CompletePendingAIActivityReaction(activityId, reactionId)
         undoable = false,
         combine = true,
         execute = function()
-            pendingReactions[reactionId] = nil
-            if next(pendingReactions) == nil then
-                self.pendingAIActivityReactions = nil
-            end
+            --Retain completion so late callbacks can see that this reaction
+            --already ended. A later Begin call collects old terminal records.
+            pendingReactions[reactionId] = {activityId = entry.activityId,
+                timestamp = ServerTimestamp(), state = "completed"}
         end,
     }
+end
+
+function creature:SetAIActivityReactionResolving(activityId, reactionId)
+    local entry = self:try_get("pendingAIActivityReactions", {})[reactionId]
+    local token = dmhub.LookupToken(self)
+    if token ~= nil and entry ~= nil and entry.activityId == activityId and entry.state ~= "completed" then
+        token:ModifyProperties{
+            description = "Resolve AI Reaction", undoable = false,
+            execute = function() entry.state = "resolving" end,
+        }
+    end
+end
+
+function creature:GetAIActivityReactionStatus(activityId)
+    local pending, description, failure = self:GetAIReactionDeliveryStatus(activityId)
+    local triggers = self:try_get("availableTriggers", {})
+    for id,entry in pairs(self:try_get("pendingAIActivityReactions", {})) do
+        if type(entry) == "table" and entry.activityId == activityId and entry.state ~= "completed" then
+            pending = pending + 1
+            description = entry.state == "resolving" and "reaction to finish: " .. (entry.ability or "reaction")
+                or "player to answer " .. (entry.ability or "reaction")
+            local age = type(entry.timestamp) == "number" and TimestampAgeInSeconds(entry.timestamp) or math.huge
+            if entry.state == "failed" then
+                failure = entry.reason or "reaction evaluation failed"
+            elseif age > g_aiActivityReactionExpirySeconds then
+                failure = "reaction completion could not be confirmed"
+            elseif entry.state ~= "resolving" and triggers[id] == nil and age >= g_aiReactionDeliverySeconds then
+                failure = "reaction marker has no matching player prompt"
+            end
+        end
+    end
+    return pending, description, failure
 end
 
 function creature:CountPendingAIActivityReactions(activityId)
     local result = 0
     for _,entry in pairs(self:try_get("pendingAIActivityReactions", {})) do
-        if type(entry) == "table" and entry.activityId == activityId
+        if type(entry) == "table" and entry.activityId == activityId and entry.state ~= "completed"
             and entry.timestamp ~= nil
             and TimestampAgeInSeconds(entry.timestamp) <= g_aiActivityReactionExpirySeconds then
             result = result + 1
@@ -10786,13 +10954,7 @@ function creature:ClearAvailableTrigger(triggerInfo)
 	--so clearing the card also completes its pending reaction marker. Accepted
 	--prompts keep the marker until their cast reports OnFinish.
 	if cleared ~= nil and cleared.aiActivityId ~= false and (cleared.triggered == false or cleared.dismissed) then
-		local pendingReactions = self:try_get("pendingAIActivityReactions")
-		if pendingReactions ~= nil then
-			pendingReactions[cleared.id] = nil
-			if next(pendingReactions) == nil then
-				self.pendingAIActivityReactions = nil
-			end
-		end
+		self:CompletePendingAIActivityReaction(cleared.aiActivityId, cleared.id)
 	end
 
 	local deletes = {}

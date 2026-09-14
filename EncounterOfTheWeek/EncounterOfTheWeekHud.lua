@@ -261,7 +261,7 @@ local function CreateResourceRow(charid)
     }
     return gui.Panel{
         width = "100%",
-        height = 16,
+        height = 19,
         flow = "horizontal",
         halign = "left",
         valign = "center",
@@ -632,15 +632,15 @@ local function CreateHeroRosterPanel()
             },
             {
                 selectors = {"eotwResIcon"},
-                width = 14,
-                height = 14,
+                width = 17,
+                height = 17,
                 halign = "left",
                 valign = "center",
                 bgcolor = "white",
             },
             {
                 selectors = {"eotwResValue"},
-                fontSize = 12,
+                fontSize = 14,
                 bold = true,
                 color = "#ffffff",
                 width = "auto",

@@ -53,7 +53,7 @@ shadow-elves.lua
 3. Score all registered start-of-turn Malice abilities, use the highest-scoring affordable option that meets its threshold, and wait for it to resolve.
 4. For each token in that initiative entry:
    - If the actual actor is outside the usable map view, pan and sync the camera before it begins. Shared initiative entries can therefore pan again as each distinct monster acts without recentering monsters that are already visible.
-   - Minions: find their Signature Ability and execute it as a coordinated squad strike (`ExecuteSquadStrike`).
+   - Minions: find their Signature Ability and execute it as a coordinated squad strike (`ExecuteSquadStrike`). Reconsider up to 6 action cycles so critical-hit extra actions are used. Each cycle selects a surviving member with an affordable signature; only affordable members join its target pairs, and movement uses the remaining turn budget.
    - Non-minions: iterate up to 6 times calling `FindAndExecuteMove()`, which scores every registered move and executes the best one. A scoring or execution error quarantines that move for the actor; `"failed"` continues to another cycle, while `"none"` or `"unsafe"` stops the actor.
 5. After all tokens act, initiative advances automatically.
 
@@ -61,13 +61,45 @@ shadow-elves.lua
 
 `MonsterAI:MoveToken` does not return until the token's path animation finishes
 and every player-controlled trigger caused by that movement is resolved. A
-movement activity ID follows remote event delivery into each trigger; pending
-markers on the player tokens keep the host waiting through Activate/Dismiss and,
-when accepted, through the triggered cast's finish callback. Multiple players
+movement activity ID follows remote event delivery into each trigger. Remote
+movement events use `aiReactionRequests`, keyed by stable event ID, with each
+complete envelope stored as a JSON string. The receiving client writes separate
+`aiReactionReceipts`: evaluating, evaluated, or failed. It retains receipts and
+a local cache to deduplicate retries and repair lost acknowledgments. Unacknowledged
+events retry every 3 seconds within the original 15-second delivery deadline.
+An evaluating receipt after a reload is ambiguous and must not be executed again.
+An expired event must never execute when a disconnected client eventually returns.
+
+After evaluation, `pendingAIActivityReactions` records distinguish awaiting a
+player choice, resolving a cast, and completed reactions. Actual player choices
+do not use the short delivery timeout. Pending markers keep the host waiting
+through Activate/Dismiss and the triggered cast's finish callback. Multiple players
 and multiple prompts are handled as one barrier. If a reaction leaves a minion
 squad owing deaths, the barrier also remains up while the red-skull choices and
 their Monster Death removals resolve. Stopping the AI while it waits aborts the
 remaining monster turn without advancing initiative.
+
+Delivery failures, orphaned prompt markers, and evaluation errors stop the AI
+without advancing initiative. The panel explains the specific client/ability
+being awaited; a failure also opens a message even if the panel is closed. Check
+the reaction manually before restarting AI after an ambiguous failure.
+
+The legacy `triggeredEvents` reader processes records individually, retaining
+events for other recipients and discarding malformed records rather than letting
+a malformed first event block the queue. New AI senders require updated receivers;
+deploy/reload the rules and AI changes together on participating clients. An old
+receiver will not acknowledge the new mailbox and the host will pause explicitly.
+
+The envelope format prevents a reproduced engine diff race: deep-copying a
+LuaPath creates a different userdata object, so an unrelated token modification
+emits a leaf patch for the unchanged path. If the recipient has deleted the event,
+that late patch recreates only its path, without recipient, timestamp, or event ID.
+A JSON string contains no userdata leaves and produces no diff when unchanged.
+The engine-wide userdata comparison and other event transports are unchanged.
+
+Run `dependencies/lua/bin/lua.exe draw-steel-codex/tests/ai_reaction_delivery_test.lua`
+from the parent repository for deterministic loss, retry, duplicate, malformed
+message, player choice, cast completion, and failure-pause regression coverage.
 
 ### Error containment
 

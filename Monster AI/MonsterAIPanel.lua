@@ -338,6 +338,8 @@ end
 --so this works on a client whose dmonly panels are hidden.
 function MonsterAI.StartAI()
     g_terminate = false
+    MonsterAI.reactionStatus = false
+    MonsterAI.reactionFailure = false
     MonsterAI.active = true
     DockablePanel.StartProcess{
         panel = "Monster AI",
@@ -387,12 +389,12 @@ MonsterAIPanel = function()
                     if g_terminate then
                         element.text = "Stopping..."
                     else
-                        element.text = g_status or "Active"
+                        element.text = MonsterAI.reactionFailure or MonsterAI.reactionStatus or g_status or "Active"
                     end
                 else
                     m_running = false
                     MonsterAI.active = false
-                    element.text = "Not Running"
+                    element.text = MonsterAI.reactionFailure or "Not Running"
                 end
                 resultPanel:FireEventTree("refreshai")
             end,

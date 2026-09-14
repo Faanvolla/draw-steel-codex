@@ -2548,9 +2548,23 @@ function CharacterPanel.DisplayAbility(token, ability, symbols, options)
         if not AbilityOwnsDisplayedCard(ability) then
             g_displayedAbilityAliases[#g_displayedAbilityAliases+1] = ability
         end
-        --Honour options.lock here too: the caller is about to embed a live roll
-        --dialog in the parent's card, and without it a stray hover preview displaces
-        --the card and destroys the roll. Coroutine-tied only, so it always expires.
+        --Honour options.lock here exactly as the normal path below does. This
+        --branch used to return bare `true`, so a roll acquired for a Hidden
+        --sub-ability (AcquireAbilityRollDialog passes lock=true) ran its whole
+        --flight with NO display lock: any stray hover -- the action bar's
+        --trigger-chip preview routes ActiveTrigger records through
+        --DisplayAbility -- displaced the live dialog (`panel.children = {}`
+        --below), the roll behavior saw `not dialog.valid`, and the cast
+        --aborted. Seen live (report BDJNBWXD): Practical Magic - Knockback
+        --(Hidden) rolled, the roll dispatched the caster's own Explosive
+        --Assistance chip, and hovering that chip destroyed the dialog mid-roll
+        --and dropped the knockback.
+        --
+        --Coroutine-tied only: an id-only lock here would never expire on its
+        --own, and this alias path rides on someone else's card, so a caller
+        --that dies without unlocking would pin that card forever. Every caller
+        --that can reach here with lock=true (AcquireAbilityRollDialog) sets
+        --lockCoroutine.
         local lockId = nil
         if options.lock and options.lockCoroutine ~= nil then
             lockId = CharacterPanel.LockDisplayAbility(options.lockCoroutine)

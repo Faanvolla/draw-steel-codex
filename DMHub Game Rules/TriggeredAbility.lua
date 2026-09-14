@@ -1442,7 +1442,7 @@ function TriggeredAbility:Trigger(characterModifier, creature, symbols, auraCont
 		aiReactionId = dmhub.GenerateGuid()
 		argOptions.aiActivityId = aiActivityId
 		argOptions.aiReactionId = aiReactionId
-		casterToken.properties:BeginPendingAIActivityReaction(aiActivityId, aiReactionId)
+		casterToken.properties:BeginPendingAIActivityReaction(aiActivityId, aiReactionId, self.name)
 	else
 		aiActivityId = nil
 	end
@@ -1734,6 +1734,9 @@ function TriggeredAbility:Trigger(characterModifier, creature, symbols, auraCont
 				dismissed = false
 			end
 			if accepted or dismissed then
+				if aiActivityId ~= nil then
+					casterToken.properties:SetAIActivityReactionResolving(aiActivityId, guid)
+				end
                 local removes = {}
                 for i, target in ipairs(targets) do
                     if target.token ~= nil and (not target.token.valid) then
@@ -1827,6 +1830,10 @@ end
 
 function TriggeredAbility:ExecuteTriggerCast(args)
 	local argOptions = args.argOptions or {}
+	if type(argOptions.aiActivityId) == "string" and type(argOptions.aiReactionId) == "string"
+		and args.casterToken ~= nil and args.casterToken.valid then
+		args.casterToken.properties:SetAIActivityReactionResolving(argOptions.aiActivityId, argOptions.aiReactionId)
+	end
 	local casterToken = args.casterToken
 	local symbols = args.symbols
 	local targets = args.targets

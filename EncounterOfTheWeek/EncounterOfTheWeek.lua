@@ -327,6 +327,9 @@ local m_restrictionInstalled = false
 local m_zoneMarker = nil
 local m_outcomeSeen = false
 local m_exitScheduled = false
+--set the moment THIS user presses Proceed on the victory/defeat screen; the
+--auto-exit below never fires without it, whatever the other clients do.
+local m_localProceeded = false
 
 local function ClearStartZoneConfinement()
     if m_restrictionInstalled then
@@ -386,10 +389,12 @@ local function UpdateStartZoneConfinement()
 end
 
 --Watch the encounter conclude: once this client has seen the victory/defeat
---screen (an awarded outcome on the live queue) and the queue then hides
---(someone pressed Proceed), leave for the titlescreen. Clients that never
---saw an awarded outcome (mid-join, or a combat ended through the Director
---escape hatch) never auto-exit.
+--screen (an awarded outcome on the live queue), the local user has pressed
+--Proceed, and the queue has hidden (combat torn down), leave for the
+--titlescreen. Another client's Proceed tears combat down but leaves this
+--client's screen held until its own press. Clients that never saw an awarded
+--outcome (mid-join, or a combat ended through the Director escape hatch)
+--never auto-exit.
 local function UpdateEncounterConclusion()
     if m_exitScheduled or not EncounterOfTheWeekGame.IsEotwGame() then
         return
@@ -412,7 +417,7 @@ local function UpdateEncounterConclusion()
         return
     end
 
-    if m_outcomeSeen then
+    if m_outcomeSeen and m_localProceeded then
         m_exitScheduled = true
         printf("EotW: encounter concluded; returning to the titlescreen")
 
@@ -640,16 +645,34 @@ end)
 --history, analytics are Director-gated); a PLAYER pressing relays the
 --request through the state doc for the host tick to execute. pcall: a core
 --codex without the hook keeps the Director-only button.
+--
+--The screen is dismissed PER CLIENT: it stays up on this client, whatever
+--the other clients or the host do, until the local user presses Proceed
+--(holdUntilLocalProceed). Only that press releases this client's auto-exit.
 pcall(function()
     DSVictoryScreen.RegisterProceedOverride{
         canProceed = function()
             return EncounterOfTheWeekGame.IsEotwGame()
         end,
-        proceed = function(defaultProceed)
+        holdUntilLocalProceed = function()
+            --once this user has pressed Proceed the screen may close with
+            --the queue as normal (that close is what triggers the exit).
+            return EncounterOfTheWeekGame.IsEotwGame() and not m_localProceeded
+        end,
+        proceed = function(defaultProceed, alreadyEnded)
+            if not EncounterOfTheWeekGame.IsEotwGame() then
+                return false
+            end
+            m_localProceeded = true
+            if alreadyEnded then
+                --combat was torn down while this screen was held; the
+                --driver below exits now that the local press has happened.
+                return true
+            end
             --the HOST (a player host: real hosting status, presented as a
             --player) falls through to the default teardown -- battle log,
             --role history and analytics must run on the host machine.
-            if not EncounterOfTheWeekGame.IsEotwGame() or IsDMOrPlayerHost() then
+            if IsDMOrPlayerHost() then
                 return false
             end
             local doc = mod:GetDocumentSnapshot(STATE_DOC_ID)
@@ -882,6 +905,107 @@ local function WaitForPastedCharacters(charids)
     game.UpdateCharacterTokens()
 end
 
+--Start-zone tiles ordered by distance from the anchor (ties by x then y):
+--the shared spreading order every client agrees on.
+local function StartZoneTilesByDistance(anchor)
+    local tiles = StartZoneLocs()
+    local ax, ay = anchor.x, anchor.y
+    table.sort(tiles, function(a, b)
+        local da = (a.x - ax) * (a.x - ax) + (a.y - ay) * (a.y - ay)
+        local db = (b.x - ax) * (b.x - ax) + (b.y - ay) * (b.y - ay)
+        if da ~= db then
+            return da < db
+        end
+        if a.x ~= b.x then
+            return a.x < b.x
+        end
+        return a.y < b.y
+    end)
+    return tiles
+end
+
+--The nth (1-based) tile in ordered that no token occupies, or nil.
+local function NthFreeStartTile(ordered, n)
+    local count = 0
+    for _,loc in ipairs(ordered) do
+        if game.GetTokensAtLoc(loc) == nil then
+            count = count + 1
+            if count == n then
+                return loc
+            end
+        end
+    end
+    return nil
+end
+
+--how long to wait for other clients' pastes to echo back before checking
+--for stacked heroes, and how many check/repair rounds to run.
+local UNSTACK_WAIT = 1.0
+local UNSTACK_ROUNDS = 3
+
+--Repair heroes this client just pasted that ended up sharing a tile with
+--another token. The paste's vacancy scan cannot see a paste another client
+--sent in the same instant (both echo back after both have chosen), so two
+--arrivals can land on the anchor tile together. After the echoes land every
+--client sees the same pile, so the repair is deterministic: the lowest
+--charid keeps the tile and each other member takes the next free Start-zone
+--tile in the shared distance order -- two clients repairing the same pile at
+--once therefore pick different tiles. Re-checks a few times to catch echoes
+--that arrive late. Yields; runs inside PlaceMyHeroes' coroutine.
+local function UnstackPlacedHeroes(charids, anchor)
+    if charids == nil or #charids == 0 then
+        return
+    end
+    local ordered = StartZoneTilesByDistance(anchor)
+    if #ordered == 0 then
+        --no Start zone: nothing to spread across.
+        return
+    end
+
+    for _ = 1, UNSTACK_ROUNDS do
+        coroutine.yield(UNSTACK_WAIT)
+        if mod.unloaded then
+            return
+        end
+        game.UpdateCharacterTokens()
+
+        local moved = false
+        for _,charid in ipairs(charids) do
+            local token = dmhub.GetCharacterById(charid)
+            if token ~= nil then
+                local stacked = game.GetTokensAtLoc(token.loc) or {}
+                if #stacked > 1 then
+                    local ids = {}
+                    for _,t in ipairs(stacked) do
+                        ids[#ids+1] = t.charid
+                    end
+                    table.sort(ids)
+                    local rank = 0
+                    for i,id in ipairs(ids) do
+                        if id == charid then
+                            rank = i - 1
+                        end
+                    end
+                    if rank > 0 then
+                        local dest = NthFreeStartTile(ordered, rank)
+                        if dest ~= nil then
+                            printf("EotW: hero %s shares %s with %d other token(s); moving it to %s", charid, tostring(token.loc), #stacked - 1, tostring(dest))
+                            token:ChangeLocation(dest)
+                            moved = true
+                        else
+                            printf("EotW: hero %s is stacked but the Start zone has no free tile", charid)
+                        end
+                    end
+                end
+            end
+        end
+
+        if not moved then
+            return
+        end
+    end
+end
+
 --Place the local player's claimed heroes into the Start zone.
 --  heroes:       full claim list, {kind, id, name} each, in claim order.
 --  clipboardIds: ids of the "lobby" heroes copied to the token clipboard at
@@ -903,6 +1027,8 @@ local function PlaceMyHeroes(heroes, clipboardIds)
     end
 
     local changed = false
+    --every hero this call put on the map, for the stacking repair below.
+    local myPasted = {}
 
     --lobby heroes travel via the token clipboard, loaded before EnterGame.
     clipboardIds = clipboardIds or {}
@@ -942,12 +1068,14 @@ local function PlaceMyHeroes(heroes, clipboardIds)
                     --token rather than guessing, but do not record it.
                     printf("EotW: pasted hero %d has no matching claim entry", i)
                     ClaimPastedHero(charid)
+                    myPasted[#myPasted+1] = charid
                 elseif mine[key] ~= nil then
                     --this hero was placed on an earlier entry; the batch paste
                     --recreated it, so delete the duplicate.
                     game.DeleteCharacters({charid})
                 else
                     ClaimPastedHero(charid)
+                    myPasted[#myPasted+1] = charid
                     mine[key] = charid
                     changed = true
                 end
@@ -972,12 +1100,17 @@ local function PlaceMyHeroes(heroes, clipboardIds)
                     --sees it instead of stacking on the anchor tile.
                     WaitForPastedCharacters({charid})
                     ClaimPastedHero(charid)
+                    myPasted[#myPasted+1] = charid
                     mine[HeroKey(heroEntry)] = charid
                     changed = true
                 end
             end
         end
     end
+
+    --another client arriving in the same instant may have pasted onto the
+    --same tiles; spread any pile before recording placement.
+    UnstackPlacedHeroes(myPasted, anchor)
 
     if changed then
         game.UpdateCharacterTokens()

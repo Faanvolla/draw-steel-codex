@@ -608,6 +608,10 @@ local g_rulePatterns = {
             if stability ~= 0 and (match.ignorestability or ignoreForCompanion or ignoreForAlly or casterToken.properties:CalculateNamedCustomAttribute("Ignore Stability") > 0) then
                 stability = 0
                 adjustments[#adjustments+1] = "Ignoring Stability"
+            else
+                --Monster Info: a hero pushing, pulling or sliding a monster
+                --against its stability reveals that stability (self-guarding).
+                MonsterKnowledge.RecordForceMove(casterToken, targetToken)
             end
 
             local forcedMovementIncrease = targetToken.properties:CalculateNamedCustomAttribute("Forced Movement Increase")

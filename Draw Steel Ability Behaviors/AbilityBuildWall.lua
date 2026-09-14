@@ -131,6 +131,36 @@ local function RecordVoxelInModification(obj)
     game.AddMapModificationVoxel(obj)
 end
 
+--EVERY wall voxel placed or destroyed makes the engine rebuild the whole map --
+--each floor's terrain layers, the solid-terrain geometry, the ground raster, the
+--walls and the logical map. On a large map that is over a SECOND per voxel, so a
+--loop that touches N voxels in one frame costs N rebuilds and hangs the client
+--for N seconds: a twenty-square Living Labyrinth replace killed a Director's
+--process outright (reports CWEKQ6NC / RYDWBBJA), and because the loop died
+--partway the wall it was replacing was left half standing.
+--
+--game.Begin/EndWallVoxelBatch collapses such a burst into ONE rebuild, with the
+--column edits published as a single patch. Two rules for using it: the burst
+--must be SYNCHRONOUS -- a batch may not span a coroutine yield, so nothing that
+--can prompt the player (CommitToPaying) goes inside one -- and the pairing is
+--refcounted, so a batched helper nests safely inside a batched caller.
+--Nil-guarded for engine builds that predate the batching bridge.
+local function BeginVoxelBatch()
+    if rawget(_G, "game") == nil or game.BeginWallVoxelBatch == nil then
+        return
+    end
+
+    game.BeginWallVoxelBatch()
+end
+
+local function EndVoxelBatch()
+    if rawget(_G, "game") == nil or game.EndWallVoxelBatch == nil then
+        return
+    end
+
+    game.EndWallVoxelBatch()
+end
+
 --destroy every wall voxel this caster created in a DIFFERENT cast. Used by the
 --replacePrevious option ("any wall created in the previous round is destroyed
 --or replaced"): voxels are tagged with wallcreator/wallcastid at spawn, so the
@@ -150,6 +180,10 @@ local function DestroyPreviousWalls(casterToken, currentCastId)
         end
     end
 
+    --one rebuild for the whole old wall instead of one per square. This is the
+    --loop that used to kill the client on a full-size replace.
+    BeginVoxelBatch()
+
     for _,token in ipairs(victims) do
         token:ModifyProperties{
             description = "Wall replaced",
@@ -159,6 +193,8 @@ local function DestroyPreviousWalls(casterToken, currentCastId)
             end,
         }
     end
+
+    EndVoxelBatch()
 end
 
 --- The maximum wall-voxel column height for the given tile: the floor's ceiling
@@ -410,6 +446,9 @@ function ActivatedAbilityBuildWallBehavior.CancelPlacement()
     local session = g_session
     g_session = nil
 
+    --the whole live-placed wall comes down in one rebuild.
+    BeginVoxelBatch()
+
     for i = #session.placements, 1, -1 do
         local placement = session.placements[i]
         local floor = game.currentMap:GetFloorFromLoc(placement.loc)
@@ -417,6 +456,8 @@ function ActivatedAbilityBuildWallBehavior.CancelPlacement()
             floor:DestroyWallVoxel(placement.loc, 9999)
         end
     end
+
+    EndVoxelBatch()
 
     DestroyHeightLabels(session)
 end
@@ -483,6 +524,10 @@ function ActivatedAbilityBuildWallBehavior:Cast(ability, casterToken, targets, o
         ownerTag = { charid = casterToken.charid, castid = castid }
     end
 
+    --the whole wall goes up in one rebuild. The batch closes before
+    --CommitToPaying, which may yield to prompt the player for the cost.
+    BeginVoxelBatch()
+
     for _,loc in ipairs(locs) do
         --programmatic casts respect the ceiling too: a column that already
         --reaches the floor's ceiling cannot take another cube.
@@ -491,6 +536,8 @@ function ActivatedAbilityBuildWallBehavior:Cast(ability, casterToken, targets, o
             RecordVoxelInModification(obj)
         end
     end
+
+    EndVoxelBatch()
 
     ability:CommitToPaying(casterToken, options)
 

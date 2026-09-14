@@ -925,6 +925,31 @@ How claimed heroes physically get from the titlescreen into an EotW game:
   the same moment both anchor at the same tile and cannot see each other's
   un-synced writes); accepted for now -- arrivals are naturally staggered by
   load time, and combat entry waits for every player anyway.
+  **Observed live 2026-09-08 (4-player game, host log):** two heroes stacked on
+  the anchor tile (1,-8, floor 2). The host had placed and then WALKED its own
+  hero off the anchor tile ~70s before the next arrivals, so the anchor read
+  vacant to everyone; two players' paste patches then reached the server
+  within the same instant (their `/characters` echoes arrived back-to-back in
+  the host's stream, the second token logging `canFit = False`), so neither
+  vacancy scan could see the other's write and both took the anchor. The
+  fourth arrival, seconds later, saw both and fanned out to (1,-7). The
+  vacancy scan (`FindBestTokenLoc` -> `charactersByLoc`) is correct for
+  everything it can see; the race is in what it cannot see yet.
+  **Post-paste stacking repair (BUILT 2026-09-08, UNTESTED, not yet
+  deployed):** `UnstackPlacedHeroes(charids, anchor)` runs at the end of
+  `PlaceMyHeroes` over every hero this client pasted. It waits 1s (for the
+  other clients' pastes from the same instant to echo back), runs
+  `game.UpdateCharacterTokens()`, and for each of its heroes checks
+  `game.GetTokensAtLoc(token.loc)`. A pile is repaired deterministically so
+  two clients fixing the same pile at once do not collide again: the members'
+  charids are sorted, the lowest keeps the tile, and the hero of sorted rank
+  `r` moves (`token:ChangeLocation`, which goes through the engine's
+  `SummonTokens` and is itself vacancy-aware) to the `r`-th free tile of the
+  Start zone in a shared order -- tiles sorted by distance from the anchor,
+  ties by x then y (`StartZoneTilesByDistance`, `NthFreeStartTile`). Up to 3
+  check/repair rounds run; a round that moves nothing ends it. Maps with no
+  Start zone skip the repair (nothing to spread across). Each client repairs
+  only its own heroes, so no elevated permissions are needed.
 - **Lua Loc gotcha (2026-08-27)**: a Loc's floor is READ as `loc.floor`;
   `loc.floorIndex` is not a property and reads nil (the CONSTRUCTOR arg is named
   `floorIndex`, the getter is `floor`). Passing a floorless Loc to
@@ -1453,6 +1478,44 @@ entirely as leafy EotW-module code plus small named hooks in core:
     check is "any id in `richEncounter.spawns` with `dmhub.GetTokenById(id) ~= nil`"
     -- GetTokenById returns nil for deleted AND despawned characters (verified), so
     the stale ids in the shipped doc never trip it.
+
+### Initiative roll: monsters took the first turn on a 10 (ROOT-CAUSED + FIXED 2026-09-08; core fix, reload pending, UNTESTED live)
+
+Report (2026-09-08, live EotW game): the players rolled a 10 on the Draw
+Steel die, the banner said the heroes won, and the Monster AI took the
+first turn anyway. Live queue inspection confirmed the mechanism: the
+queue's stored `playersGoFirst` was **nil** (resolved to the class default
+`true`), so `playersTurn` had also been written nil and resolved to ITS
+class default `false` = monsters' turn (`MCDMInitiativeQueue.lua:41-42`).
+
+Root cause, in `Draw Steel UI/DSInitiativeRoll.lua`: the banner's
+controller (the EotW host) creates the queue with `playersGoFirst =
+m_heroesWin`, and `m_heroesWin` was set ONLY by the `diceface` event of the
+controller's own local die. Dice are simulated on the roller's machine and
+shipped as a recorded replay in the chat message (`Assets/DICE_REFERENCE.md`
+sections 7-8), so on any client that did not roll -- always the case in EotW
+when a player claims the die -- the replay only starts after the roller has
+finished, and the controller's finish path (`doc.data.finished` + 2.6s of
+banner animation) fires while that replay is still tumbling, or before the
+client ever subscribed to the die (the subscription in `refreshGame` needs
+the roll's chat message to have arrived before the last document change).
+Result: stale or nil `m_heroesWin` -- a coin flip or, as here, nil -> the
+bar shows heroes won while the monsters act. Normal games rarely hit this
+because the Director both controls the banner and rolls the die.
+
+Fix (core, applies to every game, not EotW-only): the roller's
+`complete` callback now writes the authoritative die value into the shared
+`drawsteel` document (`doc.data.result = rollInfo.total`, next to
+`finished`; cleared at banner init), and the controller resolves the winner
+from `doc.data.result >= m_initiativeThreshold` (its own threshold -- the
+surprise/Initiative Threshold calc only has the player tokens on the
+controller) before creating or re-rolling the queue. If no result is known
+it logs `BANNER:: no die result known` and defaults to heroes, so both
+`playersGoFirst` and `playersTurn` are always explicit booleans -- the
+nil-falls-to-mismatched-defaults path is closed. The reroll path's
+`m_heroesWin ~= nil` guard went with it. luac-clean; live in the
+git folder (= this repo) pending a Lua reload; needs a live EotW check
+where a non-host player rolls.
 
 ### Start-zone confinement during the pre-combat phase (DECIDED + BUILT 2026-08-28; engine NEEDS BUILD)
 
@@ -2008,8 +2071,10 @@ tokens the user does not own, not a general substitute for the
 capability/presentation split.
 
 **Known related site, left alone pending a decision**:
-`CharacterToken.DragBlockedByMovementRules` (the `strictmovementrules`
-drag block) has the same shape -- on a player host it now stops the host
+`CharacterToken.PlayerMoveBlockedByMovementRules` (the `strictmovementrules`
+drag block, renamed from `DragBlockedByMovementRules` on 2026-09-08 when the
+arrow keys started sharing it -- see "Arrow-key movement bypassed the drag
+gates" below) has the same shape -- on a player host it now stops the host
 manually dragging a monster during combat when it is not that monster's
 turn, which the audit had explicitly accepted as a manual-recovery path.
 It is a user action rather than automation, so it was not changed; the
@@ -2184,6 +2249,39 @@ value differs from its forced value. Called from the host's `SetupOnArrival`
 block (next to the `permission:playersinitiative` write) and re-asserted at
 the top of every `MapScriptHostThink` tick (check-before-write, so
 steady-state ticks write nothing).
+
+#### Arrow-key movement bypassed the drag gates (FOUND + FIXED 2026-09-08; engine NEEDS BUILD, UNTESTED)
+
+User report (2026-09-08): in a live EotW game the arrow keys still moved the
+reporter's hero when it should have had no movement (off-turn), even though
+dragging refused. Root cause (engine-wide, not EotW-specific): the arrow keys
+are bound to the built-in `tokenmove` console command
+(`Assets/CoreAssets/Lua/commands.txt`, compiled into the engine as builtin
+Lua -- NOT a codex file), which calls `token:Move`. The `Move` bridge already
+clamped to the strict:movement remaining budget and honoured the
+movement-restriction zone, but it skipped the three gates the mouse drag in
+`CharacterToken.UpdateDragging` applies before a drag can even start:
+`canControlAsUser`, the frozen-game check (`isDM || !frozen`), and the
+`strictmovementrules` "in combat, not this token's turn" block. So off-turn
+arrow movement went through whenever the budget clamp alone did not catch
+it.
+
+Fix, all engine-side:
+
+- `CharacterToken.DragBlockedByMovementRules` renamed to the public
+  `PlayerMoveBlockedByMovementRules` (same body: `isDM` short-circuit, the
+  `strictmovementrules` setting, the initiative-status switch).
+- `Move` (the Lua bridge) gained a `playerMovement` option. When true it runs
+  the three drag gates above up front and returns nil if any refuses; the
+  budget clamp and zone restriction then apply as before. AI, ability and
+  forced movement never pass it, so their behaviour is unchanged.
+- `tokenmove` passes `{playerMovement = true}`. The `dmhub.isDM or
+  newLoc.isOnMap` pre-check it already had is untouched.
+- LuaLS stub `Definitions/CharacterToken.lua` documents the option.
+
+Both halves ship with the engine (the C# and the builtin Lua), so this is
+inert until the next build. `flyup`/`flydown` (`MoveVertical`) were not
+touched.
 
 #### Off-turn ability use (FOUND + FIXED 2026-09-07; verified live, uncommitted)
 
@@ -2451,11 +2549,26 @@ Codex titlescreen.
   condition reads unmet; `math.abs` on the elapsed check so a serverTime
   rebase releases the wait rather than wedging it. UNTESTED live.
 - **Player Proceed (core hook)**: `DSVictoryScreen.RegisterProceedOverride{
-  canProceed, proceed }` in `Draw Steel UI/DSVictoryScreen.lua`. Proceed-button
-  visibility becomes `dmhub.isDM OR canProceed()` (pcall-guarded); the click
-  runs `proceed(ProceedEndCombat)` first and only falls through to the normal
-  Director teardown when the override declines. `ProceedEndCombat` is also
-  exported as `DSVictoryScreen.ProceedEndCombat` for the host-side automation.
+  canProceed, proceed, holdUntilLocalProceed }` in `Draw Steel UI/DSVictoryScreen.lua`.
+  Proceed-button visibility becomes `dmhub.isDM OR canProceed()`
+  (pcall-guarded); the click runs `proceed(ProceedEndCombat, alreadyEnded)`
+  first and only falls through to the normal Director teardown when the
+  override declines. `ProceedEndCombat` is also exported as
+  `DSVictoryScreen.ProceedEndCombat` for the host-side automation.
+- **The screen is dismissed PER CLIENT (DECIDED 2026-09-08, user: "it
+  shouldn't proceed until I'm ready under any circumstances")**. The shared
+  queue drives the screen's SHOWING, but never its closing in EotW: while the
+  override's `holdUntilLocalProceed()` returns true, `checkVictory` reacts to
+  the outcome leaving the queue by flagging the screen `held`
+  (`rootPanel.data.held`) instead of hiding it -- the cards are already
+  built, so the dead live encounter is not needed. Proceed on a held screen
+  calls `proceed(ProceedEndCombat, true)` (nothing to tear down or relay) and
+  hides locally; its tooltip drops the "for everyone" wording. A new outcome
+  landing on a held screen re-shows fresh. Normal Director games register no
+  override and are unchanged. This resolves the 2026-09-07 policy question
+  (one player's Proceed used to end the screen for everyone): another
+  client's Proceed still tears combat down for the game, but each client's
+  screen and exit wait for that client's own press.
   The Victories award section's visibility gate converts `dmhub.isDM` ->
   `GameHud.DirectorUIVisible()` (identical in normal games; hidden in EotW for
   everyone including the host, per the no-Director presentation).
@@ -2465,20 +2578,29 @@ Codex titlescreen.
   run on the host). A PLAYER pressing stamps `proceedRequested` into the
   `eotwstate` doc; the host tick (which is already watching the awarded
   outcome) sees it and runs `DSVictoryScreen.ProceedEndCombat()` -- worst case
-  ~2s latency before the screen dismisses for everyone. If the host client is
-  gone, the request sits until the host returns (same accepted class as the
-  other host-crash edges).
+  ~2s latency before combat is torn down. If the host client is gone, the
+  request sits until the host returns (same accepted class as the other
+  host-crash edges). Every press (host or player, held or not) first sets the
+  module-local `m_localProceeded`; `holdUntilLocalProceed` returns
+  `IsEotwGame() and not m_localProceeded`, so the presser's own screen closes
+  with the queue as normal while everyone else's stays held.
 - **Auto-exit to the titlescreen**: each client's 1s driver latches "outcome
-  seen" while the queue is live with an awarded outcome; when the queue then
-  hides/disappears (Proceed ran), it schedules `dmhub.LeaveGame()` once, ~4s
+  seen" while the queue is live with an awarded outcome; when the queue has
+  hidden/disappeared (combat torn down) AND the local user has pressed
+  Proceed (`m_localProceeded`), it schedules `dmhub.LeaveGame()` once, ~4s
   out (covers the victory screen's 0.7s fade plus the 1-3s GameDetails write
   coalescing so the host's battle-log/queue writes flush before the socket
-  closes). Every client leaves, host included, landing on the titlescreen --
-  the existing post-leave flow (stale-screen sweep, resume row, no auto
-  re-entry) already handles the arrival. Clients that never saw an awarded
-  outcome (a combat ended via the Director escape hatch, or a mid-join) do NOT
-  auto-exit. `dmhub.LeaveGame` is deferred via `dmhub.Schedule` because it
-  synchronously unloads the calling codemod.
+  closes). Each client leaves on its own press, host included, landing on the
+  titlescreen -- the existing post-leave flow (stale-screen sweep, resume
+  row, no auto re-entry) already handles the arrival. Clients that never saw
+  an awarded outcome (a combat ended via the Director escape hatch, or a
+  mid-join) do NOT auto-exit. `dmhub.LeaveGame` is deferred via
+  `dmhub.Schedule` because it synchronously unloads the calling codemod.
+  A client still sitting on its held screen after the host has exited and
+  its titlescreen has wiped the game is fine: `DOConnection` treats the
+  server's `game-deleted` close as "stop reconnecting" and the client stays
+  in place, so the held screen survives until its own Proceed (verified in
+  `DataStoreDurableObjects.cs`; UNTESTED live).
 - **Finished-game cleanup (ADDED 2026-08-28 after the first live run: the
   game lingered in the lobby list and the account slot after everyone
   exited)**. Two causes: nobody ever told the lobby the game was over (and a
@@ -3155,7 +3277,10 @@ Begin is now the only launch path, with the resume row for re-entry.)
     press Proceed (players relay through the host via `proceedRequested`);
     every client that saw the outcome auto-exits to the titlescreen ~4s after
     the queue hides. Design in "Victory/defeat auto-detection, player Proceed,
-    and auto-exit".
+    and auto-exit". REVISED 2026-09-08 (UNTESTED live): per-client dismissal
+    -- the screen is held locally until the local Proceed press
+    (`holdUntilLocalProceed` hook in `DSVictoryScreen.lua`,
+    `m_localProceeded` gate on the auto-exit in `EncounterOfTheWeek.lua`).
 
 27. [x] Strict rules enforcement: BUILT 2026-08-28 (Lua only, UNTESTED in a
     live EotW game). All "Strict..." rules-enforcement settings (the four
@@ -3490,8 +3615,27 @@ Deliverable: end-to-end -- lobby to fought encounter with AI-run monsters.
     problem. FIXED same day: `EncounterOfTheWeek.lua` now uses its own
     `CountLivingHeroes(queue)` (`not props:IsDead()`) for the all-heroes
     defeat; design updated above. Syntax-checked, deployed; UNTESTED live.
-    The Proceed policy question (one player ends it for everyone) is still
-    open.
+    The Proceed policy question (one player ends it for everyone) was
+    DECIDED 2026-09-08: per-client dismissal (next entry).
+
+- 2026-09-08: **Victory screen closed before the user pressed Proceed. DECIDED + BUILT: per-client dismissal. Syntax-checked, deployed (git folder = repo), reloaded clean; UNTESTED live.**
+  - Cause: the screen show/hide was purely a function of the shared
+    initiative queue, so any other client's Proceed (relayed to the host's
+    teardown) hid it everywhere. User direction: it must never close until
+    the local user is ready.
+  - Fix: `DSVictoryScreen.lua` -- new optional override field
+    `holdUntilLocalProceed()`; when true, the outcome leaving the queue
+    flags the screen `held` instead of hiding it, and Proceed on a held
+    screen calls `proceed(_, alreadyEnded=true)` then hides locally.
+    `EncounterOfTheWeek.lua` -- `m_localProceeded` set on every local press;
+    the hold returns `not m_localProceeded`; `UpdateEncounterConclusion`
+    exits only when `m_outcomeSeen and m_localProceeded` and the queue is
+    hidden. Design folded into "Victory/defeat auto-detection, player
+    Proceed, and auto-exit".
+  - Live test to run: two clients; one presses Proceed, confirm the other's
+    screen stays (tooltip reads "Dismiss the victory screen.") and only that
+    client exits; the second presses later and exits, even after the first
+    client's titlescreen has wiped the game.
 
 - 2026-09-06: **Live game stuck after the last monster died -- no victory screen. DIAGNOSED + FIXED (self-healing on both layers); Core Rules half VERIFIED live, EotW half UNTESTED.**
   - Symptom: `live:CheckVictory()` read true, nothing awarded, every client

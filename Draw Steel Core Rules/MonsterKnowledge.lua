@@ -61,7 +61,7 @@ setting{
 setting{
     id = "monsterinfoautolearn",
     description = "Players learn monster stats automatically",
-    help = "Killing a monster type reveals its stamina (roughly at first, exactly by the third kill) and may reveal a trait. A monster using an ability reveals the ability, testing its characteristic reveals the characteristic, and an immunity or weakness that changes damage reveals that entry. Turn off to reveal only through the Director's eye toggles.",
+    help = "Killing a monster type reveals its stamina (roughly at first, exactly by the third kill) and may reveal a trait. A monster using an ability reveals the ability, testing its characteristic reveals the characteristic, an immunity or weakness that changes damage reveals that entry, and a hero force moving a monster reveals its stability. Turn off to reveal only through the Director's eye toggles.",
     classes = {"dmonly"},
     default = true,
     section = "Game",
@@ -104,7 +104,7 @@ end
 --- The key for one entry of a monster's stat block, e.g.
 --- EntryKey("ability", "Spear Charge") -> "ability:Spear Charge".
 --- Prefixes in use: attr, feature, ability, resist. Plain entries (role, ev,
---- keywords, size, freestrike, captain, immunities, stamina) have no prefix.
+--- keywords, size, stability, freestrike, captain, immunities, stamina) have no prefix.
 function MonsterKnowledge.EntryKey(prefix, name)
     return prefix .. ":" .. SanitizeKey(name)
 end
@@ -521,6 +521,29 @@ local function RecordDamageModifierInternal(victim, resistanceEntry)
 
     local damageType = string.lower(resistanceEntry:try_get("damageType", "all"))
     AutoReveal(key, MonsterKnowledge.EntryKey("resist", damageType), "Monster knowledge: immunity")
+end
+
+local function RecordForceMoveInternal(casterToken, targetToken)
+    if not MonsterKnowledge.AutoLearnEnabled() or casterToken == nil or targetToken == nil then
+        return
+    end
+    if not casterToken.valid or not IsHeroSide(casterToken.properties) then
+        return
+    end
+    local key = MonsterKnowledge.KeyForToken(targetToken)
+    if key == nil then
+        return
+    end
+    AutoReveal(key, "stability", "Monster knowledge: stability")
+end
+
+--- Hook: a hero (or a hero's summon) tried to push, pull or slide a monster.
+--- The attempt is enough: the players see how far it moved against its stability.
+function MonsterKnowledge.RecordForceMove(casterToken, targetToken)
+    local ok, err = pcall(RecordForceMoveInternal, casterToken, targetToken)
+    if not ok then
+        dmhub.Debug(string.format("MonsterKnowledge.RecordForceMove failed: %s", tostring(err)))
+    end
 end
 
 --- Hook: damage to a monster was changed by one of its resistance entries.

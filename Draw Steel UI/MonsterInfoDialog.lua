@@ -291,7 +291,7 @@ local function BuildHeader(ctx)
     }
 end
 
---Stamina / immunities, speed / size, captain / free strike.
+--Stamina / immunities, speed / size, stability / free strike, captain.
 local function BuildVitals(ctx)
     local props = ctx.props
     local rows = {}
@@ -321,14 +321,10 @@ local function BuildVitals(ctx)
         }),
     }
 
-    local sizeText = UNKNOWN
-    if MonsterKnowledge.IsRevealed(ctx.key, "size") then
-        local size = "?"
-        local stability = 0
-        pcall(function() size = props:SizeDescription() end)
-        pcall(function() stability = props:BaseForcedMoveResistance() end)
-        sizeText = string.format("%s / <b>Stability</b> %d", size, stability)
-    end
+    local size = "?"
+    pcall(function() size = props:SizeDescription() end)
+    local stability = 0
+    pcall(function() stability = props:BaseForcedMoveResistance() end)
 
     rows[#rows+1] = Row{
         Entry(ctx, nil, {
@@ -338,7 +334,7 @@ local function BuildVitals(ctx)
         Entry(ctx, "size", {
             classes = {"sizeM"},
             halign = "right",
-            text = string.format("<b>Size</b> %s", sizeText),
+            text = EntryText(ctx, "size", "Size", size),
         }),
     }
 
@@ -349,21 +345,25 @@ local function BuildVitals(ctx)
             classes = {"sizeM"},
             text = EntryText(ctx, "captain", "With Captain", withCaptain),
         })
-    else
-        --placeholder so Free Strike still right-aligns in a two-column row.
-        captainEntry = gui.Panel{ width = 1, height = 1 }
     end
 
     local freeStrike = 0
     pcall(function() freeStrike = props:OpportunityAttack() end)
     rows[#rows+1] = Row{
-        captainEntry,
+        Entry(ctx, "stability", {
+            classes = {"sizeM"},
+            text = EntryText(ctx, "stability", "Stability", stability),
+        }),
         Entry(ctx, "freestrike", {
             classes = {"sizeM"},
             halign = "right",
             text = EntryText(ctx, "freestrike", "Free Strike", freeStrike),
         }),
     }
+
+    if captainEntry ~= nil then
+        rows[#rows+1] = Row{ captainEntry }
+    end
 
     return rows
 end
@@ -500,7 +500,7 @@ end
 
 --Every entry key the Director's Reveal All / Hide All should cover.
 local function AllEntryKeys(ctx)
-    local keys = { "role", "keywords", "ev", "size", "freestrike", "captain", "immunities" }
+    local keys = { "role", "keywords", "ev", "size", "stability", "freestrike", "captain", "immunities" }
     for _,attrid in ipairs(creature.attributeIds) do
         keys[#keys+1] = MonsterKnowledge.EntryKey("attr", attrid)
     end
