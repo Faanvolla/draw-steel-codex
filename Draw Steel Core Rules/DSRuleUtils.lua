@@ -333,4 +333,26 @@ RuleUtils = {
             end
         end
     end,
+
+    --Removes retarget candidates the strike already targets: a strike can never
+    --be redirected onto a creature it already hits. trigger.strikeTargets (a
+    --charid list) is kept current by the roll dialog that published the trigger.
+    RemoveRetargetStrikeTargets = function(targets, trigger)
+        local strikeTargets = nil
+        if trigger ~= nil then
+            strikeTargets = trigger:try_get("strikeTargets")
+        end
+        if strikeTargets == nil then
+            return
+        end
+        local targeted = {}
+        for _, charid in ipairs(strikeTargets) do
+            targeted[charid] = true
+        end
+        for i = #targets, 1, -1 do
+            if targeted[targets[i].charid] then
+                table.remove(targets, i)
+            end
+        end
+    end,
 }

@@ -4794,6 +4794,8 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
                                             end
                                         end
 
+                                        RuleUtils.RemoveRetargetStrikeTargets(targets, trigger)
+
                                         local sourceToken = token
                                         local range = tonumber(ExecuteGoblinScript(trigger.powerRollModifier.range, token.properties:LookupSymbol(symbols), 10))
                                         local rangeType = trigger.powerRollModifier.powerRollModifier:try_get("changeTargetRange", "none")
@@ -4827,6 +4829,8 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
                                                     execute = function()
                                                         trigger.triggered = true
                                                         trigger.retargetid = newTargetToken.charid
+                                                        --choosing the new target commits the trigger, so the card leaves the drawer.
+                                                        trigger.dismissed = true
 
                                                         token.properties:DispatchAvailableTrigger(trigger)
                                                     end,
@@ -4990,6 +4994,8 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
                                                 end
                                             end
 
+                                            RuleUtils.RemoveRetargetStrikeTargets(targets, trigger)
+
                                             local sourceToken = token
                                             local range = tonumber(ExecuteGoblinScript(trigger.powerRollModifier.range, token.properties:LookupSymbol(symbols), 10))
                                             local rangeType = trigger.powerRollModifier.powerRollModifier:try_get("changeTargetRange", "none")
@@ -5024,6 +5030,8 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 
                                                             trigger.triggered = index
                                                             trigger.retargetid = newTargetToken.charid
+                                                            --choosing the new target commits the trigger, so the card leaves the drawer.
+                                                            trigger.dismissed = true
 
                                                             token.properties:DispatchAvailableTrigger(trigger)
                                                         end,
