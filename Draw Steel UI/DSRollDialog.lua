@@ -1313,11 +1313,9 @@ function GameHud.CreateRollDialog(self)
                 if token ~= nil then
                     local tokenTriggers = token.properties:GetAvailableTriggers() or {}
                     local tokenTrigger = tokenTriggers[trigger.id]
-                    --retargetid is part of the change detection: a trigger-before
-                    --flow (e.g. Devilish Charm) picks the new target after
-                    --activation without flipping triggered. dismissed is too, so a
-                    --prompt withdrawn on the reactor's side is not revived by our
-                    --periodic re-dispatch.
+                    --retargetid and chosenTargetId can change without triggered flipping
+                    --(a Devilish Charm redirect, a map pick), and dismissed must sync so our
+                    --periodic re-dispatch doesn't revive a prompt the reactor withdrew.
                     if tokenTrigger ~= nil and (tokenTrigger.triggered ~= trigger.triggered or tokenTrigger.retargetid ~= trigger.retargetid or tokenTrigger.resolving ~= trigger.resolving or tokenTrigger.dismissed ~= trigger.dismissed or tokenTrigger.chosenTargetId ~= trigger.chosenTargetId) then
                         trigger.triggered = tokenTrigger.triggered
                         trigger.retargetid = tokenTrigger.retargetid

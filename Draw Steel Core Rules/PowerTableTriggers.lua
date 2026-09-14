@@ -1250,11 +1250,9 @@ local function PromptUsesTriggeredAction(triggerInfo)
     return modifier ~= false and modifier ~= nil and modifier:try_get("type", "trigger") == "trigger"
 end
 
---Accepting a power-roll prompt that costs the triggered action spends that
---action for the round, so the reactor's other pending triggered-action prompts
---are withdrawn -- e.g. using Parry removes the Spend 1 Focus Parry offered with
---it. This runs inside the caller's ModifyProperties block, so the withdrawals
---upload together with the acceptance.
+--Accepting a prompt that costs the triggered action withdraws the reactor's other
+--pending triggered-action prompts (using Parry removes Spend 1 Focus Parry). Runs
+--inside the caller's ModifyProperties, so the withdrawals upload with the accept.
 local g_baseDispatchAvailableTrigger = creature.DispatchAvailableTrigger
 function creature:DispatchAvailableTrigger(triggerInfo)
     g_baseDispatchAvailableTrigger(self, triggerInfo)

@@ -2238,9 +2238,8 @@ function GameHud.CreateEmbeddedRollDialog()
                 return
             end
 
-            -- Show triggers from every multi-target, not just the currently
-            -- selected one: one tile per prompt record (see
-            -- ActiveTrigger.PowerRollRecordKey). A triggered action offered
+            -- Show triggers from every target's row, one tile per prompt record
+            -- (see ActiveTrigger.PowerRollRecordKey): a triggered action offered
             -- against several targets is one tile listing its candidate rows.
             local tiles = {}
             local tileByKey = {}
@@ -2551,12 +2550,9 @@ function GameHud.CreateEmbeddedRollDialog()
                 if token ~= nil then
                     local tokenTriggers = token.properties:GetAvailableTriggers() or {}
                     local tokenTrigger = tokenTriggers[trigger.id]
-                    --retargetid is part of the change detection: a trigger whose
-                    --new target is chosen AFTER activation (e.g. a trigger-before
-                    --flow like Devilish Charm tier 1) updates retargetid without
-                    --flipping triggered, and that change must still sync. So is
-                    --dismissed: a prompt dismissed or withdrawn on the reactor's
-                    --side must not be revived by our periodic re-dispatch.
+                    --retargetid and chosenTargetId can change without triggered flipping
+                    --(a Devilish Charm redirect, a map pick), and dismissed must sync so our
+                    --periodic re-dispatch doesn't revive a prompt the reactor withdrew.
                     if tokenTrigger ~= nil and (tokenTrigger.triggered ~= trigger.triggered or tokenTrigger.retargetid ~= trigger.retargetid or tokenTrigger.resolving ~= trigger.resolving or tokenTrigger.dismissed ~= trigger.dismissed or tokenTrigger.chosenTargetId ~= trigger.chosenTargetId) then
                         trigger.triggered = tokenTrigger.triggered
                         trigger.retargetid = tokenTrigger.retargetid

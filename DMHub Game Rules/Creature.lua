@@ -10417,11 +10417,9 @@ ActiveTrigger.dismissOnTrigger = false
 ActiveTrigger.powerRollModifier = false
 ActiveTrigger.noDeduplicate = false
 ActiveTrigger.targets = {}
---A prompt offered once for several targets of the same roll (e.g. Parry when
---one strike damages three allies) sets candidateTargets: targets then lists
---every candidate and the reactor picks the one it applies to. Other prompts
---(e.g. a triggered ability hitting several creatures) affect all their targets.
---See NeedsTargetChoice / GetTargetId.
+--With candidateTargets set, targets are options the reactor picks one of (e.g.
+--Parry when one strike damages three allies) and chosenTargetId records the
+--pick. Otherwise every target is affected. See NeedsTargetChoice / GetTargetId.
 ActiveTrigger.candidateTargets = false
 ActiveTrigger.chosenTargetId = false
 ActiveTrigger.triggered = false
