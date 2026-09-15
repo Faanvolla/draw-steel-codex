@@ -1084,6 +1084,44 @@ mod.shared.ShowCreateMapDialog = function()
 
     --which pack the library sidebar has filtered to; nil is all packs.
     local m_packFilter = nil
+    --which kind of map within that: "all", "free" (tier 0) or "owned"
+    --(a gated appearance the account's Patreon pledges unlock).
+    local m_packKind = "all"
+
+    --the entries of a search result that pass the kind filter.
+    local FilterByKind = function(entries, kind)
+        if kind == "all" then
+            return entries
+        end
+        local result = {}
+        for _, entry in ipairs(entries) do
+            local tier = tonumber(entry.tier) or 0
+            if kind == "free" then
+                if tier <= 0 then
+                    result[#result + 1] = entry
+                end
+            elseif kind == "owned" then
+                if tier > 0 and entry.owned then
+                    result[#result + 1] = entry
+                end
+            end
+        end
+        return result
+    end
+
+    --whether the account is a patron of any creator: the Your Maps row
+    --lists the gated appearances those pledges unlock.
+    local IsPatron = function()
+        if dmhub.patreonUserId == nil then
+            return false
+        end
+        for _, e in ipairs(dmhub.patreonOrgEntitlements or {}) do
+            if e.entitled then
+                return true
+            end
+        end
+        return false
+    end
 
     --only built with the pack browser itself; with the dev gate off nothing
     --would parent these.
@@ -1148,11 +1186,11 @@ mod.shared.ShowCreateMapDialog = function()
         --the full match list; entries are small tables and only the shown
         --chunk becomes widgets.
         local searching = m_search:match("%S") ~= nil
-        m_packEntries = DiversifyEntries(mappacks.Search{
+        m_packEntries = DiversifyEntries(FilterByKind(mappacks.Search{
             text = m_search,
             pack = m_packFilter,
             maxResults = 100000,
-        }, searching)
+        }, m_packKind), searching)
 
         --keep the selected variant if its map is still listed, even when
         --the grid shows a different variant of it.
@@ -1176,7 +1214,7 @@ mod.shared.ShowCreateMapDialog = function()
         else
             --the grid shows one entry per map without a search, so count
             --maps rather than the index's variant entries.
-            local mapCount = #DiversifyEntries(mappacks.Search{ text = "", pack = m_packFilter, maxResults = 100000 }, false)
+            local mapCount = #DiversifyEntries(FilterByKind(mappacks.Search{ text = "", pack = m_packFilter, maxResults = 100000 }, m_packKind), false)
             if searching then
                 local matchedMaps = #DiversifyEntries(m_packEntries, false)
                 packStatus.text = string.format("%d of %d maps", matchedMaps, mapCount)
@@ -1260,6 +1298,7 @@ mod.shared.ShowCreateMapDialog = function()
             local signature = PatreonSignature()
             if signature ~= m_patreonSignature then
                 m_patreonSignature = signature
+                BuildLibraryNav()
                 RefreshPackGrid()
             end
         end,
@@ -1602,6 +1641,17 @@ mod.shared.ShowCreateMapDialog = function()
         rmargin = 8,
         bgcolor = "@fg",
     }
+    --a creator logo in place of the glyph: its own aspect within the row's
+    --height, untinted, so a wide wordmark reads.
+    tileStyles[#tileStyles + 1] = {
+        selectors = {"cmNavIcon", "cmNavLogo"},
+        width = "auto",
+        height = "auto",
+        maxWidth = 40,
+        maxHeight = 18,
+        autosizeimage = true,
+        bgcolor = "white",
+    }
     tileStyles[#tileStyles + 1] = {
         selectors = {"cmNavLabel"},
         fontSize = 14,
@@ -1765,14 +1815,20 @@ mod.shared.ShowCreateMapDialog = function()
         local libraryNav
         local GoToLibrary
         local m_gridGeneration = 0
-        local LibraryFilterItem = function(label, count, packid)
+        local LibraryFilterItem = function(label, count, packid, kind, icon)
             local nameLabel = gui.Label{ classes = {"cmNavLabel"}, halign = "left", text = label }
+            local iconPanel = gui.Panel{
+                classes = {"cmNavIcon"},
+                halign = "left",
+                bgimage = icon,
+            }
             return gui.Panel{
                 classes = {"cmNavItem"},
                 flow = "horizontal",
-                data = { pack = packid, label = nameLabel },
+                data = { pack = packid, kind = kind, label = nameLabel, icon = iconPanel },
                 press = function(element)
                     m_packFilter = element.data.pack
+                    m_packKind = element.data.kind
                     GoToLibrary()
                     --the row lights up and the view switches this frame;
                     --building the tile grid is deferred so the click feels
@@ -1786,11 +1842,7 @@ mod.shared.ShowCreateMapDialog = function()
                         end
                     end)
                 end,
-                gui.Panel{
-                    classes = {"cmNavIcon"},
-                    halign = "left",
-                    bgimage = cond(packid == nil, "phosphor/book-open.png", "phosphor/user.png"),
-                },
+                iconPanel,
                 nameLabel,
                 gui.Label{ classes = {"cmNavCount"}, text = tostring(count) },
             }
@@ -1810,20 +1862,29 @@ mod.shared.ShowCreateMapDialog = function()
                 el:SetClass("selected", false)
             end
             for _, row in ipairs(libraryNav.children) do
-                row:SetClass("selected", row.data.pack == m_packFilter)
+                row:SetClass("selected", row.data.pack == m_packFilter and row.data.kind == m_packKind)
             end
             if m_setMainMode ~= nil then
                 m_setMainMode("library")
             end
         end
 
-        local m_builtLibraryNav = false
+        --rebuilt whenever what it shows could have changed: the index
+        --syncing, or the account's Patreon state (the Your Maps row and
+        --its count follow the pledges). The key says which state the rows
+        --were built for.
+        local m_libraryNavKey = nil
         BuildLibraryNav = function()
-            if m_builtLibraryNav or not mappacks.synced or not libraryNav.valid then
+            if not mappacks.synced or not libraryNav.valid then
                 return
             end
-            m_builtLibraryNav = true
             local all = DiversifyEntries(mappacks.Search{ text = "", maxResults = 100000 }, false)
+            local navKey = string.format("%d|%s", #all, PatreonSignature())
+            if navKey == m_libraryNavKey then
+                return
+            end
+            m_libraryNavKey = navKey
+
             local packOrder = {}
             local packInfo = {}
             for _, e in ipairs(all) do
@@ -1835,26 +1896,38 @@ mod.shared.ShowCreateMapDialog = function()
                 end
                 info.count = info.count + 1
             end
-            local rows = { LibraryFilterItem("All Maps", #all, nil) }
-            --only worth filtering when there is more than one pack.
-            if #packOrder > 1 then
-                for _, packid in ipairs(packOrder) do
-                    local info = packInfo[packid]
-                    local row = LibraryFilterItem("Map Pack", info.count, packid)
-                    rows[#rows + 1] = row
-                    mod.shared.GetMapPackCreator(info.entry, function(creator)
-                        if row.valid and creator ~= nil and (creator.displayName or "") ~= "" then
-                            row.data.label.text = creator.displayName
-                        end
-                    end)
-                end
+            local rows = {
+                LibraryFilterItem("All Maps", #all, nil, "all", "phosphor/book-open.png"),
+                LibraryFilterItem("Free Maps", #FilterByKind(all, "free"), nil, "free", "phosphor/gift.png"),
+            }
+            if IsPatron() then
+                rows[#rows + 1] = LibraryFilterItem("Your Maps", #FilterByKind(all, "owned"), nil, "owned", "phosphor/patreon-logo-fill.png")
+            end
+            --one row per pack, named for its creator and carrying the
+            --creator's logo once that record lands.
+            for _, packid in ipairs(packOrder) do
+                local info = packInfo[packid]
+                local row = LibraryFilterItem("Map Pack", info.count, packid, "all", "phosphor/user.png")
+                rows[#rows + 1] = row
+                mod.shared.GetMapPackCreator(info.entry, function(creator)
+                    if not row.valid or creator == nil then
+                        return
+                    end
+                    if (creator.displayName or "") ~= "" then
+                        row.data.label.text = creator.displayName
+                    end
+                    if (creator.logo or "") ~= "" then
+                        row.data.icon.bgimage = creator.logo
+                        row.data.icon:SetClass("cmNavLogo", true)
+                    end
+                end)
             end
             libraryNav.children = rows
             --the rows arrive after the dialog opened; when the library view
             --is already showing, light the row for the active filter.
             if m_mainMode == "library" then
                 for _, row in ipairs(rows) do
-                    row:SetClass("selected", row.data.pack == m_packFilter)
+                    row:SetClass("selected", row.data.pack == m_packFilter and row.data.kind == m_packKind)
                 end
             end
         end
