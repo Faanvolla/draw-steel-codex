@@ -32,6 +32,24 @@ local g_settingTargetObjects = setting {
     storage = "preference",
 }
 
+--"Objects" is the one slider position that does not carry from one ability to
+--the next. It rides in the preference above like the others, but it only counts
+--for the ability it was actually chosen on: objectTarget is set on nearly every
+--weapon strike, so one stray click on "Objects" would otherwise leave every one
+--of them with nothing clickable -- silently, and for good, since a preference
+--outlives the session. Reports NZZ7QH5W / 5FFRQ2DF / 9TYWTXFB were all this.
+--Nil at load, so a player who quit while stuck comes back with it cleared.
+local g_targetModeAbilityKey = nil
+
+--- Identifies the ability a stored "Objects" position belongs to. Prefers the
+--- guid; not every ability carries one, so fall back to the name, which is what
+--- the ability card already matches abilities on.
+--- @param ability ActivatedAbility
+--- @return string
+local function TargetModeKey(ability)
+    return ability:try_get("guid") or ability:try_get("name") or ""
+end
+
 local g_targetModeText = {
     ["enemies"] = "Enemies",
     [false]     = "Creatures",
@@ -100,6 +118,16 @@ end
 function ActivatedAbility:GetTargetMode()
     local value = g_settingTargetObjects:Get()
     local options = self:TargetModeOptions()
+
+    --"Objects" chosen on some other ability says nothing about this one, so
+    --read it as unset and use this ability's own default position instead of
+    --offering it a candidate list that cannot contain a creature.
+    if value == true and g_targetModeAbilityKey ~= TargetModeKey(self) then
+        if options == nil then
+            return false
+        end
+        return options[1].id
+    end
 
     if options == nil then
         --no slider: "enemies" has no meaning here, so it reads as any creature.
@@ -2760,6 +2788,11 @@ function ActivatedAbility:Render(options, params)
                             options = modeOptions,
                             value = self:GetTargetMode(),
                             change = function(element)
+                                --"Objects" holds only while this ability is the
+                                --one selected; see g_targetModeAbilityKey.
+                                if element.value == true then
+                                    g_targetModeAbilityKey = TargetModeKey(self)
+                                end
                                 g_settingTargetObjects:Set(element.value)
                             end,
                         },
