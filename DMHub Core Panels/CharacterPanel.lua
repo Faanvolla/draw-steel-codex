@@ -861,7 +861,6 @@ local function CharacterDetailsPanel(token)
         width = "100%",
         height = "auto",
         flow = "vertical",
-        tmargin = 26,
         styles = {
             gui.Style {
                 selectors = { "collapsedByAbility" },

@@ -13217,7 +13217,6 @@ function TacPanel.SectionsContainer()
         width = "100%",
         height = "auto",
         flow = "vertical",
-        tmargin = -26,
         monitor = GetDockablePanelsSetting(),
         events = {
             monitor = function(element)
