@@ -3123,6 +3123,18 @@ local function CreateAwardVictoryStrip(self, info)
     }
 end
 
+--Director-side kill switch for the boss bar. Players are governed by the eye icon.
+local displayBossBarSetting = setting{
+    id = "displaybossbar",
+    description = "Display Boss Bar",
+    help = "Show the Solo/Leader Stamina bar below the combat tracker on the Director's screen.",
+    editor = "check",
+    default = true,
+    storage = "preference",
+    section = "general",
+    classes = {"dmonly"},
+}
+
 -- Boss bar: a wide Stamina bar shown centered below the combat tracker whenever the
 -- live encounter designates a Solo "boss" creature (LiveEncounter:GetBossToken). The
 -- fill width tracks the boss's current Stamina; an eye icon to its right (director-only)
@@ -3237,6 +3249,11 @@ local function CreateBossBarStrip(self, info)
 
             local isDM = GameHud.DirectorUIVisible()
             local visible = liveEncounter:try_get("bossBarVisible", false)
+
+            if isDM and not displayBossBarSetting:Get() then
+                element:SetClass("collapsed", true)
+                return
+            end
 
             --players only see the bar once it has been revealed.
             if not isDM and not visible then
