@@ -1,20 +1,5 @@
 local mod = dmhub.GetModLoading()
 
---Dev gate for the map-pack browser ("...or Use an Existing Map") in the
---create-map dialog. No editor field, so it never appears in the settings UI;
---turn it on with: /set dev:patreonmaps true
-setting{
-    id = "dev:patreonmaps",
-    description = "Show the map pack browser in the create map dialog.",
-    default = false,
-    storage = "preference",
-}
-
---True if the map pack browser should be offered to this user.
-local function PatreonMapsEnabled()
-    return dmhub.GetSettingValue("dev:patreonmaps") == true
-end
-
 local function ComponentTypeMatches(value, componentType)
     if value == nil then
         return false
@@ -62,10 +47,6 @@ local function ObjectNodeHasComponent(id, componentType)
 end
 
 mod.shared.ShowCreateMapDialog = function()
-
-    --map packs are dev-gated; with them off the dialog is just the
-    --empty/import choice and the name field.
-    local packsEnabled = PatreonMapsEnabled()
 
     local selectedMap = nil
     --packs layout only: switches the main area between the blank / import /
@@ -1123,28 +1104,24 @@ mod.shared.ShowCreateMapDialog = function()
         return false
     end
 
-    --only built with the pack browser itself; with the dev gate off nothing
-    --would parent these.
-    if packsEnabled then
-        packGrid = gui.Panel{
-            --a little slack so rounding never wraps the last column.
-            width = GRID_COLUMNS * cellW + 4,
-            --auto + maxHeight is what makes vscroll engage (same pattern as
-            --markupList above); the cap is the content row's height.
-            height = "auto",
-            maxHeight = DIALOG_HEIGHT - 56 - FOOTER_HEIGHT - 12,
-            flow = "horizontal",
-            wrap = true,
-            valign = "top",
-            halign = "left",
-            vscroll = true,
-        }
+    packGrid = gui.Panel{
+        --a little slack so rounding never wraps the last column.
+        width = GRID_COLUMNS * cellW + 4,
+        --auto + maxHeight is what makes vscroll engage (same pattern as
+        --markupList above); the cap is the content row's height.
+        height = "auto",
+        maxHeight = DIALOG_HEIGHT - 56 - FOOTER_HEIGHT - 12,
+        flow = "horizontal",
+        wrap = true,
+        valign = "top",
+        halign = "left",
+        vscroll = true,
+    }
 
-        packStatus = gui.Label{
-            classes = {"mapPackStatus"},
-            text = "Syncing map packs...",
-        }
-    end
+    packStatus = gui.Label{
+        classes = {"mapPackStatus"},
+        text = "Syncing map packs...",
+    }
 
     --builds tiles for the entries shown so far, plus the Show More card
     --when more remain.
@@ -1777,668 +1754,535 @@ mod.shared.ShowCreateMapDialog = function()
         textAlignment = "center",
     }
 
-    if packsEnabled then
-        --sidebar: the two creation sources (the same selection group the
-        --old tiles formed: MapItemPress lights one and clears the other).
-        local sourceNav = gui.Panel{
-            width = "100%",
-            height = "auto",
-            flow = "vertical",
-            valign = "top",
-            gui.Panel{
-                classes = {"cmNavItem"},
-                flow = "horizontal",
-                press = MapItemPress,
-                --stays the fallback creation type (a blank map) even while
-                --the library view is the one showing.
-                create = function(element)
-                    selectedMap = element
-                end,
-                data = { type = "empty" },
-                gui.Panel{ classes = {"cmNavIcon"}, halign = "left", bgimage = "phosphor/squares-four.png" },
-                gui.Label{ classes = {"cmNavLabel"}, halign = "left", text = "Blank Map" },
-            },
-            gui.Panel{
-                classes = {"cmNavItem"},
-                flow = "horizontal",
-                press = MapItemPress,
-                data = { type = "import" },
-                gui.Panel{ classes = {"cmNavIcon"}, halign = "left", bgimage = "phosphor/upload-simple-bold.png" },
-                gui.Label{ classes = {"cmNavLabel"}, halign = "left", text = "Import Image or UVTT" },
-            },
+    --sidebar: the two creation sources (the same selection group the
+    --old tiles formed: MapItemPress lights one and clears the other).
+    local sourceNav = gui.Panel{
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        valign = "top",
+        gui.Panel{
+            classes = {"cmNavItem"},
+            flow = "horizontal",
+            press = MapItemPress,
+            --stays the fallback creation type (a blank map) even while
+            --the library view is the one showing.
+            create = function(element)
+                selectedMap = element
+            end,
+            data = { type = "empty" },
+            gui.Panel{ classes = {"cmNavIcon"}, halign = "left", bgimage = "phosphor/squares-four.png" },
+            gui.Label{ classes = {"cmNavLabel"}, halign = "left", text = "Blank Map" },
+        },
+        gui.Panel{
+            classes = {"cmNavItem"},
+            flow = "horizontal",
+            press = MapItemPress,
+            data = { type = "import" },
+            gui.Panel{ classes = {"cmNavIcon"}, halign = "left", bgimage = "phosphor/upload-simple-bold.png" },
+            gui.Label{ classes = {"cmNavLabel"}, halign = "left", text = "Import Image or UVTT" },
+        },
+    }
+
+    --library filters: All Maps plus one row per pack, labeled with the
+    --creator's display name once the async lookup lands. Pressing one
+    --brings the library view up in the main area (GoToLibrary, assigned
+    --once the nav panels exist).
+    local libraryNav
+    local GoToLibrary
+    local m_gridGeneration = 0
+    local LibraryFilterItem = function(label, count, packid, kind, icon)
+        local nameLabel = gui.Label{ classes = {"cmNavLabel"}, halign = "left", text = label }
+        local iconPanel = gui.Panel{
+            classes = {"cmNavIcon"},
+            halign = "left",
+            bgimage = icon,
         }
-
-        --library filters: All Maps plus one row per pack, labeled with the
-        --creator's display name once the async lookup lands. Pressing one
-        --brings the library view up in the main area (GoToLibrary, assigned
-        --once the nav panels exist).
-        local libraryNav
-        local GoToLibrary
-        local m_gridGeneration = 0
-        local LibraryFilterItem = function(label, count, packid, kind, icon)
-            local nameLabel = gui.Label{ classes = {"cmNavLabel"}, halign = "left", text = label }
-            local iconPanel = gui.Panel{
-                classes = {"cmNavIcon"},
-                halign = "left",
-                bgimage = icon,
-            }
-            return gui.Panel{
-                classes = {"cmNavItem"},
-                flow = "horizontal",
-                data = { pack = packid, kind = kind, label = nameLabel, icon = iconPanel },
-                press = function(element)
-                    m_packFilter = element.data.pack
-                    m_packKind = element.data.kind
-                    GoToLibrary()
-                    --the row lights up and the view switches this frame;
-                    --building the tile grid is deferred so the click feels
-                    --instant and the maps fill in a moment later. A
-                    --generation stamp makes rapid clicks rebuild only once.
-                    m_gridGeneration = m_gridGeneration + 1
-                    local generation = m_gridGeneration
-                    dmhub.Schedule(0.01, function()
-                        if generation == m_gridGeneration then
-                            RefreshPackGrid()
-                        end
-                    end)
-                end,
-                iconPanel,
-                nameLabel,
-                gui.Label{ classes = {"cmNavCount"}, text = tostring(count) },
-            }
-        end
-
-        libraryNav = gui.Panel{
-            width = "100%",
-            height = "auto",
-            flow = "vertical",
-            valign = "top",
-        }
-
-        --shows the library in the main area: the sources unselect, the row
-        --for the active filter lights, and the main view switches.
-        GoToLibrary = function()
-            for _, el in ipairs(sourceNav.children) do
-                el:SetClass("selected", false)
-            end
-            for _, row in ipairs(libraryNav.children) do
-                row:SetClass("selected", row.data.pack == m_packFilter and row.data.kind == m_packKind)
-            end
-            if m_setMainMode ~= nil then
-                m_setMainMode("library")
-            end
-        end
-
-        --rebuilt whenever what it shows could have changed: the index
-        --syncing, or the account's Patreon state (the Your Maps row and
-        --its count follow the pledges). The key says which state the rows
-        --were built for.
-        local m_libraryNavKey = nil
-        BuildLibraryNav = function()
-            if not mappacks.synced or not libraryNav.valid then
-                return
-            end
-            local all = DiversifyEntries(mappacks.Search{ text = "", maxResults = 100000 }, false)
-            local navKey = string.format("%d|%s", #all, PatreonSignature())
-            if navKey == m_libraryNavKey then
-                return
-            end
-            m_libraryNavKey = navKey
-
-            local packOrder = {}
-            local packInfo = {}
-            for _, e in ipairs(all) do
-                local info = packInfo[e.pack]
-                if info == nil then
-                    info = { count = 0, entry = e }
-                    packInfo[e.pack] = info
-                    packOrder[#packOrder + 1] = e.pack
-                end
-                info.count = info.count + 1
-            end
-            local rows = {
-                LibraryFilterItem("All Maps", #all, nil, "all", "phosphor/book-open.png"),
-                LibraryFilterItem("Free Maps", #FilterByKind(all, "free"), nil, "free", "phosphor/gift.png"),
-            }
-            if IsPatron() then
-                rows[#rows + 1] = LibraryFilterItem("Your Maps", #FilterByKind(all, "owned"), nil, "owned", "phosphor/patreon-logo-fill.png")
-            end
-            --one row per pack, named for its creator and carrying the
-            --creator's logo once that record lands.
-            for _, packid in ipairs(packOrder) do
-                local info = packInfo[packid]
-                local row = LibraryFilterItem("Map Pack", info.count, packid, "all", "phosphor/user.png")
-                rows[#rows + 1] = row
-                mod.shared.GetMapPackCreator(info.entry, function(creator)
-                    if not row.valid or creator == nil then
-                        return
-                    end
-                    if (creator.displayName or "") ~= "" then
-                        row.data.label.text = creator.displayName
-                    end
-                    if (creator.logo or "") ~= "" then
-                        row.data.icon.bgimage = creator.logo
-                        row.data.icon:SetClass("cmNavLogo", true)
+        return gui.Panel{
+            classes = {"cmNavItem"},
+            flow = "horizontal",
+            data = { pack = packid, kind = kind, label = nameLabel, icon = iconPanel },
+            press = function(element)
+                m_packFilter = element.data.pack
+                m_packKind = element.data.kind
+                GoToLibrary()
+                --the row lights up and the view switches this frame;
+                --building the tile grid is deferred so the click feels
+                --instant and the maps fill in a moment later. A
+                --generation stamp makes rapid clicks rebuild only once.
+                m_gridGeneration = m_gridGeneration + 1
+                local generation = m_gridGeneration
+                dmhub.Schedule(0.01, function()
+                    if generation == m_gridGeneration then
+                        RefreshPackGrid()
                     end
                 end)
+            end,
+            iconPanel,
+            nameLabel,
+            gui.Label{ classes = {"cmNavCount"}, text = tostring(count) },
+        }
+    end
+
+    libraryNav = gui.Panel{
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        valign = "top",
+    }
+
+    --shows the library in the main area: the sources unselect, the row
+    --for the active filter lights, and the main view switches.
+    GoToLibrary = function()
+        for _, el in ipairs(sourceNav.children) do
+            el:SetClass("selected", false)
+        end
+        for _, row in ipairs(libraryNav.children) do
+            row:SetClass("selected", row.data.pack == m_packFilter and row.data.kind == m_packKind)
+        end
+        if m_setMainMode ~= nil then
+            m_setMainMode("library")
+        end
+    end
+
+    --rebuilt whenever what it shows could have changed: the index
+    --syncing, or the account's Patreon state (the Your Maps row and
+    --its count follow the pledges). The key says which state the rows
+    --were built for.
+    local m_libraryNavKey = nil
+    BuildLibraryNav = function()
+        if not mappacks.synced or not libraryNav.valid then
+            return
+        end
+        local all = DiversifyEntries(mappacks.Search{ text = "", maxResults = 100000 }, false)
+        local navKey = string.format("%d|%s", #all, PatreonSignature())
+        if navKey == m_libraryNavKey then
+            return
+        end
+        m_libraryNavKey = navKey
+
+        local packOrder = {}
+        local packInfo = {}
+        for _, e in ipairs(all) do
+            local info = packInfo[e.pack]
+            if info == nil then
+                info = { count = 0, entry = e }
+                packInfo[e.pack] = info
+                packOrder[#packOrder + 1] = e.pack
             end
-            libraryNav.children = rows
-            --the rows arrive after the dialog opened; when the library view
-            --is already showing, light the row for the active filter.
-            if m_mainMode == "library" then
-                for _, row in ipairs(rows) do
-                    row:SetClass("selected", row.data.pack == m_packFilter and row.data.kind == m_packKind)
+            info.count = info.count + 1
+        end
+        local rows = {
+            LibraryFilterItem("All Maps", #all, nil, "all", "phosphor/book-open.png"),
+            LibraryFilterItem("Free Maps", #FilterByKind(all, "free"), nil, "free", "phosphor/gift.png"),
+        }
+        if IsPatron() then
+            rows[#rows + 1] = LibraryFilterItem("Your Maps", #FilterByKind(all, "owned"), nil, "owned", "phosphor/patreon-logo-fill.png")
+        end
+        --one row per pack, named for its creator and carrying the
+        --creator's logo once that record lands.
+        for _, packid in ipairs(packOrder) do
+            local info = packInfo[packid]
+            local row = LibraryFilterItem("Map Pack", info.count, packid, "all", "phosphor/user.png")
+            rows[#rows + 1] = row
+            mod.shared.GetMapPackCreator(info.entry, function(creator)
+                if not row.valid or creator == nil then
+                    return
                 end
+                if (creator.displayName or "") ~= "" then
+                    row.data.label.text = creator.displayName
+                end
+                if (creator.logo or "") ~= "" then
+                    row.data.icon.bgimage = creator.logo
+                    row.data.icon:SetClass("cmNavLogo", true)
+                end
+            end)
+        end
+        libraryNav.children = rows
+        --the rows arrive after the dialog opened; when the library view
+        --is already showing, light the row for the active filter.
+        if m_mainMode == "library" then
+            for _, row in ipairs(rows) do
+                row:SetClass("selected", row.data.pack == m_packFilter and row.data.kind == m_packKind)
             end
         end
+    end
 
-        --title-bar styles: the compact dock-panel header grammar (small
-        --uppercase title beside an icon, actions at the right).
-        tileStyles[#tileStyles + 1] = {
-            selectors = {"cmHeader"},
-            flow = "horizontal",
-            bgimage = "panels/square.png",
-            bgcolor = "clear",
-            width = "100%",
-            height = HEADER_HEIGHT,
-            hpad = 12,
-            borderBox = true,
+    --title-bar styles: the compact dock-panel header grammar (small
+    --uppercase title beside an icon, actions at the right).
+    tileStyles[#tileStyles + 1] = {
+        selectors = {"cmHeader"},
+        flow = "horizontal",
+        bgimage = "panels/square.png",
+        bgcolor = "clear",
+        width = "100%",
+        height = HEADER_HEIGHT,
+        hpad = 12,
+        borderBox = true,
+        halign = "left",
+    }
+    tileStyles[#tileStyles + 1] = {
+        selectors = {"cmHeaderIcon"},
+        width = 18,
+        height = 18,
+        valign = "center",
+        rmargin = 8,
+        bgcolor = "@fg",
+    }
+    tileStyles[#tileStyles + 1] = {
+        selectors = {"cmHeaderTitle"},
+        fontSize = 13,
+        bold = true,
+        uppercase = true,
+        color = "@fgStrong",
+        width = "auto",
+        height = "auto",
+        valign = "center",
+    }
+    tileStyles[#tileStyles + 1] = {
+        selectors = {"cmClose"},
+        width = 16,
+        height = 16,
+        valign = "center",
+        bgcolor = "@fgMuted",
+    }
+    tileStyles[#tileStyles + 1] = {
+        selectors = {"cmClose", "hover"},
+        bgcolor = "@fgStrong",
+    }
+
+    --the full-width title bar: title at the left, search beside it, the
+    --map count and close at the right.
+    local headerBar = gui.Panel{
+        classes = {"cmHeader"},
+        --grouped so the bar's leftover width cannot spread the items
+        --apart; the bar holds exactly a left group and a right group.
+        gui.Panel{
+            width = "auto",
+            height = "100%",
             halign = "left",
+            flow = "horizontal",
+            gui.Panel{ classes = {"cmHeaderIcon"}, bgimage = "phosphor/map-trifold.png" },
+            gui.Label{ classes = {"cmHeaderTitle"}, text = "Create Map" },
+        },
+        --anchored to the bar's right edge as a group, so the widths of
+        --the title and search field can never push the close button out.
+        gui.Panel{
+            width = "auto",
+            height = "100%",
+            halign = "right",
+            flow = "horizontal",
+            --the status text sits LEFT of the search field on purpose:
+            --this group hugs the right edge, so the rightmost items stay
+            --pinned and the label's changing width grows into the empty
+            --middle instead of shoving the search field around.
+            packStatus,
+            --the standard search field: magnifier, clear x, and the
+            --shared searchInput look. It fires "search" with the
+            --trimmed, lowercased text.
+            gui.SearchInput{
+                width = 400,
+                valign = "center",
+                rmargin = 16,
+                placeholderText = "Search maps...",
+                search = function(element, str)
+                    m_search = str
+                    --typing a search means looking at the library.
+                    if str ~= "" then
+                        GoToLibrary()
+                    end
+                    RefreshPackGrid()
+                end,
+            },
+            gui.Panel{
+                classes = {"cmClose"},
+                bgimage = "phosphor/x-bold.png",
+                lmargin = 16,
+                press = function(element)
+                    gui.CloseModal()
+                end,
+            },
+        },
+    }
+
+    local sidebar = gui.Panel{
+        classes = {"cmSidebar"},
+        width = SIDEBAR_WIDTH,
+        height = "100%",
+        flow = "vertical",
+        gui.Panel{
+            width = "100%",
+            height = "auto",
+            valign = "top",
+            flow = "vertical",
+            tmargin = 8,
+            sourceNav,
+            gui.Panel{ classes = {"cmNavDivider"} },
+            gui.Panel{
+                classes = {"cmNavSectionHeader"},
+                gui.Label{ classes = {"cmNavSection"}, text = "Map Library" },
+            },
+            gui.Panel{ classes = {"cmNavRule"} },
+            libraryNav,
+        },
+    }
+
+    createButton.valign = "center"
+    nameInput.valign = "center"
+
+    --main-area views, toggled by the sidebar selection ------------------
+
+    tileStyles[#tileStyles + 1] = {
+        selectors = {"cmDropArea"},
+        bgimage = "panels/square.png",
+        bgcolor = "@bgAlt",
+        width = "70%",
+        height = "60%",
+        halign = "center",
+        valign = "center",
+        cornerRadius = 12,
+        borderWidth = 2,
+        borderColor = "@border",
+        flow = "vertical",
+    }
+    tileStyles[#tileStyles + 1] = {
+        selectors = {"cmDropArea", "hover"},
+        bgcolor = "@bgRaised",
+        borderColor = "@accentHover",
+        transitionTime = 0.1,
+    }
+    tileStyles[#tileStyles + 1] = {
+        selectors = {"cmHint"},
+        fontSize = 15,
+        color = "@fgMuted",
+        width = "auto",
+        height = "auto",
+        halign = "center",
+        textAlignment = "center",
+    }
+
+    --hands dropped or picked files to the existing import wizard, which
+    --skips its own drop screen when paths are supplied.
+    local StartImportWithPaths = function(paths)
+        if paths == nil or #paths == 0 then
+            return
+        end
+        local name = m_mapName
+        gui.CloseModal()
+        mod.shared.ImportMap{
+            tileType = tileType,
+            nofade = true,
+            paths = paths,
+            finish = function(info)
+                mod.shared.FinishMapImport(name, info)
+            end,
         }
-        tileStyles[#tileStyles + 1] = {
-            selectors = {"cmHeaderIcon"},
-            width = 18,
-            height = 18,
-            valign = "center",
-            rmargin = 8,
-            bgcolor = "@fg",
-        }
-        tileStyles[#tileStyles + 1] = {
-            selectors = {"cmHeaderTitle"},
-            fontSize = 13,
-            bold = true,
-            uppercase = true,
-            color = "@fgStrong",
+    end
+
+    local contentGeometry = {
+        width = "100%-40",
+        height = string.format("100%%-%d", FOOTER_HEIGHT + 24),
+        halign = "center",
+        valign = "top",
+        tmargin = 12,
+    }
+
+    --the library: grid + preview (visible when a library row is picked).
+    local libraryContent = gui.Panel{
+        classes = {"collapsed"},
+        width = contentGeometry.width,
+        height = contentGeometry.height,
+        halign = contentGeometry.halign,
+        valign = contentGeometry.valign,
+        tmargin = contentGeometry.tmargin,
+        flow = "horizontal",
+        gui.Panel{
+            width = string.format("100%%-%d", PREVIEW_WIDTH + 10),
+            height = "100%",
+            halign = "left",
+            valign = "top",
+            packGrid,
+        },
+        detailPanel,
+    }
+
+    --blank map: just says what pressing Create Map will do.
+    local blankContent = gui.Panel{
+        width = contentGeometry.width,
+        height = contentGeometry.height,
+        halign = contentGeometry.halign,
+        valign = contentGeometry.valign,
+        tmargin = contentGeometry.tmargin,
+        flow = "vertical",
+        gui.Panel{
             width = "auto",
             height = "auto",
+            halign = "center",
             valign = "center",
-        }
-        tileStyles[#tileStyles + 1] = {
-            selectors = {"cmClose"},
-            width = 16,
-            height = 16,
-            valign = "center",
-            bgcolor = "@fgMuted",
-        }
-        tileStyles[#tileStyles + 1] = {
-            selectors = {"cmClose", "hover"},
-            bgcolor = "@fgStrong",
-        }
+            flow = "vertical",
+            gui.Panel{ classes = {"cmPreviewGlyph"}, bgimage = "phosphor/squares-four.png" },
+            gui.Label{
+                classes = {"cmHint"},
+                vmargin = 12,
+                text = "An empty grid map.\nName it below and press Create Map.",
+            },
+        },
+    }
 
-        --the full-width title bar: title at the left, search beside it, the
-        --map count and close at the right.
-        local headerBar = gui.Panel{
-            classes = {"cmHeader"},
-            --grouped so the bar's leftover width cannot spread the items
-            --apart; the bar holds exactly a left group and a right group.
+    --import: the drop-or-browse screen, shown as soon as the source is
+    --selected. Files go straight into the import pipeline.
+    local importContent = gui.Panel{
+        classes = {"collapsed"},
+        width = contentGeometry.width,
+        height = contentGeometry.height,
+        halign = contentGeometry.halign,
+        valign = contentGeometry.valign,
+        tmargin = contentGeometry.tmargin,
+        flow = "vertical",
+        gui.Panel{
+            classes = {"cmDropArea"},
+            dragAndDropExtensions = {".png", ".jpg", ".jpeg", ".mp4", ".webm", ".webp", ".dd2vtt", ".uvtt", ".json"},
+            dropfiles = function(element, paths)
+                StartImportWithPaths(paths)
+            end,
             gui.Panel{
                 width = "auto",
-                height = "100%",
-                halign = "left",
-                flow = "horizontal",
-                gui.Panel{ classes = {"cmHeaderIcon"}, bgimage = "phosphor/map-trifold.png" },
-                gui.Label{ classes = {"cmHeaderTitle"}, text = "Create Map" },
+                height = "auto",
+                halign = "center",
+                valign = "center",
+                flow = "vertical",
+                interactable = false,
+                gui.Panel{
+                    classes = {"cmPreviewGlyph"},
+                    interactable = false,
+                    bgimage = "phosphor/upload-simple-bold.png",
+                },
+                gui.Label{
+                    classes = {"cmHint"},
+                    interactable = false,
+                    vmargin = 12,
+                    text = "Drop image, video, or vtt files here.\nMultiple files create a multi-floor map.",
+                },
             },
-            --anchored to the bar's right edge as a group, so the widths of
-            --the title and search field can never push the close button out.
+        },
+        gui.Label{
+            classes = {"cmHint"},
+            vmargin = 10,
+            text = "- or -",
+        },
+        gui.Button{
+            classes = {"sizeL"},
+            halign = "center",
+            text = "Choose Files",
+            click = function(element)
+                dmhub.OpenFileDialog{
+                    id = "ObjectImagePath",
+                    extensions = {"jpeg", "jpg", "png", "mp4", "webm", "webp", "dd2vtt", "uvtt", "json"},
+                    multiFiles = true,
+                    prompt = "Choose image, video, or vtt file to use as map.",
+                    openFiles = function(paths)
+                        StartImportWithPaths(paths)
+                    end,
+                }
+            end,
+        },
+    }
+
+    local mainModePanels = {
+        empty = blankContent,
+        import = importContent,
+        library = libraryContent,
+    }
+    m_setMainMode = function(mode)
+        m_mainMode = mode
+        for name, panel in pairs(mainModePanels) do
+            panel:SetClass("collapsed", name ~= mode)
+        end
+        --leaving the library view unlights its rows, so only the
+        --active source reads as selected.
+        if mode ~= "library" then
+            for _, row in ipairs(libraryNav.children) do
+                row:SetClass("selected", false)
+            end
+        end
+    end
+    --open on the library with All Maps active (m_packFilter starts nil);
+    --the filter rows light themselves in BuildLibraryNav once synced.
+    GoToLibrary()
+
+    local main = gui.Panel{
+        width = string.format("100%%-%d", SIDEBAR_WIDTH),
+        height = "100%",
+        flow = "vertical",
+
+        blankContent,
+        importContent,
+        libraryContent,
+
+        --footer action bar: the name travels with the commit buttons.
+        gui.Panel{
+            classes = {"cmFooter"},
+            width = "100%",
+            height = FOOTER_HEIGHT,
+            valign = "bottom",
+            flow = "horizontal",
+            gui.Panel{
+                classes = {"cmFooterDivider"},
+                floating = true,
+                valign = "top",
+            },
+            gui.Label{
+                classes = {"form"},
+                width = "auto",
+                valign = "center",
+                hmargin = 20,
+                text = "Map Name:",
+            },
+            nameInput,
+            --right-anchored group: immune to the name field's width and
+            --the create button's changing labels (Add Map, Link Patreon).
             gui.Panel{
                 width = "auto",
                 height = "100%",
                 halign = "right",
                 flow = "horizontal",
-                --the status text sits LEFT of the search field on purpose:
-                --this group hugs the right edge, so the rightmost items stay
-                --pinned and the label's changing width grows into the empty
-                --middle instead of shoving the search field around.
-                packStatus,
-                --the standard search field: magnifier, clear x, and the
-                --shared searchInput look. It fires "search" with the
-                --trimmed, lowercased text.
-                gui.SearchInput{
-                    width = 400,
+                gui.Button{
+                    classes = {"sizeL"},
                     valign = "center",
-                    rmargin = 16,
-                    placeholderText = "Search maps...",
-                    search = function(element, str)
-                        m_search = str
-                        --typing a search means looking at the library.
-                        if str ~= "" then
-                            GoToLibrary()
-                        end
-                        RefreshPackGrid()
-                    end,
-                },
-                gui.Panel{
-                    classes = {"cmClose"},
-                    bgimage = "phosphor/x-bold.png",
-                    lmargin = 16,
-                    press = function(element)
+                    hmargin = 12,
+                    text = "Cancel",
+                    escapeActivates = true,
+                    escapePriority = EscapePriority.EXIT_MODAL_DIALOG,
+                    click = function(element)
                         gui.CloseModal()
                     end,
                 },
+                createButton,
             },
-        }
+        },
+    }
 
-        local sidebar = gui.Panel{
-            classes = {"cmSidebar"},
-            width = SIDEBAR_WIDTH,
-            height = "100%",
-            flow = "vertical",
-            gui.Panel{
-                width = "100%",
-                height = "auto",
-                valign = "top",
-                flow = "vertical",
-                tmargin = 8,
-                sourceNav,
-                gui.Panel{ classes = {"cmNavDivider"} },
-                gui.Panel{
-                    classes = {"cmNavSectionHeader"},
-                    gui.Label{ classes = {"cmNavSection"}, text = "Map Library" },
-                },
-                gui.Panel{ classes = {"cmNavRule"} },
-                libraryNav,
-            },
-        }
-
-        createButton.valign = "center"
-        nameInput.valign = "center"
-
-        --main-area views, toggled by the sidebar selection ------------------
-
-        tileStyles[#tileStyles + 1] = {
-            selectors = {"cmDropArea"},
-            bgimage = "panels/square.png",
-            bgcolor = "@bgAlt",
-            width = "70%",
-            height = "60%",
-            halign = "center",
-            valign = "center",
-            cornerRadius = 12,
-            borderWidth = 2,
-            borderColor = "@border",
-            flow = "vertical",
-        }
-        tileStyles[#tileStyles + 1] = {
-            selectors = {"cmDropArea", "hover"},
-            bgcolor = "@bgRaised",
-            borderColor = "@accentHover",
-            transitionTime = 0.1,
-        }
-        tileStyles[#tileStyles + 1] = {
-            selectors = {"cmHint"},
-            fontSize = 15,
-            color = "@fgMuted",
-            width = "auto",
-            height = "auto",
-            halign = "center",
-            textAlignment = "center",
-        }
-
-        --hands dropped or picked files to the existing import wizard, which
-        --skips its own drop screen when paths are supplied.
-        local StartImportWithPaths = function(paths)
-            if paths == nil or #paths == 0 then
-                return
-            end
-            local name = m_mapName
-            gui.CloseModal()
-            mod.shared.ImportMap{
-                tileType = tileType,
-                nofade = true,
-                paths = paths,
-                finish = function(info)
-                    mod.shared.FinishMapImport(name, info)
-                end,
-            }
-        end
-
-        local contentGeometry = {
-            width = "100%-40",
-            height = string.format("100%%-%d", FOOTER_HEIGHT + 24),
-            halign = "center",
-            valign = "top",
-            tmargin = 12,
-        }
-
-        --the library: grid + preview (visible when a library row is picked).
-        local libraryContent = gui.Panel{
-            classes = {"collapsed"},
-            width = contentGeometry.width,
-            height = contentGeometry.height,
-            halign = contentGeometry.halign,
-            valign = contentGeometry.valign,
-            tmargin = contentGeometry.tmargin,
+    m_dialog = gui.Panel{
+        classes = {"framedPanel"},
+        width = DIALOG_WIDTH,
+        height = DIALOG_HEIGHT,
+        --borderless: the modal reads as a sheet; the framedPanel class
+        --still supplies the surface and rounded corners.
+        borderWidth = 0,
+        styles = ThemeEngine.MergeStyles(tileStyles),
+        flow = "vertical",
+        headerBar,
+        gui.Panel{ classes = {"cmNavRule"} },
+        gui.Panel{
+            width = "100%",
+            height = string.format("100%%-%d", HEADER_HEIGHT + 1),
             flow = "horizontal",
-            gui.Panel{
-                width = string.format("100%%-%d", PREVIEW_WIDTH + 10),
-                height = "100%",
-                halign = "left",
-                valign = "top",
-                packGrid,
-            },
-            detailPanel,
-        }
-
-        --blank map: just says what pressing Create Map will do.
-        local blankContent = gui.Panel{
-            width = contentGeometry.width,
-            height = contentGeometry.height,
-            halign = contentGeometry.halign,
-            valign = contentGeometry.valign,
-            tmargin = contentGeometry.tmargin,
-            flow = "vertical",
-            gui.Panel{
-                width = "auto",
-                height = "auto",
-                halign = "center",
-                valign = "center",
-                flow = "vertical",
-                gui.Panel{ classes = {"cmPreviewGlyph"}, bgimage = "phosphor/squares-four.png" },
-                gui.Label{
-                    classes = {"cmHint"},
-                    vmargin = 12,
-                    text = "An empty grid map.\nName it below and press Create Map.",
-                },
-            },
-        }
-
-        --import: the drop-or-browse screen, shown as soon as the source is
-        --selected. Files go straight into the import pipeline.
-        local importContent = gui.Panel{
-            classes = {"collapsed"},
-            width = contentGeometry.width,
-            height = contentGeometry.height,
-            halign = contentGeometry.halign,
-            valign = contentGeometry.valign,
-            tmargin = contentGeometry.tmargin,
-            flow = "vertical",
-            gui.Panel{
-                classes = {"cmDropArea"},
-                dragAndDropExtensions = {".png", ".jpg", ".jpeg", ".mp4", ".webm", ".webp", ".dd2vtt", ".uvtt", ".json"},
-                dropfiles = function(element, paths)
-                    StartImportWithPaths(paths)
-                end,
-                gui.Panel{
-                    width = "auto",
-                    height = "auto",
-                    halign = "center",
-                    valign = "center",
-                    flow = "vertical",
-                    interactable = false,
-                    gui.Panel{
-                        classes = {"cmPreviewGlyph"},
-                        interactable = false,
-                        bgimage = "phosphor/upload-simple-bold.png",
-                    },
-                    gui.Label{
-                        classes = {"cmHint"},
-                        interactable = false,
-                        vmargin = 12,
-                        text = "Drop image, video, or vtt files here.\nMultiple files create a multi-floor map.",
-                    },
-                },
-            },
-            gui.Label{
-                classes = {"cmHint"},
-                vmargin = 10,
-                text = "- or -",
-            },
-            gui.Button{
-                classes = {"sizeL"},
-                halign = "center",
-                text = "Choose Files",
-                click = function(element)
-                    dmhub.OpenFileDialog{
-                        id = "ObjectImagePath",
-                        extensions = {"jpeg", "jpg", "png", "mp4", "webm", "webp", "dd2vtt", "uvtt", "json"},
-                        multiFiles = true,
-                        prompt = "Choose image, video, or vtt file to use as map.",
-                        openFiles = function(paths)
-                            StartImportWithPaths(paths)
-                        end,
-                    }
-                end,
-            },
-        }
-
-        local mainModePanels = {
-            empty = blankContent,
-            import = importContent,
-            library = libraryContent,
-        }
-        m_setMainMode = function(mode)
-            m_mainMode = mode
-            for name, panel in pairs(mainModePanels) do
-                panel:SetClass("collapsed", name ~= mode)
-            end
-            --leaving the library view unlights its rows, so only the
-            --active source reads as selected.
-            if mode ~= "library" then
-                for _, row in ipairs(libraryNav.children) do
-                    row:SetClass("selected", false)
-                end
-            end
-        end
-        --open on the library with All Maps active (m_packFilter starts nil);
-        --the filter rows light themselves in BuildLibraryNav once synced.
-        GoToLibrary()
-
-        local main = gui.Panel{
-            width = string.format("100%%-%d", SIDEBAR_WIDTH),
-            height = "100%",
-            flow = "vertical",
-
-            blankContent,
-            importContent,
-            libraryContent,
-
-            --footer action bar: the name travels with the commit buttons.
-            gui.Panel{
-                classes = {"cmFooter"},
-                width = "100%",
-                height = FOOTER_HEIGHT,
-                valign = "bottom",
-                flow = "horizontal",
-                gui.Panel{
-                    classes = {"cmFooterDivider"},
-                    floating = true,
-                    valign = "top",
-                },
-                gui.Label{
-                    classes = {"form"},
-                    width = "auto",
-                    valign = "center",
-                    hmargin = 20,
-                    text = "Map Name:",
-                },
-                nameInput,
-                --right-anchored group: immune to the name field's width and
-                --the create button's changing labels (Add Map, Link Patreon).
-                gui.Panel{
-                    width = "auto",
-                    height = "100%",
-                    halign = "right",
-                    flow = "horizontal",
-                    gui.Button{
-                        classes = {"sizeL"},
-                        valign = "center",
-                        hmargin = 12,
-                        text = "Cancel",
-                        escapeActivates = true,
-                        escapePriority = EscapePriority.EXIT_MODAL_DIALOG,
-                        click = function(element)
-                            gui.CloseModal()
-                        end,
-                    },
-                    createButton,
-                },
-            },
-        }
-
-        m_dialog = gui.Panel{
-            classes = {"framedPanel"},
-            width = DIALOG_WIDTH,
-            height = DIALOG_HEIGHT,
-            --borderless: the modal reads as a sheet; the framedPanel class
-            --still supplies the surface and rounded corners.
-            borderWidth = 0,
-            styles = ThemeEngine.MergeStyles(tileStyles),
-            flow = "vertical",
-            headerBar,
-            gui.Panel{ classes = {"cmNavRule"} },
-            gui.Panel{
-                width = "100%",
-                height = string.format("100%%-%d", HEADER_HEIGHT + 1),
-                flow = "horizontal",
-                sidebar,
-                main,
-            },
-        }
-    else
-        --without the pack browser the dialog is just the two tiles, the
-        --name field and the buttons, so it shrinks to fit them.
-        m_dialog = gui.Panel{
-            classes = {"framedPanel"},
-            width = 700,
-            height = 320,
-            styles = ThemeEngine.MergeStyles(tileStyles),
-
-            gui.Panel{
-                width = "100%-24",
-                height = "100%-32",
-                halign = "center",
-                valign = "center",
-
-                flow = "vertical",
-
-                gui.Label{
-                    classes = {"modalTitle"},
-                    text = "Create Map",
-                    vmargin = 0,
-                },
-
-                gui.Panel{
-                    flow = "horizontal",
-                    halign = "center",
-                    valign = "top",
-                    width = "auto",
-                    height = "auto",
-                    vmargin = 8,
-
-                    styles = ThemeEngine.MergeTokens({
-                        {
-                            selectors = {"mapItem"},
-                            bgimage = true,
-                            bgcolor = "@bg",
-                            cornerRadius = 12,
-                            width = 1920*0.1,
-                            height = 1080*0.1,
-                            halign = "center",
-                            hmargin = 8,
-                        },
-                        {
-                            selectors = {"mapItem", "hover"},
-                            borderWidth = 2,
-                            borderColor = "@accent",
-                        },
-                        {
-                            selectors = {"mapItem", "selected"},
-                            borderWidth = 2,
-                            borderColor = "@fg",
-                        },
-                        {
-                            selectors = {"mapText"},
-                            fontSize = 14,
-                            width = "auto",
-                            height = "auto",
-                            textAlignment = "center",
-                        },
-                    }),
-
-                    gui.Panel{
-                        classes = {"mapItem", "selected"},
-                        press = MapItemPress,
-                        create = function(element)
-                            selectedMap = element
-                        end,
-                        data = {
-                            type = "empty",
-                        },
-                        gui.Label{
-                            classes = {"mapText"},
-                            text = "Empty Map",
-                            interactable = false,
-                        },
-                    },
-
-                    gui.Panel{
-                        classes = {"mapItem"},
-                        press = MapItemPress,
-                        data = {
-                            type = "import",
-                        },
-                        gui.Label{
-                            classes = {"mapText"},
-                            text = "Import an Image\nor UVTT file",
-                            interactable = false,
-                        },
-                    },
-                },
-
-                gui.Panel{
-                    width = 600,
-                    height = "auto",
-                    flow = "vertical",
-                    valign = "top",
-                    halign = "center",
-                    vmargin = 4,
-                    gui.Panel{
-                        classes = {"formRow"},
-                        gui.Label{
-                            classes = {"form"},
-                            text = "Map Name:",
-                        },
-                        nameInput,
-                    },
-                },
-
-                gui.Panel{
-                    width = 600,
-                    height = 48,
-                    halign = "center",
-                    valign = "bottom",
-                    createButton,
-                    gui.Button{
-                        classes = {"sizeL"},
-                        halign = "right",
-                        text = "Cancel",
-                        escapeActivates = true,
-                        escapePriority = EscapePriority.EXIT_MODAL_DIALOG,
-                        click = function(element)
-                            gui.CloseModal()
-                        end,
-                    },
-                },
-            }
-        }
-    end
+            sidebar,
+            main,
+        },
+    }
 
     gui.ShowModal(m_dialog)
-
-    if packsEnabled == false then
-        return
-    end
 
     if mappacks.synced then
         BuildLibraryNav()
