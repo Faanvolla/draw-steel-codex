@@ -4510,10 +4510,14 @@ creature.RegisterSymbol {
     symbol = "effectcaster",
     lookup = function(c)
         return function(condName, caster)
+            --A scoped symbol such as Caster arrives as a lookup function; ask it for its creature.
+            if type(caster) == "function" then
+                caster = caster("self")
+            end
             if caster == nil then
                 return 0
             end
-            
+
             -- Get the caster's token ID for comparison
             local casterTokenId = dmhub.LookupTokenId(caster)
             if casterTokenId == nil then
