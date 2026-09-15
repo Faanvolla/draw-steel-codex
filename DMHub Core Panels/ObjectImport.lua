@@ -635,3 +635,195 @@ dmhub.ObjectDirectImport = function(path, point)
         end
     end)
 end
+
+--Split a placed object whose image contains multiple pieces separated by
+--transparency into separate placed objects, each staying at its current
+--spot on the map. Re-runs the sheet importer on the object's existing
+--image asset, uploads each region as a new object, spawns them at the
+--original's position offset by each region's location within the image,
+--then deletes the original.
+local function SplitPlacedObject(original)
+    dmhub.Coroutine(function()
+        local importer = dmhub.CreateObjectImporter{
+            imageids = { original.displayImageId },
+            threshold = 0,
+            breakup = true,
+        }
+
+        local startTime = dmhub.Time()
+        while importer.percentComplete < 1 do
+            coroutine.yield(0.1)
+            if dmhub.Time() > startTime + 60 then
+                importer:Destroy()
+                gui.ModalMessage{
+                    title = "Split Object",
+                    message = "Timed out reading the object's image.",
+                }
+                return
+            end
+        end
+
+        local sheet = importer.sheets[1]
+        local regions = nil
+        if sheet ~= nil then
+            regions = sheet.regions
+        end
+
+        if regions == nil or #regions < 2 then
+            importer:Destroy()
+            gui.ModalMessage{
+                title = "Split Object",
+                message = "This object's image is a single connected piece; there is nothing to split. Pieces must be separated by transparent space.",
+            }
+            return
+        end
+
+        --touching sizeInfo forces the importer to generate the textures Upload needs.
+        local _ = importer.sizeInfo
+
+        local baseName = "Object"
+        pcall(function()
+            if original.name ~= nil and original.name ~= "" then
+                baseName = original.name
+            end
+        end)
+
+        local descriptions = {}
+        for i, region in ipairs(regions) do
+            descriptions[region.imageid] = string.format("%s %d", baseName, i)
+        end
+
+        --capture the original's transform before it can change under us.
+        local originX = original.x
+        local originY = original.y
+        local objScale = original.scale
+        local objRotation = original.rotation
+        local objZOrder = original.zorder
+
+        --object images render at 128 source pixels per tile; a piece's world
+        --offset is its region center relative to the image center (objects
+        --pivot at their center), scaled and rotated with the object.
+        local srcW = sheet.width
+        local srcH = sheet.height
+        local worldPerPixel = objScale / 128
+        local rad = math.rad(objRotation)
+        local cosr = math.cos(rad)
+        local sinr = math.sin(rad)
+
+        local operation = dmhub.CreateNetworkOperation()
+        operation.progress = 0
+        operation.description = "Splitting Object"
+        operation.status = "Uploading..."
+        operation:Update()
+
+        importer:Upload{
+            imageDescriptions = descriptions,
+            progress = function(percent, desc)
+                operation.progress = percent * 0.9
+                operation:Update()
+            end,
+            complete = function(guids, guidsByImage)
+                dmhub.Coroutine(function()
+                    local placed = 0
+                    for _, region in ipairs(regions) do
+                        local guid = guidsByImage[region.imageid]
+                        if guid ~= nil then
+                            --region x/y are bottom-origin pixels, matching world +y up.
+                            local dx = (region.x + region.width * 0.5 - srcW * 0.5) * worldPerPixel
+                            local dy = (region.y + region.height * 0.5 - srcH * 0.5) * worldPerPixel
+                            local worldX = originX + dx * cosr - dy * sinr
+                            local worldY = originY + dx * sinr + dy * cosr
+
+                            --wait for the freshly uploaded asset to become spawnable.
+                            for attempt = 1, 100 do
+                                local piece = game.currentFloor:SpawnObjectLocal(guid, {
+                                    posx = worldX,
+                                    posy = worldY,
+                                    zorder = objZOrder,
+                                })
+                                if piece ~= nil then
+                                    piece.scale = objScale
+                                    piece.rotation = objRotation
+                                    piece:Upload()
+                                    placed = placed + 1
+                                    break
+                                else
+                                    coroutine.yield(0.01)
+                                end
+                            end
+                        end
+                    end
+
+                    --only remove the original once every piece made it onto the map.
+                    if placed == #regions and original.valid then
+                        original:MarkUndo()
+                        original:Destroy()
+                    end
+
+                    operation.progress = 1
+                    operation:Update()
+                    importer:Destroy()
+                end)
+            end,
+            error = function()
+                operation.progress = 1
+                operation:Update()
+                importer:Destroy()
+                gui.ModalMessage{
+                    title = "Split Object",
+                    message = "Uploading the split pieces failed.",
+                }
+            end,
+        }
+    end)
+end
+
+--The hovered placed object; right-clicking an object does not select it,
+--so hover focus -- not the selection -- identifies the menu's subject.
+local function ObjectUnderCursor()
+    local floor = game.currentFloor
+    if floor == nil then
+        return nil
+    end
+
+    for _, obj in pairs(floor.objects) do
+        local focused = false
+        pcall(function() focused = obj.editorFocus end)
+        if focused then
+            return obj
+        end
+    end
+
+    return nil
+end
+
+--add "Split into Separate Objects" to the map right-click menu for objects.
+--Assigned via the raw table since GameHud.lua (which defines the register
+--function) loads after this file.
+g_gameContextMenuContributors = rawget(_G, "g_gameContextMenuContributors") or {}
+g_gameContextMenuContributors["splitobject"] = function(entries)
+    if not dmhub.isDM then
+        return
+    end
+
+    local obj = ObjectUnderCursor()
+    if obj == nil then
+        return
+    end
+
+    --map-image objects size themselves from grid control points rather
+    --than the standard pixels-per-tile rule; splitting those is not supported.
+    local isMap = false
+    pcall(function() isMap = obj:GetComponent("Map") ~= nil end)
+    if isMap then
+        return
+    end
+
+    entries[#entries + 1] = {
+        text = "Split into Separate Objects",
+        tooltip = "Break this object into separate objects wherever its image has pieces separated by transparency. Each piece stays in place on the map.",
+        click = function()
+            SplitPlacedObject(obj)
+        end,
+    }
+end
