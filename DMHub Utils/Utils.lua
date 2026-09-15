@@ -55,6 +55,15 @@ function StrictRollsEnforced()
     return (not dmhub.isDM) and dmhub.GetSettingValue("strict:rolls") == true
 end
 
+--- True when the "Strictly Enforce Action Economy and Resource Costs" game
+--- setting binds THIS client. Same Director-only exemption as
+--- StrictRollsEnforced(): a player host is bound like any other player.
+--- Under it a hostile trigger prompt (e.g. Bleeding's damage) cannot be
+--- dismissed -- see ActiveTrigger:CanDismiss().
+function StrictActionEconomyEnforced()
+    return (not dmhub.isDM) and dmhub.GetSettingValue("strict:resources") == true
+end
+
 --- True when the user may still back out of the embedded roll `dialog` -- the
 --- ability card's close (X) button and ESC. "Strictly Enforce Rolls" withdraws
 --- that the moment the cast behind the roll has committed to paying its cost:

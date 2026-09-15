@@ -10730,6 +10730,15 @@ function ActiveTrigger:GetTargetId()
     return self.targets[1]
 end
 
+--- Whether the user may dismiss this prompt without activating it. A hostile
+--- prompt is a harmful effect forced on the creature, so under "Strictly
+--- Enforce Action Economy and Resource Costs" a player (or a player host)
+--- must accept it: the trigger panel withdraws its close button, its Dismiss
+--- button, and skips it in Dismiss Triggers. The Director is never restricted.
+function ActiveTrigger:CanDismiss()
+    return (not self.hostile) or (not StrictActionEconomyEnforced())
+end
+
 function ActiveTrigger:GetText()
 	if self.powerRollModifier then
 		return self.powerRollModifier.name

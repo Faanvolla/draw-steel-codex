@@ -285,8 +285,11 @@ mod.shared.CreateTriggerPanel = function()
                 description = "Dismiss All Triggers",
                 execute = function()
                     for _,trigger in pairs(g_token.properties:GetAvailableTriggers() or {}) do
-                        trigger.dismissed = true
-                        g_token.properties:DispatchAvailableTrigger(trigger)
+                        --a hostile prompt under strict action economy must be accepted, not dismissed.
+                        if trigger:CanDismiss() then
+                            trigger.dismissed = true
+                            g_token.properties:DispatchAvailableTrigger(trigger)
+                        end
                     end
                 end,
             }
@@ -611,9 +614,17 @@ mod.shared.CreateTriggerPanel = function()
 
 				local children = {}
 
+				--the Dismiss Triggers bar only shows while something on the list
+				--can actually be dismissed (hostile prompts under strict action
+				--economy cannot be).
+				local anyDismissable = false
+
 				local newTriggerPanels = {}
 				for key,trigger in pairs(availableTriggers) do
 					if not trigger.dismissed then
+						if trigger:CanDismiss() then
+							anyDismissable = true
+						end
 						local panel = m_activeTriggerPanels[key]
 
 						--A shared prompt's candidate targets can change mid-roll (a
@@ -1061,7 +1072,7 @@ mod.shared.CreateTriggerPanel = function()
 										return
 									end
 									local trigger = availableTriggers[key]	
-									element:SetClass("collapsed", trigger ~= nil and trigger.triggered ~= false)
+									element:SetClass("collapsed", trigger ~= nil and (trigger.triggered ~= false or not trigger:CanDismiss()))
 								end,	
 							}
 
@@ -1457,7 +1468,16 @@ mod.shared.CreateTriggerPanel = function()
                                         },
                                     },
                                     swallowPress = true,
+                                    --a hostile prompt under strict action economy must be accepted:
+                                    --the close button is withdrawn (re-evaluated each refresh so a
+                                    --setting change takes effect on the live card).
+                                    refresh = function(element)
+                                        element:SetClass("collapsed", not trigger:CanDismiss())
+                                    end,
                                     press = function(element)
+                                        if not trigger:CanDismiss() then
+                                            return
+                                        end
                                         g_token:ModifyProperties{
                                             undoable = false,
                                             description = "Trigger",
@@ -1854,6 +1874,7 @@ mod.shared.CreateTriggerPanel = function()
 
                 --Cards into the scroller, Dismiss bar outside it so it stays put.
                 triggerListPanel.children = children
+                dismissAllPanel:SetClass("collapsed", not anyDismissable)
 				element.children = {triggerListPanel, dismissAllPanel}
 				m_activeTriggerPanels = newTriggerPanels
 			end,
