@@ -10076,8 +10076,12 @@ function creature:PumpTriggeredEvents()
     self._tmp_pumpingTriggeredEvents = true
     local consumed = {}
     for _,event in pairs(events) do
+        --The dispatching client holds its fresh event with the ServerTimestamp()
+        --placeholder until the server stamps it; discarding that here deletes the
+        --event before the recipient ever sees it. TimestampAgeInSeconds reads it as 0.
         local valid = type(event) == "table" and type(event.userid) == "string"
-            and type(event.eventName) == "string" and type(event.timestamp) == "number"
+            and type(event.eventName) == "string"
+            and (type(event.timestamp) == "number" or event.timestamp == ServerTimestamp())
         if not valid or TimestampAgeInSeconds(event.timestamp) >= 30 or event.userid == dmhub.userid then
             consumed[event] = true
             if valid and event.userid == dmhub.userid and TimestampAgeInSeconds(event.timestamp) < 30 then
