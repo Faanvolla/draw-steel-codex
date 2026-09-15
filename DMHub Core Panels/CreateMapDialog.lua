@@ -59,6 +59,9 @@ mod.shared.ShowCreateMapDialog = function()
     local m_packEntries = {}
     local m_search = ""
     local m_dialog = nil
+    --the hud modal layer this dialog was shown in; hidden (not closed)
+    --while the settings sheet is open from the Link Patreon button.
+    local m_modalLayer = nil
 
     --fixed dialog geometry: a sources sidebar on the left, the library grid
     --in the middle and a docked preview pane on the right.
@@ -159,10 +162,27 @@ mod.shared.ShowCreateMapDialog = function()
             if not access.linked then
                 --the Account tab of the settings hosts the Patreon link
                 --flow. The settings sheet lives in the hud's dialog layer,
-                --BELOW modals, so this dialog has to close first or the
-                --settings open behind it.
-                gui.CloseModal()
-                dmhub.ShowPlayerSettings{ tab = "Account" }
+                --BELOW modals, so the modal layer is hidden (not closed)
+                --while it is open, and comes back when the settings
+                --close. A hidden layer is inactive, so it neither blocks
+                --the settings nor claims Escape from them. The layer
+                --keeps this dialog as its child, so the selection, name
+                --and search survive; the create button's think re-reads
+                --the Patreon state as soon as it is active again.
+                local layer = m_modalLayer
+                if layer ~= nil and layer.valid then
+                    layer:AddClass("hidden")
+                end
+                dmhub.ShowPlayerSettings{
+                    tab = "Account",
+                    onClose = function()
+                        if layer == nil or not layer.valid or m_dialog == nil or not m_dialog.valid then
+                            return
+                        end
+                        layer:RemoveClass("hidden")
+                        layer:SetAsLastSibling()
+                    end,
+                }
             else
                 OpenCreatorPatreon()
             end
@@ -2282,7 +2302,7 @@ mod.shared.ShowCreateMapDialog = function()
         },
     }
 
-    gui.ShowModal(m_dialog)
+    m_modalLayer = gui.ShowModal(m_dialog)
 
     if mappacks.synced then
         BuildLibraryNav()

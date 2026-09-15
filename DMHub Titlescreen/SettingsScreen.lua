@@ -7497,6 +7497,17 @@ function CreateSettingsScreen(dialog, args)
 		width = "100%",
 		height = "100%",
 		settingsDialog,
+		--args.onClose: fired once when the settings go away, however they
+		--were closed (Close button, Escape, toggled shut, replaced by the
+		--subscription screen). Both hosting paths below destroy this root
+		--on close, so its destroy event is the one reliable signal.
+		destroy = function(element)
+			if args.onClose ~= nil then
+				local onClose = args.onClose
+				args.onClose = nil
+				onClose()
+			end
+		end,
 	}
 
 	--args.tab: open straight on a named tab, e.g.

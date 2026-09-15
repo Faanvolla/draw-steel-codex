@@ -1190,7 +1190,9 @@ function dmhub.AddObjectFolder() end
 function dmhub.LeaveGame() end
 
 --- Opens the player settings dialog with the given arguments.
---- @param args? any
+--- args.tab opens straight on a named tab; args.search seeds the search box;
+--- args.onClose is called once when the settings close, however they close.
+--- @param args? {tab?: string, search?: string, onClose?: fun()}
 function dmhub.ShowPlayerSettings(args) end
 
 --- Undo the last user editing action.
