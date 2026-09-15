@@ -715,6 +715,21 @@ local function SplitPlacedObject(original)
         local objRotation = original.rotation
         local objZOrder = original.zorder
 
+        --capture the original's Core properties (elevation, height, shadows,
+        --sublayer, keywords, ...) so the pieces keep them. The pivot is
+        --excluded: piece positions are computed as region centers, which
+        --assumes the default centered pivot.
+        local coreProps = {}
+        pcall(function()
+            local core = original:GetComponent("Core")
+            for _, f in ipairs(core.fields) do
+                local fieldName = f.name
+                if fieldName ~= "pivot_x" and fieldName ~= "pivot_y" then
+                    coreProps[#coreProps + 1] = { name = fieldName, value = f.currentValue }
+                end
+            end
+        end)
+
         --object images render at 128 source pixels per tile; a piece's world
         --offset is its region center relative to the image center (objects
         --pivot at their center), scaled and rotated with the object.
@@ -758,6 +773,14 @@ local function SplitPlacedObject(original)
                                     zorder = objZOrder,
                                 })
                                 if piece ~= nil then
+                                    pcall(function()
+                                        local pieceCore = piece:GetComponent("Core")
+                                        for _, p in ipairs(coreProps) do
+                                            pcall(function() pieceCore:SetProperty(p.name, p.value) end)
+                                        end
+                                    end)
+                                    --explicit fallback in case the generic copy failed;
+                                    --these two also drive the placement math.
                                     piece.scale = objScale
                                     piece.rotation = objRotation
                                     piece:Upload()
