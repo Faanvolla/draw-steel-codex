@@ -4137,7 +4137,7 @@ spine.register{
 Commands.RegisterMacro{
     name = "patreon",
     summary = "admin: pretend a Patreon pledge for this session",
-    doc = "Usage: /patreon <orgid> <cents>   pretend you pledge <cents>/month to that creator org (0 = not a patron)\n       /patreon <orgid> clear    forget the override for that org\n       /patreon clear            forget every override\n       /patreon                  list real entitlements and overrides\nAdmin accounts only. Nothing is written to the server; overrides vanish on restart.",
+    doc = "Usage: /patreon <orgid> <cents>   pretend you pledge <cents>/month to that creator org (0 = not a patron)\n       /patreon <orgid> clear    forget the override for that org\n       /patreon clear            forget every override\n       /patreon                  list real entitlements and overrides\nAdmin accounts only. Nothing is written to the server; overrides vanish on restart.\nTo hold EVERY grant persistently instead, /set patreondevgrant true (admin only; /patreon shows when it is in force).",
     completions = function(args, argIndex)
         if argIndex == 1 then
             local result = {{text = "clear", summary = "forget every override"}}
@@ -4168,6 +4168,9 @@ Commands.RegisterMacro{
             end
             if #lines == 0 then
                 lines[1] = "no Patreon entitlements"
+            end
+            if dmhub.patreonDevGrantActive then
+                lines[#lines+1] = "DEV GRANT ON (patreondevgrant): every org reads as top tier; /set patreondevgrant false to turn off"
             end
             dmhub.Log("Patreon entitlements:\n" .. table.concat(lines, "\n"))
             return

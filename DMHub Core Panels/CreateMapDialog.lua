@@ -744,6 +744,15 @@ mod.shared.ShowCreateMapDialog = function()
         }
     end
 
+    --the access strip's button while an appearance is locked: names the
+    --creator's tier when the pack publishes one, else quotes the price.
+    local function JoinButtonText(entry)
+        if entry.tierName ~= nil and entry.tierName ~= "" then
+            return string.format("Join %s tier", entry.tierName)
+        end
+        return string.format("Join for %s", mod.shared.MapPackTierLabel(entry, true))
+    end
+
     --opens the selected map's creator Patreon campaign page, falling back
     --to their website; shared by the access strip's Join button and the
     --hero price pill. Declared local up by the strip.
@@ -772,12 +781,13 @@ mod.shared.ShowCreateMapDialog = function()
         if h < 1 then h = 1 end
         local thumb = mod.shared.MapPackThumbImage(entry)
 
-        --price pill on the map's corner while the appearance is gated
-        --behind a pledge the account lacks; clicking it opens the creator's
-        --Patreon page where that pledge can be made.
+        --tier pill on the map's corner while the appearance is gated behind
+        --a pledge the account lacks (the creator's tier name, else the price);
+        --clicking it opens the creator's Patreon page where that pledge can
+        --be made.
         local pill = nil
         if mod.shared.MapPackPatreonState(entry) == "locked" then
-            local price = mod.shared.MapPackTierText(entry.tier):gsub("/month", "/mo")
+            local price = mod.shared.MapPackTierLabel(entry, true)
             pill = gui.Panel{
                 classes = {"mapPackHeroPill"},
                 floating = true,
@@ -910,10 +920,10 @@ mod.shared.ShowCreateMapDialog = function()
                 detailAccessButton.text = "Link Patreon..."
             elseif (access.cents or 0) > 0 then
                 text = text .. string.format(". Your current pledge is %s.", mod.shared.MapPackTierText(access.cents))
-                detailAccessButton.text = string.format("Join for %s", mod.shared.MapPackTierText(entry.tier):gsub("/month", "/mo"))
+                detailAccessButton.text = JoinButtonText(entry)
             else
                 text = text .. "."
-                detailAccessButton.text = string.format("Join for %s", mod.shared.MapPackTierText(entry.tier):gsub("/month", "/mo"))
+                detailAccessButton.text = JoinButtonText(entry)
             end
         else
             text = text .. "."

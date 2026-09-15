@@ -12,6 +12,7 @@
 --- @field ctime number Unix timestamp when this asset was created.
 --- @field mtime number Unix timestamp when this asset was last modified.
 --- @field hidden boolean True if this asset is hidden (soft-deleted). Hidden assets are not shown to users but existing references continue working.
+--- @field doNotPurge boolean True if this asset must survive bulk cleanups. Hidden assets are normally treated as soft-deleted and purged; this marks one that is hidden deliberately and still required.
 GameAsset = {}
 
 --- ValidationCheck

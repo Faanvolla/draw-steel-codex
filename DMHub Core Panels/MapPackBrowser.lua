@@ -264,6 +264,22 @@ mod.shared.MapPackTierText = function(cents)
 	return string.format("$%.2f/month", cents / 100)
 end
 
+--how the user should read an appearance's pledge level: the creator's tier
+--name when the pack publishes one ("Adventurer tier"), else the price
+--("$1.99/month"). short = true abbreviates the price form for pills and
+--buttons ("$1.99/mo"); the name form is already short.
+mod.shared.MapPackTierLabel = function(entry, short)
+	local name = entry.tierName
+	if name ~= nil and name ~= "" then
+		return string.format("%s tier", name)
+	end
+	local price = mod.shared.MapPackTierText(entry.tier)
+	if short then
+		price = price:gsub("/month", "/mo")
+	end
+	return price
+end
+
 --one line explaining an appearance's Patreon status to the user, or nil for
 --a free one. creatorName is optional.
 mod.shared.MapPackPatreonText = function(entry, creatorName)
@@ -274,6 +290,10 @@ mod.shared.MapPackPatreonText = function(entry, creatorName)
 	local who = cond(creatorName ~= nil and creatorName ~= "", creatorName, "the creator")
 	if state == "unlocked" then
 		return string.format("Included with your %s Patreon membership", who)
+	end
+	local name = entry.tierName
+	if name ~= nil and name ~= "" then
+		return string.format("Requires the %s tier of the %s Patreon", name, who)
 	end
 	return string.format("Requires a %s Patreon membership with %s", mod.shared.MapPackTierText(entry.tier), who)
 end
