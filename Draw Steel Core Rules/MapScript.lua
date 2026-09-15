@@ -22,7 +22,17 @@ local mod = dmhub.GetModLoading()
 --           hostThink = function(ctx) end,     -- HOST ONLY, every hostThinkInterval
 --           hostThinkInterval = 1,
 --           events = { eventName = function(ctx, ...) end },  -- global events
+--           buttons = { { id, name, icon, tooltip, directorOnly,
+--                         click = function(ctx, element) end }, ... },
 --       }
+--
+--   * MAP BUTTONS: a definition's `buttons` render as rail-styled,
+--     accent-glyph buttons in the top-right corner of the map (the
+--     DocumentSystem MapButtons bar) for as long as the instance runs on
+--     this client. A click runs the handler with the instance ctx and the
+--     button panel; `element.popup = gui.Panel{...}` opens UI anchored to
+--     the button with click-away/Escape dismissal. directorOnly defaults
+--     to true.
 --
 --   * Every client viewing the map runs an instance of each attached script.
 --     Exactly one client - the elected HOST, always a director - additionally
@@ -151,6 +161,21 @@ return {
     -- including custom ones fired with dmhub.FireGlobalEvent.
     events = {
         -- DiceRoll = function(ctx, info) end,
+    },
+
+    -- Map buttons: rail-style buttons in the top-right corner of the map
+    -- while this script runs. click gets the ctx and the button panel;
+    -- set element.popup to open UI anchored to the button. Shown to the
+    -- director only unless directorOnly = false.
+    buttons = {
+        -- {
+        --     id = "info", name = "Map Info", icon = "phosphor/info-bold.png",
+        --     click = function(ctx, element)
+        --         element.popup = gui.Panel{ classes = {"framedPanel"}, bgimage = true,
+        --             width = 300, height = 120, pad = 16, borderBox = true,
+        --             gui.Label{ classes = {"modalTitle"}, text = "Hello" } }
+        --     end,
+        -- },
     },
 }
 ]==]
@@ -342,6 +367,44 @@ local function NormalizeDefinition(def)
         end
     end
 
+    if def.buttons ~= nil then
+        if type(def.buttons) ~= "table" then
+            return nil, "buttons must be a list of button tables"
+        end
+        norm.buttons = {}
+        local seenButtons = {}
+        for i, b in ipairs(def.buttons) do
+            if type(b) ~= "table" then
+                return nil, string.format("buttons[%d] must be a table", i)
+            end
+            if type(b.id) ~= "string" or b.id == "" then
+                return nil, string.format("buttons[%d] needs a string id", i)
+            end
+            if seenButtons[b.id] then
+                return nil, string.format("duplicate button id \"%s\"", b.id)
+            end
+            seenButtons[b.id] = true
+            if type(b.click) ~= "function" then
+                return nil, string.format("button \"%s\" needs a click function", b.id)
+            end
+            for _, field in ipairs({ "name", "icon", "tooltip" }) do
+                if b[field] ~= nil and type(b[field]) ~= "string" then
+                    return nil, string.format("button \"%s\": %s must be a string", b.id, field)
+                end
+            end
+            norm.buttons[#norm.buttons + 1] = {
+                id = b.id,
+                name = b.name or b.id,
+                icon = b.icon or "phosphor/lightning.png",
+                tooltip = b.tooltip,
+                --nil ord = declared order (registration order in the bar).
+                ord = tonumber(b.ord),
+                directorOnly = (b.directorOnly ~= false),
+                click = b.click,
+            }
+        end
+    end
+
     local interval = tonumber(def.thinkInterval) or 1
     if interval < 0.25 then
         interval = 0.25
@@ -435,6 +498,13 @@ function MapScript.DescribeDefinition(def)
             parts[#parts + 1] = "listens for " .. table.concat(names, ", ")
         end
     end
+    if def.buttons ~= nil and #def.buttons > 0 then
+        if #def.buttons == 1 then
+            parts[#parts + 1] = "1 map button"
+        else
+            parts[#parts + 1] = string.format("%d map buttons", #def.buttons)
+        end
+    end
     if #parts == 0 then
         return "Definition OK (declares nothing yet)"
     end
@@ -494,6 +564,32 @@ function MapScript.CreateCustomRecord()
         params = {},
     }
     MapScript.RefreshRecordName(rec)
+    return rec
+end
+
+--- Attach a library or built-in script to the CURRENT map unless a record
+--- for that scriptid is already attached. Returns the record (existing or
+--- new), or nil when the id resolves to nothing. For code that sets a map
+--- up programmatically - the uvtt importer attaching its settings script.
+function MapScript.EnsureAttached(scriptid)
+    if scriptid == nil or scriptid == "" then
+        return nil
+    end
+    if MapScript.GetBuiltin(scriptid) == nil then
+        local dataTable = dmhub.GetTable(MapScript.tableName) or {}
+        if dataTable[scriptid] == nil then
+            return nil
+        end
+    end
+    local records = DeepCopy(MapScript.GetAttachedRecords())
+    for _, rec in ipairs(records) do
+        if rec.scriptid == scriptid then
+            return rec
+        end
+    end
+    local rec = MapScript.CreateRecordFromLibrary(scriptid)
+    records[#records + 1] = rec
+    MapScript.SetAttachedRecords(records)
     return rec
 end
 
@@ -899,6 +995,57 @@ local function RegisterInstanceEvents(instance)
     end
 end
 
+--Publish the definition's map buttons for a running instance (the
+--top-right MapButtons bar in DocumentSystem; absent on a core without it,
+--in which case buttons are silently not shown). A click runs the handler
+--with the instance ctx and the button panel. A failing click is reported
+--like any handler error but never disables the button: clicks are
+--user-paced rather than a tick loop, and a button that went dead after
+--one error would be undiagnosable. Repeat failures still print.
+local function RegisterInstanceButtons(instance)
+    instance.buttonIds = {}
+    local mapButtons = rawget(_G, "MapButtons")
+    if mapButtons == nil or instance.def.buttons == nil then
+        return
+    end
+    for _, button in ipairs(instance.def.buttons) do
+        local id = "mapscript:" .. instance.key .. "|" .. button.id
+        local handler = button.click
+        local hkey = "button:" .. button.id
+        instance.buttonIds[#instance.buttonIds + 1] = id
+        mapButtons.Register(id, {
+            name = button.name,
+            icon = button.icon,
+            tooltip = button.tooltip,
+            directorOnly = button.directorOnly,
+            ord = button.ord,
+            click = function(element)
+                if mod.unloaded or instance.destroyed then
+                    return
+                end
+                local ok, err = pcall(handler, instance.ctx, element)
+                if not ok then
+                    if instance.errorReported[hkey] then
+                        print("ERROR:", string.format("Map Script '%s': error in %s: %s", tostring(instance.ctx.name), hkey, tostring(err)))
+                    else
+                        ReportError(instance, hkey, err)
+                    end
+                end
+            end,
+        })
+    end
+end
+
+local function UnregisterInstanceButtons(instance)
+    local mapButtons = rawget(_G, "MapButtons")
+    if mapButtons ~= nil then
+        for _, id in ipairs(instance.buttonIds or {}) do
+            mapButtons.Unregister(id)
+        end
+    end
+    instance.buttonIds = {}
+end
+
 local function CreateInstance(key, mapid, rec, code, def, paramsig)
     local instance = {
         key = key,
@@ -923,6 +1070,7 @@ local function CreateInstance(key, mapid, rec, code, def, paramsig)
         end
     end
     RegisterInstanceEvents(instance)
+    RegisterInstanceButtons(instance)
     return instance
 end
 
@@ -935,6 +1083,8 @@ local function DestroyInstance(instance)
     end
     instance.destroyed = true
     g_runtime.instances[instance.key] = nil
+    --buttons go first: they must not outlive the instance for even a tick.
+    UnregisterInstanceButtons(instance)
     for _, guid in ipairs(instance.eventGuids or {}) do
         pcall(function() dmhub.DeregisterEventHandler(guid) end)
     end
@@ -1772,6 +1922,70 @@ return {
         end)
     end,
     hostThinkInterval = 2,
+}
+]==],
+}
+
+--Attached automatically by the map importer (CreateMapDialog's
+--FinishMapImport) when the map came from a Universal VTT file. For now the
+--button opens an empty framed panel anchored to itself; the uvtt controls
+--land in it next.
+MapScript.RegisterBuiltin{
+    id = "builtin:uvtt-settings",
+    name = "UVTT Settings",
+    description = "Adds a map button for adjusting a map imported from a Universal VTT (.uvtt / .dd2vtt) file. Attached automatically by the importer.",
+    code = [==[
+return {
+    name = "UVTT Settings",
+    description = "Adds a map button for adjusting a map imported from a Universal VTT (.uvtt / .dd2vtt) file.",
+
+    buttons = {
+        {
+            id = "settings",
+            name = "UVTT Settings",
+            icon = "phosphor/map-trifold.png",
+            click = function(ctx, element)
+                --anchored to the button: click-away and Escape dismiss it,
+                --and the bar's click handler closes it on a second press.
+                element.popup = gui.Panel{
+                    width = "auto",
+                    height = "auto",
+                    gui.Panel{
+                        classes = {"framedPanel"},
+                        width = 360,
+                        height = 240,
+                        flow = "vertical",
+                        pad = 16,
+                        borderBox = true,
+                        bgimage = true,
+
+                        gui.Panel{
+                            width = "100%",
+                            height = "auto",
+                            flow = "horizontal",
+                            gui.Label{
+                                classes = {"modalTitle"},
+                                text = "UVTT Settings",
+                                width = "auto",
+                                height = "auto",
+                                halign = "left",
+                                valign = "center",
+                            },
+                            gui.CloseButton{
+                                halign = "right",
+                                valign = "center",
+                                click = function()
+                                    if element.valid then
+                                        element.popup = nil
+                                    end
+                                end,
+                            },
+                        },
+                    },
+                }
+            end,
+        },
+    },
 }
 ]==],
 }

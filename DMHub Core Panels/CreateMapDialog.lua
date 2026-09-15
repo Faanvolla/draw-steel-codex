@@ -3379,6 +3379,15 @@ mod.shared.FinishMapImport = function(mapName, info)
             end
         end
 
+        --a map imported from a Universal VTT file gets the UVTT Settings
+        --map script attached, which puts a button in the top-right corner
+        --of the map for adjusting the import. Map Scripts belong to the
+        --Draw Steel module, so this is guarded like the settings panels
+        --(rawget: core modules must not hard-depend on it).
+        if info.uvttData ~= nil and rawget(_G, "MapScript") ~= nil then
+            MapScript.EnsureAttached("builtin:uvtt-settings")
+        end
+
         local floors = game.currentMap.floorsWithoutLayers
 
         for i,floor in ipairs(floors) do

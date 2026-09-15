@@ -20444,6 +20444,306 @@ ThemeEngine.OnThemeChanged(mod, function()
     end
 end)
 
+-- ---------------------------------------------------------------------------
+-- Map Buttons
+-- ---------------------------------------------------------------------------
+--A short row of rail-styled buttons in the top-right corner of the map,
+--supplied by whatever is running on the CURRENT map rather than by the
+--user's layout -- Map Scripts are the first client: a script declares
+--`buttons = {...}` and each attached instance registers them while it
+--runs, so they come and go with the map (a uvtt import's settings
+--button, an encounter's controls). They are deliberately NOT rail
+--entries: nothing about them belongs in iconraillayout, and they must
+--show even with the rail mode off. They reuse the rail's button/icon
+--classes and styles so they look native, with one difference -- the
+--glyph wears the scheme's accent color, so the row reads as "this map
+--offers something" rather than as more standing chrome.
+--
+--The bar hangs from the layer's top-right, level with the right rail's
+--slot 0 and just inboard of it, growing leftward. A GLOBAL table rather
+--than PanelDocument fields or file locals: the registry has to outlive
+--a reload of THIS file (registrations are owned by other mods' running
+--instances, which are not re-run when only this file reloads -- the
+--same reason MapScript keeps its builtin registry in a global), and the
+--main chunk sits on the 200-locals ceiling regardless.
+MapButtons = rawget(_G, "MapButtons") or {}
+if type(MapButtons.registry) ~= "table" then
+    MapButtons.registry = {}
+end
+if type(MapButtons.seq) ~= "number" then
+    MapButtons.seq = 0
+end
+--the previous generation's bar destroys itself (its think sees its own
+--mod.unloaded); this generation starts with none and rebuilds on load.
+MapButtons.bar = nil
+MapButtons.rebuildPending = false
+
+--- Register (or replace) a map button. def fields:
+---   name         hover label; defaults to "Map Button"
+---   icon         engine image path, e.g. "phosphor/gear-six-fill.png"
+---   tooltip      hover text shown instead of the name
+---   click        function(element): element is the button panel; set
+---                element.popup to open UI anchored to it (popupPositioning
+---                is preset to "panel", so click-away/Escape dismissal is free)
+---   directorOnly true (the default) hides the button from players
+---   ord          sort key; defaults to registration order
+--- The bar rebuilds on the next frame.
+function MapButtons.Register(id, def)
+    if type(id) ~= "string" or id == "" or type(def) ~= "table" then
+        return
+    end
+    local existing = MapButtons.registry[id]
+    local seq
+    if existing ~= nil then
+        seq = existing.seq
+    else
+        MapButtons.seq = MapButtons.seq + 1
+        seq = MapButtons.seq
+    end
+    MapButtons.registry[id] = {
+        id = id,
+        name = def.name or "Map Button",
+        icon = def.icon or "phosphor/lightning.png",
+        tooltip = def.tooltip,
+        click = def.click,
+        directorOnly = (def.directorOnly ~= false),
+        ord = def.ord,
+        seq = seq,
+    }
+    MapButtons.Refresh()
+end
+
+function MapButtons.Unregister(id)
+    if MapButtons.registry[id] == nil then
+        return
+    end
+    MapButtons.registry[id] = nil
+    MapButtons.Refresh()
+end
+
+--the entries this client shows, in display order: explicit ord first,
+--then registration order.
+function MapButtons.VisibleEntries()
+    local result = {}
+    for _, def in pairs(MapButtons.registry) do
+        if dmhub.isDM or not def.directorOnly then
+            result[#result + 1] = def
+        end
+    end
+    table.sort(result, function(a, b)
+        local ao, bo = a.ord, b.ord
+        if (ao ~= nil) ~= (bo ~= nil) then
+            return ao ~= nil
+        end
+        if ao ~= nil and ao ~= bo then
+            return ao < bo
+        end
+        return a.seq < b.seq
+    end)
+    return result
+end
+
+--the rail's styles plus the accent glyph. Both rules out-rank the rail's
+--own iconRailIcon rules by selector count, so the accent wins at rest
+--and under the pointer.
+function MapButtons.Styles()
+    local styles = IconRailStyles()
+    local extra = ThemeEngine.MergeTokens({
+        {
+            selectors = {"iconRailIcon", "mapButtonIcon"},
+            bgcolor = "@accent",
+        },
+        {
+            selectors = {"iconRailIcon", "mapButtonIcon", "parent:hover"},
+            bgcolor = "@accentHover",
+        },
+    })
+    for _, rule in ipairs(extra or {}) do
+        styles[#styles + 1] = rule
+    end
+    return styles
+end
+
+--how far in from the right edge the bar's right end sits: just inboard
+--of the right rail (its zoomed width plus one slot gap) while the rail
+--mode is on, else the rail's own edge inset. Layer units: the bar zooms
+--about its top-right corner (setRailScale), so the corner stays put.
+function MapButtons.RightInset()
+    if RailModeActive() then
+        return ICON_RAIL_LEFT + (ICON_RAIL_BUTTON + ICON_RAIL_GAP) * WindowUIScale()
+    end
+    return ICON_RAIL_LEFT
+end
+
+function MapButtons.CreateButton(def, index)
+    local id = def.id
+    return gui.Panel{
+        classes = {"iconRailButton", "mapButton", "scriptAnim"},
+        bgimage = true,
+        blurBackground = true,
+        width = ICON_RAIL_BUTTON,
+        height = ICON_RAIL_BUTTON,
+        lmargin = cond(index > 1, ICON_RAIL_GAP, 0),
+        flow = "none",
+        --presses must not reach the map underneath (the rail's reason).
+        swallowPress = true,
+        popupPositioning = "panel",
+        data = { mapButtonId = id },
+
+        gui.Panel{
+            classes = {"iconRailIcon", "mapButtonIcon"},
+            bgimage = def.icon,
+            width = 20,
+            height = 20,
+            halign = "center",
+            valign = "center",
+            interactable = false,
+        },
+
+        --the name, in the rail's label grammar, hanging under the button
+        --(the toolkit strip's StripHoverLabel placement): the bar is a
+        --horizontal row, so beside-the-button would cover a neighbour.
+        gui.Label{
+            classes = {"iconRailLabel"},
+            floating = true,
+            renderOnTop = true,
+            halign = "center",
+            valign = "top",
+            y = ICON_RAIL_BUTTON + 10,
+            interactable = false,
+            text = def.tooltip or def.name,
+            width = "auto",
+            height = "auto",
+            hpad = 8,
+            vpad = 4,
+            borderBox = true,
+            textWrap = false,
+        },
+
+        hover = function(element)
+            RailButtonSound("hover")
+        end,
+        dehover = function(element)
+            RailButtonSound("dehover")
+        end,
+        press = function(element)
+            RailButtonSound("press")
+        end,
+        click = function(element)
+            --a second click on a button whose popup is up closes it.
+            if element.popup ~= nil then
+                element.popup = nil
+                return
+            end
+            --re-read at click time so a replaced registration is live
+            --without a rebuild (the script-button discipline).
+            local current = MapButtons.registry[id]
+            if current == nil or type(current.click) ~= "function" then
+                return
+            end
+            element:PulseClass("clickPop")
+            current.click(element)
+        end,
+    }
+end
+
+--Tear down and rebuild the bar from the registry. No bar at all when
+--nothing is visible to this client or the hud is down.
+function MapButtons.Build()
+    if MapButtons.bar ~= nil and MapButtons.bar.valid then
+        MapButtons.bar:DestroySelf()
+    end
+    MapButtons.bar = nil
+
+    local layer = DocumentsLayer()
+    if layer == nil then
+        return
+    end
+    --sweep a bar left behind by a previous module generation.
+    for _, child in ipairs(layer.children) do
+        if child.valid and child:HasClass("mapButtonsBar") then
+            child:DestroySelf()
+        end
+    end
+
+    local entries = MapButtons.VisibleEntries()
+    if #entries == 0 then
+        return
+    end
+
+    local buttons = {}
+    for i, def in ipairs(entries) do
+        buttons[#buttons + 1] = MapButtons.CreateButton(def, i)
+    end
+
+    local bar = gui.Panel{
+        classes = {"mapButtonsBar"},
+        halign = "right",
+        valign = "top",
+        rmargin = MapButtons.RightInset(),
+        tmargin = IconRailTop(),
+        width = "auto",
+        height = "auto",
+        flow = "horizontal",
+        styles = MapButtons.Styles(),
+        children = buttons,
+
+        --the rail's Font Size zoom, anchored to the top-right corner the
+        --bar hangs from (see setRailScale in CreateIconRail).
+        setRailScale = function(element)
+            element.selfStyle.pivot = {x = 1, y = 1}
+            element.selfStyle.uiscale = WindowUIScale()
+        end,
+
+        --the inset and the zoom both depend on these.
+        multimonitor = {"fontsize", "iconrail"},
+        monitor = function(element)
+            MapButtons.Refresh()
+        end,
+
+        --die with the module generation; run the rail cadence for any
+        --child that wants refreshRail.
+        thinkTime = 0.5,
+        think = function(element)
+            if mod.unloaded then
+                element:DestroySelf()
+                return
+            end
+            element:FireEventTree("refreshRail")
+        end,
+    }
+    layer:AddChild(bar)
+    bar:FireEvent("setRailScale")
+    MapButtons.bar = bar
+end
+
+--Coalesced rebuild: registrations arrive in bursts (a map's scripts all
+--activating on one driver tick), and the layer may not be up yet -- a
+--refresh with no layer is a no-op, and the EnterGame/reload builders
+--below call this again once it is.
+function MapButtons.Refresh()
+    if MapButtons.rebuildPending then
+        return
+    end
+    MapButtons.rebuildPending = true
+    dmhub.Schedule(0.01, function()
+        MapButtons.rebuildPending = false
+        if mod.unloaded then
+            return
+        end
+        MapButtons.Build()
+    end)
+end
+
+--recolor on a theme/scheme switch, exactly as the rails do above.
+ThemeEngine.OnThemeChanged(mod, function()
+    local bar = MapButtons.bar
+    if bar ~= nil and bar.valid then
+        bar.styles = MapButtons.Styles()
+        bar:UpdateStyle()
+    end
+end)
+
 --Create or destroy the rails to match the setting; restore pinned windows
 --when they come up. Safe to call any time.
 function EnsureIconRail()
@@ -20692,6 +20992,7 @@ dmhub.Coroutine(function()
         end
         if DocumentsLayer() ~= nil then
             EnsureIconRail()
+            MapButtons.Refresh()
             return
         end
         coroutine.yield(0.1)
@@ -20717,6 +21018,9 @@ dmhub.RegisterEventHandler("EnterGame", function()
         end
 
         EnsureIconRail()
+        --the map-button bar rides the same hud lifecycle: scripts that
+        --registered buttons before the layer was up get their bar now.
+        MapButtons.Refresh()
 
         --A retired built-in (Map Maker, 2026-08-08) can still be named as
         --the active view in a game that used it. Its arrangement is
