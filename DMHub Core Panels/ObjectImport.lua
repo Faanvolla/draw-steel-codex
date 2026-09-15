@@ -688,6 +688,21 @@ local function SplitPlacedObject(original)
             end
         end)
 
+        --put the pieces in the same palette folder as the original's
+        --blueprint. imageid is the blueprint asset guid when the object was
+        --placed from the palette (an md5: value means an inline image with
+        --no blueprint, so the pieces go to the root).
+        local parentFolder = nil
+        pcall(function()
+            local assetid = original.imageid
+            if assetid ~= nil and string.sub(assetid, 1, 4) ~= "md5:" then
+                local node = assets:GetObjectNode(assetid)
+                if node ~= nil then
+                    parentFolder = node.parentFolder
+                end
+            end
+        end)
+
         local descriptions = {}
         for i, region in ipairs(regions) do
             descriptions[region.imageid] = string.format("%s %d", baseName, i)
@@ -718,6 +733,7 @@ local function SplitPlacedObject(original)
 
         importer:Upload{
             imageDescriptions = descriptions,
+            folder = parentFolder,
             progress = function(percent, desc)
                 operation.progress = percent * 0.9
                 operation:Update()
