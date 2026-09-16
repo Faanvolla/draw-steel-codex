@@ -1272,7 +1272,7 @@ function ActivatedAbility:TargetTypeEditor()
                                         text = "Make the ability affect creatures that are enemies of the ability's caster.",
                                     },
                                     {
-                                        script = "not enemy and type is not undead",
+                                        script = "(not enemy) and type is not undead",
                                         text = "Make the ability affect creatures that are not enemies of the ability's caster. The ability won't affect undead creatures.",
                                     },
                                     {
@@ -1378,7 +1378,7 @@ function ActivatedAbility:TargetTypeEditor()
 							text = "Make the ability affect creatures that are enemies of the ability's caster.",
 						},
 						{
-							script = "not enemy and type is not undead",
+							script = "(not enemy) and type is not undead",
 							text = "Make the ability affect creatures that are not enemies of the ability's caster. The ability won't affect undead creatures.",
 						},
 						{
