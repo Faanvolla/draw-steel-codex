@@ -652,6 +652,23 @@ TokenHud.RegisterPanel{
                         dmhub.initiativeQueue:SelectTurn(initiativeid)
                         dmhub:UploadInitiativeQueue()
 
+                        --Claiming the turn from the swords also selects the
+                        --token, so the action bar shows the creature whose
+                        --turn just started. Only select if it is not already
+                        --part of the selection: SelectToken clears the rest of
+                        --the selection, which we don't want to disturb when the
+                        --token is already selected.
+                        local alreadySelected = false
+                        for _,tok in ipairs(dmhub.selectedTokens) do
+                            if tok.charid == token.charid then
+                                alreadySelected = true
+                                break
+                            end
+                        end
+                        if not alreadySelected then
+                            dmhub.SelectToken(token.charid)
+                        end
+
                         local tokens = GameHud.GetTokensForInitiativeId(GameHud.instance, GameHud.instance.initiativeInterface, initiativeid)
                         for i,tok in ipairs(tokens) do
                             if tok.properties ~= nil then
