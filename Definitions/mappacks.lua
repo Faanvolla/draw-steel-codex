@@ -19,6 +19,7 @@
 --- @field description string
 --- @field footstep string recommended default footstep surface name (" if none)
 --- @field tier integer Patreon pledge in cents needed to unlock this appearance; 0 when free
+--- @field tierName string the creator's name for that pledge level ("Adventurer"); "" when free or unnamed
 --- @field org string creator organization whose Patreon the tier is measured against
 --- @field owned boolean whether the current account can use this appearance
 --- @field matchScore integer how well the entry matched a Search; 0 for an empty search
@@ -44,7 +45,7 @@ mappacks = {}
 --- @param options {success: nil|fun(), error: nil|fun(message: string)}
 function mappacks.Sync(options) end
 
---- Searches the synced index. Every space-separated term in options.text must match a word of the entry's name, scene, variant, description or a keyword, either whole or as the start of the word ("cave" finds "cavern"). matchScore sums each term's match quality: 4 whole keyword, 3 whole word elsewhere, 2 keyword prefix, 1 prefix elsewhere; 0 for an empty search. Results are in index order, rank them by matchScore yourself. options.pack restricts to one module fullid. Empty text returns every entry up to maxResults (default 200). Entries are per appearance variant: variantIndex 0 is the map's base image, n is its n-th alternate appearance. tier is the minimum monthly Patreon pledge in cents to the creator organization `org` that unlocks the appearance (0 = free); owned is whether this account may add it right now, evaluated live against the account's pledges.
+--- Searches the synced index. Every space-separated term in options.text must match a word of the entry's name, scene, variant, description or a keyword, either whole or as the start of the word ("cave" finds "cavern"). matchScore sums each term's match quality: 4 whole keyword, 3 whole word elsewhere, 2 keyword prefix, 1 prefix elsewhere; 0 for an empty search. Results are in index order, rank them by matchScore yourself. options.pack restricts to one module fullid. Empty text returns every entry up to maxResults (default 200). Entries are per appearance variant: variantIndex 0 is the map's base image, n is its n-th alternate appearance. tier is the minimum monthly Patreon pledge in cents to the creator organization `org` that unlocks the appearance (0 = free), tierName the creator's name for that pledge level (empty when free or unnamed); owned is whether this account may add it right now, evaluated live against the account's pledges.
 --- @param options {text: nil|string, pack: nil|string, maxResults: nil|integer}
 --- @return MapPackIndexEntry[]
 function mappacks.Search(options) end

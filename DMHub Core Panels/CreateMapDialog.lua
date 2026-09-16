@@ -1644,18 +1644,22 @@ mod.shared.ShowCreateMapDialog = function()
         selectors = {"cmNavIcon"},
         width = 18,
         height = 18,
+        halign = "left",
         valign = "center",
         rmargin = 8,
         bgcolor = "@fg",
     }
-    --a creator logo in place of the glyph: its own aspect within the row's
-    --height, untinted, so a wide wordmark reads.
+    --a creator logo in place of the glyph and the name: its own aspect
+    --within the row's height, untinted so a wide wordmark reads, and
+    --centered in the row since it stands alone (the count stays right).
     tileStyles[#tileStyles + 1] = {
         selectors = {"cmNavIcon", "cmNavLogo"},
         width = "auto",
         height = "auto",
         maxWidth = 40,
         maxHeight = 18,
+        halign = "center",
+        rmargin = 0,
         autosizeimage = true,
         bgcolor = "white",
     }
@@ -1825,7 +1829,6 @@ mod.shared.ShowCreateMapDialog = function()
         local nameLabel = gui.Label{ classes = {"cmNavLabel"}, halign = "left", text = label }
         local iconPanel = gui.Panel{
             classes = {"cmNavIcon"},
-            halign = "left",
             bgimage = icon,
         }
         return gui.Panel{
@@ -1909,8 +1912,9 @@ mod.shared.ShowCreateMapDialog = function()
         if IsPatron() then
             rows[#rows + 1] = LibraryFilterItem("Your Maps", #FilterByKind(all, "owned"), nil, "owned", "phosphor/patreon-logo-fill.png")
         end
-        --one row per pack, named for its creator and carrying the
-        --creator's logo once that record lands.
+        --one row per pack, named for its creator once that record lands.
+        --A creator with a logo shows the logo alone, centered: the name
+        --would only repeat what the wordmark already says.
         for _, packid in ipairs(packOrder) do
             local info = packInfo[packid]
             local row = LibraryFilterItem("Map Pack", info.count, packid, "all", "phosphor/user.png")
@@ -1925,6 +1929,7 @@ mod.shared.ShowCreateMapDialog = function()
                 if (creator.logo or "") ~= "" then
                     row.data.icon.bgimage = creator.logo
                     row.data.icon:SetClass("cmNavLogo", true)
+                    row.data.label:SetClass("collapsed", true)
                 end
             end)
         end
