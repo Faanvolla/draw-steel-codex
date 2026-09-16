@@ -177,12 +177,13 @@ local function HeartbeatAbilityShare()
 end
 
 -- Begin sharing ability data for the given token.
-local function BeginAbilitySharing(token, ability)
+local function BeginAbilitySharing(token, ability, section)
     g_sharingToken = token
     g_sharingData = {
         casterTokenId = token.charid,
         ability = ability,
         userid = dmhub.loginUserid,
+        section = section,
     }
 
     WriteAbilityShare()
@@ -2767,6 +2768,22 @@ function CharacterPanel.AcquireAbilityRollDialog(token, ability, symbols, displa
     --dialog's subtree, so it has to be told.
     local aiDriven = token ~= nil and token.valid and token.properties ~= nil
         and token.properties._tmp_aicontrol > 0
+
+    --An AI-driven cast never passes through the action bar's targeting UI,
+    --which is the only place sharing normally begins (HighlightAbilitySection
+    --with a caster), so without this the other players never see the Monster
+    --AI's card or its roll. Begin sharing here, now that DisplayAbility has
+    --made this the displayed ability. Gated on the hosting machine and the
+    --AI flag rather than token.canControl: canControl is elevation-aware, and
+    --this cast coroutine does not inherit the AI turn's host elevation past
+    --its first yield, so on a player host it reads false for the monster.
+    if aiDriven and displayed and g_sharingData == nil and g_displayedAbility ~= nil
+        and IsDMOrPlayerHost()
+        and dmhub.GetSettingValue("privaterolls") ~= "dm"
+        and IsTokenOnCurrentTurn(token)
+    then
+        BeginAbilitySharing(token, g_displayedAbility, "main")
+    end
 
     local dialog = CharacterPanel.EmbedDialogInAbility(aiDriven)
     if dialog ~= nil then

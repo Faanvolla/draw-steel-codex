@@ -869,6 +869,17 @@ GameHud.customInterfaces = {}
 
 GameHud.RegisterCustomInterface = function(provider)
 	if type(provider) == "table" and type(provider.active) == "function" then
+		--a Lua reload re-registers every provider: replace the one with
+		--the same id in place rather than appending, otherwise the stale
+		--generation's provider stays first and keeps winning.
+		if provider.id ~= nil then
+			for i,existing in ipairs(GameHud.customInterfaces) do
+				if existing.id == provider.id then
+					GameHud.customInterfaces[i] = provider
+					return
+				end
+			end
+		end
 		GameHud.customInterfaces[#GameHud.customInterfaces+1] = provider
 	end
 end
