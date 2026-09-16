@@ -582,6 +582,9 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 					id = "equipment-id-input",
 					text = document:try_get("id", "(unassigned)"),
 					refresh = function(element)
+						if element.hasInputFocus then
+							return
+						end
 						element.text = document:try_get("id", "(unassigned)")
 					end,
 				},
@@ -594,6 +597,12 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 					
 					events = {
 						refresh = function(element)
+							--the game hud fires refresh across this whole tree on every inbound
+							--patch, and document.name is only written on commit, so refreshing
+							--mid-edit would throw away what the user is typing.
+							if element.hasInputFocus then
+								return
+							end
 							element.text = document.name
 						end,
 						change = function(element)
@@ -743,6 +752,9 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 				end,
 				child = gui.Input{
 					refresh = function(element)
+						if element.hasInputFocus then
+							return
+						end
 						local destroyChance = document:AmmoDestroyChance()
 						element.text = string.format("%d", round(destroyChance*100))
 					end,
@@ -1061,6 +1073,9 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 					
 					events = {
 						refresh = function(element)
+							if element.hasInputFocus then
+								return
+							end
 							element.text = tostring(document.weight)
 						end,
 						change = function(element)
@@ -1095,7 +1110,9 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 						Refresh()
 					end,
 					refresh = function(element)
-						element.text = string.format("%d", document:try_get("massQuantity", 1))
+						if not element.hasInputFocus then
+							element.text = string.format("%d", document:try_get("massQuantity", 1))
+						end
 						element.parent:SetClass("collapsed-anim", (document:has_key("equipmentCategory") == false or not EquipmentCategory.quantityCategories[document.equipmentCategory]))
 					end,
 				},
@@ -1533,7 +1550,9 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 					events = {
 						refresh = function(element)
 							element.parent:SetClass("collapsed", (document.type ~= 'Gear' or document:try_get('consumable') == nil))
-							element.text = tostring(document:try_get('consumableCharges', 1))
+							if not element.hasInputFocus then
+								element.text = tostring(document:try_get('consumableCharges', 1))
+							end
 						end,
 						
 						change = function(element)
@@ -1582,7 +1601,7 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 
 					events = {
 						refresh = function(element)
-							if element.parent:HasClass('collapsed-anim') then
+							if element.hasInputFocus or element.parent:HasClass('collapsed-anim') then
 								return
 							end
 							element.text = tostring(document.armorClass)
@@ -1604,7 +1623,7 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 
 					events = {
 						refresh = function(element)
-							if element.parent:HasClass('collapsed-anim') then
+							if element.hasInputFocus or element.parent:HasClass('collapsed-anim') then
 								return
 							end
 							if document:has_key('strength') then
@@ -1656,7 +1675,7 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 
 					events = {
 						refresh = function(element)
-							if element.parent:HasClass('collapsed-anim') then
+							if element.hasInputFocus or element.parent:HasClass('collapsed-anim') then
 								return
 							end
 
@@ -1688,7 +1707,7 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 
 					events = {
 						refresh = function(element)
-							if element.parent:HasClass('collapsed-anim') then
+							if element.hasInputFocus or element.parent:HasClass('collapsed-anim') then
 								return
 							end
 							element.text = tostring(document.armorClassModifier)
@@ -1713,6 +1732,9 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 					id = 'weapon-bonus-input',
 					events = {
 						refresh = function(element)
+							if element.hasInputFocus then
+								return
+							end
 							element.text = tostring(document:try_get('hitbonus', 0))
 						end,
 						change = function(element)
@@ -1729,6 +1751,9 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 
 					events = {
 						refresh = function(element)
+							if element.hasInputFocus then
+								return
+							end
 							element.text = tostring(document:try_get('damage', 1))
 						end,
 						change = function(element)
@@ -1748,7 +1773,9 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 
 					events = {
 						refresh = function(element)
-							element.text = tostring(document:try_get('versatileDamage', ''))
+							if not element.hasInputFocus then
+								element.text = tostring(document:try_get('versatileDamage', ''))
+							end
 							element.parent:SetClass('collapsed-anim', document.type ~= 'Weapon' or document.hands ~= 'Versatile')
 						end,
 						change = function(element)
@@ -1767,7 +1794,9 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 					id = 'weapon-range-input',
 					events = {
 						refresh = function(element)
-							element.text = tostring(document:try_get('range', ''))
+							if not element.hasInputFocus then
+								element.text = tostring(document:try_get('range', ''))
+							end
 							element.parent:SetClass('collapsed-anim', document.type ~= 'Weapon' or not document:IsRanged())
 						end,
 						change = function(element)

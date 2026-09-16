@@ -13178,6 +13178,9 @@ local function CalculateSpellTargetFocusing(symbols)
     local potentialTargetTokens = {}
     if g_currentAbility == nil then return potentialTargetTokens end
     local spell = g_currentAbility
+    --DIAG: slider position, hoisted for the trace at the end of the function.
+    --A stuck "Objects" is what explains an armed=0 pass. nil = never resolved.
+    local diagTargetMode = nil
     if (spell.targetType == 'self' or spell.targetType == 'target' or spell.targetType == 'all' or spell.targetType == 'areatemplate') and g_synthesizedSpellsPanel:HasClass("collapsed") then
 
         local locs = nil
@@ -13200,6 +13203,8 @@ local function CalculateSpellTargetFocusing(symbols)
         --withhold the caster's own side ("Enemies"). See ActivatedAbility
         --GetTargetingMode in MCDMActivatedAbility.lua.
         local targeting, enemiesOnly = g_currentAbility:GetTargetingMode()
+        --not `targeting`: that collapses "enemies" and "creatures" both to false.
+        diagTargetMode = g_currentAbility:GetTargetMode()
         if g_currentAbility.targetAllegiance == "dead" then
             allTokens = dmhub.allTokensIncludingObjects
         elseif g_currentAbility.objectTarget == false then
@@ -13428,9 +13433,10 @@ local function CalculateSpellTargetFocusing(symbols)
             validCount = validCount + 1
         end
     end
-    local diagLine = string.format("TARGETDIAG:: ability=%s caster=%s armed=%d valid=%d chosen=%d",
+    local diagLine = string.format("TARGETDIAG:: ability=%s caster=%s mode=%s armed=%d valid=%d chosen=%d",
         tostring(spell.name),
         tostring(g_token ~= nil and (g_token.name or g_token.charid) or "nil"),
+        tostring(diagTargetMode),
         #potentialTargetTokens, validCount, #g_targetsChosen)
     if diagLine ~= g_lastTargetDiagLine then
         g_lastTargetDiagLine = diagLine

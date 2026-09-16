@@ -6749,6 +6749,16 @@ setting{
     default = {},
 }
 
+--Which rail sides are hidden outside rearrange mode: { left = true } or
+--{ right = true }. A set of hidden sides rather than per-side booleans so
+--the untouched value is {} and compares equal to a View saved before the
+--flag existed. Toggled by the rearrange-mode eye; travels with Views.
+setting{
+    id = "iconrailhidden",
+    storage = "pergamepreference",
+    default = {},
+}
+
 --Which panels are popped out into native OS windows, and where:
 --{ [panelKey] = {x = ..., y = ..., width = ..., height = ..., session = ...} }.
 --x/y are the OS window's top-left in SCREEN pixels (reported by the
@@ -10825,6 +10835,38 @@ local function RailSetRearranging(on)
     RebuildIconRails()
 end
 
+--Per-side rail visibility (the rearrange-mode eye). A hidden side is not
+--built at all in normal mode; rearrange mode builds both so the eye that
+--shows it again has somewhere to live. PanelDocument fields rather than
+--locals: this chunk runs close to Lua's 200-local ceiling.
+PanelDocument.RailSideHidden = function(side)
+    local hidden = dmhub.GetSettingValue("iconrailhidden") or {}
+    return hidden[side] == true
+end
+
+--Hiding a side forces the other visible, so one rail always stays and
+--rearrange mode stays reachable. Showing a side touches nothing else.
+PanelDocument.RailSetSideHidden = function(side, hidden)
+    local stored = DeepCopy(dmhub.GetSettingValue("iconrailhidden") or {})
+    if hidden then
+        stored = { [side] = true }
+    else
+        stored[side] = nil
+    end
+    dmhub.SetSettingValue("iconrailhidden", stored)
+    RebuildIconRails()
+end
+
+--The side a new button should land on: the requested side, unless it is
+--hidden, in which case the other one -- a button added to a hidden rail
+--would appear nowhere.
+PanelDocument.RailVisibleSide = function(side)
+    if PanelDocument.RailSideHidden(side) then
+        return cond(side == "left", "right", "left")
+    end
+    return side
+end
+
 --Non-drag rearrangement (accessibility parity, Views brief A9a): the
 --same moves dragging performs, driven from the rail-button context menu.
 --op: "up" | "down" | "side" | "remove".
@@ -10915,6 +10957,7 @@ end
 --Add a panel to a rail at the next free slot (the inverse of "Remove
 --from rail"; also how non-curated panels first reach the rail).
 local function RailAddPanel(name, side)
+    side = PanelDocument.RailVisibleSide(side)
     local sides, inert = RailLayout()
     local key = string.lower(name)
     for _, l in pairs(sides) do
@@ -11217,6 +11260,7 @@ local function RailAddKey(key, side)
     if side ~= "left" and side ~= "right" then
         side = "left"
     end
+    side = PanelDocument.RailVisibleSide(side)
     local sides, inert = RailLayout()
     for _, l in pairs(sides) do
         for i, e in ipairs(l) do
@@ -17294,6 +17338,66 @@ local function CreateIconRail(side, entries)
                 RailSetRearranging(false)
             end,
         }
+
+        --The rail visibility eye, inboard of the STOP button (right of it
+        --on the left rail, left of it on the right rail). Same floating
+        --band, so it never displaces a slot either.
+        local hidden = PanelDocument.RailSideHidden(side)
+        buttons[#buttons + 1] = gui.Panel{
+            classes = {"iconRailButton"},
+            bgimage = true,
+            blurBackground = true,
+            floating = true,
+            x = cond(side == "left", 1, -1) * (ICON_RAIL_BUTTON + PanelDocument.RAIL_STOP_GAP),
+            y = -(ICON_RAIL_BUTTON + PanelDocument.RAIL_STOP_GAP),
+            width = ICON_RAIL_BUTTON,
+            height = ICON_RAIL_BUTTON,
+            flow = "none",
+            halign = "center",
+            valign = "top",
+            swallowPress = true,
+            data = {},
+
+            gui.Panel{
+                classes = {"iconRailIcon"},
+                bgimage = cond(hidden, "phosphor/eye-slash-fill.png", "phosphor/eye-fill.png"),
+                width = 20,
+                height = 20,
+                halign = "center",
+                valign = "center",
+            },
+
+            gui.Label{
+                classes = {"iconRailLabel"},
+                floating = true,
+                renderOnTop = true,
+                x = nearSideLabel.x,
+                halign = nearSideLabel.halign,
+                valign = "center",
+                interactable = false,
+                text = cond(hidden, "SHOW RAIL", "HIDE RAIL"),
+                width = "auto",
+                height = "auto",
+                hpad = 8,
+                vpad = 4,
+                borderBox = true,
+                textWrap = false,
+            },
+
+            hover = function(element)
+                RailButtonSound("hover")
+            end,
+            dehover = function(element)
+                RailButtonSound("dehover")
+            end,
+            press = function(element)
+                RailButtonSound("press")
+            end,
+
+            click = function(element)
+                PanelDocument.RailSetSideHidden(side, not hidden)
+            end,
+        }
     end
 
     local prevBottom = nil
@@ -19928,8 +20032,8 @@ local function CreateIconRail(side, entries)
             element:FireEvent("syncDockMode")
         end,
 
-        --"/" with nothing focused: summon chat and start typing. Only the
-        --left rail is registered as a chat listener (see BuildIconRails) so
+        --"/" with nothing focused: summon chat and start typing. Only one
+        --rail is registered as a chat listener (see BuildIconRails) so
         --this runs once, whichever rail the chat button lives on.
         slash = function(element)
             RailSlashOpensChat()
@@ -20114,23 +20218,27 @@ local function WrapRailOverflow(sides)
         local span = e.span or 1
         local target = cond(o.from == "left", "right", "left")
         local placed = false
-        for s = 0, maxSlots - span do
-            local free = true
-            for i = 0, span - 1 do
-                if used[target][s + i] then
-                    free = false
+        --never onto a side that is not built (hidden outside rearrange
+        --mode): the button would vanish instead of overflowing visibly.
+        if g_railRearranging or not PanelDocument.RailSideHidden(target) then
+            for s = 0, maxSlots - span do
+                local free = true
+                for i = 0, span - 1 do
+                    if used[target][s + i] then
+                        free = false
+                        break
+                    end
+                end
+                if free then
+                    for i = 0, span - 1 do
+                        used[target][s + i] = true
+                    end
+                    e.slot = s
+                    local list = sides[target]
+                    list[#list + 1] = e
+                    placed = true
                     break
                 end
-            end
-            if free then
-                for i = 0, span - 1 do
-                    used[target][s + i] = true
-                end
-                e.slot = s
-                local list = sides[target]
-                list[#list + 1] = e
-                placed = true
-                break
             end
         end
         if not placed then
@@ -20309,25 +20417,32 @@ local function BuildIconRails()
     local sides = RailLayout()
     WrapRailOverflow(sides)
     for _, side in ipairs({"left", "right"}) do
-        local rail = CreateIconRail(side, sides[side])
-        g_iconRails[side] = rail
-        layer:AddChild(rail)
-        --apply the Font Size zoom now that the rail is attached (pivot
-        --writes need an attached panel -- see setRailScale).
-        rail:FireEvent("setRailScale")
-        if g_railRearranging then
-            local trash = CreateRailTrashZone(side)
-            g_railTrashZones[side] = trash
-            layer:AddChild(trash)
+        --a hidden side is not built in normal mode: nothing to paint, no
+        --hover surface, no + prompt. Rearrange mode builds both so its
+        --eye can bring the side back.
+        if g_railRearranging or not PanelDocument.RailSideHidden(side) then
+            local rail = CreateIconRail(side, sides[side])
+            g_iconRails[side] = rail
+            layer:AddChild(rail)
+            --apply the Font Size zoom now that the rail is attached (pivot
+            --writes need an attached panel -- see setRailScale).
+            rail:FireEvent("setRailScale")
+            if g_railRearranging then
+                local trash = CreateRailTrashZone(side)
+                g_railTrashZones[side] = trash
+                layer:AddChild(trash)
+            end
         end
     end
 
     --One chat listener for both rails, so the "/" hotkey opens one window.
     --The rail ROOT is the listener on purpose: while its own dock is on
     --screen the rail collapses its children (and collapsed panels process
-    --no events), but the root itself stays live.
-    if g_iconRails.left ~= nil then
-        chat.events:Listen(g_iconRails.left)
+    --no events), but the root itself stays live. Whichever rail exists
+    --takes it -- the left side may be hidden.
+    local listener = g_iconRails.left or g_iconRails.right
+    if listener ~= nil then
+        chat.events:Listen(listener)
     end
 end
 
@@ -21593,6 +21708,7 @@ function ViewsCaptureLayout()
         },
         leftDockOff = dmhub.GetSettingValue("leftdockoffscreen") == true,
         rightDockOff = dmhub.GetSettingValue("rightdockoffscreen") == true,
+        railHidden = DeepCopy(dmhub.GetSettingValue("iconrailhidden") or {}),
     }
 end
 
@@ -21792,6 +21908,16 @@ function ViewsApplyLayout(layout)
     end
     dmhub.SetSettingValue("leftdockoffscreen", layout.leftDockOff ~= false)
     dmhub.SetSettingValue("rightdockoffscreen", layout.rightDockOff ~= false)
+
+    --rail visibility travels with the view. At most one side hidden: a
+    --record naming both keeps only the left.
+    local railHidden = {}
+    for _, side in ipairs({"left", "right"}) do
+        if (layout.railHidden or {})[side] == true and next(railHidden) == nil then
+            railHidden[side] = true
+        end
+    end
+    dmhub.SetSettingValue("iconrailhidden", railHidden)
 
     RebuildIconRails()
     return skipped
