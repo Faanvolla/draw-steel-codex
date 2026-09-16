@@ -57,6 +57,20 @@ shadow-elves.lua
    - Non-minions: iterate up to 6 times calling `FindAndExecuteMove()`, which scores every registered move and executes the best one. A scoring or execution error quarantines that move for the actor; `"failed"` continues to another cycle, while `"none"` or `"unsafe"` stops the actor.
 5. After all tokens act, initiative advances automatically.
 
+When no registered or synthesized move scores above zero, the actor advances
+toward the enemy with the cheapest complete traversable route to an unoccupied
+adjacent space with line of sight. It takes the furthest reachable step on that
+route using its remaining movement, then reconsiders attacks on the next cycle.
+Existing strike planning includes moving into charge position and takes priority
+over this fallback. If ordinary movement cannot advance it further, it casts
+`Use Move Action` in Advance mode for another speed's worth of movement, provided
+the main action is affordable and a route exists. Minions without a reachable
+signature target use the same fallback; squad target caps still take priority.
+
+Run `../dependencies/lua/bin/lua.exe tests/ai_advance_test.lua` and
+`../dependencies/lua/bin/lua.exe tests/ai_minion_critical_test.lua` from the codex
+root to check route selection, action economy, attack priority, and squad retries.
+
 ### Player reactions during AI movement
 
 `MonsterAI:MoveToken` does not return until the token's path animation finishes

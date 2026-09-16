@@ -1316,7 +1316,7 @@ end
 function MonsterAI:FindSquadActionToken()
     --A critical hit may belong to a different minion than the squad's first actor.
     for _,member in ipairs(self.squadMembers) do
-        if self.TokenIsLiveCombatant(member.token) then
+        if not member.skippedForTargetLimit and self.TokenIsLiveCombatant(member.token) then
             for _,ability in ipairs(member.token.properties:GetActivatedAbilities()) do
                 if ability.categorization == "Signature Ability" and ability:CanAfford(member.token) then
                     return member.token
@@ -2624,6 +2624,8 @@ function MonsterAI:ExecuteSquadStrike(ability)
     local rays = {}
     local targetPairs = {}
     local assignedTargets = {}
+    local assignedTargetIds = {}
+    local advanced = false
 
     local function AffordableMemberAbility(memberToken)
         if not self.TokenIsLiveCombatant(memberToken) then
@@ -2640,12 +2642,14 @@ function MonsterAI:ExecuteSquadStrike(ability)
     local function RefreshAssignments()
         local livePairs = {}
         local liveAssignedTargets = {}
+        assignedTargetIds = {}
         for _,pair in ipairs(targetPairs) do
             local attacker = dmhub.GetTokenById(pair.a)
             local target = dmhub.GetTokenById(pair.b)
             if AffordableMemberAbility(attacker) ~= nil and self.TokenIsLiveCombatant(target) then
                 livePairs[#livePairs+1] = pair
                 liveAssignedTargets[pair.b] = (liveAssignedTargets[pair.b] or 0) + 1
+                assignedTargetIds[#assignedTargetIds+1] = target.id
             end
         end
         targetPairs = livePairs
@@ -2656,7 +2660,7 @@ function MonsterAI:ExecuteSquadStrike(ability)
         RefreshAssignments()
         local memberToken = squadMember.token
         local memberAbility = AffordableMemberAbility(memberToken)
-        if memberAbility ~= nil then
+        if memberAbility ~= nil and not squadMember.skippedForTargetLimit then
             local memberName = self.TokenLogName(memberToken)
             local memberId = memberToken.charid
             local queue = dmhub.initiativeQueue
@@ -2671,15 +2675,20 @@ function MonsterAI:ExecuteSquadStrike(ability)
             local options = self:FindSquadMemberStrikeOptions(squadMember, memberAbility)
             local bestOption = nil
             local bestScore = nil
+            local targetLimitReached = false
             for _,option in pairs(options) do
-                local score = option.cost
-                if assignedTargets[option.token.charid] ~= nil then
-                    score = score + 10000*assignedTargets[option.token.charid]
-                end
-
-                if bestOption == nil or score < bestScore then
-                    bestOption = option
-                    bestScore = score
+                local assignedCount = assignedTargets[option.token.charid] or 0
+                --Use the same repeat-target rule as manual squad targeting,
+                --including abilities and creatures that waive the minion limit.
+                if assignedCount > 0 and not memberAbility:CanTargetAdditionalTimes(
+                    memberToken, {targetPairs = targetPairs}, assignedTargetIds, option.token) then
+                    targetLimitReached = true
+                else
+                    local score = option.cost + 10000*assignedCount
+                    if bestOption == nil or score < bestScore then
+                        bestOption = option
+                        bestScore = score
+                    end
                 end
             end
 
@@ -2740,14 +2749,21 @@ function MonsterAI:ExecuteSquadStrike(ability)
                     })
                 end
             else
+                --These member records last for this squad's turn. Do not let
+                --critical-hit retries give capped-out minions a fresh strike.
+                squadMember.skippedForTargetLimit = targetLimitReached
                 self:LogDecision("MINION ASSIGNMENT REJECTED", {
                     actor = memberName,
                     actorId = memberId,
                     category = "Main Action",
                     move = "Minion Signature Ability",
                     ability = abilityName,
-                    reason = "no legal target can be reached",
+                    reason = targetLimitReached and "all reachable targets have reached the squad target limit"
+                        or "no legal target can be reached",
                 })
+                if not targetLimitReached then
+                    advanced = self:ExecuteAdvanceFallback(memberToken) or advanced
+                end
             end
         else
             self:LogDecision("MINION ASSIGNMENT CANCELLED", {
@@ -2756,7 +2772,8 @@ function MonsterAI:ExecuteSquadStrike(ability)
                 category = "Main Action",
                 move = "Minion Signature Ability",
                 ability = abilityName,
-                reason = "squad member is dead or cannot afford the signature ability",
+                reason = squadMember.skippedForTargetLimit and "member already skipped for the squad target limit"
+                    or "squad member is dead or cannot afford the signature ability",
                 result = "continuing with eligible squad members",
             })
         end
@@ -2832,7 +2849,7 @@ function MonsterAI:ExecuteSquadStrike(ability)
         result = logMessage,
     })
 
-    return executed
+    return executed or advanced
 end
 
 function MonsterAI:FindBestMoveToUseStrike(token, ability, scorefn)
@@ -3915,6 +3932,106 @@ function MonsterAI:HandleMoveExecutionFailure(moveid, abilityName, err)
     return g_moveResultFailed
 end
 
+-- Compare complete routes to legal spaces beside enemies, then take the furthest
+-- affordable step on the winning route. Straight-line distance would get stuck
+-- on the wrong side of walls and can prefer an enemy we cannot actually reach.
+function MonsterAI:FindAdvancePlan(token, paths)
+    local mover = self:GetMovementToken(token)
+    local reachable = {}
+    local canMove = false
+    for _,info in pairs(paths) do
+        reachable[info.loc.xyfloorOnly.str] = info
+        if info.cost > 0 then canMove = true end
+    end
+    if not canMove then return nil end
+    local best = nil
+    for _,enemy in ipairs(self.enemyTokens) do
+        if self.TokenIsLiveCombatant(enemy) then
+            if mover:Distance(enemy) <= 1 and mover:GetLineOfSight(enemy) > 0 then
+                mover:ClearMovementArrow()
+                return nil
+            end
+            local size = math.max(1, mover.tileSize)
+            local enemySize = math.max(1, enemy.tileSize)
+            for x = -size,enemySize do
+                for y = -size,enemySize do
+                    if x == -size or x == enemySize or y == -size or y == enemySize then
+                        local goal = enemy.loc:dir(x, y)
+                        if not self:MovementLocOverlapsCreature(token, goal) then
+                            local preview = mover:MarkMovementArrow(goal, {})
+                            local path = preview ~= nil and preview.path or nil
+                            local reachableGoal = false
+                            if path ~= nil and path.destination.xyfloorOnly.str == goal.xyfloorOnly.str then
+                                self:ExecuteWithTheoreticalMovementLoc(token, path.destination, function()
+                                    reachableGoal = mover:Distance(enemy) <= 1 and mover:GetLineOfSight(enemy) > 0
+                                end)
+                            end
+                            if reachableGoal then
+                                -- Engine previews reuse their path object. Keep only value locations.
+                                local dest = nil
+                                for _,step in ipairs(path.steps) do
+                                    local info = reachable[step.xyfloorOnly.str]
+                                    if info ~= nil and info.cost > 0 then dest = info.loc end
+                                end
+                                if dest ~= nil and (best == nil or path.cost < best.cost) then
+                                    best = {loc = dest, enemy = enemy, cost = path.cost}
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    mover:ClearMovementArrow()
+    return best
+end
+
+function MonsterAI:ExecuteAdvanceFallback(token)
+    local mover = self:GetMovementToken(token)
+    local plan = self:FindAdvancePlan(token, self:CalculateRemainingMovementPaths(token))
+    local advance = nil
+    if plan == nil then
+        advance = FindAbilityByName(token.properties:GetActivatedAbilities(), "Use Move Action")
+        if advance == nil or not advance:CanAfford(token) then return false end
+        plan = self:FindAdvancePlan(token,
+            self:CalculateMovementPaths(token, math.max(0, mover.properties:CurrentMovementSpeed())*10))
+    end
+    if plan == nil then return false end
+
+    self:LogDecision("ADVANCE FALLBACK", {
+        actor = self.TokenLogName(token),
+        ability = advance ~= nil and advance.name or nil,
+        to = self.LocLogName(plan.loc),
+        targets = self.TargetsLogName({{token = plan.enemy}}),
+        plan = advance ~= nil and "convert main action to Advance" or "use remaining movement",
+    })
+    local origin = mover.loc.str
+    if advance == nil then
+        self:MoveToken(token, plan.loc, {maxCost = 10000, ignoreFalling = false}, true)
+    else
+        -- Advance invokes Move Speed. Use the real cast to pay the main action,
+        -- and track its movement reactions just as MoveToken does.
+        local activityId = dmhub.GenerateGuid()
+        local previous = mover.properties:try_get("_tmp_aiActivityId")
+        mover.properties._tmp_aiActivityId = activityId
+        self:SetTargetsForExpectedPrompt{casterid = token.charid, targets = {{loc = plan.loc}}}
+        local ok, err = RunYieldingFunction(function()
+            self:ExecuteAbility(token, advance, {{token = token}}, {symbols = {mode = 1}})
+        end)
+        mover.properties._tmp_aiActivityId = previous
+        self._tmp_expectedPromptTarget = nil
+        if not ok then error(err) end
+        local completed, reason = self:WaitForMovementActivity(mover, activityId)
+        if not completed then
+            self._tmp_abortTurn = reason
+            error(reason)
+        end
+    end
+    self.Sleep(0.5)
+    return mover.valid and mover.loc.str ~= origin
+end
+
 function MonsterAI:FindAndExecuteMove()
     local token = self.token
     local searchContext = {}
@@ -4179,6 +4296,19 @@ function MonsterAI:FindAndExecuteMove()
         return g_moveResultExecuted
     end
 
+    local advanceId = "Advance toward enemy"
+    if not failedMoves[advanceId] then
+        self:SetMoveLogContext(token, {id = advanceId, category = "Movement"})
+        local advanced = false
+        local ok, err = RunYieldingFunction(function()
+            advanced = self:ExecuteAdvanceFallback(token)
+        end)
+        if not ok then
+            return self:HandleMoveExecutionFailure(advanceId, "Advance", err)
+        end
+        if advanced then return g_moveResultExecuted end
+    end
+
     self:SetLogContext(token, searchContext)
     self:LogDecision("MOVE SEARCH FINISHED", {
         reason = "no move scored above zero",
@@ -4247,13 +4377,17 @@ function MonsterAI:ExecuteAbility(casterToken, ability, targets, options)
     if targets == nil then
         targets = {}
 
-        if ability.targetType == "all" then
-            local range = ability:GetRange(casterToken.properties)
-            --a burst ability.
+        if ability.targetType == "all" or ability.targetType == "map" then
+            local range = nil
+            if ability.targetType == "all" then
+                range = ability:GetRange(casterToken.properties)
+            end
+            --Map abilities use their target filter across the whole map;
+            --burst abilities also restrict targets to their range.
             for _,token in ipairs(dmhub.allTokens) do
                 if self.TokenIsLiveCombatant(token)
                     and ability:TargetPassesFilter(casterToken, token, symbols)
-                    and token:Distance(casterToken) <= range then
+                    and (range == nil or token:Distance(casterToken) <= range) then
                     targets[#targets+1] = { token = token }
                 end
             end

@@ -8,6 +8,14 @@ local function section(first, last)
     return source:sub(start, assert(source:find(last, start + #first, true)) - 1)
 end
 local function noop() end
+--Exercise the actual manual-targeting rule as well as the AI planner.
+local rulesFile = assert(io.open("Draw Steel Core Rules/MCDMActivatedAbility.lua", "r"))
+local rulesSource = rulesFile:read("*a")
+rulesFile:close()
+ActivatedAbility = {}
+local ruleStart = assert(rulesSource:find("function ActivatedAbility:CanTargetAdditionalTimes(", 1, true))
+local ruleEnd = assert(rulesSource:find("local function GetTargetsWithTokens", ruleStart, true))
+assert(load(rulesSource:sub(ruleStart, ruleEnd - 1)))()
 local function try_get(self, key, default)
     local value = self[key]
     if value == nil then return default end
@@ -42,7 +50,7 @@ local checks = 0
 local function check(value, message) assert(value, message); checks = checks + 1 end
 local function fixture(count)
     local tokens, members, casts = {}, {}, {}
-    local enemy = {charid = "enemy", name = "enemy", valid = true}
+    local enemy = {id = "enemy", charid = "enemy", name = "enemy", valid = true}
     tokens.enemy = enemy
     dmhub = {
         initiativeQueue = {hidden = false, round = 1},
@@ -52,6 +60,8 @@ local function fixture(count)
     }
     local ability = {name = "Whistling Axes", categorization = "Signature Ability"}
     function ability:CanAfford(t) return t.actions > 0 end
+    function ability:UsesSquadStrike() return true end
+    ability.CanTargetAdditionalTimes = ActivatedAbility.CanTargetAdditionalTimes
     for i=1,count do
         local t = {charid = tostring(i), name = "Minion " .. i, valid = true, actions = 1, moved = 0, loc = "start"}
         t.properties = {minion = true, monster_type = "Dwarf Axethrower", try_get = try_get,
@@ -59,6 +69,10 @@ local function fixture(count)
             GetActivatedAbilities = function() return {ability} end,
             CurrentMovementSpeed = function() return 5 end,
             DistanceMovedThisTurn = function() return t.moved end,
+            CalculateNamedCustomAttribute = function(_, name)
+                assert(name == "Ignore Minion Target Limit")
+                return t.ignoreTargetLimit and 1 or 0
+            end,
             GetPierceWalls = function() return 0 end}
         tokens[t.charid] = t
         members[#members+1] = {token = t}
@@ -67,13 +81,22 @@ local function fixture(count)
         pathBudgets = {}, moveCounts = {}, _tmp_failedMoves = {}}, {__index = MonsterAI})
     function ai:SetupCombatants(t) self.token = t; self.abilities = t.properties:GetActivatedAbilities() end
     function ai:GetMovementToken(t) return t end
+    function ai:ExecuteAdvanceFallback(t)
+        if self.advanceFallback then return self.advanceFallback(t) end
+        return false
+    end
     function ai:CalculateMovementPaths(t, budget)
         self.pathBudgets[#self.pathBudgets+1] = {token = t, budget = budget}
         return {{loc = budget > 0 and "attack position" or t.loc, cost = budget}}
     end
     function ai:FindSquadMemberStrikeOptions(member)
         if self.noTargets then return {} end
-        return {{token = enemy, loc = member.paths[1].loc, cost = 0}}
+        local options = {{token = enemy, loc = member.paths[1].loc, cost = 0}}
+        if self.otherEnemy then
+            tokens[self.otherEnemy.charid] = self.otherEnemy
+            options[#options+1] = {token = self.otherEnemy, loc = member.paths[1].loc, cost = 100000}
+        end
+        return options
     end
     function ai:MoveToken(t, loc)
         self.moveCounts[t.charid] = (self.moveCounts[t.charid] or 0) + 1
@@ -89,7 +112,7 @@ local function fixture(count)
             t.actions = t.actions - 1
             ids[#ids+1] = t.charid
         end
-        casts[#casts+1] = {caster = caster.charid, ids = ids}
+        casts[#casts+1] = {caster = caster.charid, ids = ids, pairs = options.symbols.targetPairs}
         --The normal critical-hit rule restores a Main Action after the cast.
         if self.afterCast then self.afterCast(#casts, tokens) end
     end
@@ -150,7 +173,53 @@ run()
 check(#ai.casts == 0 and ai.moveCounts["1"] == nil, "no legal targets ends the squad turn")
 
 ai, tokens, run = fixture(1)
+ai.noTargets = true
+local advances = 0
+ai.advanceFallback = function()
+    advances = advances + 1
+    ai.noTargets = false
+    return true
+end
+run()
+check(advances == 1 and #ai.casts == 1, "advancing minion reconsiders its signature next cycle")
+
+ai, tokens, run = fixture(1)
 ai.afterCast = function() tokens["1"].actions = 1; ai._tmp_abortTurn = true end
 run()
 check(#ai.casts == 1, "stop request prevents the extra action")
+
+ai, tokens, run = fixture(8)
+run()
+check(#ai.casts == 1 and #ai.casts[1].ids == 3, "one enemy receives at most three attackers across ordinary action cycles")
+check(ai.moveCounts["4"] == nil and tokens["4"].actions == 1, "capped-out minions do not move or spend an action")
+
+ai, tokens, run = fixture(7)
+ai.otherEnemy = {id = "other", charid = "other", name = "other", valid = true}
+run()
+local targetCounts = {}
+for _,pair in ipairs(ai.casts[1].pairs) do targetCounts[pair.b] = (targetCounts[pair.b] or 0) + 1 end
+check(#ai.casts == 1 and targetCounts.enemy == 3 and targetCounts.other == 3,
+    "full preferred target forces another legal target even with a much higher movement cost")
+
+ai, tokens, run = fixture(5)
+for i=1,5 do tokens[tostring(i)].ignoreTargetLimit = true end
+run()
+check(#ai.casts == 1 and #ai.casts[1].ids == 5, "Ignore Minion Target Limit preserves unlimited squad targeting")
+
+ai, tokens, run = fixture(5)
+tokens["1"].properties:GetActivatedAbilities()[1].repeatTargets = true
+run()
+check(#ai.casts == 1 and #ai.casts[1].ids == 5, "explicit repeat-target abilities preserve the manual-targeting exception")
+
+ai, tokens, run = fixture(5)
+ai.afterCast = function(n) if n == 1 then tokens["2"].actions = 1 end end
+run()
+check(#ai.casts == 2 and #ai.casts[2].ids == 1 and ai.casts[2].ids[1] == "2",
+    "genuine critical follow-up excludes minions skipped for the target cap")
+
+ai, tokens, run = fixture(5)
+ai.afterMove = function(t) if t.charid == "3" then tokens["1"].valid = false end end
+run()
+check(#ai.casts == 1 and #ai.casts[1].ids == 3 and ai.casts[1].ids[3] == "4",
+    "an attacker killed during movement frees its target slot for a surviving minion")
 print(string.format("PASS: %d minion critical-hit checks", checks))
