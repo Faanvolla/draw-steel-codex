@@ -417,6 +417,14 @@ local EXIT_DELAY = 4
 
 local m_restrictionInstalled = false
 local m_zoneMarker = nil
+--the map the restriction/outline were built for, and the markup-zone
+--revision they were read at. The game loads on whatever map the engine picks
+--first (lowest ord) and EnsureOnEncounterMap travels to the chosen map
+--AFTER the 1s driver has already confined to the first map's Start zone, so
+--the confinement must follow the current map or every encounter inherits
+--the first map's starting area.
+local m_restrictionMapId = nil
+local m_restrictionZonesSeq = nil
 local m_outcomeSeen = false
 local m_exitScheduled = false
 --set the moment THIS user presses Proceed on the victory/defeat screen; the
@@ -428,6 +436,8 @@ local function ClearStartZoneConfinement()
         m_restrictionInstalled = false
         pcall(function() dmhub.ClearMovementRestriction() end)
     end
+    m_restrictionMapId = nil
+    m_restrictionZonesSeq = nil
     if m_zoneMarker ~= nil then
         pcall(function() m_zoneMarker:Destroy() end)
         m_zoneMarker = nil
@@ -459,8 +469,19 @@ local function UpdateStartZoneConfinement()
         return
     end
 
+    local mapid = game.currentMapId
+    local zonesSeq = nil
+    pcall(function() zonesSeq = dmhub.markupZonesSeq end)
+
     if m_restrictionInstalled then
-        return
+        if m_restrictionMapId == mapid and m_restrictionZonesSeq == zonesSeq then
+            return
+        end
+        --the map changed under us (EnsureOnEncounterMap travelling to the
+        --chosen encounter, or a resume landing elsewhere) or the zones were
+        --edited: tear down and rebuild for what is now on screen.
+        ClearStartZoneConfinement()
+        GameHud.SetTooltipsSuppressed("eotw", true)
     end
 
     local locs = StartZoneLocs()
@@ -470,6 +491,8 @@ local function UpdateStartZoneConfinement()
     end
 
     m_restrictionInstalled = true
+    m_restrictionMapId = mapid
+    m_restrictionZonesSeq = zonesSeq
     --pcall: an engine build without the Movement Restriction API degrades to
     --no confinement (the zone outline below still draws).
     pcall(function() dmhub.SetMovementRestriction{ locs = locs } end)

@@ -1711,6 +1711,18 @@ hook plus leafy EotW code:
   has Start-zone tiles -> install restriction + overlay, else clear both. A
   poll (rather than event wiring) self-heals across Lua reloads, late
   `IsEotwGame` flips, and map loads.
+- **The confinement follows the current map (FIXED 2026-09-16, verified live
+  on the Angry Dwarves map)**: the poll remembers the `game.currentMapId` and
+  `dmhub.markupZonesSeq` the restriction/outline were built from
+  (`m_restrictionMapId` / `m_restrictionZonesSeq`) and tears down and rebuilds
+  when either changes. Before this it installed once and then returned early
+  on `m_restrictionInstalled` forever -- and the game LOADS on whichever map
+  the engine picks first (lowest ord: `Encounter: Goblin Ambush`) before
+  `EnsureOnEncounterMap` travels to the chosen encounter, so every encounter
+  inherited the Goblin Ambush starting area (restriction AND dashed outline)
+  while hero placement, which reads the zone fresh after the travel, was
+  correct. Any future "read the Start zone once and cache it" code must key
+  the cache the same way.
 
 ### Tooltip suppression during the pre-combat phase (DECIDED + BUILT 2026-08-30; engine NEEDS BUILD)
 
