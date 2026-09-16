@@ -1903,6 +1903,25 @@ CharacterModifier.TypeInfo.power = {
 
                 if modifier:try_get("changeTarget", false) then
 
+                    --Lines of Force: selecting a new target is optional, so the
+                    --original target stays pickable in the retarget picker.
+                    children[#children+1] = gui.Check{
+                        styles = ThemeEngine.GetStyles(),
+                        style = {
+                            height = 30,
+                            width = 260,
+                            fontSize = 18,
+                            halign = "left",
+                        },
+
+                        text = "Allow Keeping Original Target",
+                        value = modifier:try_get("changeTargetAllowOriginal", false),
+                        change = function(element)
+                            modifier.changeTargetAllowOriginal = element.value
+                            Refresh()
+                        end,
+                    }
+
                     local helpSymbols = DeepCopy(CharacterModifier.defaultHelpSymbols)
 
                     helpSymbols.current = {

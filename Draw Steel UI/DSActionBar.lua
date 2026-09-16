@@ -4794,7 +4794,8 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
                                             end
                                         end
 
-                                        RuleUtils.RemoveRetargetStrikeTargets(targets, trigger)
+                                        RuleUtils.RemoveRetargetStrikeTargets(targets, trigger, trigger.targets[1])
+                                        local allowOriginal = RuleUtils.RetargetAllowsOriginal(trigger)
 
                                         local sourceToken = token
                                         local range = tonumber(ExecuteGoblinScript(trigger.powerRollModifier.range, token.properties:LookupSymbol(symbols), 10))
@@ -4817,7 +4818,7 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
                                             radius = range,
                                             targets = targets,
                                             reasons = retargetReasons,
-                                            prompt = RuleUtils.RetargetPromptText(sourceToken, range, rangeType),
+                                            prompt = RuleUtils.RetargetPromptText(sourceToken, range, rangeType, allowOriginal),
                                             choose = function(newTargetToken)
                                                 if token == nil then
                                                     return
@@ -4994,7 +4995,8 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
                                                 end
                                             end
 
-                                            RuleUtils.RemoveRetargetStrikeTargets(targets, trigger)
+                                            RuleUtils.RemoveRetargetStrikeTargets(targets, trigger, trigger.targets[1])
+                                            local allowOriginal = RuleUtils.RetargetAllowsOriginal(trigger)
 
                                             local sourceToken = token
                                             local range = tonumber(ExecuteGoblinScript(trigger.powerRollModifier.range, token.properties:LookupSymbol(symbols), 10))
@@ -5017,7 +5019,7 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
                                                 radius = range,
                                                 targets = targets,
                                                 reasons = retargetReasons,
-                                                prompt = RuleUtils.RetargetPromptText(sourceToken, range, rangeType),
+                                                prompt = RuleUtils.RetargetPromptText(sourceToken, range, rangeType, allowOriginal),
                                                 choose = function(newTargetToken)
                                                     if token == nil then
                                                         return

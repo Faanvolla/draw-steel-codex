@@ -284,8 +284,18 @@ RuleUtils = {
 
     --Prompt shown when a retarget picker (Goaded, Meat Shield) is limited to the
     --original strike's range. Names the striker and its reach so the player can
-    --see why some tokens are greyed out.
-    RetargetPromptText = function(sourceToken, range, rangeType)
+    --see why some tokens are greyed out. allowOriginal (the modifier's
+    --changeTargetAllowOriginal flag, e.g. Lines of Force) says the original
+    --target is itself a valid pick, so the prompt stops asking for a "new" one.
+    RetargetPromptText = function(sourceToken, range, rangeType, allowOriginal)
+        local text = RuleUtils.RetargetPromptTextBase(sourceToken, range, rangeType)
+        if allowOriginal then
+            text = text:gsub("^Choose a new target", "Choose a target", 1) .. " (you may keep the original target)"
+        end
+        return text
+    end,
+
+    RetargetPromptTextBase = function(sourceToken, range, rangeType)
         if rangeType ~= "ability" or sourceToken == nil or not sourceToken.valid then
             return "Choose a new target for the strike"
         end
@@ -337,7 +347,11 @@ RuleUtils = {
     --Removes retarget candidates the strike already targets: a strike can never
     --be redirected onto a creature it already hits. trigger.strikeTargets (a
     --charid list) is kept current by the roll dialog that published the trigger.
-    RemoveRetargetStrikeTargets = function(targets, trigger)
+    --originalTargetId is the target the trigger fired for; when the modifier
+    --sets changeTargetAllowOriginal (Lines of Force: "you can select a new
+    --target"), keeping that creature is a legal choice, so it stays in the list.
+    --Other strike targets are still excluded.
+    RemoveRetargetStrikeTargets = function(targets, trigger, originalTargetId)
         local strikeTargets = nil
         if trigger ~= nil then
             strikeTargets = trigger:try_get("strikeTargets")
@@ -349,10 +363,27 @@ RuleUtils = {
         for _, charid in ipairs(strikeTargets) do
             targeted[charid] = true
         end
+        if originalTargetId ~= nil and RuleUtils.RetargetAllowsOriginal(trigger) then
+            targeted[originalTargetId] = nil
+        end
         for i = #targets, 1, -1 do
             if targeted[targets[i].charid] then
                 table.remove(targets, i)
             end
         end
+    end,
+
+    --True if the trigger's power-roll modifier lets the player keep the
+    --original target in its retarget picker (changeTargetAllowOriginal).
+    RetargetAllowsOriginal = function(trigger)
+        if trigger == nil then
+            return false
+        end
+        local mod = trigger:try_get("powerRollModifier")
+        local powerMod = mod ~= nil and mod:try_get("powerRollModifier") or nil
+        if powerMod == nil then
+            return false
+        end
+        return powerMod:try_get("changeTargetAllowOriginal", false) == true
     end,
 }

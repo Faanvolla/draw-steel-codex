@@ -1140,6 +1140,13 @@ function GameHud.CreateEmbeddedRollDialog()
             return
         end
 
+        -- Keeping the original target (changeTargetAllowOriginal, e.g. Lines of
+        -- Force) is not a redirect: the arrow already points there.
+        if newToken.charid == currentToken.charid then
+            m_appliedArrowRetargets[charid] = newid
+            return
+        end
+
         -- A strike turned back on the attacker (e.g. Clever Trick) gets no arrow,
         -- like any self-target; sweeping onto the caster draws a zero-length arc.
         if newToken.charid == casterToken.charid then
