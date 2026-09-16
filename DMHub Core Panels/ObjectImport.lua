@@ -723,7 +723,9 @@ local function SplitPlacedObject(original)
         pcall(function()
             local core = original:GetComponent("Core")
             for _, f in ipairs(core.fields) do
-                local fieldName = f.name
+                --f.id is the raw C# field name SetProperty expects; f.name does
+                --not exist on component fields (unknown userdata reads yield nil).
+                local fieldName = f.id
                 if fieldName ~= "pivot_x" and fieldName ~= "pivot_y" then
                     coreProps[#coreProps + 1] = { name = fieldName, value = f.currentValue }
                 end
