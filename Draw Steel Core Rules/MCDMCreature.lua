@@ -977,7 +977,14 @@ function monster.OnCreateFromBestiary(self, token, groupid)
         --clear out any squad information for minions.
         self.squadpos = nil
 
-        if g_lastGroupId ~= groupid or g_lastSquadMonsterType ~= self.monster_type or g_lastSquadGameUpdate ~= dmhub.gameupdateid then
+        --Compare against the squad's MINION type, not our own: a captain
+        --(non-minion) placed with a minion group must join the squad already
+        --handed out to those minions. The engine's click-to-place walks the
+        --group's monsters in hash order, so the captain may come before or
+        --after its minions; keying the reset on self.monster_type gave a
+        --captain that spawned after them a fresh squad of its own.
+        local squadMonsterType = minionName or self.monster_type
+        if g_lastGroupId ~= groupid or g_lastSquadMonsterType ~= squadMonsterType or g_lastSquadGameUpdate ~= dmhub.gameupdateid then
             --we are a new minion type or the game has been updated, so reset the last squad id.
             g_lastSquadId = nil
             g_lastSquadMonsterType = nil
