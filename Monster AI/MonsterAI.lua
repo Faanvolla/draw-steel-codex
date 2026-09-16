@@ -24,6 +24,114 @@ MonsterAI.log = {}
 MonsterAI.active = false
 MonsterAI.reactionStatus = false
 MonsterAI.reactionFailure = false
+
+--"The AI is waiting on a player" notice ----------------------------------
+--
+--Only the host's AI knows it is waiting (a hero's turn-claim trigger, an
+--opportunity attack after a move, a trigger prompt holding a cast open), so
+--it publishes what it waits on to this shared document and EVERY client
+--shows it on the tip banner through the notice channel (Tip.notices in
+--GameHud.lua): "Waiting for Shadow's Hesitation Is Weakness". The wait
+--sites call SetWaiting/ClearWaiting; both are idempotent against the
+--document so a wait loop can call them every iteration without churning
+--writes. AI start and stop clear it so a crashed host never leaves a stale
+--notice behind.
+local WAITING_DOC = "monsterAIWaiting"
+
+--Seconds a notice must persist before clients show it, so a wait that
+--resolves instantly (a prompt answered at once) never flashes the banner.
+local NOTICE_GRACE_SECONDS = 1
+
+function MonsterAI.SetWaiting(key, text)
+    if type(text) ~= "string" or text == "" then
+        MonsterAI.ClearWaiting()
+        return
+    end
+    local doc = mod:GetDocumentSnapshot(WAITING_DOC)
+    if doc.data.key == key and doc.data.text == text then
+        return
+    end
+    doc:BeginChange()
+    doc.data.key = key
+    doc.data.text = text
+    doc:CompleteChange("Monster AI waiting: " .. text, {undoable = false})
+end
+
+function MonsterAI.ClearWaiting()
+    local doc = mod:GetDocumentSnapshot(WAITING_DOC)
+    if doc.data.key == nil and doc.data.text == nil then
+        return
+    end
+    doc:BeginChange()
+    doc.data.key = nil
+    doc.data.text = nil
+    doc:CompleteChange("Monster AI waiting cleared", {undoable = false})
+end
+
+--The Monster AI panel's diagnostic status reads "Waiting for Shadow's player
+--to answer Opportunity Attack" / "... reaction to finish: Opportunity
+--Attack" (creature:GetAIActivityReactionStatus). The banner wants the
+--player-facing "Waiting for Shadow's Opportunity Attack".
+local function NoticeTextFromReactionStatus(status)
+    if type(status) ~= "string" then
+        return nil
+    end
+    local text = status:gsub("player to answer ", "")
+    text = text:gsub("reaction to finish: (.*)$", "%1 to finish")
+    return text
+end
+
+--Name a hero's undismissed trigger prompt while a monster's cast is held
+--open by it: "Waiting for Shadow's Opportunity Attack". nil when no hero
+--holds a prompt.
+local function FindPlayerTriggerPromptNotice()
+    for _,token in ipairs(dmhub.allTokens) do
+        if token.playerControlled and token.properties ~= nil
+            and MonsterAI.TokenIsLiveCombatant(token) then
+            for _,trigger in pairs(token.properties:GetAvailableTriggers(true) or {}) do
+                if not trigger.dismissed and not trigger.triggered
+                    and type(trigger.abilityName) == "string" then
+                    return string.format("Waiting for %s's %s", token.name, trigger.abilityName)
+                end
+            end
+        end
+    end
+    return nil
+end
+
+--Client side: every client (players included) polls the document through
+--the tip banner's notice channel. Registered by direct table insert so this
+--file does not depend on GameHud.lua having loaded first; GameHud.lua
+--preserves an existing Tip.notices table.
+Tip = rawget(_G, "Tip") or {}
+Tip.notices = Tip.notices or {}
+local m_noticeText = nil
+local m_noticeSince = 0
+Tip.notices["monster-ai-waiting"] = {
+    id = "monster-ai-waiting",
+    priority = 1000,
+    text = function()
+        local q = dmhub.initiativeQueue
+        if q == nil or q.hidden then
+            m_noticeText = nil
+            return nil
+        end
+        local doc = mod:GetDocumentSnapshot(WAITING_DOC)
+        local text = doc.data.text
+        if type(text) ~= "string" or text == "" then
+            m_noticeText = nil
+            return nil
+        end
+        if text ~= m_noticeText then
+            m_noticeText = text
+            m_noticeSince = dmhub.Time()
+        end
+        if dmhub.Time() - m_noticeSince < NOTICE_GRACE_SECONDS then
+            return nil
+        end
+        return text
+    end,
+}
 MonsterAI.maliceAbilityMinimumScore = 0.65
 MonsterAI.maliceAbilityRepeatPenalty = 0.20
 MonsterAI.areaTelegraphBlinks = 3
@@ -585,6 +693,7 @@ function MonsterAI:WaitForMovementActivity(movementToken, activityId)
     while true do
         if mod.unloaded or (cancelWhenAIStops and not MonsterAI.active) then
             MonsterAI.reactionStatus = false
+            MonsterAI.ClearWaiting()
             return false, mod.unloaded and "Monster AI module unloaded"
                 or "Monster AI stop requested"
         end
@@ -592,6 +701,7 @@ function MonsterAI:WaitForMovementActivity(movementToken, activityId)
         pending, status, failure = self:CountPendingActivityReactions(activityId)
         if failure ~= nil then
             MonsterAI.reactionStatus = false
+            MonsterAI.ClearWaiting()
             MonsterAI.reactionFailure = "AI paused: " .. failure .. ". Check the reaction manually before restarting AI."
             self:LogDecision("PLAYER REACTION FAILED", {activity = activityId,
                 reason = failure, result = "AI stopped; initiative remains on this monster"})
@@ -603,6 +713,7 @@ function MonsterAI:WaitForMovementActivity(movementToken, activityId)
         end
         pendingMinionDeaths = self:CountPendingMinionDeathConfirmations()
         MonsterAI.reactionStatus = status or (pendingMinionDeaths > 0 and "Waiting for minion death confirmations") or false
+        MonsterAI.SetWaiting("reaction", NoticeTextFromReactionStatus(MonsterAI.reactionStatus))
         if pending == 0 and pendingMinionDeaths == 0 then
             idleSince = idleSince or dmhub.Time()
             if dmhub.Time() - idleSince >= 0.3 then
@@ -620,6 +731,7 @@ function MonsterAI:WaitForMovementActivity(movementToken, activityId)
         duration = dmhub.Time() - startedAt,
     })
     MonsterAI.reactionStatus = false
+    MonsterAI.ClearWaiting()
     return true
 end
 
@@ -1553,17 +1665,34 @@ end
 function MonsterAI:WaitForAbilityIdle(timeout)
     local deadline = dmhub.Time() + (timeout or 45)
     local idleSince = nil
+    --While a cast is held open by a hero's trigger prompt, tell the table
+    --whose prompt it is. Scanned at most twice a second; cleared on exit.
+    local lastPromptScan = -math.huge
+    local waitingSet = false
     while dmhub.Time() < deadline do
         if ActivatedAbility.CountActiveCasts() <= 0 then
             idleSince = idleSince or dmhub.Time()
             if dmhub.Time() - idleSince >= 0.3 then
+                if waitingSet then MonsterAI.ClearWaiting() end
                 return true
             end
         else
             idleSince = nil
+            if dmhub.Time() - lastPromptScan >= 0.5 then
+                lastPromptScan = dmhub.Time()
+                local notice = FindPlayerTriggerPromptNotice()
+                if notice ~= nil then
+                    MonsterAI.SetWaiting("cast", notice)
+                    waitingSet = true
+                elseif waitingSet then
+                    MonsterAI.ClearWaiting()
+                    waitingSet = false
+                end
+            end
         end
         coroutine.yield(0.1)
     end
+    if waitingSet then MonsterAI.ClearWaiting() end
     return false
 end
 

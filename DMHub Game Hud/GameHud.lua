@@ -2293,6 +2293,8 @@ function Tip.ResetAll()
 	gh.activeTipId = nil
 	gh._tipState = nil
 	gh._tipLastScan = nil
+	gh.activeNoticeId = nil
+	gh._noticeDismissed = nil
 	local banner = gh:try_get("tipBanner")
 	if banner ~= nil and banner.valid then
 		banner:SetClass("visible", false)
@@ -2310,6 +2312,27 @@ function Tip.Clear(id)
 	if gh:try_get("activeTipId") == id then
 		gh:_ClearActiveTip()
 	end
+end
+
+--Notice channel. A notice is a live STATUS shown on the same banner as the
+--tips ("Waiting for Shadow's Hesitation Is Weakness"), not a learn-once
+--tip: it is never marked learned, it outranks every tip, it appears within
+--a driver tick of its source returning text, and it leaves the moment the
+--source returns nil. Sources are polled by the driver at its 1Hz cadence,
+--so a source may read replicated state (a shared document, token
+--properties) without any monitor of its own. Dismiss hides only the
+--current text of the current notice; new text shows again.
+--Stored on Tip so hot-reloading this file keeps sources registered from
+--other modules (the Monster AI registers its "waiting on a player" notice).
+Tip.notices = Tip.notices or {}
+
+---@param spec {id: string, priority: nil|number, text: fun(): nil|string}
+function Tip.RegisterNotice(spec)
+	Tip.notices[spec.id] = spec
+end
+
+function Tip.UnregisterNotice(id)
+	Tip.notices[id] = nil
 end
 
 --First tip: camera movement. Cleared automatically the moment the camera
@@ -2696,12 +2719,91 @@ function GameHud:_ClearActiveTip()
 end
 
 function GameHud:HideTip()
+	--A notice on screen: Dismiss hides this text of this notice only. The
+	--driver shows the notice again as soon as its text changes.
+	local activeNotice = self:try_get("activeNoticeId")
+	if activeNotice ~= nil then
+		local banner = self:try_get("tipBanner")
+		self._noticeDismissed = {
+			id = activeNotice,
+			text = banner ~= nil and banner.valid and banner.data.currentText or "",
+		}
+		self:_HideNoticeBanner()
+		return
+	end
+
 	--Dismiss-button / explicit hide: treat the active tip as learned so it
 	--won't reappear next session.
 	local active = self:_ClearActiveTip()
 	if active ~= nil then
 		Tip.MarkLearned(active)
 	end
+end
+
+--Internal: take the active notice off the banner. Does not touch the
+--dismissed record; callers decide whether this is a dismiss or an end.
+function GameHud:_HideNoticeBanner()
+	self.activeNoticeId = nil
+	local banner = self:try_get("tipBanner")
+	if banner ~= nil and banner.valid then
+		banner:SetClass("visible", false)
+		banner.interactable = false
+	end
+end
+
+--Poll every notice source; return the highest-priority one with text.
+function GameHud:_TipFindNotice()
+	local best, bestText = nil, nil
+	for _, spec in pairs(Tip.notices) do
+		local ok, text = pcall(spec.text)
+		if ok and type(text) == "string" and text ~= "" then
+			if best == nil or (spec.priority or 0) > (best.priority or 0) then
+				best = spec
+				bestText = text
+			end
+		end
+	end
+	return best, bestText
+end
+
+--Notice half of the driver tick. Returns true when a notice owns the
+--banner this tick (shown, dismissed, or blocked by a dialog), in which case
+--the tip half must not run.
+function GameHud:_TipDriverNoticeTick()
+	local notice, noticeText = self:_TipFindNotice()
+	local activeNotice = self:try_get("activeNoticeId")
+	if notice == nil then
+		if activeNotice ~= nil then
+			self:_HideNoticeBanner()
+		end
+		self._noticeDismissed = nil
+		return false
+	end
+
+	--A notice outranks a tip: suppress the tip without marking it learned.
+	if self:try_get("activeTipId") ~= nil then
+		self:_ClearActiveTip()
+		self._tipLastScan = nil
+	end
+
+	local dismissed = self:try_get("_noticeDismissed")
+	local isDismissed = dismissed ~= nil and dismissed.id == notice.id
+		and dismissed.text == noticeText
+	if isDismissed or self:_TipIsBlockedByDialog() then
+		if activeNotice ~= nil then
+			self:_HideNoticeBanner()
+		end
+		return true
+	end
+
+	local banner = self:try_get("tipBanner")
+	local currentText = banner ~= nil and banner.valid and banner.data.currentText or nil
+	if activeNotice ~= notice.id or currentText ~= noticeText
+		or (banner ~= nil and banner.valid and not banner:HasClass("visible")) then
+		self.activeNoticeId = notice.id
+		self:ShowTip(noticeText)
+	end
+	return true
 end
 
 --Panel classes that, when present anywhere in the HUD tree, suppress the
@@ -2734,6 +2836,10 @@ end
 --a tip is actively displayed or when the scan has actually found a tip to
 --show; never speculatively.
 function GameHud:_TipDriverTick()
+	if self:_TipDriverNoticeTick() then
+		return
+	end
+
 	local active = self:try_get("activeTipId")
 
 	if active ~= nil then
