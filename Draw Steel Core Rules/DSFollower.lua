@@ -17,6 +17,13 @@ end
 --- @field role string Role tag, always "follower".
 follower = RegisterGameType("follower", "monster")
 
+--The type was registered as "Follower" between 2025-11-27 and 2025-12-14, and data
+--saved then (journal follower annotations, including ones inside published modules
+--such as The Delian Tomb) still carries __typeName "Follower". Aliasing the global
+--lets the engine deserialize those records as this type instead of registering an
+--inert placeholder; RichFollower:_validate flattens them to plain tables on load.
+Follower = follower
+
 follower.availableRolls = 0
 
 Commands.RegisterMacro{
