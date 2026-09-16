@@ -178,6 +178,12 @@ CharacterModifier.TypeInfo.powertabletrigger = {
         local triggerInfo = g_idToTriggerChoice[self.trigger]
         local triggerTarget = casterToken
 
+        --Triggered and free triggered actions are both forbidden by effects
+        --like "Can't use triggered actions"; passive entries are not actions.
+        if self.type ~= "passive" and (not token.properties:CanUseTriggeredAbilities()) then
+            return false
+        end
+
         if self.type == "trigger" then
             local resources = token.properties:GetResources()
             local usage = token.properties:GetResourceUsage(g_triggerResourceId, "round")
@@ -294,6 +300,12 @@ CharacterModifier.TypeInfo.powertabletrigger = {
         local symbols = castOptions.symbols or {}
 
         if triggerInfo.triggerwhilecasting then
+            return false
+        end
+
+        --Triggered and free triggered actions are both forbidden by effects
+        --like "Can't use triggered actions"; passive entries are not actions.
+        if self.type ~= "passive" and (not token.properties:CanUseTriggeredAbilities()) then
             return false
         end
 

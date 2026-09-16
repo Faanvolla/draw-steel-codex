@@ -3974,7 +3974,24 @@ function CharacterModifier:TriggerEvent(creature, eventName, info, modContext, d
 			return false
 		end
 
-        if  ((not self.triggeredAbility:IsMandatory(creatureToken)) and (not creature:TriggeredAbilityEnabled(self.triggeredAbility))) then
+        local mandatory = self.triggeredAbility:IsMandatory(creatureToken)
+
+        --An effect forbidding triggered actions suppresses every optional
+        --reaction. Mandatory triggers fire automatically rather than being an
+        --action the creature takes, and hostile triggers are forced on the
+        --creature, so both still go through.
+        if (not mandatory) and (not self.triggeredAbility:try_get("hostile", false)) and creature:TriggeredActionsForbidden() then
+            if debugLog ~= nil then
+                debugLog[#debugLog+1] = {
+                    name = self.triggeredAbility.name,
+                    success = false,
+                    reason = "Cannot use triggered actions",
+                }
+            end
+            return false
+        end
+
+        if  ((not mandatory) and (not creature:TriggeredAbilityEnabled(self.triggeredAbility))) then
             if debugLog ~= nil then
                 debugLog[#debugLog+1] = {
                     name = self.triggeredAbility.name,

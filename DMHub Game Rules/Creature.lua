@@ -6323,8 +6323,20 @@ function creature:DispatchTeleportOpportunityAttacks(observers)
     end
 end
 
+--Whether an effect on this creature forbids triggered actions (the "Cannot Use
+--Triggered Abilities" custom attribute, set by e.g. the "Can't use triggered
+--actions" ongoing effect). This covers triggered AND free triggered actions, as
+--the Dazed/Surprised rules do. Consulted by every path that offers a creature a
+--reaction: opportunity attacks (below), event-driven triggered abilities
+--(CharacterModifier:TriggerEvent) and power-roll/casting triggers
+--(PowerTableTriggers). Mandatory and hostile triggers are not actions the
+--creature chooses to take, so they ignore it.
+function creature:TriggeredActionsForbidden()
+    return self:CalculateNamedCustomAttribute("Cannot Use Triggered Abilities") > 0
+end
+
 function creature:CanUseTriggeredAbilities()
-    return (not self:IsDead()) and self:CalculateNamedCustomAttribute("Cannot Use Triggered Abilities") == 0
+    return (not self:IsDead()) and (not self:TriggeredActionsForbidden())
 end
 
 --Observer-side gate for opportunity attacks specifically. Deliberately narrower than
