@@ -132,7 +132,7 @@
 --- @field patronTier number The Patreon tier level of the current user. 0 means not a patron.
 --- @field patreonUserId string The Patreon user id linked to this account, or nil if no Patreon account is linked. Mirrored live from /Patrons, so it is available immediately with no round trip. Use this -- NOT patronTier -- to tell whether a Patreon account is linked: patronTier is a hardcoded 3 on MCDM white-label builds.
 --- @field patreonOrgEntitlements {orgid: string, entitled: boolean, active: boolean, cents: number, campaignId: string}[] A list of the creator organizations this account has Patreon entitlements to, each {orgid, entitled, active, cents, campaignId}. Mirrored live from /Patrons, so it updates within seconds of the user pledging -- no refresh call needed. Gate on `entitled`, not `active`: a lapsed patron of an org whose creator chose to let entitlements persist keeps entitled = true. Empty if no Patreon is linked.
---- @field patreonDevGrantActive boolean True while the hidden admin "patreondevgrant" preference is on AND this is an admin account: every creator organization then reads as a top-tier, entitled pledge and patronTier reports the top DMHub tier. Explicit SetPatreonOrgOverride entries still win for their org. Always false for non-admins.
+--- @field patreonDevGrantActive boolean True while the hidden admin "patreondevgrant" preference is on AND this is an admin account: every creator organization then reads as a top-tier, entitled pledge (patreonOrgEntitlements, IsEntitledToOrg, map pack tiers, Patreon-included modules) and patronTier reports the top DMHub tier. Explicit SetPatreonOrgOverride entries still win for their org. Always false for non-admins, whatever the preference says.
 --- @field patreonOrgOverrides table<string, integer> The session Patreon overrides in force, as a table of orgid -> cents (see SetPatreonOrgOverride). Empty when none.
 --- @field patreonLinkedAt number Unix timestamp in milliseconds of when this account's Patreon was linked, or 0 if it is not linked.
 --- @field patreonPledgeTier number The raw Patreon tier recorded for this account (0-4), ignoring the MCDM white-label override that makes patronTier always report 3. DMHub campaign only: this is the DMHub Patreon's patron ladder and says nothing about whether the user is a patron of any creator organization in the app -- for that, use patreonOrgEntitlements / IsEntitledToOrg. A user can be tier 4 here with no MCDM membership at all, and vice versa. Use for reporting the user's actual DMHub pledge; use patronTier to gate features.
@@ -949,8 +949,8 @@ function dmhub.CloudError(msg) end
 --- @param msg? string
 function dmhub.Error(msg) end
 
---- Execute another instance of the app connected to the same game.
---- @param options? any
+--- Execute another instance of the app. By default the child connects to the same game; options.asplayer logs it in as the secondary (player) account, options.args appends verbatim extra command-line arguments, and options.connect = false boots the child to the titlescreen instead of into this game (it then relies on options.args to find its way).
+--- @param options nil|{asplayer: nil|boolean, args: nil|string, connect: nil|boolean}
 function dmhub.DuplicateWindowInNewProcess(options) end
 
 --- Forces other user's cameras to move to this user's camera position.
@@ -1190,10 +1190,8 @@ function dmhub.AddObjectFolder() end
 --- Leaves the current game back to the titlescreen
 function dmhub.LeaveGame() end
 
---- Opens the player settings dialog with the given arguments.
---- args.tab opens straight on a named tab; args.search seeds the search box;
---- args.onClose is called once when the settings close, however they close.
---- @param args? {tab?: string, search?: string, onClose?: fun()}
+--- Opens the player settings dialog with the given arguments. args.tab opens straight on a named tab; args.search seeds the search box; args.onClose is called once when the settings close, however they close.
+--- @param args? any
 function dmhub.ShowPlayerSettings(args) end
 
 --- Undo the last user editing action.
