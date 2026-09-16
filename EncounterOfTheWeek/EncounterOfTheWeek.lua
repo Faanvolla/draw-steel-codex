@@ -132,6 +132,98 @@ local function RecordExpectedUsers(members)
     m_isEotwGame = true
 end
 
+--Host only, at setup: record which encounter map this game plays on (a map
+--NAME), so members who arrive after the lobby roster record has expired --
+--and every resume -- still land on the same map.
+local function RecordEncounterMap(name)
+    if type(name) ~= "string" or name == "" then
+        return
+    end
+    local doc = mod:GetDocumentSnapshot(STATE_DOC_ID)
+    if doc.data.encounterMap == name then
+        return
+    end
+    doc:BeginChange()
+    doc.data.encounterMap = name
+    doc:CompleteChange("Encounter of the Week: encounter map", {undoable = false})
+end
+
+--- the encounter map ---------------------------------------------------
+
+--The week's module may ship several encounter maps: one named exactly this
+--(the default) and any number named "<this>: <title>". The host picks one in
+--the create-game dialog; the choice travels as the map's NAME (ids change
+--every week, names do not). Mirrored by the titlescreen's
+--EncounterOfTheWeek.IsEncounterMapName and the publisher's
+--is_encounter_map_name -- keep the three in step.
+local DEFAULT_ENCOUNTER_MAP = "Encounter"
+
+local function FindMapByName(name)
+    for _,map in pairs(game.maps or {}) do
+        if map.description == name then
+            return map
+        end
+    end
+    return nil
+end
+
+--Make sure this client is on the chosen encounter map, travelling there if
+--not. Runs on every member's client on arrival, BEFORE hero placement: the
+--engine's own choice of map on entry (the module's lowest-ord map, or the
+--map your own token stands on) is only right by luck once the module ships
+--more than one. Must run inside a coroutine -- it waits for the switch to
+--land so callers see the new map's floors and Start zone.
+--  requested: the name from the lobby record (nil/"" = not chosen).
+--Resolution order: requested -> the host's stamp in the state doc (a resume
+--after the lobby record expired) -> the default. A name with no matching
+--map falls back to the default; with no default either we stay put.
+--Returns the name of the map now in play (nil if none was found).
+local function EnsureOnEncounterMap(requested)
+    local name = requested
+    if type(name) ~= "string" or name == "" then
+        local stamped = nil
+        pcall(function() stamped = mod:GetDocumentSnapshot(STATE_DOC_ID).data.encounterMap end)
+        name = stamped
+    end
+    if type(name) ~= "string" or name == "" then
+        name = DEFAULT_ENCOUNTER_MAP
+    end
+
+    local map = FindMapByName(name)
+    if map == nil and name ~= DEFAULT_ENCOUNTER_MAP then
+        printf("EotW: this game has no map named \"%s\"; falling back to \"%s\"", name, DEFAULT_ENCOUNTER_MAP)
+        name = DEFAULT_ENCOUNTER_MAP
+        map = FindMapByName(name)
+    end
+    if map == nil then
+        printf("EotW: this game has no map named \"%s\"; staying on the current map", name)
+        return nil
+    end
+
+    if game.currentMapId == map.id then
+        return name
+    end
+
+    printf("EotW: travelling to the encounter map \"%s\"", name)
+    map:Travel()
+
+    --the animated switch syncs the map's details first, so give it a
+    --generous window; a switch that never lands is logged, not fatal.
+    local waited = 0
+    while game.currentMapId ~= map.id and waited < 60 do
+        coroutine.yield(0.1)
+        waited = waited + 0.1
+    end
+    if game.currentMapId ~= map.id then
+        printf("EotW: travel to \"%s\" did not complete; continuing on the current map", name)
+        return nil
+    end
+
+    --let the new map's floors and markup settle before anyone reads them.
+    coroutine.yield(0.5)
+    return name
+end
+
 --Every member, after their heroes are placed: I am in the game. Re-entry
 --refreshes the timestamp, which just extends the pre-combat grace beat.
 local function RecordArrival()
@@ -943,15 +1035,50 @@ end
 local UNSTACK_WAIT = 1.0
 local UNSTACK_ROUNDS = 3
 
---Repair heroes this client just pasted that ended up sharing a tile with
---another token. The paste's vacancy scan cannot see a paste another client
---sent in the same instant (both echo back after both have chosen), so two
+--Tile-set key for a Loc, so tiles can be looked up by position. A Loc
+--exposes its floor as .floor (core.Loc{floorIndex=...} constructs it, but
+--the field reads back as .floor).
+local function LocKey(loc)
+    return string.format("%d,%d,%d", math.floor(loc.x), math.floor(loc.y), loc.floor or 0)
+end
+
+--Every hero token on the current map standing outside the Start zone, sorted
+--by charid: the shared order every client agrees on when spreading them
+--back in. startSet is keyed by LocKey.
+local function HeroesOutsideStartZone(startSet)
+    local ids = {}
+    for _,token in ipairs(dmhub.allTokens) do
+        if token.valid and token.playerControlled and token.properties ~= nil then
+            local isHero = false
+            pcall(function() isHero = token.properties:IsHero() end)
+            if isHero and not startSet[LocKey(token.loc)] then
+                ids[#ids+1] = token.charid
+            end
+        end
+    end
+    table.sort(ids)
+    return ids
+end
+
+--Repair heroes this client just pasted that did not end up alone on a
+--Start-zone tile.
+--
+--Outside the zone: the engine's paste fans out from the anchor by distance
+--alone (anchor, its neighbours, then rings), with no idea a markup zone
+--exists, so a zone narrower than a 3x3 block around the anchor -- a
+--corridor, an L -- spills heroes over its edge. Every such hero (any
+--client's) is ranked by charid and takes that rank's free Start-zone tile.
+--
+--Stacked: the paste's vacancy scan cannot see a paste another client sent
+--in the same instant (both echo back after both have chosen), so two
 --arrivals can land on the anchor tile together. After the echoes land every
 --client sees the same pile, so the repair is deterministic: the lowest
 --charid keeps the tile and each other member takes the next free Start-zone
 --tile in the shared distance order -- two clients repairing the same pile at
---once therefore pick different tiles. Re-checks a few times to catch echoes
---that arrive late. Yields; runs inside PlaceMyHeroes' coroutine.
+--once therefore pick different tiles.
+--
+--Re-checks a few times to catch echoes that arrive late. Yields; runs
+--inside PlaceMyHeroes' coroutine.
 local function UnstackPlacedHeroes(charids, anchor)
     if charids == nil or #charids == 0 then
         return
@@ -960,6 +1087,10 @@ local function UnstackPlacedHeroes(charids, anchor)
     if #ordered == 0 then
         --no Start zone: nothing to spread across.
         return
+    end
+    local startSet = {}
+    for _,loc in ipairs(ordered) do
+        startSet[LocKey(loc)] = true
     end
 
     for _ = 1, UNSTACK_ROUNDS do
@@ -970,9 +1101,26 @@ local function UnstackPlacedHeroes(charids, anchor)
         game.UpdateCharacterTokens()
 
         local moved = false
+        local outside = nil
         for _,charid in ipairs(charids) do
             local token = dmhub.GetCharacterById(charid)
-            if token ~= nil then
+            if token ~= nil and not startSet[LocKey(token.loc)] then
+                outside = outside or HeroesOutsideStartZone(startSet)
+                local rank = 0
+                for i,id in ipairs(outside) do
+                    if id == charid then
+                        rank = i
+                    end
+                end
+                local dest = rank > 0 and NthFreeStartTile(ordered, rank) or nil
+                if dest ~= nil then
+                    printf("EotW: hero %s landed outside the Start zone at %s; moving it to %s", charid, tostring(token.loc), tostring(dest))
+                    token:ChangeLocation(dest)
+                    moved = true
+                else
+                    printf("EotW: hero %s is outside the Start zone but it has no free tile", charid)
+                end
+            elseif token ~= nil then
                 local stacked = game.GetTokensAtLoc(token.loc) or {}
                 if #stacked > 1 then
                     local ids = {}
@@ -1639,7 +1787,11 @@ end
 --  numHeroes:    total filled hero slots in the game (from the lobby roster).
 --  members:      userids of every player with claimed heroes at launch (from
 --                the lobby roster; nil on a resume with no record).
---Every member places their own heroes and records their arrival; the host
+--  encounterMap: the NAME of the encounter map the host chose at create time
+--                (from the lobby roster record; nil/"" = not chosen, so the
+--                host's stamp in the state doc or the default map is used).
+--Every member first makes sure they are on the chosen encounter map, then
+--places their own heroes and records their arrival; the host
 --additionally stamps the game state, sets the "Number of Heroes" setting,
 --spawns the encounter monsters, and attaches the EotW map script that then
 --runs the encounter (combat entry + Monster AI).
@@ -1662,6 +1814,15 @@ function EncounterOfTheWeekGame.SetupOnArrival(args)
             --NOTE: nothing here switches on player-host mode. The game was
             --created directorless, so the engine already had it on before this
             --client finished loading.
+        end
+
+        --onto the chosen encounter map (a switch waits for the map to load),
+        --before any hero placement or Start-zone reads.
+        local encounterMap = EnsureOnEncounterMap(args.encounterMap)
+        if IsDMOrPlayerHost() then
+            --stamp it, so members arriving after the lobby record expires,
+            --and every resume, land on the same map.
+            RecordEncounterMap(encounterMap)
         end
 
         PlaceMyHeroes(args.heroes, args.clipboardIds)

@@ -31,6 +31,29 @@ function EncounterOfTheWeek.Enabled()
     return dmhub.GetSettingValue("dev:encounteroftheweek") == true
 end
 
+--Debug "Player Window": an admin in a game's lobby view can launch a second
+--copy of the app logged in as the secondary account (like the New Player
+--Window command). That child is started with `--eotw-game <gameid>`; on
+--reaching the titlescreen it opens this screen and joins that game, so the
+--multiplayer flow can be exercised from one machine. Consumed once by the
+--screen's auto-join.
+EncounterOfTheWeek.autoJoinGameid = nil
+do
+    local args = dmhub.commandLineArguments
+    for i,str in ipairs(args) do
+        if str == "--eotw-game" and args[i+1] ~= nil then
+            EncounterOfTheWeek.autoJoinGameid = args[i+1]
+        end
+    end
+end
+
+--True while the child launched with --eotw-game still has to open the
+--screen: the titlescreen calls ShowScreen for it on reaching the selection
+--screen (the arg bypasses the dev gate, which is per account preference).
+function EncounterOfTheWeek.WantsAutoOpen()
+    return EncounterOfTheWeek.autoJoinGameid ~= nil
+end
+
 --Set by the game-side EotW codemod just before it exits a finished game
 --(victory/defeat concluded): holds that game's id, or "". The screen's
 --resume refresh destroys the finished game / clears the account slot and
@@ -107,6 +130,14 @@ local GAME_BACKEND = "durableobjects-staging"
 --Delian Tomb adventure uses; update alongside the weekly encounter.
 local LOADING_SCREEN_ART = "panels/backgrounds/delian-tomb-bg.png"
 
+--The week's module ships one or more encounter maps: one named exactly
+--this (the default) and any number named "<this>: <title>". The create-game
+--dialog lists them and the choice rides on the lobby roster record as the
+--map's NAME (ids change weekly; names do not). Mirrored by the publisher
+--(tools/eotw_publish, is_encounter_map_name) and the game-side resolver in
+--EncounterOfTheWeek/EncounterOfTheWeek.lua -- keep the three in step.
+local ENCOUNTER_MAP_NAME = "Encounter"
+
 --How long to let the loading screen dissolve in before this screen ducks
 --out from under it. The titlescreen's loading screen fades in over 0.3s
 --(the "loadingScreen"/"create" style pair in CodexTitlescreen.lua); hiding
@@ -169,6 +200,83 @@ local VEIL_CROSSFADE_SECONDS = 0.3
 local VEIL_WAIT_POLL_SECONDS = 0.1
 local VEIL_WAIT_IDLE_SECONDS = 0.5
 local VEIL_WAIT_MAX_SECONDS = 4
+
+--── encounter list cache ─────────────────────────────────────────────
+--Which encounters the week's module offers, for the create-game dropdown.
+--The publisher writes every shipped map's name into the module record's
+--contentSummary ({type = "map", items = {...}}), and module.DownloadModuleInfo
+--returns that record without downloading the module itself -- one small
+--fetch, no snapshot. Only maps that follow the encounter naming rule count.
+
+--nil until loaded; then a list of map names, the default first, then the
+--alternatives alphabetically. {} when the module lists no encounter maps.
+local m_encounters = nil
+local m_encountersFetching = false
+
+--The naming rule: exactly ENCOUNTER_MAP_NAME, or "ENCOUNTER_MAP_NAME: <title>".
+function EncounterOfTheWeek.IsEncounterMapName(name)
+    if type(name) ~= "string" then
+        return false
+    end
+    return name == ENCOUNTER_MAP_NAME or name:sub(1, #ENCOUNTER_MAP_NAME + 2) == ENCOUNTER_MAP_NAME .. ": "
+end
+
+--Kick off (or re-kick after a failure) the module-record fetch. Safe to call
+--any time; no-ops while a fetch is in flight or done.
+function EncounterOfTheWeek.CacheEncounters()
+    if m_encounters ~= nil or m_encountersFetching then
+        return
+    end
+    if module.DownloadModuleInfo == nil then
+        m_encounters = {}
+        return
+    end
+
+    m_encountersFetching = true
+    module.DownloadModuleInfo{
+        moduleid = STARTING_MODULE,
+        success = function(info)
+            m_encountersFetching = false
+            if mod.unloaded then
+                return
+            end
+            local names = {}
+            local seen = {}
+            local summary = nil
+            pcall(function() summary = info.contentSummary end)
+            for _,entry in ipairs(summary or {}) do
+                local kind = string.lower(tostring(entry.type or ""))
+                if kind == "map" or kind == "maps" then
+                    for _,item in ipairs(entry.items or {}) do
+                        if EncounterOfTheWeek.IsEncounterMapName(item) and not seen[item] then
+                            seen[item] = true
+                            names[#names+1] = item
+                        end
+                    end
+                end
+            end
+            table.sort(names, function(a, b)
+                if (a == ENCOUNTER_MAP_NAME) ~= (b == ENCOUNTER_MAP_NAME) then
+                    return a == ENCOUNTER_MAP_NAME
+                end
+                return a < b
+            end)
+            m_encounters = names
+            printf("EotW: the module offers %d encounter map(s)", #names)
+        end,
+        failure = function(msg)
+            --allow a retry the next time the screen opens.
+            m_encountersFetching = false
+            printf("EotW: could not fetch the module record for the encounter list: %s", tostring(msg))
+        end,
+    }
+end
+
+--nil while unavailable/loading; otherwise the list of encounter map names.
+function EncounterOfTheWeek.GetEncounters()
+    EncounterOfTheWeek.CacheEncounters()
+    return m_encounters
+end
 
 --── pregen hero cache ────────────────────────────────────────────────
 --The codex-encounteroftheweek module ships premade heroes as module
@@ -669,8 +777,10 @@ local function CreateLoadingVeil(root)
             end
 
             --make sure the pregen list is (being) loaded by the time the
-            --player reaches a game's slot picker.
+            --player reaches a game's slot picker, and the encounter list by
+            --the time they open the create-game dialog.
             EncounterOfTheWeek.CachePregens()
+            EncounterOfTheWeek.CacheEncounters()
 
             m_screen = CreateScreen{ titlescreen = root }
             m_screen:SetClass("eotwOpening", true)
@@ -1081,6 +1191,15 @@ CreateScreen = function(args)
         }
     end
 
+    --" -- Encounter: <title>" for a roster record whose host chose an
+    --encounter; "" when the record has no choice (the module's default map).
+    local EncounterSuffix = function(record)
+        if record ~= nil and type(record.encounter) == "string" and record.encounter ~= "" then
+            return " -- " .. record.encounter
+        end
+        return ""
+    end
+
     --Enter the actual game world. Lobby heroes exist only in the local lobby
     --game, so they are copied to the token clipboard BEFORE entering (the
     --clipboard is engine state that survives the game switch); on arrival the
@@ -1100,9 +1219,16 @@ CreateScreen = function(args)
         --entering combat. nil on a resume (no record) so the game keeps its
         --previously recorded roster.
         local members = nil
+        --the encounter map the host chose at create time (a map NAME in the
+        --module; "" or nil = the default). nil on a resume: the game-side
+        --setup then uses the name the host stamped into the game.
+        local encounterMap = nil
         if record ~= nil then
             myHeroes = MyHeroesCopy(record)
             slotsFilled = record.slotsFilled or 0
+            if type(record.encounter) == "string" and record.encounter ~= "" then
+                encounterMap = record.encounter
+            end
             members = {}
             for userid,player in pairs(record.players or {}) do
                 local heroCount = 0
@@ -1164,6 +1290,7 @@ CreateScreen = function(args)
                     clipboardIds = clipboardIds,
                     numHeroes = slotsFilled,
                     members = members,
+                    encounterMap = encounterMap,
                 }
             end
         end)
@@ -1270,7 +1397,7 @@ CreateScreen = function(args)
                     height = "auto",
                 },
                 gui.Label{
-                    text = string.format("Hosted by %s -- %d/%d heroes", record.hostName or "?", slotsFilled, slotsTotal),
+                    text = string.format("Hosted by %s -- %d/%d heroes%s", record.hostName or "?", slotsFilled, slotsTotal, EncounterSuffix(record)),
                     fontSize = 18,
                     color = Styles.textColor,
                     opacity = 0.8,
@@ -1787,7 +1914,7 @@ CreateScreen = function(args)
         end
         table.sort(memberNames)
         children[#children+1] = gui.Label{
-            text = string.format("Hosted by %s -- players: %s", record.hostName or "?", cond(#memberNames > 0, table.concat(memberNames, ", "), "none yet")),
+            text = string.format("Hosted by %s -- players: %s%s", record.hostName or "?", cond(#memberNames > 0, table.concat(memberNames, ", "), "none yet"), EncounterSuffix(record)),
             fontSize = 18,
             color = Styles.textColor,
             opacity = 0.8,
@@ -1999,6 +2126,28 @@ CreateScreen = function(args)
                 end,
             }
         end
+        --Debug: an admin can spawn a second app window logged in as the
+        --secondary account that opens this screen and joins this game, to
+        --exercise the multiplayer flow from one machine. Only while the
+        --game is open, since that is the only time a join can succeed;
+        --the child joins through the lobby like any player, so a private
+        --game rejects it (the error shows in the child's list).
+        if isMember and isOpen and dmhub.isAdminAccount then
+            buttons[#buttons+1] = gui.Button{
+                text = "Player Window",
+                fontSize = 20,
+                width = 160,
+                height = 44,
+                hmargin = 6,
+                click = function()
+                    dmhub.DuplicateWindowInNewProcess{
+                        asplayer = true,
+                        connect = false,
+                        args = string.format("--eotw-game %s", gameid),
+                    }
+                end,
+            }
+        end
         --Re-join a game already in progress: any member once it is "ready",
         --or the host while it is still "launched" (their re-entry re-runs
         --the setup, which is re-entry safe). This is the manual path back
@@ -2177,6 +2326,30 @@ CreateScreen = function(args)
         --a launched game we belong to pulls us into the world; the list
         --still re-renders below while the game switch spins up.
         CheckLaunchedGames()
+
+        --debug player window (see EncounterOfTheWeek.autoJoinGameid): the
+        --first roster snapshot that names the game joins it -- or just
+        --opens its view if this account is somehow already a member.
+        --One shot: a rejected join (private game, full, launched) shows
+        --the error and leaves the player on the list.
+        if EncounterOfTheWeek.autoJoinGameid ~= nil and m_conn.connected then
+            local games = m_conn:GetPath("/state/games")
+            if games ~= nil then
+                local gameid = EncounterOfTheWeek.autoJoinGameid
+                EncounterOfTheWeek.autoJoinGameid = nil
+                local record = games[gameid]
+                if record == nil then
+                    ShowGamesError("Player window: the game to join is no longer listed.")
+                else
+                    local myUserid = dmhub.loginUserid
+                    if record.hostUserid == myUserid or (record.players ~= nil and record.players[myUserid] ~= nil) then
+                        OpenGameView(gameid)
+                    else
+                        JoinGame(gameid)
+                    end
+                end
+            end
+        end
 
         --game lobby view mode: render the viewed game, falling back to
         --the list if it vanished (abandoned, expired, or we left it).
@@ -2601,6 +2774,22 @@ CreateScreen = function(args)
         local dialogStatusLabel = nil
         local dlg = nil
 
+        --the encounter maps the week's module offers. With more than one the
+        --dialog shows a dropdown, defaulting to the bare "Encounter" map when
+        --it exists (else the first). With one or none (or the list not
+        --loaded yet) there is nothing to choose: no dropdown, and the game
+        --plays the module's default map.
+        local encounters = EncounterOfTheWeek.GetEncounters() or {}
+        local m_encounter = nil
+        if #encounters > 1 then
+            m_encounter = encounters[1]
+            for _,name in ipairs(encounters) do
+                if name == ENCOUNTER_MAP_NAME then
+                    m_encounter = name
+                end
+            end
+        end
+
         --default the game name to the creator's name ("David's Game"),
         --prefilled so it can be edited or cleared.
         local defaultName = "Encounter of the Week"
@@ -2629,7 +2818,7 @@ CreateScreen = function(args)
 
             m_conn:Request{
                 action = "create-game",
-                args = { name = name, public = m_public },
+                args = { name = name, public = m_public, encounter = m_encounter },
                 success = function()
                     SetDialogStatus("Creating the game...")
                     --one EotW game per account: capture the current slot
@@ -2705,10 +2894,15 @@ CreateScreen = function(args)
             }
         end
 
+        local encounterOptions = {}
+        for _,name in ipairs(encounters) do
+            encounterOptions[#encounterOptions+1] = { id = name, text = name }
+        end
+
         dlg = gui.Panel{
             floating = true,
             width = 560,
-            height = 340,
+            height = cond(m_encounter ~= nil, 400, 340),
             halign = "center",
             valign = "center",
             bgimage = "panels/square.png",
@@ -2746,6 +2940,46 @@ CreateScreen = function(args)
                     nameInput = element
                     element.text = defaultName
                 end,
+            },
+
+            --which of the week's encounters to play; only when there is a choice.
+            gui.Panel{
+                classes = { cond(m_encounter == nil, "collapsed", nil) },
+                width = 460,
+                height = "auto",
+                halign = "center",
+                vmargin = 8,
+                flow = "horizontal",
+
+                gui.Label{
+                    text = "Encounter:",
+                    fontSize = 20,
+                    color = Styles.textColor,
+                    width = "auto",
+                    height = "auto",
+                    valign = "center",
+                    hmargin = 8,
+                },
+                gui.Dropdown{
+                    width = 340,
+                    height = 36,
+                    fontSize = 18,
+                    valign = "center",
+                    --The open list (dropdownBorder/dropdownMenu/dropdownOption)
+                    --carries no styles of its own: it inherits the host's
+                    --cascade (popupsInheritStyles), and its rules live only
+                    --in the themed sheet. The titlescreen's legacy
+                    --Styles.Default styles the closed control but not the
+                    --list, so it rendered as bare labels over the dialog.
+                    --Same trap as g_CheckboxStyles above; scoped to the
+                    --dropdown so the rest of the dialog keeps its look.
+                    styles = ThemeEngine.GetStyles(),
+                    options = encounterOptions,
+                    idChosen = m_encounter or ENCOUNTER_MAP_NAME,
+                    change = function(element)
+                        m_encounter = element.idChosen
+                    end,
+                },
             },
 
             gui.Check{

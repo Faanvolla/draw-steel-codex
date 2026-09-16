@@ -308,6 +308,96 @@ local function CreateSurgeCorner(charid)
     }
 end
 
+--A gently pulsing "!" trigger badge in the card's top-left corner while
+--the hero has an available (non-hostile, undismissed) trigger -- the same
+--test the Monster AI's trigger-reaction dice uses. Hostile prompts are
+--skipped because they never expire and would pulse forever. Hover lists
+--the pending triggers; clicking centers the map on the hero and selects
+--them (selection only takes for a hero the user controls). Rebuilt only
+--when the set of trigger ids changes.
+local function CreateTriggerCorner(charid)
+    local badge = gui.TriggerPanel{
+        width = 22,
+        height = 22,
+        halign = "left",
+        valign = "top",
+        swallowPress = true,
+        data = { tooltipText = "" },
+        hover = function(element)
+            element.tooltip = element.data.tooltipText
+        end,
+        press = function(element)
+            audio.FireSoundEvent("Mouse.Click")
+            dmhub.CenterOnToken(charid, function()
+                dmhub.SelectToken(charid)
+            end)
+        end,
+        thinkTime = 0.03,
+        think = function(element)
+            local r = (math.sin(dmhub.Time() * 2 * math.pi / 1.4) + 1) / 2
+            element.selfStyle.opacity = 0.6 + 0.4 * r
+            element.selfStyle.scale = 0.92 + 0.16 * r
+        end,
+    }
+
+    return gui.Panel{
+        classes = {"collapsed"},
+        floating = true,
+        halign = "left",
+        valign = "top",
+        x = 4,
+        y = 4,
+        width = 22,
+        height = 22,
+        styles = Styles.TriggerStyles,
+        data = { sig = nil },
+        refreshCard = function(element)
+            local tok = dmhub.GetCharacterById(charid)
+            if tok == nil or not tok.valid or tok.properties == nil then
+                return
+            end
+            local triggers = nil
+            pcall(function() triggers = tok.properties:GetAvailableTriggers(true) end)
+            local ids = {}
+            local lines = {}
+            if triggers ~= nil then
+                for id, t in pairs(triggers) do
+                    if not t.hostile then
+                        ids[#ids+1] = id
+                        local text = t.text
+                        if t.powerRollModifier then
+                            text = t.powerRollModifier:try_get("name") or text
+                        end
+                        if text ~= nil and text ~= "" then
+                            lines[#lines+1] = text
+                        end
+                    end
+                end
+            end
+            table.sort(ids)
+            local sig = table.concat(ids, ",")
+            if sig == element.data.sig then
+                return
+            end
+            element.data.sig = sig
+            if #ids == 0 then
+                element:SetClass("collapsed", true)
+                return
+            end
+            table.sort(lines)
+            local name = tok.name or "This hero"
+            local tip = string.format("%s has a trigger available.", name)
+            if #lines > 0 then
+                tip = tip .. "\n\n" .. table.concat(lines, "\n")
+            end
+            tip = tip .. "\n\nClick to jump to " .. name .. "."
+            badge.data.tooltipText = tip
+            element:SetClass("collapsed", false)
+        end,
+        badge,
+    }
+end
+
 local function CreateHeroCard(entry)
     local charid = entry.charid
     local mineClass = nil
@@ -457,6 +547,7 @@ local function CreateHeroCard(entry)
         conditionsRow,
         overlay,
         CreateSurgeCorner(charid),
+        CreateTriggerCorner(charid),
     }
 end
 
@@ -476,6 +567,12 @@ local ROSTER_BOTTOM_GAP = 12
 --the smallest the column will shrink to before it just overflows: past
 --this the cards are unreadable and clipping is the better failure.
 local ROSTER_MIN_SCALE = 0.4
+
+--the encounter-pools strip (malice + hero tokens) sits ABOVE the roster in
+--the same right-rail wrapper, so its height plus the gap below it comes
+--off the roster's budget (see CreateEncounterPoolsPanel).
+local POOLS_HEIGHT = 40
+local POOLS_GAP = 8
 
 local function RosterHeightBudget()
     local layerHeight = 1048
@@ -500,7 +597,7 @@ local function RosterHeightBudget()
         topInset = 64
     end
 
-    local budget = (layerHeight - topInset - ROSTER_BOTTOM_GAP) / zoom
+    local budget = (layerHeight - topInset - POOLS_HEIGHT - POOLS_GAP - ROSTER_BOTTOM_GAP) / zoom
     if budget < 100 then
         budget = 100
     end
@@ -750,6 +847,211 @@ local function CreateHeroRosterPanel()
     }
 end
 
+--- Encounter pools: malice + hero tokens -------------------------------------
+
+--A strip above the roster showing the two encounter-wide pools everyone
+--cares about and which no card can carry: the monsters' Malice and the
+--party's shared Hero Tokens. Read-only for everyone (strict rules: malice
+--is spent by the Monster AI, hero tokens through the game's own flows);
+--hovering a cell shows the pool's change history. Both pools live in the
+--shared global-resource document, so that document is monitored for
+--prompt updates; the 1s think covers the combat-state gating (malice
+--reads as 0 outside combat without the document changing).
+local function PoolValue(kind)
+    local value = 0
+    pcall(function()
+        if kind == "malice" then
+            value = CharacterResource.GetMalice() or 0
+        else
+            value = CharacterResource.GetGlobalResource(CharacterResource.heroTokenId) or 0
+        end
+    end)
+    return value
+end
+
+local function PoolHistory(kind)
+    local history = {}
+    pcall(function()
+        local id = cond(kind == "malice", CharacterResource.maliceResourceId, CharacterResource.heroTokenId)
+        history = CharacterResource.GetGlobalResourceHistory(id) or {}
+    end)
+    return history
+end
+
+--the malice cost diamond the action bar / initiative bar use, shrunk to
+--fit the strip: a rotated square with the split-shade gradient and the
+--red inner diamond, no number inside (the count sits beside it).
+local function CreateMaliceDiamond()
+    return gui.Panel{
+        classes = {"costDiamond", "malice"},
+        styles = { Styles.ActionMenu },
+        interactable = false,
+        rotate = 135,
+        width = 18,
+        height = 18,
+        halign = "center",
+        valign = "center",
+        hmargin = 0,
+        bgcolor = "white",
+        border = { x1 = 0, y1 = 2, x2 = 2, y2 = 0 },
+        gradient = Styles.Ability.maliceDiamondGradient,
+
+        gui.Panel{
+            classes = {"costInnerDiamond", "malice"},
+            interactable = false,
+        },
+    }
+end
+
+local function CreatePoolCell(kind)
+    local icon
+    if kind == "malice" then
+        icon = CreateMaliceDiamond()
+    else
+        icon = gui.Panel{
+            classes = {"eotwPoolIcon"},
+            bgimage = "drawsteel/hero-token.png",
+            interactable = false,
+        }
+    end
+
+    local value = gui.Label{
+        classes = {"eotwPoolValue"},
+        text = "0",
+        interactable = false,
+        data = { value = nil },
+        refreshPools = function(element)
+            local n = PoolValue(kind)
+            if n ~= element.data.value then
+                element.data.value = n
+                element.text = string.format("%d", n)
+            end
+        end,
+    }
+
+    local description = cond(kind == "malice", "Malice", "Hero Tokens")
+
+    return gui.Panel{
+        classes = {"eotwPoolCell"},
+        --the diamond is rotated, so give it a square slot of its own to
+        --spin in rather than letting the flow measure its unrotated box.
+        gui.Panel{
+            width = 26,
+            height = 26,
+            halign = "left",
+            valign = "center",
+            interactable = false,
+            icon,
+        },
+        value,
+
+        hover = function(element)
+            element.tooltip = gui.StatsHistoryTooltip{
+                description = description,
+                entries = PoolHistory(kind),
+            }
+        end,
+    }
+end
+
+local function CreateEncounterPoolsPanel()
+    return gui.Panel{
+        id = "eotwEncounterPools",
+        classes = {"eotwPoolsStrip"},
+        --a plain panel paints no background without a bgimage.
+        bgimage = "panels/square.png",
+        width = CARD_WIDTH,
+        height = POOLS_HEIGHT,
+        flow = "horizontal",
+        halign = "right",
+        valign = "top",
+        bmargin = POOLS_GAP,
+
+        styles = ThemeEngine.MergeTokens{
+            {
+                selectors = {"eotwPoolsStrip"},
+                bgcolor = "#000000c0",
+                border = 1,
+                borderColor = "#000000cc",
+                cornerRadius = 8,
+            },
+            {
+                selectors = {"eotwPoolCell"},
+                width = "50%",
+                height = "100%",
+                --padding inside the 50%, not on top of it (two cells must
+                --fit the strip exactly).
+                borderBox = true,
+                flow = "horizontal",
+                halign = "left",
+                valign = "center",
+                hpad = 8,
+                transitionTime = 0.15,
+            },
+            {
+                selectors = {"eotwPoolCell", "hover"},
+                brightness = 1.3,
+            },
+            {
+                selectors = {"eotwPoolIcon"},
+                width = 20,
+                height = 20,
+                halign = "center",
+                valign = "center",
+                bgcolor = "white",
+            },
+            {
+                selectors = {"eotwPoolValue"},
+                fontSize = 16,
+                bold = true,
+                color = "#ffffff",
+                width = "auto",
+                height = "auto",
+                halign = "left",
+                valign = "center",
+                lmargin = 4,
+            },
+        },
+
+        CreatePoolCell("malice"),
+        CreatePoolCell("herotokens"),
+
+        create = function(element)
+            element:FireEventTree("refreshPools")
+        end,
+
+        monitorGame = CharacterResource.GlobalResourcePath(),
+        refreshGame = function(element)
+            element:FireEventTree("refreshPools")
+        end,
+
+        thinkTime = 1,
+        think = function(element)
+            if mod.unloaded then
+                element:DestroySelf()
+                return
+            end
+            element:FireEventTree("refreshPools")
+        end,
+    }
+end
+
+--The whole right-rail widget: the pools strip above the hero roster. Both
+--pack against the right edge; the roster's own fit-to-screen shrink
+--pivots on its top-right corner so the strip above it is untouched.
+local function CreateRightRailPanel()
+    return gui.Panel{
+        id = "eotwRightRail",
+        width = "auto",
+        height = "auto",
+        flow = "vertical",
+        halign = "right",
+        valign = "top",
+        CreateEncounterPoolsPanel(),
+        CreateHeroRosterPanel(),
+    }
+end
+
 --- Kept rail buttons (bottom-left corner) -----------------------------------
 
 local RAIL_BUTTON_SIZE = 40
@@ -920,11 +1222,11 @@ pcall(function()
 
         suppressRails = true,
 
-        --the roster hangs off the RIGHT edge; the kept rail buttons stay
-        --in the bottom-LEFT corner where the real rail's are.
+        --the pools strip + roster hang off the RIGHT edge; the kept rail
+        --buttons stay in the bottom-LEFT corner where the real rail's are.
         railPanel = function(side)
             if side == "right" then
-                return CreateHeroRosterPanel()
+                return CreateRightRailPanel()
             end
             return nil
         end,

@@ -14,7 +14,7 @@ An Encounter of the Week can have between three and seven heroes participate. On
 
 Once a game has the required number of heroes, the host may select to begin and it launches into the encounter.
 
-An enounter of the week is played as a game which has a special mcdm-encounteroftheweek module installed. It should automatically include the monsterai code mod, with monster ai always running. Upon entry into the game, it should automatically choose the "Encounter" map within the module. A special environmental keyword "Start" should mark the hero's "starting zone" and before proceeding the heroes should be able to move around their starting zone and select their position.
+An enounter of the week is played as a game which has a special mcdm-encounteroftheweek module installed. It should automatically include the monsterai code mod, with monster ai always running. Upon entry into the game, it should automatically choose the encounter map within the module: the module ships one map named "Encounter" (the default) and may ship more named "Encounter: <title>"; the game creator picks which to play from a dropdown when creating the game (see "Choosing the week's encounter"). A special environmental keyword "Start" should mark the hero's "starting zone" and before proceeding the heroes should be able to move around their starting zone and select their position.
 
 The encounter should be run with the monster AI playing the monsters turns automatically.
 
@@ -478,6 +478,151 @@ EotW games themselves are still ordinary DO-backed games (only the lobby is not 
   (SheetPanel deactivates hidden panels), which costs nothing: the titlescreen
   is deactivated moments later anyway, and nobody heartbeats a roster record
   from inside a game.
+
+## Choosing the week's encounter (DECIDED + BUILT 2026-09-15; staging worker DEPLOYED; map switch VERIFIED live 2026-09-16, spawn blocked by the module's content)
+
+A week's module may offer more than one encounter. The rule is a **naming
+convention on the maps in the authoring game**, so nothing has to be
+registered anywhere:
+
+- a map named exactly **`Encounter`** is the **default** encounter;
+- any map named **`Encounter: <title>`** (colon-space) is an alternative,
+  e.g. `Encounter: Fight the Dwarves`.
+
+No two encounter maps may share a name (the game finds the chosen map BY
+NAME, since map ids change every week). The bare `Encounter` should always
+exist: it is what an older client, a week that shipped only alternatives, or
+a resumed game with no recorded choice falls back to. The publisher errors on
+a duplicate name and warns when the default is missing.
+
+The choice is made **by the game creator, in the create-game dialog**, and
+then rides the game as the map's name:
+
+1. **Listing the encounters (titlescreen)**: `EncounterOfTheWeek.CacheEncounters`
+   / `GetEncounters` in `Codex Titlescreen/EncounterOfTheWeek.lua` fetch the
+   module RECORD with `module.DownloadModuleInfo` (not the snapshot -- one
+   small Firebase read) and take the map names from its `contentSummary`
+   (`{type = "map", items = {...}}`, which the headless publisher already
+   writes), keeping those that pass `EncounterOfTheWeek.IsEncounterMapName`.
+   Sorted default-first, then alphabetically. Kicked off in `buildScreen`
+   next to `CachePregens`. No engine change was needed for this.
+2. **The dropdown**: `ShowCreateDialog` shows an "Encounter:" `gui.Dropdown`
+   row (between the name input and the Public checkbox; dialog grows 340 ->
+   400) ONLY when the module lists two or more encounter maps; the default is
+   preselected. With one, none, or a list not loaded yet, there is no
+   dropdown and no choice is sent -- the game plays the default map. The
+   choice goes to the lobby as `create-game { ..., encounter = <map name> }`.
+3. **The lobby record**: `LobbyReservation.encounter` and
+   `LobbyGameRecord.encounter` (a string; `""` = not chosen) in
+   `cloudflare-game-server/src/lobby-core.ts`. `applyCreateGame` trims and
+   caps it at `MAX_ENCOUNTER_NAME_LENGTH` (120) and ignores non-strings;
+   `applyConfirmGame` copies it onto the record. Opaque to the DO. Unit test
+   "carries the chosen encounter map name onto the roster record" (suite 35
+   green, tsc clean). Staging worker deployed 2026-09-15 (version
+   `0732550b`), so the field is live on `game-server-staging`.
+4. **Showing it**: the games list rows and the game lobby view header append
+   ` -- Encounter: <title>` (`EncounterSuffix`) when the record carries a
+   choice.
+5. **Entering the game**: `EnterWorld` passes `encounterMap = record.encounter`
+   into `EncounterOfTheWeekGame.SetupOnArrival` (nil on a resume with no
+   record). Game-side (`EncounterOfTheWeek/EncounterOfTheWeek.lua`),
+   `EnsureOnEncounterMap(requested)` runs on EVERY member's client, inside
+   the arrival coroutine, BEFORE hero placement: it resolves the name
+   (argument -> the host's stamp `doc.data.encounterMap` in the state doc ->
+   `DEFAULT_ENCOUNTER_MAP`), finds the map by `description` over `game.maps`
+   (an unknown name falls back to the default; no default = stay put), and
+   if it is not the current map calls `map:Travel()` and polls
+   `game.currentMapId` (0.1s, up to 60s) then settles 0.5s so the Start zone
+   and floors are readable. The host then stamps the resolved name
+   (`RecordEncounterMap`) so late joiners and resumes agree even after the
+   lobby record expires. The engine's own map choice on entry (lowest-ord
+   map, or your own token's map) is no longer relied on -- it just decides
+   which map loads first.
+6. **Publishing**: `tools/eotw_publish/publish_eotw.py` now seeds EVERY
+   encounter map (`find_encounter_maps` / `is_encounter_map_name`, default
+   first), each map's reachable documents, each map's floor scan and asset
+   references, and runs the per-map warnings (prefixed `[<map name>]`) plus
+   the missing-default warning. `--map-name` is still the base name.
+
+The three copies of the naming rule -- the publisher's `is_encounter_map_name`,
+the titlescreen's `IsEncounterMapName`, and the game-side resolver's
+`DEFAULT_ENCOUNTER_MAP` prefix test -- must stay in step.
+
+Not done / open:
+- Dropdown labels are the full map names (`Encounter: Fight the Dwarves`),
+  not just the title. Revisit if it reads badly once several ship.
+- `LOADING_SCREEN_ART` / the game's `coverart` are still one image for all
+  encounters.
+- The lobby smoke test (`test/lobby-smoke.ts`) does not exercise the field.
+- First live run (2026-09-16, game `BlazingPrinceCrystalChimera` on staging,
+  module version shipping `Encounter: Goblin Ambush` + `Encounter: Angry
+  Dwarves`): the CHOICE path works end to end -- the create dialog listed
+  both maps, the record carried `Encounter: Goblin Ambush`, the host
+  travelled there, stamped it in the state doc, placed 5 heroes, attached
+  the map script and signalled ready. **The encounter did not spawn**:
+  `EotW: encounter spawn failed: This map's journal has no encounter to
+  spawn.` Root cause is content, not code: the published module's only
+  document is `Room 1` (`645e4522`, the dwarf fight: Dwarf Trapper x2 /
+  Warden + Driver x4 / Gunner + Axethrower x4), filed under
+  `Encounter: Angry Dwarves` (`8d78cadf`). `Encounter: Goblin Ambush`
+  (`9ca4404c`) has NO document filed under it and no info bubble on either
+  of its two floors (checked under host elevation too), so
+  `FindMapEncounter` has nothing to pick from -- the three encounters
+  `GetEncountersOnCurrentMap` does return in that game are all off-map
+  (the `Combat Encounter` template, `Useful Macros` in private, a Part 2
+  montage doc) and are correctly rejected by the parentFolder filter. The
+  published version also has no bare `Encounter` default. Both conditions
+  are exactly what the publisher's per-map warnings cover ("[Encounter:
+  Goblin Ambush] no document reachable from this map contains an
+  encounter" and the missing-default warning), and warnings refuse to
+  publish unless `--force` was passed -- so either that run was forced or
+  the warning did not fire; check the publish log before authoring the fix.
+  Fix (authoring game): write the goblin encounter document with
+  `parentFolder = 9ca4404c-...` (or an info bubble on that map AND file it
+  under the map), and name one map exactly `Encounter` so there is a
+  default; republish without `--force`. Games created against the current
+  version cannot be repaired in place: the host client re-runs
+  `SpawnEncounterMonsters` only via `SetupOnArrival`, and the document is
+  simply absent from the game.
+- No game-side change is proposed for this. One option, if it recurs:
+  `EnsureOnEncounterMap` could treat "map exists but no encounter under it"
+  like "map missing" and fall back to a map that has one -- but that hides
+  authoring mistakes the publisher is meant to surface, so it is NOT done.
+
+## Debug "Player Window" from the game lobby view (DECIDED + BUILT 2026-09-15; engine NEEDS BUILD, UNTESTED)
+
+User direction: an admin in a game's lobby view gets a "Player Window" button
+that launches a second copy of the app logged in as the secondary account
+(same mechanism as the `New Player Window` command), which can add heroes and
+play once the game begins -- the multiplayer flow from one machine.
+
+- **Button** (`Codex Titlescreen/EncounterOfTheWeek.lua`, `BuildGameView`
+  control row): shown to any member while the game is `open` and
+  `dmhub.isAdminAccount`. Click:
+  `dmhub.DuplicateWindowInNewProcess{ asplayer = true, connect = false,
+  args = "--eotw-game <gameid>" }`.
+- **Engine** (`GameController.DuplicateWindowInNewProcess(asplayer, extraArgs,
+  connectToGame)` + the `dmhub` binding in `LuaInterface.cs`): two new options.
+  `args` is appended verbatim to the child's command line; `connect = false`
+  omits `--gameid` AND the borrowed `--local-game-server-port`, so the child
+  boots to the titlescreen exactly like a fresh launch, on its own local server
+  (its own lobby game -- the secondary account's -- lives there, not on the
+  parent's). `--asplayer` still selects the secondary account both for the
+  dev-key login and the Steam `secondary` login. Stub updated in
+  `Definitions/dmhub.lua`.
+- **Child boot**: `EncounterOfTheWeek.autoJoinGameid` is parsed from
+  `dmhub.commandLineArguments` at load. `CodexTitlescreen.SetTitlescreenState`
+  calls `EncounterOfTheWeek.ShowScreen()` on arriving at `selection-screen`
+  when `WantsAutoOpen()` (the user still presses a key on the starting screen;
+  the arg bypasses the `dev:encounteroftheweek` gate, which is a per-account
+  preference the secondary account may not have set). `RefreshGames` then
+  consumes the id on the first connected roster snapshot: already a member ->
+  `OpenGameView`; else `JoinGame` (whose success opens the view); not listed ->
+  error line. One shot, so a rejected join leaves the child on the list.
+- **Known limitation**: the child joins through the normal `join-game`
+  arbitration, so a **private** game rejects it ("game is private"). Use a
+  public game for this, or add an invite/allowlist path server-side if private
+  testing matters.
 
 ## Hero-card lineup (game lobby view UI; DECIDED + BUILT 2026-08-28)
 
@@ -1135,8 +1280,10 @@ points that matter to this feature:
   documents are exactly what the engine would see. (The server only
   materializes a game on a WebSocket connect, so the script opens one first;
   that also hands it the whole `game` store, which *is* `GameDetails`.)
-- **The week's contents are derived, not re-ticked.** The map is found *by
-  name* (`Encounter`) because the id changes every week. (v4 shipped
+- **The week's contents are derived, not re-ticked.** The maps are found *by
+  name* -- every map named `Encounter` (the default) or `Encounter: <title>`
+  (an alternative; see "Choosing the week's encounter") -- because the ids
+  change every week. (v4 shipped
   `05ac910d`, which now reads "Goblin Guardians". That map belongs to
   `venla-deliantomb` and is named "Goblin Guardians" *in the module*, so its
   game-side rename to "Encounter" either was undone by hand or was reset when a
@@ -1335,7 +1482,7 @@ Consequences worth knowing before using it:
 
 ## In-game flow
 
-- Map on entry: rather than forcing a map switch, **make "Encounter" the module's only (or lowest-ord) map** so the natural fallback selection (`GameController.cs:4871`) picks it with no extra loading beat. `executeOnArrive` on `lobby:EnterGame(gameid, fn)` (fires after loading completes, `GameController.cs:7170`) and `dmhub.RegisterEventHandler("EnterGame", ...)` are both available if forcing is needed; `map:Travel()` / `game.ChangeMap(map, floor)` do the switch.
+- Map on entry: SUPERSEDED 2026-09-15 by "Choosing the week's encounter" -- with several encounter maps in the module, every client now travels to the chosen map on arrival (`EnsureOnEncounterMap`), waiting for the switch to land before placing heroes. The engine's natural fallback (`GameController.cs:4871`, lowest-ord map) only decides which map loads first; keeping the default "Encounter" lowest-ord still saves the extra loading beat in the common case. Original note: rather than forcing a map switch, **make "Encounter" the module's only (or lowest-ord) map** so the natural fallback selection picks it with no extra loading beat. `executeOnArrive` on `lobby:EnterGame(gameid, fn)` (fires after loading completes, `GameController.cs:7170`) and `dmhub.RegisterEventHandler("EnterGame", ...)` are both available if forcing is needed; `map:Travel()` / `game.ChangeMap(map, floor)` do the switch.
 - Start zone: an `EnvironmentalKeyword` named "Start" -- the keyword is defined in the mcdm-encounteroftheweek module -- (compendium: Rules > Environmental Keywords; `EnvironmentalKeyword.lua`), painted as a markup zone (`floor.markupZones` records, `floor:SetMarkupZone`; schema at `MapMarkupPanel.lua:944-998`). Query tiles by scanning `floor.markupZones` for records with `keyword == startKeywordId` (skip `category == "surface"/"hole"`); resolve the id via `EnvironmentalKeyword.keywordsByName["start"]`. Per-square test: `game.GetAurasAtLoc(loc)` + `aura.auraInstance.aura:try_get("environmentalKeywordId")`. GoblinScript: `target.Environment has "Start"` works as a targetFilter.
 - Monster AI: lives in `Monster AI/` as a `dmonly` DockablePanel background process (`MonsterAIPanel.lua`). BUILT (2026-08-28): `MonsterAI.StartAI()` / `MonsterAI.StopAI()` / `MonsterAI.IsAIRunning()` exported from `MonsterAIPanel.lua`, wrapping the same StartProcess/StopProcess calls the panel button makes (the button now routes through them). `DockablePanel.StartProcess` is independent of panel visibility (verified in source), so the AI runs headless on a host whose dmonly panels are hidden. `MonsterAI.active` is presentation/lifecycle state; `MonsterAI.IsAIRunning()` is the authoritative process-liveness read. As of 2026-08-31, `EnsureAIRunning` uses the latter so EotW restarts a process even if a catastrophic exit left the former stale. Normal turn, actor, move, trigger, and process-iteration failures are contained inside the Monster AI framework before that watchdog is needed.
 
@@ -2954,6 +3101,47 @@ registered in the EotW codemod at position 2 after EncounterOfTheWeek.lua):
     `refreshRail` tick, which is the first moment the column is certainly
     attached to the layer -- a pivot write needs an attached panel.
     `selfStyle.uiscale` is write-only; never read it back.
+- **Encounter pools strip above the roster (DECIDED + BUILT 2026-09-15,
+  user direction: "add a new panel which displays both monster malice as
+  well as hero tokens" above the hero panels)**. `railPanel("right")` now
+  returns `CreateRightRailPanel()` -- a vertical container holding
+  `CreateEncounterPoolsPanel()` above `CreateHeroRosterPanel()`, so both
+  live in the same right-rail wrapper. The strip is card-width (132) by
+  `POOLS_HEIGHT` (40), the roster overlay's dark plate look (`#000000c0`,
+  cornerRadius 8, `bgimage = "panels/square.png"` -- a plain panel paints
+  no background without one), two 50% `borderBox` cells: the Malice cell
+  (the action bar's `costDiamond`/`costInnerDiamond` malice diamond from
+  `Styles.ActionMenu`, 18px, rotated 135, inside a 26x26 slot so the flow
+  does not measure the unrotated box) and the Hero Tokens cell
+  (`drawsteel/hero-token.png`, 20px), each followed by the count in 16px
+  bold white. Values: `CharacterResource.GetMalice()` and
+  `CharacterResource.GetGlobalResource(CharacterResource.heroTokenId)`
+  (both pcall-guarded, labels only rewritten on change). Refresh: the
+  strip monitors `CharacterResource.GlobalResourcePath()` (both pools live
+  in the shared global-resource document) plus a 1s think, which covers
+  malice reading as 0 outside combat without the document changing.
+  **Read-only for everyone** (strict rules: malice is spent by the Monster
+  AI, hero tokens through the game's own flows; no +/- and no typed edit
+  -- flag if the host should get an edit path). Hovering a cell shows the
+  pool's `gui.StatsHistoryTooltip` ("Recent changes to Malice" / "Hero
+  Tokens"). `RosterHeightBudget` subtracts `POOLS_HEIGHT + POOLS_GAP` (8)
+  so a seven-hero roster still fits below the strip; the roster's own
+  top-right-pivot shrink is unaffected by being nested one level deeper
+  (the wrapper's `refreshRail` is fired tree-wide). Verified live
+  2026-09-15 in a real EotW game (0.0.831): strip renders top-right above
+  the cards showing Malice 4 / Hero Tokens 0, cells measure 66x40 each,
+  the history tooltip appears, no console errors.
+  - **Core fix that came out of it**: `GameHud.RegisterCustomInterface`
+    (`DMHub Core UI/Hud.lua`) appended on every call, so a Lua reload
+    that re-ran the EotW mod left the stale generation's provider first
+    in the list and still winning ("first active provider wins") -- the
+    new roster code was never built. It now replaces an existing provider
+    with the same `id` in place.
+  - Reload gotcha hit again while iterating: the EotW codemod's
+    `localContents` went stale (34682 bytes vs 40113 on disk) and
+    `reload_lua` kept compiling the old file. Remedy is the one in memory:
+    `autoreloadlua` on, rewrite the file bytes, wait for `MOD:: READ
+    CONTENTS`, then `autoreloadlua` off again.
 - Clicking a card pops the full character panel **beside the card, on the
   side with more room** (user direction 2026-08-28; it used to open
   mid-screen): `ToggleCharacterPanelDocument(charid, nil, cardPanel)` --
@@ -3007,6 +3195,93 @@ opens chat via the wrapper's chat-listener wiring. Residual: the chat
 speech-bubble preview does not show during a takeover (it anchors by
 top-slot math on a slotted chat button); the Chat button's unread badge
 covers awareness.
+
+### "The AI is waiting on you" notice (DECIDED + BUILT 2026-09-15; luac-clean, UNTESTED live)
+
+The Monster AI pauses on players in three places, and nothing on any
+client says why the monsters are not moving:
+
+1. **Turn-claim pause** -- `FindPendingPlayerTurnClaimTrigger` in
+   `Monster AI/MonsterAIPanel.lua` (Hesitation Is Weakness): the watcher
+   loop returns early instead of selecting a monster.
+2. **Reaction wait after movement** -- `MonsterAI:WaitForMovementActivity`
+   (`Monster AI/MonsterAI.lua`): opportunity attacks and other
+   movement-triggered player prompts (`pendingAIActivityReactions` on the
+   hero's creature, replicated) plus minion death confirmations. Already
+   computes the exact text we want ("Waiting for <hero>'s player to answer
+   <ability>") into `MonsterAI.reactionStatus`, but that only reaches the
+   `dmonly` Monster AI panel label, hidden in EotW.
+3. **Ability-cast waits** -- `MonsterAI:WaitForAbilityIdle` while a monster's
+   cast is held open by a hero's trigger prompt (`availableTriggers` on the
+   hero, replicated). Knows only that a cast is live, not whose prompt holds it.
+
+User direction (2026-09-15): the initiative-bar center-slot label is NOT
+obvious enough. Reuse the new-user **tip banner** (`Tip.Register` registry +
+`GameHud:ShowTip` / `_TipDriverTick` in `DMHub Game Hud/GameHud.lua`: the
+920x80 top-center banner with a Dismiss button) and show it for EVERY AI
+wait on a player, e.g. "Waiting for Shadow's Hesitation Is Weakness".
+
+Built 2026-09-15 (all three files luac-clean; an in-session `reload_lua`
+did NOT re-read `GameHud.lua` / `MonsterAI.lua` -- the running app still
+had the old code -- so verify after the user's own reload or restart):
+- **Banner notice channel** -- `DMHub Game Hud/GameHud.lua`: `Tip.notices`
+  + `Tip.RegisterNotice{id, priority, text = fn}` / `Tip.UnregisterNotice`;
+  `GameHud:_TipDriverNoticeTick` runs first in `_TipDriverTick` and owns
+  the banner while any source returns text (suppresses the active tip
+  without marking it learned, honors the dialog-blocking check); Dismiss
+  (`GameHud:HideTip`) records `{id, text}` in `_noticeDismissed` so only
+  that text stays hidden; `Tip.ResetAll` clears notice state too.
+- **Shared document + writer** -- `Monster AI/MonsterAI.lua`: mod document
+  `monsterAIWaiting` `{key, text}`; `MonsterAI.SetWaiting(key, text)` /
+  `MonsterAI.ClearWaiting()` (both idempotent against the snapshot,
+  `undoable = false`). The client-side source is registered there too
+  (direct insert into `Tip.notices["monster-ai-waiting"]`, priority 1000,
+  hidden while the initiative queue is hidden, 1s `NOTICE_GRACE_SECONDS`
+  measured on the viewing client's clock).
+- **Wait sites**: turn-claim pause (`MonsterAIPanel.lua` watcher loop,
+  `FindPendingPlayerTurnClaimTrigger` now also returns the token; cleared
+  via a `turnClaimWaiting` flag when the pause lifts); movement reactions
+  (`WaitForMovementActivity`, text derived from `reactionStatus` by
+  `NoticeTextFromReactionStatus`: "Waiting for Shadow's Opportunity
+  Attack" / "... to finish" / "Waiting for minion death confirmations");
+  cast holds (`WaitForAbilityIdle` scans hero tokens' undismissed
+  `availableTriggers` twice a second via `FindPlayerTriggerPromptNotice`).
+  Cleared at AI thread start, AI stop, and every wait exit.
+- **Audience**: everyone, Director included (user decision 2026-09-15).
+
+To test: EotW game, hero with Hesitation Is Weakness holding the prompt at
+the top of a monster side -> banner on every client within ~2s; answer or
+dismiss the prompt -> banner leaves within ~1s; a hero with an opportunity
+attack prompt during a monster move -> "Waiting for <hero>'s Opportunity
+Attack"; Dismiss hides it until the text changes; the Monster AI panel's
+status label is unchanged.
+
+Original plan, kept for the rationale:
+- **Banner: add a "notice" channel.** Tips are learn-once (a `tipsLearned`
+  preference, 5s scan cadence, Dismiss marks learned). A wait notice must
+  show immediately, never be learned, take precedence over tips, and
+  clear itself when the wait ends; Dismiss should only hide THAT instance
+  (until the text changes). Implement as `Tip.SetNotice(id, text)` /
+  `Tip.ClearNotice(id)` layered on the same banner and the same
+  dialog-blocking rules, with a short `since` grace (~1s) so a wait that
+  resolves instantly never flashes a banner.
+- **Sharing: host-authoritative shared document.** The host's AI is the
+  only party that knows it is waiting, so it publishes `{key, text, since}`
+  to a mod document (pattern: `VillainActionState` in
+  `Draw Steel Core Rules/DSResources.lua` -- `mod:GetDocumentSnapshot`,
+  `BeginChange`/`CompleteChange`, clients `monitorGame` the path); every
+  client renders it through the notice channel. One writer:
+  `MonsterAI.SetWaiting(key, text)` / `MonsterAI.ClearWaiting()` called
+  from the three sites above; the cast site names the prompt by scanning
+  hero tokens' undismissed `availableTriggers`. Cleared on AI stop and on
+  encounter start (same hook `VillainActionState` uses). Alternative
+  rejected: each client deriving the wait from replicated trigger state
+  alone -- it cannot tell an AI wait from a Director who simply has not
+  moved yet, and it would fire in ordinary Director games.
+- **Audience:** everyone, including the hero being waited on (the prompt
+  card is small; the banner is the reminder). Open: whether a Director
+  running the Monster AI in a normal game should also see it (default yes;
+  it is a status, not a tutorial).
 
 ---
 
@@ -3082,8 +3357,9 @@ clients on the EotW screen chatting/seeing presence. Lua deployed (gitfolder = r
 
 ## Phase 4 -- Creating and joining EotW games
 
-12. [x] Create-game flow: "Create Game" button + dialog (name input, public checkbox)
-    in the EotW screen. Flow as designed: lobby `create-game` request (reserve) ->
+12. [x] Create-game flow: "Create Game" button + dialog (name input, encounter
+    dropdown when the module offers more than one -- see "Choosing the week's
+    encounter", 2026-09-15 -- public checkbox) in the EotW screen. Flow as designed: lobby `create-game` request (reserve) ->
     `lobby:CreateGame` -> lobby `confirm-game` with the new gameid -> host `join-game`
     with 1 slot. The confirm fires even if the dialog was closed mid-create (an
     engine game exists by then; only a confirm lists it). INTERIM: games are created
@@ -3150,7 +3426,7 @@ Deliverable: full lobby loop up to pressing Begin.
 18. [X] Author 3+ pregen heroes as module content. VERIFIED against v2: 8 pregens ship with `IsHero()` true and resolvable classes -- Dwarf Fury, High Elf Tactician, Human Censor, Human Null, Human Talent, Orc Conduit, Polder Elementalist, Polder Shadow (only Wode Elf Troubadour of the 9 official pregens is absent).
 19. [X] Publish the module with the Monster AI codemod ticked in ModShare. VERIFIED in v2's snapshot.codemods: both the EotW stub codemod (`cdc19d98-...1428`) and Monster AI (`263594e2-aca1-4ce5-b70e-8d690695d7b4`) are bundled. (v1 lacked Monster AI; `ReconcileStartingModuleCodemods` repairs v1-created games as the version advances.) The install-side `codeModsFromModules` write is engine code proven by the Crowdex precedent; verify once the first game is created from the module.
 
-19b. [X] Automate publishing (`tools/eotw_publish/`, 2026-08-30). `publish_eotw.py` republishes the module headlessly -- no DMHub, no Unity -- reading the Local authoring game's SQLite through a throwaway copy of the real local game server, deriving the week's contents (map named `Encounter` + documents filed under it + `Start` keyword + pregen-party heroes + pinned codemods + dependency closure + dependency modules' codemods), and writing `/ModuleVersions`, the blob store and `/Module/{fullid}`. Verified against published v4 with `--verify-against`: identical payload modulo real edits since. Dry run by default; refuses to publish when the report warns the module would not play. Design + gotchas in "Publishing the weekly module headlessly" above and in `tools/eotw_publish/README.md`.
+19b. [X] Automate publishing (`tools/eotw_publish/`, 2026-08-30). `publish_eotw.py` republishes the module headlessly -- no DMHub, no Unity -- reading the Local authoring game's SQLite through a throwaway copy of the real local game server, deriving the week's contents (every map named `Encounter` or `Encounter: <title>` -- multi-map since 2026-09-15 -- + documents filed under them + `Start` keyword + pregen-party heroes + pinned codemods + dependency closure + dependency modules' codemods), and writing `/ModuleVersions`, the blob store and `/Module/{fullid}`. Verified against published v4 with `--verify-against`: identical payload modulo real edits since. Dry run by default; refuses to publish when the report warns the module would not play. Design + gotchas in "Publishing the weekly module headlessly" above and in `tools/eotw_publish/README.md`.
 
 Deliverable: manually creating a game from this module yields a playable encounter map with AI available. NOT YET MET -- the only remaining blocker is the step 17 empty-encounter gap. `STARTING_MODULE` in `Codex Titlescreen/EncounterOfTheWeek.lua` now points at `mcdm-encounteroftheweek` (swapped 2026-08-27), so the next game created through the EotW screen exercises the module end-to-end.
 
@@ -3351,6 +3627,32 @@ Deliverable: end-to-end -- lobby to fought encounter with AI-run monsters.
   `accountInfo.eotwGame` slot (one game per account, never in `games`), with
   entering a new game destroying the previous one -- DO released -- and a resume
   row on the EotW screen. See "One EotW game per account" in Architecture Notes.
+- **Monster AI rolls are not shown to the other players** (DIAGNOSED +
+  FIXED in Lua 2026-09-15; UNTESTED with a second client, not yet deployed). The host sees the AI's ability card + roll dialog
+  (`AbilitySidebar` `abilityDisplay`, built by `AcquireAbilityRollDialog` from
+  `MCDMAbilityRollBehavior:Cast`), but nothing reaches the players' remote
+  display. Not a player-host problem: the same happens under a normal Director
+  running the Monster AI. Cause: remote display is driven by the ability-share
+  document, and sharing only ever BEGINS in `CharacterPanel.HighlightAbilitySection`
+  when it is passed a `caster` -- the only callers that pass one are the action
+  bar's targeting paths (`DrawSteelActionBar.lua`, four sites). The cast
+  pipeline's own calls (`ActivatedAbility.CastCoroutine`, sections "main" /
+  "effects") pass no caster, so for an AI cast -- which never goes through the
+  targeting UI -- `g_sharingData` stays nil, `BeginAbilitySharing` never runs,
+  and the roll dialog's `UpdateAbilitySharing` writes are all no-ops.
+  Fix (Lua only, `Timeline/AbilitySidebar.lua`): `AcquireAbilityRollDialog`
+  begins sharing itself for AI-driven casts -- right after `DisplayAbility`
+  has set `g_displayedAbility`, when `casterToken.properties._tmp_aicontrol > 0`,
+  `IsDMOrPlayerHost()`, `privaterolls ~= "dm"` and the caster is on the current
+  turn (same clobber guard as player sharing). `BeginAbilitySharing` took an
+  optional `section` argument so the share lands as "main" in one write. Gated
+  on `_tmp_aicontrol` + `IsDMOrPlayerHost()` rather than `token.canControl`:
+  `canControl` is elevation-aware and the cast coroutine
+  (`dmhub.Coroutine(CastCoroutine)`) does not inherit the AI turn's host
+  elevation past its first yield. The existing hide path clears the share.
+  Not done here: the pre-behavior `HighlightAbilitySection` calls in
+  `ActivatedAbility.CastCoroutine` still pass no caster (they fire before the
+  card exists), so AI casts with no power roll still do not share.
 - **Observers**: the spec says games can be observed. Join as a player with zero hero slots, or a true spectator mechanism? Affects permissions and the players list.
 - ~~**Weekly rotation**~~ RESOLVED (2026-08-30): the module id stays stable
   (`mcdm-encounteroftheweek`, version bumps) and publishing is automated by
@@ -3463,7 +3765,34 @@ Deliverable: end-to-end -- lobby to fought encounter with AI-run monsters.
 
 # Status
 
-- 2026-09-06 (latest): **Hero killed on their own turn locked the combat on
+- 2026-09-15: **Debug "Player Window" in the game lobby view. DECIDED +
+  BUILT; engine NEEDS BUILD, UNTESTED, UNCOMMITTED.** Admin-only button
+  launching a secondary-account child (`--asplayer --eotw-game <id>`,
+  `connect = false`) that auto-opens the EotW screen and joins the game.
+  Private games reject the join. Design in
+  [Debug "Player Window"](#debug-player-window-from-the-game-lobby-view-decided--built-2026-09-15-engine-needs-build-untested).
+
+- 2026-09-15 (latest): **Encounter pools strip (Malice + Hero Tokens) above
+  the hero roster. DECIDED + BUILT + VERIFIED LIVE; UNCOMMITTED.** User
+  direction: "add a new panel which displays both monster malice as well as
+  hero tokens" above the hero panels in the right rail wrapper. Built in
+  `EncounterOfTheWeek/EncounterOfTheWeekHud.lua` (`CreateEncounterPoolsPanel`
+  + `CreateRightRailPanel`, roster budget reserves the strip's height).
+  Read-only, history tooltips on hover. Verified in a real EotW game on
+  0.0.831: strip above the cards showing Malice 4 / Hero Tokens 0, no
+  console errors. Two things came out of it, both UNCOMMITTED in the codex
+  repo: a core fix to `GameHud.RegisterCustomInterface` (`DMHub Core
+  UI/Hud.lua`) so a Lua reload replaces a same-id provider instead of
+  leaving the stale one first and winning; and another instance of the
+  stale-`localContents` reload gotcha (details in the hud section). Open
+  question for the user: should the host get an edit path on the pools, or
+  is read-only right under strict rules? Note: the panel was iterated on
+  by hot-reloading Lua mid-combat in the user's live game, which threw a
+  burst of `EmbeddedRollDialog` errors for the in-flight roll dialog (the
+  reload destroyed it) -- harmless once the dialog was reopened, but do
+  not reload during someone's roll.
+
+- 2026-09-06: **Hero killed on their own turn locked the combat on
   "Hero Turn"; ROOT-CAUSED + FIXED in core Lua, live on disk, UNTESTED
   end-to-end.** First real exercise of the Hero Death rule: it fired and
   despawned the hero (kill path now VERIFIED), but the queue's current entry
@@ -4421,3 +4750,56 @@ Deliverable: end-to-end -- lobby to fought encounter with AI-run monsters.
   Info is always on" under "Strict rules enforcement". Next: live two-client
   verification per those sections (Monster Info needs its engine build
   first).
+
+- **2026-09-15: Trigger-reaction countdown is infinite in EotW.** When a
+  hero has a trigger available during a Monster AI turn, the roll dialog
+  shows the "Triggers available" dice (`gui.ProgressDice`, mounted by
+  `CreateTriggerReactionPanel` in `DrawSteelActionBar/DrawSteelActionBar.lua`)
+  and auto-proceeds after 5 seconds unless clicked, which is too fast for
+  players who are new to the app. User direction: in EotW the timer never
+  counts down. The two `m_timerState` builders (`Draw Steel UI/DSRollDialog.lua`
+  ~3139 and `Timeline/EmbeddedRollDialog.lua` ~6174) now check
+  `EncounterOfTheWeekGame.IsEotwGame()` (pcall-guarded, the game codemod
+  may be absent) and, when true, create the state already `paused = true`
+  with the "Click to dismiss" text, i.e. exactly the state one click on
+  the dice would otherwise produce: the dice sits full, nothing
+  auto-proceeds, and a single click dismisses and proceeds. The 30-second
+  "Waiting for <hero>'s trigger..." state (`m_resolveState`) that appears
+  while another player's trigger is actually resolving is unchanged.
+  luac-clean, ASCII-clean, live via gitfolder; UNTESTED live (needs a
+  Monster AI turn in a real EotW game with a hero holding a trigger).
+
+- **2026-09-15 (later): Hero cards show a pulsing trigger badge.** User
+  direction: when a hero has a trigger available, their roster card gets
+  the same "!" badge the initiative bar uses (`gui.TriggerPanel`, styled by
+  `Styles.TriggerStyles`), gently pulsing, with a tooltip and a click that
+  jumps to the hero. `CreateTriggerCorner(charid)` in
+  `EncounterOfTheWeek/EncounterOfTheWeekHud.lua` mounts it floating in the
+  card's top-left corner (conditions own the top-right, surges the
+  bottom-right). Availability is `GetAvailableTriggers(true)` minus hostile
+  entries -- the same test `AbilityActivityInFlight` uses; hostile prompts
+  are skipped because they never expire and would pulse forever. The
+  wrapper rebuilds only when the sorted set of trigger ids changes (it runs
+  on every `refreshCard`, i.e. the roster's 1s think and `/characters`
+  changes, which is where `availableTriggers` lives). The badge's own 30ms
+  think drives a 1.4s sine on opacity (0.6..1) and scale (0.92..1.08).
+  Tooltip: "<hero> has a trigger available." + each trigger's
+  `powerRollModifier` name (falling back to `text`) + "Click to jump to
+  <hero>." Press: `dmhub.CenterOnToken(charid, function()
+  dmhub.SelectToken(charid) end)` -- selection only takes for a hero the
+  user controls, so on someone else's hero it just centers. The badge
+  sets `swallowPress` so the card's own press (character panel toggle)
+  does not also fire. luac-clean, ASCII-clean, UNCOMMITTED, UNTESTED live
+  (needs a Monster AI turn in an EotW game with a hero holding a trigger).
+
+- **2026-09-16: First live run of the encounter dropdown -- map switch
+  works, spawn failed on content.** The user entered an EotW game whose
+  creator chose `Encounter: Goblin Ambush`; the host landed on that map,
+  placed heroes and signalled ready, but no monsters spawned (console:
+  `EotW: encounter spawn failed: This map's journal has no encounter to
+  spawn.`). Diagnosed in the running game via MCP: the shipped module's
+  only document (`Room 1`, the dwarf encounter) is filed under
+  `Encounter: Angry Dwarves`; the goblin map has no document and no info
+  bubbles, and the version ships no bare `Encounter` default. Content fix
+  in the authoring game + republish (details under "Choosing the week's
+  encounter"). No code changed this session.
