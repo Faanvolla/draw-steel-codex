@@ -163,6 +163,10 @@ gui={ModalMessage=function(args) modalMessage=args.message end}
 MonsterAI={active=true, IsAIRunning=function() return true end, StopAI=function() MonsterAI.active=false end}
 function MonsterAI:LogDecision() end
 function MonsterAI:CountPendingMinionDeathConfirmations() return 0 end
+--The "AI is waiting on a player" notice replicates through a shared
+--document and is shown by the tip banner; neither is under test here.
+MonsterAI.SetWaiting=function() end
+MonsterAI.ClearWaiting=function() end
 dmhub.allTokens={host.token}
 local aiSource="draw-steel-codex/Monster AI/MonsterAI.lua"
 assert(load(source(aiSource,"function MonsterAI:CountPendingActivityReactions", "--Count squad deaths")))()
