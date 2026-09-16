@@ -6171,11 +6171,18 @@ function GameHud.CreateEmbeddedRollDialog()
                                     local t = dmhub.Time()
                                     if m_timerState == nil then
                                         print("AI:: SET TIMER STATE")
+                                        --Encounter of the Week: no countdown. Start already
+                                        --paused (full dice, "Click to dismiss") so the timer
+                                        --never auto-proceeds; a click proceeds. pcall-guarded:
+                                        --the EotW codemod may not be loaded in this game.
+                                        local eotw = false
+                                        pcall(function() eotw = EncounterOfTheWeekGame.IsEotwGame() end)
                                         m_timerState = {
                                             start = t,
                                             current = t,
                                             expire = t + 5,
-                                            text = "Triggers available. Click to pause.",
+                                            paused = eotw or nil,
+                                            text = cond(eotw, "Triggers available. Click to dismiss.", "Triggers available. Click to pause."),
                                             callback = function()
                                                 if m_timerState ~= nil then
                                                     if m_timerState.paused then
