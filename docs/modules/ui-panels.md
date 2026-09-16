@@ -64,7 +64,6 @@ Both configs are stored as `pergamepreference` settings, so each game session ca
 | `Audio.lua` | Audio | Ambient sound and music |
 | `GameControls.lua` | Game Controls | Session-wide game settings |
 | `GoblinScriptEditor.lua` | GoblinScript Editor | Formula editor and debugger |
-| `AIPanel.lua` | AI Assistant | AI-powered content generation |
 
 !!! tip "Finding a panel"
     Search for `DockablePanel.Register` across `DMHub Core Panels/` to get a complete list of every registered panel and its options.

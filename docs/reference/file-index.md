@@ -121,7 +121,6 @@ Core UI panels for the DMHub application. Contains map tools, chat, audio, and a
 | GoblinScriptDocs.lua | GoblinScript documentation viewer |
 | InfoDocument.lua | Info document display |
 | InfoBubble.lua | Hover info bubble |
-| AIPanel.lua | AI assistant panel |
 | AICore.lua | AI integration core |
 | APIDocumentation.lua | API documentation viewer |
 | Journal.lua | Journal/notes panel |
