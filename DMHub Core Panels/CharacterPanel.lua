@@ -4361,11 +4361,13 @@ CreateBestiaryPanel = function()
     --leaves, so the header growing (the "showing the first N matches"
     --note appearing) shrinks the scroll region instead of overflowing the
     --panel.
+    --Inset on the right only (halign left pins the left edge): the host
+    --window's resize strip floats 3px inside the frame, over the scrollbar.
     local scrollPanel = gui.Panel {
         id = "BestiaryScrollPanel",
-        width = "100%",
+        width = "100%-8",
         height = "100% available",
-        halign = "center",
+        halign = "left",
         valign = "top",
         vscroll = true,
         hideObjectsOutOfScroll = false,

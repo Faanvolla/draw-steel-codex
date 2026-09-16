@@ -364,6 +364,12 @@ CreateClaudePanel = function()
         vscroll = true,
         hideObjectsOutOfScroll = true,
         hpad = 6,
+        --Inset on the right only (halign left pins the left edge): the host
+        --window's resize strip floats 3px inside the frame, over the scrollbar.
+        --Set here rather than in the base style below: hpad does not move
+        --the scrollbar, and selfStyle beats the styles table.
+        width = "100%-8",
+        halign = "left",
         height = "100% available",
 
         styles = {

@@ -1505,10 +1505,12 @@ CreateLayersPanel = function()
 		--lines and drag targets then poked out past the popped-out panel
 		--window's frame (the dock's frame padding absorbed the overhang, hiding
 		--it there). The gutters are gone entirely now: rows run flush to both
-		--edges, so width is a plain 100% with no margin and nothing overflows.
-		--Do NOT pair '100%-24' with hmargin 0 -- that subtracts gutters that no
-		--longer exist and leaves the list short on the right.
-		width = "100%",
+		--edges, so there is no margin and nothing overflows. Do NOT pair
+		--'100%-24' with hmargin 0 -- that subtracts gutters that no longer
+		--exist and leaves the list short on the right. The -8 is unrelated:
+		--the host window's resize strip floats 3px inside the frame, over
+		--the scrollbar, so the list stops short of the right edge to clear it.
+		width = "100%-8",
 		height = "100%",
 		hmargin = 0,
 		halign = 'left',

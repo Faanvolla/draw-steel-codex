@@ -7074,7 +7074,9 @@ local function BuildSoundPanelContent()
 
 			kids[#kids+1] = gui.Panel{
 				vscroll = true,
-				width = "100%",
+				--Inset on the right only (halign left pins the left edge): the host
+				--window's resize strip floats 3px inside the frame, over the scrollbar.
+				width = "100%-8",
 				--Absorb exactly the height the host leaves after the pinned
 				--auto-height siblings above, however tall they are and however
 				--the user resizes the panel. Replaces a fixed maxHeight = 360
@@ -7082,7 +7084,7 @@ local function BuildSoundPanelContent()
 				--bottom edge whenever that assumption broke.
 				height = "100% available",
 				flow = "vertical",
-				halign = "center",
+				halign = "left",
 
 				--Single top-aligned column: the scroll region is sized to the
 				--host's leftover space, so loose children would center-pack in
