@@ -654,8 +654,10 @@ function GameHud.CreateEmbeddedRollDialog()
     --showing. Builds candidate slot keys in most-specific-first order and returns the
     --first one the player has an activation for:
     --  1. "damage:<type>"                -- a power roll whose tiers deal that damage
-    --                                       type (e.g. "4 fire damage"); typed damage
-    --                                       only, plain "4 damage" matches nothing.
+    --                                       type (e.g. "4 fire damage"); a plain
+    --                                       "4 damage" clause matches a "damage:untyped"
+    --                                       activation, which is tried after any typed
+    --                                       match.
     --  2. "class:<classid>:<subclassid>" -- the rolling hero's class + chosen subclass.
     --  3. "class:<classid>"              -- the rolling hero's class.
     --  4. "monster:<groupid>"            -- the rolling monster's type (MonsterGroup),
@@ -674,10 +676,21 @@ function GameHud.CreateEmbeddedRollDialog()
         if rollProps ~= nil and rollProps.typeName == "RollPropertiesPowerTable" then
             local ok, damageTypes = pcall(function() return rollProps:GetDamageTypes() end)
             if ok and damageTypes ~= nil then
+                local hasUntyped = false
                 for _,damageType in ipairs(damageTypes) do
-                    if damageType ~= "untyped" then
+                    if damageType == "untyped" then
+                        hasUntyped = true
+                    else
                         candidates[#candidates+1] = "damage:" .. damageType
                     end
+                end
+
+                --Untyped comes last within the damage group. GetDamageTypes reports a
+                --tier's clauses in text order, and in a tier like "8 damage; 4 corruption
+                --damage" the untyped clause comes first, so keeping that order would let
+                --it outrank the corruption activation.
+                if hasUntyped then
+                    candidates[#candidates+1] = "damage:untyped"
                 end
             end
         end
