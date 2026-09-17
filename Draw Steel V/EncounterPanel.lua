@@ -1352,7 +1352,7 @@ end
 --The party the encounter is balanced against plus the author's target:
 --Heroes / Level / Victories steppers, the live party Encounter Strength
 --readout, and the target-difficulty dropdown.
-local function CreatePartyBar(encounter, party, refresh, budgetDial)
+local function CreatePartyBar(encounter, party, refresh, rebuild, budgetDial)
     local esValueLabel = gui.Label {
         classes = { "number", "sizeXl", "bold" },
         width = "auto",
@@ -1382,7 +1382,7 @@ local function CreatePartyBar(encounter, party, refresh, budgetDial)
         end,
     }
 
-    local function partyColumn(caption, stepper)
+    local function partyColumn(caption, stepper, extra)
         return gui.Panel {
             flow = "vertical",
             width = "auto",
@@ -1391,8 +1391,49 @@ local function CreatePartyBar(encounter, party, refresh, budgetDial)
             rmargin = 18,
             FieldCaption(caption),
             stepper,
+            extra,
         }
     end
+
+    --Rebalance the roster for every other party size, keeping the current
+    --one exactly as built. See Encounter.Rebalance for the rules.
+    --Floating so the Heroes stepper stays level with the Level and
+    --Victories steppers; the button hangs just below it.
+    local balanceButton = gui.Button {
+        classes = { "sizeXs" },
+        floating = true,
+        width = 60,
+        height = 16,
+        fontSize = 10,
+        halign = "center",
+        valign = "bottom",
+        y = 26,
+        text = "Balance",
+        data = { tip = "" },
+        refreshBuilder = function(element)
+            element.data.tip = string.format(
+                "Keep the encounter as it is for %d heroes and rebuild the balancing for every other party size (3-7) to match its difficulty: whole groups are removed from the highest lettered down for smaller parties, and new groups of the same monster types are added for larger ones.",
+                party.numHeroes)
+        end,
+        create = function(element)
+            element:FireEvent("refreshBuilder")
+        end,
+        hover = function(element)
+            gui.Tooltip(element.data.tip)(element)
+        end,
+        press = function(element)
+            local summary = encounter:Rebalance(party)
+            local lines = {}
+            for _, n in ipairs(Encounter.RebalanceHeroCounts) do
+                local entry = summary[n]
+                if entry ~= nil then
+                    lines[#lines + 1] = string.format("%d heroes: %d EV (target %d), %d groups", n, entry.ev, entry.target, entry.groups)
+                end
+            end
+            print("Encounter rebalanced:\n" .. table.concat(lines, "\n"))
+            rebuild()
+        end,
+    }
 
     --The bar is a vertical stack: the classic horizontal row of columns, plus
     --an encounter-script parameter row beneath it that only appears when an
@@ -1412,7 +1453,7 @@ local function CreatePartyBar(encounter, party, refresh, budgetDial)
                 dmhub.SetSettingValue("numheroes", v)
                 refresh()
             end,
-        }),
+        }, balanceButton),
 
         partyColumn("Level", CreateStepper {
             value = party.level,
@@ -4365,7 +4406,7 @@ function Encounter.Editor(self, options)
             end,
         },
 
-        CreatePartyBar(self, party, refresh, CreateBudgetDial(self, party)),
+        CreatePartyBar(self, party, refresh, rebuild, CreateBudgetDial(self, party)),
 
         --the two-pane body: bestiary browser left, composition right.
         gui.Panel {

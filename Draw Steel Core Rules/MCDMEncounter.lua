@@ -550,6 +550,651 @@ function Encounter.DifficultyBands(strength)
     }
 end
 
+-- ===========================================================================
+-- Rebalancing an encounter across party sizes
+--
+-- The builder's "Balance" button. The roster the author built for the current
+-- party size is taken as ground truth and left untouched; every other party
+-- size 3..7 gets its per-size configuration (group.minHeroes,
+-- group.monsterMinHeroes and group.balancing[n].monsters, plus brand-new
+-- gated groups) rewritten so the encounter lands at the same point on the
+-- difficulty scale.
+--
+-- "The same difficulty" is defined by the tier maths above: every tier
+-- boundary is the party's total strength plus a fixed number of single-hero
+-- strengths, and each extra hero adds exactly one single-hero strength to the
+-- total. So the encounter reads the same for n heroes when its EV differs
+-- from the current EV by (n - n0) single-hero strengths: the surplus above or
+-- deficit below the budget, measured in heroes, is preserved.
+--
+-- The sizes are derived incrementally, stepping away from the current size
+-- in both directions: 5 -> 4 -> 3 and 5 -> 6 -> 7. Each step starts from its
+-- neighbour's roster and has a budget of one hero's strength (plus whatever
+-- the previous step over- or under-shot by), so every larger party is the
+-- smaller party's roster plus one more group, and vice versa.
+--
+-- Units are a squad of minions (group.squadSize, default 4) or one
+-- non-minion monster. Stepping UP (adding a hero):
+--   1. open exactly one new group, seeded with the least-represented
+--      non-minion type whose EV fits the budget. Leaders and Solos are never
+--      duplicated. A minion squad may only start a group when the encounter
+--      already has a group made purely of minions.
+--   2. still within budget, give the new group a minion squad if some
+--      existing group pairs that minion with this monster type, then a
+--      second monster of the same type.
+--   3. spend what is left on existing groups: another squad for a group
+--      that already has one, in preference to a duplicate of a monster the
+--      group already has; highest letter first within each. No group is
+--      given more than two non-minion monsters.
+-- Stepping DOWN (removing a hero):
+--   1. remove the last group. If that lands more than a hero's strength
+--      under target, remove instead whichever group lands closest. A group
+--      that is the encounter's only source of a type keeps one unit of it.
+--   2. if still over target, remove duplicates (a second copy of a type in a
+--      group, or a second squad), highest letter first, while that lands
+--      closer to target.
+-- ===========================================================================
+
+Encounter.RebalanceHeroCounts = { 3, 4, 5, 6, 7 }
+
+--EV of `quantity` of one monster type, using the CountEDS minion rule.
+local function RebalanceEntryEV(props, quantity)
+    local ev = props:EV() * quantity
+    if props.minion then
+        ev = round(ev / 4)
+    end
+    return ev
+end
+
+--Number of units a count of one type represents (squads for minions).
+local function RebalanceUnits(count, step)
+    return math.ceil(count / step)
+end
+
+--Smallest n (3..7) from which `activeByN[n]` is true for every larger n, or
+--false when the set is not of that shape, or nil when never active.
+local function RebalanceThreshold(activeByN)
+    local first = nil
+    for _, n in ipairs(Encounter.RebalanceHeroCounts) do
+        if activeByN[n] then
+            if first == nil then
+                first = n
+            end
+        elseif first ~= nil then
+            return false
+        end
+    end
+    return first
+end
+
+--Rebalance the encounter for every party size other than party.numHeroes.
+--party = { numHeroes =, level =, victories = } as the builder's party bar
+--holds it. Mutates self.groups in place (existing group tables are kept so
+--open group cards stay valid) and appends any new groups. Returns a summary
+--keyed by hero count: { target = EV aimed for, ev = EV achieved, groups =
+--number of active groups, added = number of new groups created }.
+function Encounter.Rebalance(self, party)
+    local n0 = party.numHeroes
+    local strength = Encounter.PartyStrength {
+        numHeroes = n0,
+        level = party.level,
+        victories = party.victories,
+    }
+    local single = strength.singleHero
+    local minN = Encounter.RebalanceHeroCounts[1]
+    local maxN = Encounter.RebalanceHeroCounts[#Encounter.RebalanceHeroCounts]
+
+    --------------------------------------------------------------------------
+    -- Gather the working model: one "slot" per group that holds at least one
+    -- known monster type. Groups the model skips are left exactly as they are.
+    --------------------------------------------------------------------------
+    local infoCache = {}
+    local function Info(monsterid)
+        local info = infoCache[monsterid]
+        if info == nil then
+            local asset = assets.monsters[monsterid]
+            if asset == nil then
+                info = false
+            else
+                local props = asset.properties
+                local org = OrganizationKeyword(props)
+                info = {
+                    props = props,
+                    minion = props.minion and true or false,
+                    boss = (org == "leader" or org == "solo"),
+                    unitEV = RebalanceEntryEV(props, cond(props.minion, 4, 1)),
+                }
+            end
+            infoCache[monsterid] = info
+        end
+        return info or nil
+    end
+
+    local slots = {}
+    for groupIndex, group in ipairs(self.groups) do
+        local types = {}
+        for monsterid, _ in pairs(group.monsters or {}) do
+            if Info(monsterid) ~= nil then
+                types[#types + 1] = monsterid
+            end
+        end
+        if #types > 0 then
+            table.sort(types)
+            local slot = {
+                group = group,
+                index = groupIndex,
+                types = types,
+                step = {},
+                base0 = {},
+            }
+            for _, monsterid in ipairs(types) do
+                slot.step[monsterid] = cond(Info(monsterid).minion, group.squadSize or 4, 1)
+                --AdjustedMonsterQuantity applies the per-monster gate; the
+                --group gate is the caller's job, as in AdjustedGroupEV.
+                if group.minHeroes ~= nil and group.minHeroes > n0 then
+                    slot.base0[monsterid] = 0
+                else
+                    slot.base0[monsterid] = Encounter.AdjustedMonsterQuantity(group, monsterid, group.monsters[monsterid] or 0, n0)
+                end
+            end
+            slots[#slots + 1] = slot
+        end
+    end
+
+    --the set of types the encounter uses anywhere; the only types allowed in.
+    local allTypes = {}
+    local allTypesList = {}
+    for _, slot in ipairs(slots) do
+        for _, monsterid in ipairs(slot.types) do
+            if not allTypes[monsterid] then
+                allTypes[monsterid] = true
+                allTypesList[#allTypesList + 1] = monsterid
+            end
+        end
+    end
+    table.sort(allTypesList)
+
+    --counts[n][slotIndex][monsterid] = number of that monster placed at n heroes.
+    local counts = {}
+    counts[n0] = {}
+    for s, slot in ipairs(slots) do
+        counts[n0][s] = {}
+        for _, monsterid in ipairs(slot.types) do
+            counts[n0][s][monsterid] = slot.base0[monsterid]
+        end
+    end
+
+    --------------------------------------------------------------------------
+    -- Helpers over a roster.
+    --------------------------------------------------------------------------
+    local function Count(roster, s, monsterid)
+        return (roster[s] and roster[s][monsterid]) or 0
+    end
+
+    local function GroupEV(roster, s)
+        local total = 0
+        for _, monsterid in ipairs(slots[s].types) do
+            local c = Count(roster, s, monsterid)
+            if c > 0 then
+                total = total + RebalanceEntryEV(Info(monsterid).props, c)
+            end
+        end
+        return total
+    end
+
+    local function RosterEV(roster)
+        local total = 0
+        for s = 1, #slots do
+            total = total + GroupEV(roster, s)
+        end
+        return total
+    end
+
+    local function GroupActive(roster, s)
+        for _, monsterid in ipairs(slots[s].types) do
+            if Count(roster, s, monsterid) > 0 then
+                return true
+            end
+        end
+        return false
+    end
+
+    local function ActiveGroupCount(roster)
+        local n = 0
+        for s = 1, #slots do
+            if GroupActive(roster, s) then
+                n = n + 1
+            end
+        end
+        return n
+    end
+
+    --units of a type across the whole roster.
+    local function TypeUnits(roster, monsterid)
+        local n = 0
+        for s, slot in ipairs(slots) do
+            local c = Count(roster, s, monsterid)
+            if c > 0 then
+                n = n + RebalanceUnits(c, slot.step[monsterid])
+            end
+        end
+        return n
+    end
+
+    --non-minion monsters in a group.
+    local function GroupNonMinions(roster, s)
+        local n = 0
+        for _, monsterid in ipairs(slots[s].types) do
+            if not Info(monsterid).minion then
+                n = n + Count(roster, s, monsterid)
+            end
+        end
+        return n
+    end
+
+    --a group made purely of minions exists somewhere in the roster.
+    local function HasPureMinionGroup(roster)
+        for s = 1, #slots do
+            if GroupActive(roster, s) and GroupNonMinions(roster, s) == 0 then
+                return true
+            end
+        end
+        return false
+    end
+
+    --a minion type that shares a group with the given monster type somewhere
+    --in the roster, or nil.
+    local function PairedMinion(roster, monsterid)
+        for s, slot in ipairs(slots) do
+            if Count(roster, s, monsterid) > 0 then
+                for _, other in ipairs(slot.types) do
+                    if Info(other).minion and Count(roster, s, other) > 0 then
+                        return other
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    --EV change from adding one unit of a type to a slot.
+    local function AddDelta(roster, s, monsterid)
+        local props = Info(monsterid).props
+        local c = Count(roster, s, monsterid)
+        local step = slots[s].step[monsterid] or cond(Info(monsterid).minion, 4, 1)
+        return RebalanceEntryEV(props, c + step) - RebalanceEntryEV(props, c), step
+    end
+
+    --EV change (positive) from removing one unit of a type from a slot, and
+    --the number of monsters that removal takes away.
+    local function RemoveDelta(roster, s, monsterid)
+        local props = Info(monsterid).props
+        local c = Count(roster, s, monsterid)
+        local take = math.min(c, slots[s].step[monsterid])
+        return RebalanceEntryEV(props, c) - RebalanceEntryEV(props, c - take), take
+    end
+
+    --add one unit of a type to a slot, registering the type on the slot if
+    --it is new there. Returns the EV added.
+    local function AddUnit(roster, s, monsterid)
+        local slot = slots[s]
+        if slot.step[monsterid] == nil then
+            slot.types[#slot.types + 1] = monsterid
+            table.sort(slot.types)
+            if Info(monsterid).minion then
+                slot.step[monsterid] = (slot.group and slot.group.squadSize) or 4
+            else
+                slot.step[monsterid] = 1
+            end
+            slot.base0[monsterid] = 0
+            for _, r in pairs(counts) do
+                if r[s] ~= nil and r[s][monsterid] == nil then
+                    r[s][monsterid] = 0
+                end
+            end
+        end
+        local delta, step = AddDelta(roster, s, monsterid)
+        roster[s][monsterid] = Count(roster, s, monsterid) + step
+        return delta
+    end
+
+    local function CopyRoster(roster)
+        local copy = {}
+        for s = 1, #slots do
+            copy[s] = {}
+            for monsterid, c in pairs(roster[s] or {}) do
+                copy[s][monsterid] = c
+            end
+        end
+        return copy
+    end
+
+    --pick the winner among candidates by an ordered list of scores (higher
+    --wins at every position); ties fall to the earlier candidate.
+    local function Best(candidates)
+        local best = nil
+        for _, cand in ipairs(candidates) do
+            if best == nil then
+                best = cand
+            else
+                for i = 1, #cand.score do
+                    if cand.score[i] > best.score[i] then
+                        best = cand
+                        break
+                    elseif cand.score[i] < best.score[i] then
+                        break
+                    end
+                end
+            end
+        end
+        return best
+    end
+
+    --------------------------------------------------------------------------
+    -- Stepping up: derive the roster for one more hero.
+    --------------------------------------------------------------------------
+    local function OpenGroup()
+        local slot = {
+            group = nil,
+            index = #slots + 1,
+            types = {},
+            step = {},
+            base0 = {},
+        }
+        slots[#slots + 1] = slot
+        for _, r in pairs(counts) do
+            r[#slots] = r[#slots] or {}
+        end
+        return #slots
+    end
+
+    local function StepUp(roster, budget)
+        local added = 0
+
+        --1. the new group's first monster: least-represented type that fits.
+        local allowMinionStart = HasPureMinionGroup(roster)
+        local candidates = {}
+        for _, monsterid in ipairs(allTypesList) do
+            local info = Info(monsterid)
+            if not info.boss and (allowMinionStart or not info.minion) and info.unitEV <= budget then
+                candidates[#candidates + 1] = {
+                    monsterid = monsterid,
+                    score = { -TypeUnits(roster, monsterid), cond(info.minion, 0, 1), -info.unitEV },
+                }
+            end
+        end
+        local first = Best(candidates)
+        if first ~= nil then
+            local s = OpenGroup()
+            added = 1
+            budget = budget - AddUnit(roster, s, first.monsterid)
+
+            --2. a paired minion squad, then a second of the same monster.
+            local info = Info(first.monsterid)
+            if not info.minion then
+                local minion = PairedMinion(roster, first.monsterid)
+                if minion ~= nil then
+                    local squad = Info(minion).unitEV
+                    if squad <= budget then
+                        budget = budget - AddUnit(roster, s, minion)
+                    end
+                end
+                local delta = AddDelta(roster, s, first.monsterid)
+                if delta <= budget then
+                    budget = budget - AddUnit(roster, s, first.monsterid)
+                end
+            end
+        end
+
+        --3. spend the rest on existing groups: squads before duplicate
+        --monsters, highest letter first.
+        while true do
+            local options = {}
+            for s, slot in ipairs(slots) do
+                if GroupActive(roster, s) then
+                    local nonMinions = GroupNonMinions(roster, s)
+                    for _, monsterid in ipairs(slot.types) do
+                        local info = Info(monsterid)
+                        if Count(roster, s, monsterid) > 0 and not info.boss
+                            and (info.minion or nonMinions < 2) then
+                            local delta = AddDelta(roster, s, monsterid)
+                            if delta > 0 and delta <= budget then
+                                options[#options + 1] = {
+                                    s = s,
+                                    monsterid = monsterid,
+                                    score = { cond(info.minion, 1, 0), s, -TypeUnits(roster, monsterid), -delta },
+                                }
+                            end
+                        end
+                    end
+                end
+            end
+            local pick = Best(options)
+            if pick == nil then
+                break
+            end
+            budget = budget - AddUnit(roster, pick.s, pick.monsterid)
+        end
+
+        return added
+    end
+
+    --------------------------------------------------------------------------
+    -- Stepping down: derive the roster for one fewer hero.
+    --------------------------------------------------------------------------
+
+    --what removing a group leaves behind: one unit of any type the group is
+    --the encounter's only source of. Returns the EV removed and the remains.
+    local function GroupRemoval(roster, s)
+        local keep = {}
+        local removedEV = 0
+        for _, monsterid in ipairs(slots[s].types) do
+            local c = Count(roster, s, monsterid)
+            if c > 0 then
+                local step = slots[s].step[monsterid]
+                local remain = 0
+                if TypeUnits(roster, monsterid) - RebalanceUnits(c, step) == 0 then
+                    remain = math.min(c, step)
+                end
+                keep[monsterid] = remain
+                local props = Info(monsterid).props
+                removedEV = removedEV + RebalanceEntryEV(props, c) - RebalanceEntryEV(props, remain)
+            end
+        end
+        return removedEV, keep
+    end
+
+    local function StepDown(roster, target)
+        local ev = RosterEV(roster)
+
+        --1. remove a group: the last one, unless that lands more than a
+        --hero's strength under target, in which case whichever lands closest.
+        local active = {}
+        for s = 1, #slots do
+            if GroupActive(roster, s) then
+                active[#active + 1] = s
+            end
+        end
+        if #active >= 2 then
+            local choice = nil
+            local last = active[#active]
+            local lastEV = GroupRemoval(roster, last)
+            if lastEV > 0 and ev - lastEV >= target - single then
+                choice = last
+            else
+                local bestDistance = nil
+                for i = #active, 1, -1 do
+                    local s = active[i]
+                    local removedEV = GroupRemoval(roster, s)
+                    if removedEV > 0 then
+                        local distance = math.abs(ev - removedEV - target)
+                        if bestDistance == nil or distance < bestDistance then
+                            bestDistance = distance
+                            choice = s
+                        end
+                    end
+                end
+            end
+            if choice ~= nil then
+                local removedEV, keep = GroupRemoval(roster, choice)
+                for monsterid, remain in pairs(keep) do
+                    roster[choice][monsterid] = remain
+                end
+                ev = ev - removedEV
+            end
+        end
+
+        --2. still over: remove duplicates, highest letter first, while that
+        --lands closer.
+        while ev > target do
+            local options = {}
+            for s, slot in ipairs(slots) do
+                if GroupActive(roster, s) then
+                    for _, monsterid in ipairs(slot.types) do
+                        local c = Count(roster, s, monsterid)
+                        if RebalanceUnits(c, slot.step[monsterid]) >= 2 then
+                            local delta, take = RemoveDelta(roster, s, monsterid)
+                            if delta > 0 and math.abs(ev - delta - target) < math.abs(ev - target) then
+                                options[#options + 1] = {
+                                    s = s,
+                                    monsterid = monsterid,
+                                    delta = delta,
+                                    take = take,
+                                    score = { s, TypeUnits(roster, monsterid), -delta },
+                                }
+                            end
+                        end
+                    end
+                end
+            end
+            local pick = Best(options)
+            if pick == nil then
+                break
+            end
+            roster[pick.s][pick.monsterid] = roster[pick.s][pick.monsterid] - pick.take
+            ev = ev - pick.delta
+        end
+    end
+
+    --------------------------------------------------------------------------
+    -- Walk out from the current size in both directions.
+    --------------------------------------------------------------------------
+    local ev0 = RosterEV(counts[n0])
+    local summary = {}
+    summary[n0] = { target = ev0, ev = ev0, groups = ActiveGroupCount(counts[n0]), added = 0 }
+
+    for n = n0 + 1, maxN do
+        local roster = CopyRoster(counts[n - 1])
+        counts[n] = roster
+        local target = ev0 + (n - n0) * single
+        local added = StepUp(roster, target - RosterEV(roster))
+        summary[n] = { target = target, ev = RosterEV(roster), groups = ActiveGroupCount(roster), added = added }
+    end
+
+    for n = n0 - 1, minN, -1 do
+        local roster = CopyRoster(counts[n + 1])
+        counts[n] = roster
+        local target = ev0 + (n - n0) * single
+        StepDown(roster, target)
+        summary[n] = { target = target, ev = RosterEV(roster), groups = ActiveGroupCount(roster), added = 0 }
+    end
+
+    --------------------------------------------------------------------------
+    -- Write the rosters back as base quantities + gates + balancing deltas.
+    -- The base quantity of each entry is its count at the smallest party size
+    -- it appears for; everything else is a delta from that, so
+    -- AdjustedMonsterQuantity reproduces the rosters exactly.
+    --------------------------------------------------------------------------
+    for s, slot in ipairs(slots) do
+        local group = slot.group
+        if group == nil then
+            group = { monsters = {} }
+            self.groups[#self.groups + 1] = group
+            slot.group = group
+        end
+
+        --group gate: the smallest party size the group is active for, when the
+        --active sizes form a "n and up" run; otherwise no gate (the deltas
+        --zero the group out where it is inactive).
+        local activeByN = {}
+        for _, n in ipairs(Encounter.RebalanceHeroCounts) do
+            activeByN[n] = GroupActive(counts[n], s)
+        end
+        local threshold = RebalanceThreshold(activeByN)
+        if threshold == nil then
+            --never active at any size: an author-made group gated above the
+            --current size that the walk never opened. Its gate is kept and
+            --the per-entry deltas below zero it out wherever the gate would
+            --have let it in, so the rosters stay exactly what the walk built.
+        elseif threshold == false or threshold == minN then
+            group.minHeroes = nil
+        else
+            group.minHeroes = threshold
+        end
+
+        --balancing is keyed by hero count and must stay dense from 1 (see
+        --ShowBalancingPopup in EncounterPanel.lua); keep stamina/disableSolo.
+        local balancing = group.balancing or {}
+        for i = 1, 7 do
+            balancing[i] = balancing[i] or {}
+            balancing[i].monsters = {}
+        end
+
+        local monsterMinHeroes = {}
+        for _, monsterid in ipairs(slot.types) do
+            local presentByN = {}
+            local baseN = nil
+            for _, n in ipairs(Encounter.RebalanceHeroCounts) do
+                local c = Count(counts[n], s, monsterid)
+                presentByN[n] = c > 0
+                if c > 0 and baseN == nil then
+                    baseN = n
+                end
+            end
+
+            if baseN == nil then
+                --never placed at any size: keep the author's base quantity and
+                --zero it out of every size the algorithm covers.
+                if (group.monsters[monsterid] or 0) > 0 then
+                    for _, n in ipairs(Encounter.RebalanceHeroCounts) do
+                        balancing[n].monsters[monsterid] = -group.monsters[monsterid]
+                    end
+                end
+            else
+                local base = Count(counts[baseN], s, monsterid)
+                group.monsters[monsterid] = base
+                local entryThreshold = RebalanceThreshold(presentByN)
+                if entryThreshold ~= false and entryThreshold ~= minN then
+                    monsterMinHeroes[monsterid] = entryThreshold
+                end
+                for _, n in ipairs(Encounter.RebalanceHeroCounts) do
+                    local c = Count(counts[n], s, monsterid)
+                    local gatedOut = (group.minHeroes ~= nil and n < group.minHeroes)
+                        or (monsterMinHeroes[monsterid] ~= nil and n < monsterMinHeroes[monsterid])
+                    if not gatedOut and c ~= base then
+                        balancing[n].monsters[monsterid] = c - base
+                    end
+                end
+            end
+        end
+
+        --entries the model skipped (unknown assets) keep any gate they had.
+        for monsterid, gate in pairs(group.monsterMinHeroes or {}) do
+            if not allTypes[monsterid] then
+                monsterMinHeroes[monsterid] = gate
+            end
+        end
+        if next(monsterMinHeroes) == nil then
+            group.monsterMinHeroes = nil
+        else
+            group.monsterMinHeroes = monsterMinHeroes
+        end
+        group.balancing = balancing
+    end
+
+    return summary
+end
+
 --Count the non-minion monsters across the WHOLE encounter (start groups + every
 --reinforcement wave) at the given hero count. Uses CloneForNumberOfHeroes so the
 --count reflects what actually spawns (minHeroes filtering + per-hero balancing).
