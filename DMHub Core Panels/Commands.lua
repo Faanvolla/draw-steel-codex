@@ -431,13 +431,28 @@ Commands.Register{
     end,
 }
 
+--Not dmonly: on a player host (a directorless game, e.g. Encounter of the
+--Week) dmhub.isDM reads false, but a dev+admin account hosting the game
+--still gets this as a debug path -- the child is launched with `--director`,
+--which seeds dmhub.playerHostModeSuppressed so it runs as a full Director
+--(Director UI, vision, no strict rules) into the same game, alongside the
+--player-host window. Identical to the old dmonly behavior everywhere else.
 Commands.Register{
     name = "New Director Window",
     group = 'zzz',
     icon = mod.images.newWindow,
-    dmonly = true,
+    filtered = function()
+        if dmhub.isDM then
+            return false
+        end
+        return not (devmode() and dmhub.isAdminAccount and IsDMOrPlayerHost())
+    end,
     execute = function()
-        dmhub.DuplicateWindowInNewProcess()
+        if dmhub.playerHostMode == true then
+            dmhub.DuplicateWindowInNewProcess{ args = "--director" }
+        else
+            dmhub.DuplicateWindowInNewProcess()
+        end
     end,
 }
 
