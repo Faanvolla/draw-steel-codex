@@ -5,6 +5,7 @@ CharacterResource.epicResourceId = "e7b04a7e-61fc-4e17-b999-d95d7e751abb"
 CharacterResource.maliceResourceId = "101bab52-7f7c-4bab-92c2-9f8e0cfb7ec8"
 CharacterResource.surgeResourceId = "8b0ae5fe-0eb3-45fa-9e6d-b9de68f5cc6d"
 CharacterResource.triggerResourceId = "b9bc06dd-80f1-4f33-bc55-25c114e3300c"
+CharacterResource.freeTriggeredActionResourceId = "5e551b7d-17fb-4099-a303-bafb3c146f98"
 CharacterResource.actionResourceId = "d19658a2-4d7b-4504-af9e-1a5410fb17fd"
 CharacterResource.maneuverResourceId = "a513b9a6-f311-4b0f-88b8-4e9c7bf92d0b"
 CharacterResource.heroTokenId = "2166c5fe-260e-4691-9743-06cf097a59f3"
@@ -13,6 +14,18 @@ CharacterResource.recoveryResourceId = "5bd90f9b-46be-4cf2-8ca6-a96430d62949"
 CharacterResource.freeManeuverResourceId = "d81ce1e9-96a3-4705-9180-1c80f72a86cf"
 CharacterResource.respiteActivityId = "5758da29-8660-47d3-805b-7c6038f476a1"
 CharacterResource.rampageId = "9f418676-96be-402b-92da-0f50294146b3"
+
+--Whether this ability is a Draw Steel triggered action or free triggered action,
+--as declared by its "Action" field in the ability editor. Only these two are
+--suppressed by "Cannot Use Triggered Abilities" (the Dazed / Surprised rule).
+--A TriggeredAbility whose action is "No Action" is not an action the creature
+--takes: automatic effects, and prompt plumbing such as the "Spend Recovery"
+--trigger that Healing Grace and similar abilities fire on their targets.
+--- @return boolean
+function ActivatedAbility:IsTriggeredAction()
+    local resource = self:ActionResource()
+    return resource == CharacterResource.triggerResourceId or resource == CharacterResource.freeTriggeredActionResourceId
+end
 
 monster.resourceid = CharacterResource.maliceResourceId
 character.resourceid = CharacterResource.heroicResourceId

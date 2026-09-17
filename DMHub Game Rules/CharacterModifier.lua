@@ -3976,11 +3976,13 @@ function CharacterModifier:TriggerEvent(creature, eventName, info, modContext, d
 
         local mandatory = self.triggeredAbility:IsMandatory(creatureToken)
 
-        --An effect forbidding triggered actions suppresses every optional
-        --reaction. Mandatory triggers fire automatically rather than being an
-        --action the creature takes, and hostile triggers are forced on the
-        --creature, so both still go through.
-        if (not mandatory) and (not self.triggeredAbility:try_get("hostile", false)) and creature:TriggeredActionsForbidden() then
+        --An effect forbidding triggered actions suppresses optional triggers whose
+        --Action is "Triggered Action" or "Free Triggered Action". Triggers with no
+        --action are not actions the creature takes (automatic effects, and prompt
+        --plumbing like "Spend Recovery" fired by Healing Grace) so they go through,
+        --as do mandatory triggers (fire automatically) and hostile triggers (forced
+        --on the creature).
+        if (not mandatory) and (not self.triggeredAbility:try_get("hostile", false)) and self.triggeredAbility:IsTriggeredAction() and creature:TriggeredActionsForbidden() then
             if debugLog ~= nil then
                 debugLog[#debugLog+1] = {
                     name = self.triggeredAbility.name,

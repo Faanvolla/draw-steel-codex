@@ -6329,7 +6329,9 @@ end
 --the Dazed/Surprised rules do. Consulted by every path that offers a creature a
 --reaction: opportunity attacks (below), event-driven triggered abilities
 --(CharacterModifier:TriggerEvent) and power-roll/casting triggers
---(PowerTableTriggers). Mandatory and hostile triggers are not actions the
+--(PowerTableTriggers). Only abilities whose Action is Triggered Action or Free
+--Triggered Action (ActivatedAbility:IsTriggeredAction) are suppressed; triggers
+--with no action, mandatory triggers and hostile triggers are not actions the
 --creature chooses to take, so they ignore it.
 function creature:TriggeredActionsForbidden()
     return self:CalculateNamedCustomAttribute("Cannot Use Triggered Abilities") > 0
