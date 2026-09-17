@@ -221,12 +221,16 @@ local g_registerGameTypes = {}
 --loaded is a typo in a serialized __typeName or a missing/disabled mod.
 local g_placeholderGameTypes = {}
 
+--Remembers the placeholder TABLE, not just the name: a later plain assignment such as
+--`Follower = follower` (an alias for a renamed type) resolves the name without going
+--through RegisterGameType, and must not be reported as still unregistered.
 function MarkPlaceholderGameType(typeName)
-	g_placeholderGameTypes[typeName] = true
+	g_placeholderGameTypes[typeName] = rawget(_G, typeName)
 end
 
 function IsPlaceholderGameType(typeName)
-	return g_placeholderGameTypes[typeName] == true
+	local placeholder = g_placeholderGameTypes[typeName]
+	return placeholder ~= nil and rawequal(rawget(_G, typeName), placeholder)
 end
 
 
