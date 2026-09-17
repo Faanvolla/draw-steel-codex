@@ -43,6 +43,34 @@ setting{
     storage = "preference",
 }
 
+--A debug Director window: this client was launched with `--director` (the
+--"New Director Window" command on a dev+admin player host does this). The
+--engine seeds dmhub.playerHostModeSuppressed from the same flag, so the
+--client is the Director from its first frame; the Lua side must agree or the
+--hatch driver below would switch it straight back off. Read once: a launch
+--flag cannot change.
+local m_isDirectorDebugWindow = nil
+function EncounterOfTheWeekGame.IsDirectorDebugWindow()
+    if m_isDirectorDebugWindow == nil then
+        m_isDirectorDebugWindow = false
+        pcall(function()
+            for _,arg in ipairs(dmhub.commandLineArguments) do
+                if arg == "--director" then
+                    m_isDirectorDebugWindow = true
+                end
+            end
+        end)
+    end
+    return m_isDirectorDebugWindow
+end
+
+--Should this client show the Director experience in an EotW game? The
+--"/toggle eotw:showdirectorui" hatch or the --director launch flag.
+function EncounterOfTheWeekGame.ShowDirectorUI()
+    return dmhub.GetSettingValue("eotw:showdirectorui") == true
+        or EncounterOfTheWeekGame.IsDirectorDebugWindow()
+end
+
 --Handoff to the titlescreen: set to the finished game's id just before this
 --client exits at encounter conclusion. The titlescreen EotW screen (which
 --re-declares this setting for read access) destroys the game / clears the
@@ -93,7 +121,7 @@ pcall(function()
         if not EncounterOfTheWeekGame.IsEotwGame() then
             return true
         end
-        return dmhub.GetSettingValue("eotw:showdirectorui") == true
+        return EncounterOfTheWeekGame.ShowDirectorUI()
     end)
 end)
 
@@ -719,7 +747,9 @@ end
 --player vision, player UI, strict rules -- on every entry path, with no
 --in-session switch and so no reload. All this driver does is keep the
 --"/toggle eotw:showdirectorui" debug hatch in sync, which deliberately DOES
---refresh: it is a debugging action.
+--refresh: it is a debugging action. (A --director debug window is already
+--suppressed by the engine from launch, so for it this is a no-op -- unless
+--the engine predates the flag, in which case it refreshes once here.)
 --
 --Engine builds without the flag ignore it at creation and report
 --playerHostModeSuppressed as nil; there the Director-UI filter above remains
@@ -731,7 +761,7 @@ local function UpdateDirectorUIHatch()
     if not EncounterOfTheWeekGame.IsEotwGame() then
         return
     end
-    local suppress = dmhub.GetSettingValue("eotw:showdirectorui") == true
+    local suppress = EncounterOfTheWeekGame.ShowDirectorUI()
     if dmhub.playerHostModeSuppressed ~= suppress then
         printf("EncounterOfTheWeek: Director UI hatch %s", tostring(suppress))
         dmhub.playerHostModeSuppressed = suppress
@@ -957,6 +987,40 @@ local function NormalizeHeroLevel(token)
     }
 end
 
+--Detach the pasted copy from the engine's lobby hero sync. CreateHero
+--stamps every lobby hero with properties.originalid (its lobby charid) and
+--properties.creatorid (its owner); both ride inside properties, so the paste
+--carries them into the EotW copy. With them present, the engine periodically
+--saves the owner's primary character to char-cache/{originalid}.json
+--(CharacterToken.SaveLocally, gated by creatorid == me) and the next lobby
+--load PUTs that file over the ORIGINAL lobby hero (SerializedCharacterInfo.
+--LoadLocally) -- which is how EotW stamina, recoveries, conditions and the
+--level-1 clamp leaked home (ticket 3GJJQYJV). That sync is right for campaign
+--copies and wrong for a disposable weekly copy, so clear both stamps here.
+--creatorid is the gate, originalid the file name: clear BOTH, since a copy
+--with creatorid but no originalid would save to a nameless file.
+local function DetachFromLobbySync(token)
+    local props = token.properties
+    if props == nil then
+        return
+    end
+
+    local hasOriginal = props:try_get("originalid") ~= nil
+    local hasCreator = props:try_get("creatorid") ~= nil
+    if not (hasOriginal or hasCreator) then
+        return
+    end
+
+    token:ModifyProperties{
+        description = "Encounter of the Week: detach from lobby hero",
+        undoable = false,
+        execute = function()
+            props.originalid = nil
+            props.creatorid = nil
+        end,
+    }
+end
+
 --Claim a freshly pasted hero for the local player: owner, default (friendly)
 --party. Cross-game pastes by the DM arrive ownerless and partyless (which
 --reads as a hostile NPC), and module pregens carry whatever the author had,
@@ -976,8 +1040,10 @@ local function ClaimPastedHero(charid, description)
                 token.partyId = GetDefaultPartyID()
                 token.ownerId = dmhub.loginUserid
                 token:UploadToken(description or "Encounter of the Week hero")
-                --the encounter is balanced for a level-1 party; this is a
-                --separate properties patch, so it runs after the token upload.
+                --properties patches, issued after the token upload: cut the
+                --copy loose from the lobby hero it was pasted from, then
+                --clamp it to the level the encounter is balanced for.
+                DetachFromLobbySync(token)
                 NormalizeHeroLevel(token)
                 return
             end

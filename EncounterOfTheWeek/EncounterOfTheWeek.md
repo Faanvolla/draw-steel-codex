@@ -624,6 +624,58 @@ play once the game begins -- the multiplayer flow from one machine.
   public game for this, or add an invite/allowlist path server-side if private
   testing matters.
 
+## Debug "Director Window" from inside an EotW game (DECIDED + BUILT 2026-09-16; engine NEEDS BUILD, UNTESTED)
+
+User direction: a dev+admin account hosting an EotW game gets a working
+"New Director Window" -- a second window, same account, same game, that
+runs as a FULL Director (Director UI, Director vision, no strict rules) so
+the game can be administered and debugged while the first window keeps
+playing as the player host.
+
+- **Core command** (`DMHub Core Panels/Commands.lua`, "New Director Window"):
+  no longer `dmonly` (which drops the registration outright when
+  `dmhub.isDM` is false at load -- true on every player host). It now uses
+  a `filtered` function: shown when `dmhub.isDM`, OR when `devmode()` and
+  `dmhub.isAdminAccount` and `IsDMOrPlayerHost()`. Everyone else sees exactly
+  what they saw before. Registered commands with no `menu` land in the title
+  bar's **Codex** menu (`WindowMenuItems("codex")`), which the EotW custom
+  interface leaves visible (it only suppresses "Panels"), so that is where
+  it appears in an EotW game. On click, if `dmhub.playerHostMode == true`
+  the child is launched with `args = "--director"`; otherwise the call is
+  unchanged.
+- **Engine** (`GameController.cs`): `playerHostModeSuppressed` is seeded
+  from a `static readonly` scan of the command line for `--director`, so the
+  child is the Director from its first frame with no in-session flip and no
+  view-as-player refresh. Harmless outside directorless games. The existing
+  `GameHarness.RefreshGame` carry-over is untouched. Documentation on
+  `dmhub.playerHostModeSuppressed` (`LuaInterface.cs`, `Definitions/dmhub.lua`)
+  mentions the flag.
+- **EotW codemod** (`EncounterOfTheWeek/EncounterOfTheWeek.lua`):
+  `EncounterOfTheWeekGame.IsDirectorDebugWindow()` (scans
+  `dmhub.commandLineArguments` once for `--director`) and
+  `EncounterOfTheWeekGame.ShowDirectorUI()` = the `eotw:showdirectorui`
+  preference OR the flag. The Director-UI presentation filter, the
+  `UpdateDirectorUIHatch` driver and the custom interface's `active`
+  (`EncounterOfTheWeekHud.lua`, nil-guarded for an older codemod) all read
+  `ShowDirectorUI()`. Without this the 1s driver would have switched the
+  engine-seeded suppression straight back off. On an engine that predates
+  the flag the driver instead sets `playerHostModeSuppressed` itself, which
+  costs one refresh -- still functional.
+- **Why a launch flag and not the preference**: `eotw:showdirectorui` is a
+  per-account preference; setting it in the child would also flip the
+  parent window (same account), which is the window that must stay a
+  player host.
+- **Not done**: the child is a second session of the host account in the
+  same game, exactly like the ordinary New Director Window; the map-script
+  election already picks one session, but nothing was added to keep the
+  debug window from being elected as the EotW setup/AI host.
+- **UNTESTED**: the running app at verification time was loading its core
+  mods from `c:\dev\d20-dmhub\d20`, not this checkout, and no EotW game
+  was open; the Lua is luac-clean only. Needs an engine build, then: open
+  the Codex title-bar menu in an EotW game as the host -> New Director
+  Window -> the child should arrive with Director UI, no strict-rule
+  clamps, and the parent should remain a player host.
+
 ## Hero-card lineup (game lobby view UI; DECIDED + BUILT 2026-08-28)
 
 The game lobby view's hero slots are **portrait cards in a horizontal wrapping
@@ -1164,6 +1216,79 @@ keeps `victories`, which feeds the `victories` GoblinScript symbol and the
 encounter-strength maths. Zeroing them would be the same "start clean" spirit as
 the level clamp, but it was not asked for and is not done.
 
+## Hero combat state leaks back into the lobby (ROOT-CAUSED + FIXED 2026-09-16, ticket 3GJJQYJV; Lua UNTESTED live, not deployed)
+
+Ticket `3GJJQYJV` (reporter thc1967, v0.0.831, filed from the lobby): "Heroes
+coming out of Encounter of the Week with residual combat effects. Jacy has temp
+stamina, Ysoreth is down stamina and recoveries." Its Player.log shows the
+whole mechanism. **It is not the copy** -- the copy is a true deep copy under a
+fresh guid (`CopyCharacters`/`PasteCharacters`, `GameController.cs:3628/3722`;
+log: lobby Ysoreth is `204f5fb7`, her EotW copy is a different id). **It is the
+engine's existing campaign-to-lobby hero sync, the local character cache.**
+
+- **Stamp.** `CreateHero` (`CodexTitlescreen.lua:1041`) writes
+  `properties.originalid = <lobby charid>` and `properties.creatorid = <userid>`
+  on every lobby hero. Both ride inside `properties`, so the JSON deep copy
+  carries them into the EotW copy unchanged.
+- **Save.** `GameController.Update` (`GameController.cs:8213`): a non-Director
+  client, every 6000 frames, calls `CharacterToken.SaveLocally()` on its
+  `primaryCharacter` when `ShouldSaveLocally()` (`creatorid == me`) holds. It
+  bumps `properties.mtime` and writes the ENTIRE `CharacterInfo` to
+  `{persistentDataPath}/char-cache/{originalid}.json` -- keyed by the LOBBY id
+  (`CharacterToken.cs:22950`). Log: 5 saves of `char-cache/3756365b.json` during
+  game 1 (`ObsidianSiegeSilverBrandbearer`) and 19 saves of
+  `char-cache/204f5fb7.json` (Ysoreth) during game 2
+  (`RainbowDoomedShackledSoulraker`).
+- **Restore.** On the first `UpdateGameDetails` of a lobby game
+  (`GameController.cs:6159`, `isLobbyGame && !_lobbyGameUpdatedCharacters`),
+  `SerializedCharacterInfo.LoadLocally` (`CharacterInfo.cs:792`) runs for every
+  lobby character: if a cache file exists with a newer `mtime`, it PUTs the
+  cached record over the lobby hero (`"Update Character Details"`, not
+  undoable) and deletes the file. Log: `LOCALCHAR:: Restore character:
+  204f5fb7` followed by `PutData /GameDetails/4727ff75.../characters/204f5fb7
+  (30799b)` two lines before `LOBBYGAME:: ENTERED!`.
+
+So the lobby hero is replaced wholesale by the EotW copy's final state: stamina,
+temporary stamina, recoveries, ongoing effects/conditions, surges, heroic
+resource, `dsVictoryRoleHistory`, the EotW `partyid`/`ownerId`, **and the
+level-1 clamp from `NormalizeHeroLevel`** -- a level-6 lobby hero comes home
+level 1 (the "runs on the game's COPY, never the original" claim in the
+level-1 section is therefore only true until the next lobby load). The
+`mtime` guard cannot help: the EotW save always stamps a newer server time
+than the lobby record. Only the reporter's `primaryCharacter` is affected per
+game (one hero per player per session), which is why "some" heroes leak.
+
+The sync is intentional for campaigns (a lobby hero mirrors its campaign copy),
+so the fix exempts EotW copies rather than removing the feature.
+
+**FIX (BUILT 2026-09-16, codex only, no engine change):** `DetachFromLobbySync
+(token)` in `EncounterOfTheWeek/EncounterOfTheWeek.lua`, called from
+`ClaimPastedHero` right after `UploadToken` and before `NormalizeHeroLevel`.
+It is a `ModifyProperties` patch (`undoable = false`) that sets
+`properties.originalid = nil` and `properties.creatorid = nil` on the pasted
+copy, issued only when either stamp is present (a properties key set to nil
+diffs as a null patch, i.e. a deletion -- `ScriptSerialize.LuaValuePatch`).
+Both are cleared on purpose: `creatorid` is `ShouldSaveLocally`'s gate and
+`originalid` is the cache file name, and a copy with the gate but no name
+would save to `char-cache/.json`. With `creatorid` gone the periodic save never
+fires, so nothing is ever restored over the lobby hero. Module pregens carry
+the module author's creatorid and never saved; they now lose it too, harmless.
+Runs for every placed hero, once, at placement (the same choke point as the
+level clamp). luac-clean.
+
+**UNTESTED live.** Verify: place a lobby hero into an EotW game, check the
+copy's properties have no `originalid`/`creatorid` (`DebugGetState` or the
+character sheet), play >6000 frames (~2 min), confirm no `LOCALCHAR:: SAVE
+TO` line in the log, leave, and confirm the lobby hero is unchanged and no
+`LOCALCHAR:: Restore character` line appears.
+
+**Not covered:** heroes already damaged before the fix are not repaired (the
+cache file is consumed on restore); those users fix stamina/recoveries/level by
+hand in the builder. A future engine guard (skip `SaveLocally` when
+`originalid` is empty; skip the periodic save in EotW games) would make this
+robust against any other codemod re-stamping the fields -- optional, NEEDS
+BUILD, not done.
+
 ## Joiner-side module install race + Firebase permission denials (FOUND 2026-08-27, engine fix pending)
 
 Diagnosed from the first live 2-client Begin (game `DeathlessChainedSuperiorOrc`):
@@ -1539,7 +1664,9 @@ entirely as leafy EotW-module code plus small named hooks in core:
   menu DM entries (`TokenUI.lua`), HeroesPanel host controls, victory-screen
   Director controls, CodexTitleBar bits. Escape hatch: the hidden preference
   `eotw:showdirectorui` (`/toggle eotw:showdirectorui`) restores Director UI
-  on an EotW client for debugging/manual recovery.
+  on an EotW client for debugging/manual recovery. Since 2026-09-16 the
+  `--director` launch flag is a second way in (see "Debug Director Window");
+  both feed `EncounterOfTheWeekGame.ShowDirectorUI()`.
 - **`EncounterOfTheWeekGame.IsEotwGame()`** (EotW codemod): true when the game
   occupies this account's eotw slot (`lobby.eotwGameid == dmhub.gameid`) OR the
   shared state doc carries the host-stamped `eotw = true` marker. Cached once
@@ -3777,6 +3904,14 @@ Deliverable: end-to-end -- lobby to fought encounter with AI-run monsters.
 
 # Status
 
+- 2026-09-16: **"New Director Window" works from an EotW game for dev+admin
+  hosts. DECIDED + BUILT; engine NEEDS BUILD, UNTESTED, UNCOMMITTED** (core
+  `Commands.lua`, the EotW codemod + hud, `GameController.cs`,
+  `LuaInterface.cs`, stubs). The child launches with `--director`, which
+  seeds `playerHostModeSuppressed` in the engine and is honored by the
+  codemod's Director-UI gates. Design in
+  [Debug "Director Window"](#debug-director-window-from-inside-an-eotw-game-decided--built-2026-09-16-engine-needs-build-untested).
+
 - 2026-09-15: **Debug "Player Window" in the game lobby view. DECIDED +
   BUILT; engine NEEDS BUILD, UNTESTED, UNCOMMITTED.** Admin-only button
   launching a secondary-account child (`--asplayer --eotw-game <id>`,
@@ -4815,3 +4950,38 @@ Deliverable: end-to-end -- lobby to fought encounter with AI-run monsters.
   bubbles, and the version ships no bare `Encounter` default. Content fix
   in the authoring game + republish (details under "Choosing the week's
   encounter"). No code changed this session.
+
+- **2026-09-16 (later): Tactician Mark prompts absent on a killing blow --
+  DIAGNOSED, working as the rules intend, but silently; no code changed.**
+  In game `HungeringSilentFacelessTalent` (staging DO) the Shadow's Two
+  Throats at Once killed the marked Dwarf Warden 1, and the Tactician got
+  neither the Mark: Benefit prompt nor the "place your Mark on a new
+  creature" prompt. Two independent gates, both silent (the trigger
+  dispatcher only records reasons into `debugLog` for relayed events):
+  1. The Tactician was under the Dwarf Axethrower's Whistling Axes effect
+     ("can't use triggered actions until the start of the next round",
+     ongoing effect `4dadd12e`, applied round 2 at 1789552560851, ~60s before
+     the kill). `creature:TriggeredActionsForbidden()` is true, so
+     `CharacterModifier:TriggerEvent` (`DMHub Game Rules/CharacterModifier.lua`,
+     "Cannot use triggered actions" branch) drops every optional, non-hostile
+     trigger on the creature -- both Mark prompts. Mandatory triggers
+     (Marked Takes Damage, Monster Death) still fired, which is why the log
+     shows them and nothing else.
+  2. Independently, the Benefit costs 1 focus and the Tactician was at 0
+     (the focus history shows the fourth accepted Benefit set it to 0 at
+     1789552415490, no gain until the kill). `HasTriggeredEvent` /
+     `TriggerEvent` run `CanAfford` synchronously at the losehitpoints
+     dispatch, while the same event's +1 focus grants (Marked Takes Damage,
+     Ally Uses Heroic Ability) land later from their cast coroutines -- so a
+     Tactician at 0 focus can never spend the focus that the very same hit
+     grants. The rules are ambiguous on that ordering; flagged, not changed.
+  Diagnosis trail: `MANDATORY:: IS = ...` prints in Player.log (three prints
+  plus a `null mandatory =` line per trigger that reaches the prompt stage;
+  the re-mark showed only the CharacterModifier print), the Warden record
+  still carrying the Mark effect with `casterInfo.tokenid` = the Tactician,
+  and the Tactician's `2d3d5511..._history` focus ledger, both read via
+  `GET https://game-server-staging.codexback.com/api/<gameid>/store/game?path=/characters/<charid>`.
+  UX gap for EotW (open): strict-rules players get no feedback that a
+  trigger was suppressed by a "can't use triggered actions" effect or by
+  an empty resource pool; a hint on the hero card badge/tooltip or a
+  one-line notice when a would-be prompt is suppressed would close it.

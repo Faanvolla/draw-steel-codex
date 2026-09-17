@@ -1215,8 +1215,12 @@ pcall(function()
             if eotw == nil or not eotw.IsEotwGame() then
                 return false
             end
-            --the Director-UI escape hatch restores the whole normal
-            --interface for debugging/manual recovery.
+            --the Director-UI escape hatch (or a --director debug window)
+            --restores the whole normal interface for debugging/manual
+            --recovery.
+            if eotw.ShowDirectorUI ~= nil then
+                return not eotw.ShowDirectorUI()
+            end
             return dmhub.GetSettingValue("eotw:showdirectorui") ~= true
         end,
 
