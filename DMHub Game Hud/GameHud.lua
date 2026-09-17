@@ -374,6 +374,15 @@ local function DiagramProfileFromPath(token, path)
 	}
 end
 
+--Releases the attack cross-section scene (see dmhub.SetAttackCrossSection). The
+--bridge is absent on engine builds that predate it; dmhub is userdata, so an
+--unknown member reads as nil rather than erroring.
+local function ClearAttackCrossSection()
+	if dmhub.ClearAttackCrossSection ~= nil then
+		dmhub.ClearAttackCrossSection()
+	end
+end
+
 --Rebuilds the diagram from the current move by asking the engine to build the
 --offscreen cross-section scene (see MovementCrossSection.cs) and displaying the
 --returned render texture. The panel is sized to the render texture, scaled down
@@ -454,7 +463,36 @@ function GameHud.MovementTooltipPlacement(token, path)
 		minx, miny, maxx, maxy = p.x, p.y, p.x, p.y
 	end
 	minx, miny, maxx, maxy = minx - pad, miny - pad, maxx + pad, maxy + pad
+	return GameHud.TooltipPlacementOutsideBox(minx, miny, maxx, maxy)
+end
 
+--Where to put the attack cross-section tooltip during ability targeting: outside the
+--box spanning the attacker and the hovered target, so it never sits on either creature
+--or on the targeting arrow between them. Same side-picking rule as the movement tooltip.
+--- @param sourceToken CharacterToken the attacker
+--- @param targetToken CharacterToken the hovered target
+--- @return Vector2 anchor, string halign, string valign
+function GameHud.AttackTooltipPlacement(sourceToken, targetToken)
+	local minx, miny, maxx, maxy = nil, nil, nil, nil
+	for _,tok in ipairs{sourceToken, targetToken} do
+		local p = tok:PosAtLoc(tok.loc)
+		local pad = (tok.tileSize or 1)*0.5 + 0.15
+		if minx == nil then
+			minx, miny, maxx, maxy = p.x - pad, p.y - pad, p.x + pad, p.y + pad
+		else
+			if p.x - pad < minx then minx = p.x - pad end
+			if p.x + pad > maxx then maxx = p.x + pad end
+			if p.y - pad < miny then miny = p.y - pad end
+			if p.y + pad > maxy then maxy = p.y + pad end
+		end
+	end
+	return GameHud.TooltipPlacementOutsideBox(minx, miny, maxx, maxy)
+end
+
+--Picks the roomiest side of a world-space box (inside dmhub.cameraUsableBounds) for a
+--tooltip anchored just outside it. Shared by the movement and attack diagram tooltips.
+--- @return Vector2 anchor, string halign, string valign
+function GameHud.TooltipPlacementOutsideBox(minx, miny, maxx, maxy)
 	--Keep the hovered tile inside the box too: during ability targeting it can be well
 	--outside the path -- a jump that lands short at a wall while the user aims past it --
 	--and a tooltip just off the path box would then sit on the cursor. mouseLoc is nil
@@ -533,8 +571,35 @@ local function CreateMovementDiagramPanel()
 			--the tooltip (and this panel) is torn down by FinishTokenMoving; release
 			--the offscreen render texture so nothing stays resident while idle.
 			dmhub.ClearMovementCrossSection()
+			ClearAttackCrossSection()
 		end,
 		args = function(element, args)
+			--The attack cross-section (ability targeting hovering a target): the action bar
+			--has already built the engine scene and checked it is worth showing; we just
+			--display the returned image (see CrossSection.ShowAttack in DrawSteelActionBar.lua).
+			if args ~= nil and args.attackDiagram ~= nil then
+				dmhub.ClearMovementCrossSection()
+				element.data.signature = "attack"
+				if GameHud.TooltipsSuppressed() or not dmhub.GetSettingValue("showmovementcrosssection") then
+					element:SetClass("collapsed", true)
+					ClearAttackCrossSection()
+					return
+				end
+				local result = args.attackDiagram
+				local scale = 1
+				if result.width > g_diagramMaxWidth then
+					scale = g_diagramMaxWidth / result.width
+				end
+				element:SetClass("collapsed", false)
+				element.selfStyle.width = result.width * scale
+				element.selfStyle.height = result.height * scale
+				element.selfStyle.bgcolor = "white"
+				element.bgimage = result.image
+				return
+			end
+
+			ClearAttackCrossSection()
+
 			if args == nil or args.movingToken == nil or args.movingPath == nil or
 			   GameHud.TooltipsSuppressed() or
 			   not dmhub.GetSettingValue("showmovementcrosssection") then

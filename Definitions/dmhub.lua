@@ -763,6 +763,14 @@ function dmhub.SetMovementCrossSection(args) end
 --- Hides the movement cross-section diagram (see dmhub.SetMovementCrossSection) and releases its render texture so nothing stays resident while idle. Safe to call when nothing is active.
 function dmhub.ClearMovementCrossSection() end
 
+--- Builds (or updates) the offscreen attack cross-section diagram: the side-on terrain profile along the straight line from attacker to target, both creatures at their altitudes, and the sightline the cover calculation uses (green = clear, yellow = the target has cover, red = fully blocked; cut where it is blocked). Returns the special bgimage key (image), the render texture's pixel size (width, height), the cover result (cover: 0 none, 1 half, 2 three-quarters, 3 full -- the same value dmhub.GetCoverInfo reports), what blocks the line (description, e.g. 'wall' or 'ridge') and whether there is anything vertical worth showing (interesting: false for a flat shot across open ground -- the caller normally hides the diagram then). Returns nil when the pair can't be drawn (different floors, same tile, no active map). Call dmhub.ClearAttackCrossSection to release it. Independent of the movement cross-section.
+--- @param args {attacker: CharacterToken, target: CharacterToken}
+--- @return nil|{image: string, width: number, height: number, cover: number, description: string, interesting: boolean}
+function dmhub.SetAttackCrossSection(args) end
+
+--- Hides the attack cross-section diagram (see dmhub.SetAttackCrossSection) and releases its render texture. Safe to call when nothing is active.
+function dmhub.ClearAttackCrossSection() end
+
 --- Installs a Movement Restriction Mode on this client: while installed, tokens can only be moved within the given tiles. Pathfinding treats any step ending outside the set as impassable, so the drag preview and movement-radius markers clip to the allowed area, and drops outside it are refused -- including for the DM (the dmillegalmoves setting does not bypass it). Forced movement (pushes/slides) is exempt. The restriction applies to all tokens on this client until dmhub.ClearMovementRestriction is called or the game session ends. Calling again replaces the previous set.
 --- @param args {locs: Loc[]}
 function dmhub.SetMovementRestriction(args) end

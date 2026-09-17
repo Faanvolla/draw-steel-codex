@@ -1048,7 +1048,9 @@ end
 --crashes on math.floor(nil). We only need movingToken/movingPath to reach the
 --diagram, so we build a minimal, preview-safe text ourselves. See
 --MOVEMENT_CROSS_SECTION_REFERENCE.md.
-local g_movementDiagramShown = false
+--Cross-section tooltip state (movement diagram + attack diagram) in ONE table: this
+--chunk sits at Lua's 200-local ceiling, so a new top-level local does not parse.
+local CrossSection = { movementShown = false, attackShown = false }
 
 --- @param token CharacterToken the moving token
 --- @param path LuaPath the previewed movement path
@@ -1114,18 +1116,101 @@ local function ShowMovementDiagram(token, path, label, alternates, damages, text
         movingPathAlternates = alternates,
         movingPathDamages = damages,
     })
-    g_movementDiagramShown = true
+    CrossSection.movementShown = true
 end
 
 local function ClearMovementDiagram()
-    if not g_movementDiagramShown then
+    if not CrossSection.movementShown then
         return
     end
-    g_movementDiagramShown = false
+    CrossSection.movementShown = false
     --truthiness check: GameHud.instance is false (not nil) while the hud rebuilds.
     if GameHud.instance then
         GameHud.instance:FinishTokenMoving()
     end
+end
+
+--Attack cross-section: while hovering a target during ability targeting, a side-on
+--diagram of the terrain between the attacker and the target with the sightline the
+--cover rules used (see MovementCrossSection.SetAttackCrossSection). Only shown when
+--the engine reports something vertical worth seeing (the creatures at different
+--altitudes or airborne, ground rising/falling between them, a solid or height-limited
+--wall crossed, or cover that came from the terrain) -- a flat shot shows nothing, so
+--ordinary targeting is unchanged. Rides the same "tiletooltip" event + diagram panel
+--as the movement diagram (GameHud.lua), anchored outside the attacker/target box so it
+--never covers the arrow. Torn down with GameHud.FinishTokenMoving on unhover.
+function CrossSection.ClearAttack()
+    if not CrossSection.attackShown then
+        return
+    end
+    CrossSection.attackShown = false
+    --truthiness check: GameHud.instance is false (not nil) while the hud rebuilds.
+    if GameHud.instance then
+        GameHud.instance:FinishTokenMoving()
+    end
+end
+
+--- @param sourceToken CharacterToken the attacker (or the relay the arrow is drawn from)
+--- @param targetToken CharacterToken the hovered target
+function CrossSection.ShowAttack(sourceToken, targetToken)
+    --dmhub is userdata: on an engine build without the bridge the member reads as nil.
+    if sourceToken == nil or targetToken == nil or dmhub.SetAttackCrossSection == nil
+       or GameHud.AttackTooltipPlacement == nil or not GameHud.instance then
+        CrossSection.ClearAttack()
+        return
+    end
+    if not sourceToken.valid or not targetToken.valid or sourceToken.floorIndex ~= targetToken.floorIndex
+       or sourceToken.charid == targetToken.charid then
+        CrossSection.ClearAttack()
+        return
+    end
+    local dialog = GameHud.instance.dialog
+    local sheet = dialog and dialog.sheet
+    if sheet == nil then
+        CrossSection.ClearAttack()
+        return
+    end
+
+    local result = dmhub.SetAttackCrossSection{attacker = sourceToken, target = targetToken}
+    if result == nil or not result.interesting then
+        dmhub.ClearAttackCrossSection()
+        CrossSection.ClearAttack()
+        return
+    end
+
+    local text
+    local delta = (targetToken.altitude or 0) - (sourceToken.altitude or 0)
+    if delta > 0 then
+        text = string.format(tr("Target is %d higher"), delta)
+    elseif delta < 0 then
+        text = string.format(tr("Target is %d lower"), -delta)
+    else
+        text = tr("Line of Effect")
+    end
+
+    local what = result.description
+    if what == "ridge" then
+        what = tr("the terrain")
+    elseif what == "none" or what == nil or what == "" then
+        what = nil
+    end
+    if result.cover == 0 then
+        text = string.format("%s\n<color=#aaffaaff>%s</color>", text, tr("Clear line of effect"))
+    elseif result.cover == 3 then
+        text = string.format("%s\n<color=#ffaaaaff>%s</color>", text, cond(what ~= nil, string.format(tr("No line of effect: blocked by %s"), what), tr("No line of effect")))
+    else
+        text = string.format("%s\n<color=#ffdd88ff>%s</color>", text, cond(what ~= nil, string.format(tr("Cover from %s"), what), tr("Cover")))
+    end
+
+    local anchor, halign, valign = GameHud.AttackTooltipPlacement(sourceToken, targetToken)
+    sheet:FireEvent("tiletooltip", {
+        loc = anchor,
+        halign = halign,
+        valign = valign,
+        text = text,
+        attackDiagram = result,
+    })
+    CrossSection.attackShown = true
 end
 
 --Tiered-jump hover state: markers on the tiles where lower-tier (shortfall)
@@ -11378,6 +11463,7 @@ CreateAbilityController = function()
                     m_markLineOfSight:AddLabel("Locked", "buff")
                     m_markLineOfSightToken = targetToken
                     m_markLineOfSightSourceToken = g_squadPendingLockMinion
+                    CrossSection.ShowAttack(g_squadPendingLockMinion, targetToken)
                 end
                 return
             end
@@ -11420,9 +11506,17 @@ CreateAbilityController = function()
                     m_markLineOfSightSourceToken = originToken
                 end
             end
+
+            --The attack cross-section for the arrow just drawn (collapses itself for a flat shot).
+            if m_markLineOfSightToken == targetToken and m_markLineOfSightSourceToken ~= nil then
+                CrossSection.ShowAttack(m_markLineOfSightSourceToken, targetToken)
+            end
         end,
 
         unhighlightTargetToken = function(element, targetToken)
+            if targetToken == nil or targetToken == m_markLineOfSightToken then
+                CrossSection.ClearAttack()
+            end
             if m_markLineOfSight ~= nil and (targetToken == nil or targetToken == m_markLineOfSightToken) then
                 m_markLineOfSight:Destroy()
                 m_markLineOfSight = nil
