@@ -4,11 +4,13 @@ local mod = dmhub.GetModLoading()
 --with the mcdm-encounteroftheweek module, so it loads only inside EotW games
 --(and the source game the module is authored in). Setup never runs on its
 --own: the titlescreen EotW screen ("Codex Titlescreen/EncounterOfTheWeek.lua")
---drives it by calling EncounterOfTheWeekGame.SetupOnArrival from the
---lobby:EnterGame arrival callback. That explicit handoff is deliberate -- it
---means entering the authoring game normally never triggers EotW setup. The
---only load-time behavior is passive: registering the EotW map-script builtin
---and the Director-UI filter, both inert until IsEotwGame() is true.
+--hands it over, parking the arrival args in a global before entering the game
+--and stamping them ready from the engine's lobby:EnterGame arrival callback.
+--Whichever side loads second runs SetupOnArrival off that handoff -- see "the
+--arrival handoff" at the foot of this file. It stays an explicit handoff, so
+--entering the authoring game normally never triggers EotW setup. All other
+--load-time behavior is passive: registering the EotW map-script builtin and
+--the Director-UI filter, both inert until IsEotwGame() is true.
 --Design/plan doc: EncounterOfTheWeek/EncounterOfTheWeek.md.
 
 EncounterOfTheWeekGame = {}
@@ -1958,3 +1960,55 @@ function EncounterOfTheWeekGame.SetupOnArrival(args)
         end
     end)
 end
+
+--- the arrival handoff --------------------------------------------------
+
+--Setup is handed over from the titlescreen: it parks the arrival args in a
+--global before entering the game, then calls in here from the engine's
+--arrival callback ("Codex Titlescreen/EncounterOfTheWeek.lua"). The two can
+--land in either order. The engine fires that callback the instant the
+--loading screen clears, while this codemod's id rides in on the /games
+--record -- which can arrive a beat later, in which case the callback found
+--EncounterOfTheWeekGame still nil and silently skipped setup, leaving the
+--member on the engine's default map choice with no heroes placed, and so
+--with no vision at all: a black screen showing nothing but the Start zone
+--outline (bug 32UW4UQB). So whichever side gets here second runs the setup,
+--exactly once.
+--
+--.ready is the callback's stamp. The engine fires it only once the game has
+--finished loading, so it is also this side's guarantee that travelling maps
+--and pasting tokens is safe now; without it we would be acting on a
+--half-loaded game.
+local m_arrivalStarted = false
+
+function EncounterOfTheWeekGame.ConsumePendingArrival()
+    if m_arrivalStarted then
+        return
+    end
+
+    local pending = rawget(_G, "EotwPendingArrival")
+    if type(pending) ~= "table" or pending.ready ~= true then
+        return
+    end
+
+    --only a POSITIVE mismatch rejects: an unreadable gameid must not be what
+    --swallows the handoff all over again. Entry overwrites the global every
+    --time, and only the callback for the game being entered stamps it ready,
+    --so a leftover from another game needs both reads to disagree to matter.
+    local currentGame = nil
+    pcall(function() currentGame = dmhub.gameid end)
+    if pending.gameid ~= nil and currentGame ~= nil and pending.gameid ~= currentGame then
+        --parked for a different game; leave it for that game's client.
+        return
+    end
+
+    m_arrivalStarted = true
+    _G.EotwPendingArrival = nil
+    EncounterOfTheWeekGame.SetupOnArrival(pending)
+end
+
+--The load-time half of the handoff: pick up an arrival the titlescreen's
+--callback could not deliver because this codemod had not loaded yet. A no-op
+--in every other case -- entering the authoring game, a Lua reload
+--mid-session, or the normal ordering where the callback lands second.
+EncounterOfTheWeekGame.ConsumePendingArrival()

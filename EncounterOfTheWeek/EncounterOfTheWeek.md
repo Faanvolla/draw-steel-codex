@@ -1080,17 +1080,35 @@ How claimed heroes physically get from the titlescreen into an EotW game:
   fix-up. The pristine module character stays untouched as a template.
 - **Arrival timing**: the `lobby:EnterGame(gameid, fn)` callback fires in
   `FinishLoadingCo` after the game is FULLY loaded (map, floors, markup zones,
-  tokens, tables all valid) and after codemods' `enterGameHandlers` have run. The
-  callback is created in the titlescreen Lua state and survives the codemod
-  unload/reload of the game switch, so it captures ONLY plain data and resolves
-  the game-side global late via `rawget(_G, "EncounterOfTheWeekGame")`.
-- **Explicit handoff, no auto-detection**: the game-side codemod does nothing on
-  load; setup runs only when the titlescreen's Enter World calls
-  `EncounterOfTheWeekGame.SetupOnArrival{heroes, clipboardIds, numHeroes}`. This
-  is deliberate -- the authoring/source game also loads the EotW codemod, and any
-  on-entry auto-spawn there would dump monsters into the user's source game.
-  Consequence: entering an EotW game from the CAMPAIGNS list (not the EotW
-  screen) runs no setup; acceptable for now, revisit with Begin (step 21).
+  tokens, tables all valid). The callback is created in the titlescreen Lua state
+  and survives the codemod unload/reload of the game switch, so it captures ONLY
+  plain data and resolves the game-side global late via `rawget(_G,
+  "EncounterOfTheWeekGame")`. It does **not** wait for the game's own codemods:
+  the EotW codemod's id rides in on the `/games/{gameid}` record, and that update
+  can land AFTER the loading screen clears. See the handoff bullet below.
+- **Explicit handoff, no auto-detection**: setup runs only off the titlescreen's
+  Enter World, never off game entry itself. This is deliberate -- the
+  authoring/source game also loads the EotW codemod, and any on-entry auto-spawn
+  there would dump monsters into the user's source game. Consequence: entering an
+  EotW game from the CAMPAIGNS list (not the EotW screen) runs no setup;
+  acceptable for now, revisit with Begin (step 21).
+  - **Both sides of the handoff, either order** (2026-09-17, bug 32UW4UQB):
+    Enter World parks the args in `_G.EotwPendingArrival` (keyed by gameid)
+    *before* `lobby:EnterGame`, and the arrival callback stamps `.ready = true`
+    on them -- the engine fires it only once loading is done, so that stamp is
+    also the game side's licence to travel maps and paste tokens. The callback
+    then calls `EncounterOfTheWeekGame.ConsumePendingArrival()`; the game-side
+    codemod calls the same function once at load. Whichever lands second runs
+    `SetupOnArrival`, guarded by a module-local `m_arrivalStarted` so it runs
+    exactly once. Without this, a member whose `/games` record update lost the
+    race by ~300ms found `EncounterOfTheWeekGame` nil, silently skipped setup,
+    and sat on the engine's default map choice -- no travel, no heroes, so no
+    vision at all: a black screen with nothing but the Start zone outline.
+    Mixed versions degrade cleanly: an old module (no `ConsumePendingArrival`)
+    still gets the direct `SetupOnArrival` call, and an old core titlescreen
+    (parks nothing) leaves the new module's load-time call a no-op.
+    NOTE the two halves ship in DIFFERENT mods -- `Codex Titlescreen` is core
+    codex, `EncounterOfTheWeek` rides the weekly module publish.
 - **Re-entry guard**: the game-side state doc (`mod:GetDocumentSnapshot
   ("eotwstate")`) records `placedHeroes[userid][kind..":"..heroid] = charid`;
   already-recorded heroes are skipped (batch-paste duplicates of them are

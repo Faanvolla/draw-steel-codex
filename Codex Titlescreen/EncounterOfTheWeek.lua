@@ -1282,16 +1282,46 @@ CreateScreen = function(args)
             titlescreenRoot:FireEventTree("overrideLoadingScreenArt", LOADING_SCREEN_ART, gameid)
         end
 
+        --The arrival args are ALSO parked in a plain global, not just
+        --captured by the callback below. The engine fires that callback the
+        --instant the loading screen clears, which can be before the game's
+        --own codemods have loaded: the game-side EotW codemod's id rides in
+        --on the /games record, and a member whose record update lands a beat
+        --late found EncounterOfTheWeekGame still nil and silently skipped
+        --setup -- leaving them on the engine's default map choice with no
+        --heroes placed, and so with no vision at all: a black screen showing
+        --nothing but the Start zone outline (bug 32UW4UQB). A global outlives
+        --every codemod load/unload, so the game side can pick the handoff up
+        --itself whenever it does load. Keyed by gameid, so a leftover entry
+        --can never fire in some other game.
+        local arrival = {
+            gameid = gameid,
+            heroes = myHeroes,
+            clipboardIds = clipboardIds,
+            numHeroes = slotsFilled,
+            members = members,
+            encounterMap = encounterMap,
+        }
+        _G.EotwPendingArrival = arrival
+
         lobby:EnterGame(gameid, function()
+            --the engine fires this only once the game has finished loading,
+            --so the stamp doubles as the game side's guarantee that running
+            --setup -- travelling maps, pasting tokens -- is safe now.
+            arrival.ready = true
+
             local eotwGame = rawget(_G, "EncounterOfTheWeekGame")
-            if eotwGame ~= nil and eotwGame.SetupOnArrival ~= nil then
-                eotwGame.SetupOnArrival{
-                    heroes = myHeroes,
-                    clipboardIds = clipboardIds,
-                    numHeroes = slotsFilled,
-                    members = members,
-                    encounterMap = encounterMap,
-                }
+            if eotwGame == nil then
+                --not loaded yet; it consumes the parked args on load.
+                return
+            end
+
+            if eotwGame.ConsumePendingArrival ~= nil then
+                eotwGame.ConsumePendingArrival()
+            elseif eotwGame.SetupOnArrival ~= nil then
+                --a published module older than this handoff.
+                _G.EotwPendingArrival = nil
+                eotwGame.SetupOnArrival(arrival)
             end
         end)
     end
