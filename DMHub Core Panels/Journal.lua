@@ -1309,7 +1309,12 @@ CreateFolderContentsPanel = function(journalPanel, folderid)
                                 },
                             }
 
-                            element.tooltip:MakeNonInteractiveRecursive()
+                            --nil when a mod holds tooltip suppression: the
+                            --engine setter destroys the offered panel instead
+                            --of showing it.
+                            if element.tooltip ~= nil then
+                                element.tooltip:MakeNonInteractiveRecursive()
+                            end
                         end,
                         canDragOnto = function(element, target)
                             if target == nil then
@@ -1994,7 +1999,11 @@ local function MakeRecentDocumentPanel(documentnumber)
                 },
             }
 
-            element.parent.tooltip:MakeNonInteractiveRecursive()
+            --nil when a mod holds tooltip suppression: the engine setter
+            --destroys the offered panel instead of showing it.
+            if element.parent.tooltip ~= nil then
+                element.parent.tooltip:MakeNonInteractiveRecursive()
+            end
         end,
     }
 end

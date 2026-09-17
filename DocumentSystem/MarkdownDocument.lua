@@ -6441,7 +6441,10 @@ local function CreateMarkdownAutocomplete(opts)
                             interactable = false,
                             halign = "right",
                         })
-                        element.tooltip:MakeNonInteractiveRecursive()
+                        --nil while tooltips are suppressed (see GameHud.SetTooltipsSuppressed)
+                        if element.tooltip ~= nil then
+                            element.tooltip:MakeNonInteractiveRecursive()
+                        end
                     elseif result.isRichTag or result.isRichTagPrefix then
                         -- Render a mini document showing what the rich tag looks like.
                         local tagContent
@@ -6494,7 +6497,10 @@ local function CreateMarkdownAutocomplete(opts)
                                 interactable = false,
                                 halign = "right",
                             })
-                            element.tooltip:MakeNonInteractiveRecursive()
+                            --nil while tooltips are suppressed (see GameHud.SetTooltipsSuppressed)
+                            if element.tooltip ~= nil then
+                                element.tooltip:MakeNonInteractiveRecursive()
+                            end
                         end
                     else
                         CustomDocument.PreviewLink(element, result.link)
