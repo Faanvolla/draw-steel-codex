@@ -749,6 +749,9 @@ function MonsterAI:MoveToken(token, loc, options, continueIfActorDies)
             targets = self.TargetsLogName({{token = creature}}),
             reason = "destination footprint overlaps another live creature",
         })
+        if not continueIfActorDies then
+            self._tmp_moveFailure = "movement destination overlaps another creature"
+        end
         return nil, true
     end
     self:LogDecision("MOVEMENT START", {
@@ -796,6 +799,10 @@ function MonsterAI:MoveToken(token, loc, options, continueIfActorDies)
             self._tmp_actorInterrupted = "actor is no longer a live combatant after a player reaction"
             error(self._tmp_actorInterrupted)
         end
+    end
+    if not continueIfActorDies and (options == nil or not options.straightline)
+        and not self:MovementTokenIsAtLoc(token, loc) then
+        self._tmp_moveFailure = "movement did not reach the planned destination"
     end
     return result, true
 end
@@ -1439,6 +1446,7 @@ function MonsterAI:PlayTurnCoroutine(initiativeid)
                     self._tmp_synthesizedAbilitiesUsed = {}
                     self._tmp_synthesizedPlanningFailed = false
                     self._tmp_failedMoves = {}
+                    self._tmp_failedChargePlans = {}
 					self._tmp_actorInterrupted = nil
 
                     local tacticNames = table.keys(self.activeTactics)
@@ -2378,23 +2386,74 @@ function MonsterAI:FindClosestEnemy()
     return closestEnemy
 end
 
---Straight-line charge probe from the mover's CURRENT (possibly theoretical)
---location to an enemy. Returns {dest = <Loc>, chargeDist = <tiles>} when there
---is a usable charge line, or nil when there is no path or the move would drop
---us more than a tile.
---
---This is the most expensive call in the AI's scoring pass: each probe walks a
---full straight-line path through the engine's move-cost function (~1.2ms
---measured over 15-20 tiles), and the initiative pass asks for the same
---origin/target pairs once per candidate actor -- 68% of the probes in a
---measured dwarf encounter were exact duplicates. So results are memoized per
---frame, keyed by (mover, origin, target): nothing moves within a frame, and
---the memo dies with it. Same idiom as the action bar's per-frame pathCache.
---
---Only the destination (a Loc, which is a C# struct and so copied by value) and
---the step count are kept. The Pathfind.Path object is deliberately NOT cached,
---because the engine reuses it on the next MarkMovementArrow call.
-function MonsterAI:ChargeProbe(movementToken, enemy)
+-- Charge targets are empty landing squares, with absolute ground altitudes.
+-- The generic straight-line arrow instead treats altitude as a vertical offset.
+function MonsterAI:ChargeProbe(movementToken, enemy, distance, range)
+    local now = dmhub.Time()
+    if self:try_get("_tmp_chargePlanTime") ~= now then
+        self._tmp_chargePlanTime = now
+        self._tmp_chargePlans = {}
+    end
+    local cache = self._tmp_chargePlans
+    local cacheKey = table.concat({movementToken.id, movementToken.loc.str, enemy.id,
+        enemy.loc.str, distance, range}, "|")
+    if cache[cacheKey] ~= nil then return cache[cacheKey] or nil end
+    local best = nil
+    for _,loc in ipairs(enemy.loc:LocsInRadius(range + movementToken.creatureDimensions.x)) do
+        if enemy:Distance(loc) <= range and movementToken.loc:DistanceInTiles(loc) <= distance then
+            local plan = movementToken:PlanCharge(loc, {
+                chargeDistance = distance, chargeJumpDistance = 0, chargeJumpHeight = 0,
+            })
+            if plan ~= nil and plan.validCharge and not plan.requiresRoll then
+                local dest = plan.path.destination
+                local failed = self:try_get("_tmp_failedChargePlans", {})
+                local key = movementToken.id .. "|" .. movementToken.loc.str .. "|" .. dest.str
+                if not failed[key] and enemy:Distance(dest) <= range
+                    and (best == nil or plan.path.cost < best.cost) then
+                    best = {dest = dest, chargeDist = dest:DistanceInTiles(movementToken.loc),
+                        cost = plan.path.cost}
+                end
+            end
+        end
+    end
+    cache[cacheKey] = best or false
+    return best
+end
+
+-- Revalidate immediately before moving, then use the planner's ground-relative
+-- segment destination. Never feed an absolute altitude to straight-line Move.
+function MonsterAI:ExecuteChargeMovement(token, dest, continueIfActorDies)
+    local mover = self:GetMovementToken(token)
+    local key = mover.id .. "|" .. mover.loc.str .. "|" .. dest.str
+    local distance = mover.properties:CurrentMovementSpeed()
+    local previousFailure = self:try_get("_tmp_moveFailure")
+    local plan = mover:PlanCharge(dest, {
+        chargeDistance = distance, chargeJumpDistance = 0, chargeJumpHeight = 0,
+    })
+    if plan ~= nil and plan.validCharge and not plan.requiresRoll
+        and plan.path.destination.str == dest.str and #plan.chargeSegments == 1
+        and not plan.chargeSegments[1].jump then
+        local path, survived = self:MoveToken(token, plan.chargeSegments[1].loc, {
+            straightline = true, movementType = "walk", moveThroughFriends = false,
+            chargeDistance = distance, freeMovement = true, ignoreFalling = false,
+        }, continueIfActorDies)
+        if not survived then return false, false end
+        if path ~= nil and self:MovementTokenIsAtLoc(token, dest) then
+            self._tmp_moveFailure = previousFailure
+            return true, true
+        end
+    end
+    self._tmp_failedChargePlans = self:try_get("_tmp_failedChargePlans", {})
+    self._tmp_failedChargePlans[key] = true
+    self._tmp_chargePlanTime = nil
+    if not continueIfActorDies then
+        self._tmp_moveFailure = "charge route failed validation or movement did not reach its landing square"
+    end
+    return false, true
+end
+
+-- Legacy straight-line probe for synthetic leap combos, which execute their own jump.
+function MonsterAI:LeapProbe(movementToken, enemy)
     local now = dmhub.Time()
     if self.chargeProbeCacheTime ~= now then
         self.chargeProbeCache = {}
@@ -2498,7 +2557,13 @@ function MonsterAI:FindValidTargetsOfStrike(token, ability, loc, range)
 
             local chargeLoc = nil
             if hasCharge and dist <= chargeReach then
-                local probe = self:ChargeProbe(movementToken, enemy)
+                local probe
+                if ability:try_get("chargeDistanceOverride") ~= nil then
+                    -- Leap combos use this synthetic strike only to choose a jump target.
+                    probe = self:LeapProbe(movementToken, enemy)
+                else
+                    probe = self:ChargeProbe(movementToken, enemy, maxChargeDistance, chargeRange)
+                end
                 if probe ~= nil then
                     local targetDist = enemy:Distance(probe.dest)
                     -- A stopped or zero-length arrow is not a charge. Dual-mode
@@ -2717,15 +2782,17 @@ function MonsterAI:ExecuteSquadStrike(ability)
                     self.Sleep(0.3)
                     --A Charge's movement is part of the ability, not the creature's
                     --move action, so it does not consume the remaining move budget.
-                    local _, chargeSurvived = self:MoveToken(memberToken, bestOption.charge,
-                        {maxCost = 10000, ignoreFalling = false, freeMovement = true}, true)
-                    memberSurvived = chargeSurvived
+                    local reached, chargeSurvived = self:ExecuteChargeMovement(memberToken, bestOption.charge, true)
+                    memberSurvived = chargeSurvived and reached
                     self.Sleep(1)
                 end
 
                 local targetToken = bestOption.token
                 if memberSurvived and self.TokenIsLiveCombatant(memberToken)
-                    and self.TokenIsLiveCombatant(targetToken) then
+                    and self.TokenIsLiveCombatant(targetToken)
+                    and (bestOption.charge == nil or (
+                        memberToken:Distance(targetToken) <= memberAbility:GetRange(memberToken.properties)
+                        and memberToken:GetLineOfSight(targetToken, memberToken.properties:GetPierceWalls()) > 0)) then
                     assignedTargets[targetToken.charid] = (assignedTargets[targetToken.charid] or 0) + 1
                     targetPairs[#targetPairs+1] = {a = memberId, b = targetToken.charid}
                     dmhub.Schedule(0.8, function()
@@ -3762,6 +3829,7 @@ function MonsterAI:FindTurnEagernessMove(token, queue)
         self.squadCaptain = false
         self.squadMembers = {}
         self._tmp_failedMoves = {}
+        self._tmp_failedChargePlans = {}
         self._tmp_synthesizedAbilitiesUsed = {}
         self._tmp_synthesizedPlanningFailed = false
         self:SetupCombatants(token, queue)
@@ -4033,6 +4101,7 @@ function MonsterAI:ExecuteAdvanceFallback(token)
 end
 
 function MonsterAI:FindAndExecuteMove()
+    self._tmp_moveFailure = nil
     local token = self.token
     local searchContext = {}
     for key,value in pairs(self:try_get("_tmp_aiLogContext") or {}) do
@@ -4279,14 +4348,20 @@ function MonsterAI:FindAndExecuteMove()
         self:LogDecision("MOVE EXECUTION START", {
             ability = self.AbilitiesLogName(bestScore.usingAbilities),
         })
+        local executeResult
         local ok, err = RunYieldingFunction(function()
-            bestMove.execute(bestMove, self, token, bestScore,
+            executeResult = bestMove.execute(bestMove, self, token, bestScore,
                 bestScore.usingAbilities[1], bestScore.usingAbilities[2],
                 bestScore.usingAbilities[3])
         end)
         if not ok then
             return self:HandleMoveExecutionFailure(
                 bestMove.id, self.AbilitiesLogName(bestScore.usingAbilities), err)
+        end
+        if executeResult == false or self:try_get("_tmp_moveFailure") ~= nil then
+            return self:HandleMoveExecutionFailure(bestMove.id,
+                self.AbilitiesLogName(bestScore.usingAbilities),
+                self:try_get("_tmp_moveFailure", "execution returned false"))
         end
         self:LogMove(self.token.properties.monster_type, bestMove.id, "Executed move")
         self:LogDecision("MOVE FINISHED", {
@@ -4329,6 +4404,7 @@ function MonsterAI:DistanceFromNearestEnemy(token)
 end
 
 function MonsterAI:ExecuteAbility(casterToken, ability, targets, options)
+    if self:try_get("_tmp_moveFailure") ~= nil then return false end
 
     if not ability:CanAfford(casterToken) then
         self:LogDecision("ABILITY CAST REJECTED", {
@@ -4419,7 +4495,9 @@ function MonsterAI:ExecuteAbility(casterToken, ability, targets, options)
 
                 --freeMovement: the Charge's movement is part of the ability, not the
                 --creature's move action (see the matching note in ExecuteSquadStrike).
-                self:MoveToken(token, chargeLoc, {maxCost = 10000, ignoreFalling = false, freeMovement = true})
+                if not self:ExecuteChargeMovement(token, chargeLoc) then
+                    return false
+                end
                 self.Sleep(1)
             end
         end
@@ -4482,6 +4560,7 @@ function MonsterAI:ExecuteAbility(casterToken, ability, targets, options)
             targets = self.TargetsLogName(targets),
             reason = "charge movement did not leave every target in legal range and line of sight",
         })
+        self._tmp_moveFailure = "charge left target outside legal range or line of sight"
         return false
     end
 

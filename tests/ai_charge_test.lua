@@ -1,0 +1,53 @@
+-- Run from codex root: ../dependencies/lua/bin/lua.exe tests/ai_charge_test.lua
+local f = assert(io.open("Monster AI/MonsterAI.lua"))
+local source = f:read("*a"):gsub("\r\n", "\n"); f:close()
+local first = assert(source:find("function MonsterAI:ChargeProbe", 1, true))
+local last = assert(source:find("function MonsterAI:LeapProbe", first, true))
+MonsterAI = {}
+dmhub = {Time = function() return 1 end}
+assert(load(source:sub(first, last-1)))()
+local function loc(x, altitude)
+    return {x=x, altitude=altitude, str=x .. ":" .. altitude,
+        DistanceInTiles=function(self, other) return math.abs(self.x-other.x) end}
+end
+local origin, ground, relative = loc(0,2), loc(2,2), loc(2,0)
+local mover = {id="goblin", loc=origin, creatureDimensions={x=1},
+    properties={CurrentMovementSpeed=function() return 6 end}}
+local enemy = {id="enemy", loc=loc(3,2), Distance=function(_, other) return math.abs(3-other.x) end}
+function enemy.loc:LocsInRadius() return {ground} end
+local mode = "legal"
+function mover:PlanCharge(dest, options)
+    assert(options.chargeJumpDistance == 0 and options.chargeDistance == 6)
+    if mode == "blocked" then return nil end
+    return {validCharge=true, requiresRoll=mode == "rolled", path={destination=ground,cost=20},
+        chargeSegments={{loc=relative,expectedLoc=ground,jump=false}}}
+end
+local ai = setmetatable({}, {__index=MonsterAI})
+function ai:try_get(k, default) if self[k] == nil then return default end return self[k] end
+function ai:GetMovementToken() return mover end
+function ai:MovementTokenIsAtLoc(_, dest) return mover.loc.str == dest.str end
+function ai:MoveToken(_, dest, options)
+    assert(dest.altitude == 0, "straight-line execution needs relative altitude, not ground altitude")
+    assert(options.straightline and options.movementType == "walk" and options.freeMovement)
+    assert(options.moveThroughFriends == false)
+    if mode == "no path" then return nil, true end
+    if mode == "short" then return {}, true end
+    mover.loc=ground
+    return {}, true
+end
+assert(ai:ChargeProbe(mover, enemy, 6, 1).dest == ground, "keep absolute elevated landing for validation")
+assert(ai:ExecuteChargeMovement(mover, ground), "execute elevated charge")
+assert(ai._tmp_moveFailure == nil)
+mover.loc=origin
+for _,blocked in ipairs({"blocked", "rolled"}) do
+    mode=blocked; ai._tmp_chargePlanTime=nil
+    assert(ai:ChargeProbe(mover,enemy,6,1) == nil, "reject blocked or roll-dependent route")
+end
+for _,failure in ipairs({"no path", "short"}) do
+    mode=failure; ai._tmp_failedChargePlans={}; ai._tmp_moveFailure=nil
+    assert(not ai:ExecuteChargeMovement(mover,ground), "failed movement cannot authorize an attack")
+    assert(ai._tmp_moveFailure ~= nil)
+    mode="legal"
+    assert(ai:ChargeProbe(mover,enemy,6,1) == nil, "same route excluded even for another strike registration")
+end
+print("AI charge altitude, validation, and failed-route tests passed")

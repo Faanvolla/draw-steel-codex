@@ -120,3 +120,19 @@ selector.moves.strike = {id = "strike", score = function() return {score = 0.2} 
 assert(selector:FindAndExecuteMove() == "executed" and selector.attacked and not selector.advanced,
     "legal strike or charge precedes advancement and action conversion")
 print("AI advance selection priority tests passed")
+
+-- Band callbacks historically discard ExecuteAbility's false return. The
+-- execution marker must still quarantine them and allow a lower-scoring move.
+assert(load('local g_moveResultFailed="failed"; local g_moveResultUnsafe="unsafe"; ' ..
+    section("function MonsterAI:HandleMoveExecutionFailure", "-- Compare complete routes")))()
+function selector:WaitForAbilityIdle() return true end
+selector.moves.strike.execute = function() selector._tmp_moveFailure = "charge blocked" end
+assert(selector:FindAndExecuteMove() == "failed", "ignored cast failure must fail the move")
+assert(selector._tmp_failedMoves.strike, "failed registration quarantined")
+selector.advanced = false
+assert(selector:FindAndExecuteMove() == "executed" and selector.advanced,
+    "next cycle falls back instead of repeating failed charge")
+selector._tmp_failedMoves = {}
+selector.moves.strike.execute = function() return false end
+assert(selector:FindAndExecuteMove() == "failed", "explicit false also fails the move")
+print("AI failed move fallback tests passed")

@@ -542,3 +542,25 @@ Currently implemented in `MonsterAIMonsters.lua`:
 - The scoring info table returned from `score()` is passed directly to `execute()` as `scoringInfo`. You can store arbitrary data in it (e.g., a pre-computed target list).
 - Minions are handled automatically via `ExecuteSquadStrike` -- you generally don't need to register moves for them.
 - The DM can enable/disable individual moves per monster type via the Monster AI panel.
+
+### Charge routes and failed movement
+
+Ground charges use `PlanCharge` on candidate landing squares within melee range,
+not on the occupied target square. Generic straight-line previews interpret the
+input altitude as an offset above ground and must not receive a target token's
+absolute altitude for charge planning. Execution revalidates the landing and uses
+its charge segment's zero-altitude `loc` with straight-line walking; the absolute
+`expectedLoc`/destination is used to verify arrival. Jump-assisted charge plans
+are not currently selected by the AI. Synthetic leap combos retain their separate
+probe and ability execution.
+
+Failed charge routes are excluded for that actor's turn, including when another
+strike registration considers the same route. Failed movement records a transient
+failure even when a band callback discards `ExecuteAbility`'s return value; the
+move loop quarantines the failed registration and considers alternatives. A
+failed minion charge cancels that member's target assignment without cancelling
+other members' strikes.
+
+Run `../dependencies/lua/bin/lua.exe tests/ai_charge_test.lua` and
+`../dependencies/lua/bin/lua.exe tests/ai_advance_test.lua` from the codex root for
+charge altitude, route failure, and fallback regression coverage.
