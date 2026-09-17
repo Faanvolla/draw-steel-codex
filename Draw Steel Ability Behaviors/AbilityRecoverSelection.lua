@@ -24,8 +24,6 @@ end
 
 function ActivatedAbilityRecoverySelectionBehavior:Cast(ability, casterToken, targets, options)
 
-    ability:CommitToPaying(casterToken, options)
-
     local targetTokenids = ActivatedAbility.GetTokenIds(targets) or {}
 
     local finished = false
@@ -586,10 +584,18 @@ function ActivatedAbilityRecoverySelectionBehavior:Cast(ability, casterToken, ta
         coroutine.yield(0.1)
     end
 
-    -- Canceling stops the ability from executing
+    --Canceling cancels the whole ability, not just this behavior: nothing was
+    --spent and nothing happened, so the cast must not consume the ability's
+    --usage charge or its action either. A bare return left the cast running and
+    --FinishCast paid for it anyway. Abort first, commit after -- the same order
+    --the power roll (MCDMAbilityRollBehavior) and jump behaviors use.
     if canceled then
+        options.abort = true
+        options.stopProcessing = true
         return
     end
+
+    ability:CommitToPaying(casterToken, options)
 
     for _, tok in pairs(targetTokenids) do
         local token = dmhub.GetTokenById(tok)

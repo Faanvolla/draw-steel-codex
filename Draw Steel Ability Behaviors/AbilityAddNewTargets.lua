@@ -30,7 +30,14 @@ function ActivatedAbilityAddNewTargetsBehavior:Cast(ability, casterToken, target
 		return
 	end
 
-	ability:CommitToPaying(casterToken, options)
+	--Deliberately no CommitToPaying here. Choosing targets is a preparatory step,
+	--not a payload: nothing irreversible has happened yet and the prompt below can
+	--still be cancelled. Committing here left options.pay set for the rest of the
+	--cast, so a later behavior's cancel (Healing Grace's Recovery Selection dialog)
+	--still burned the ability's usage charge and action for no effect. The behaviors
+	--that actually do something commit for themselves, and a triggered ability whose
+	--only behavior is this one still pays -- TriggeredAbility:ExecuteTriggerCast
+	--consumes its resources upfront, independently of CommitToPaying.
 
 	local symbols = options.symbols or {}
 
