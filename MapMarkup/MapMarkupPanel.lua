@@ -956,10 +956,68 @@ end
 CreateMarkupEditor = function()
     local contentPanel
 
+    --One record per tab from its builder ({panel, toolPanel, prime}), built
+    --LAZILY: a tab's content is constructed the first time that tab is
+    --shown, not when the panel is. The builders are the bulk of this panel
+    --(thousands of lines of gui construction between them, each with its
+    --own monitors and think handlers), and building all five up front made
+    --every panel open and dock-layout restore pay for four tabs the user
+    --might never look at. Missed refresh events are not a problem: each
+    --builder comes up with fresh state and is primed on build.
+    local modes = {}
+    local modeBuilders = {
+        walls = MM.BuildWallsMode,
+        zones = MM.BuildZonesMode,
+        surfaces = MM.BuildFootstepsMode,
+        elevation = MM.BuildElevationMode,
+        props = MM.BuildPropsMode,
+    }
+
+    --contentPanel's children, in display order: tab strip, the tabs built
+    --so far in tab order, then the not-implemented placeholder and the Fade
+    --Map row. Re-assigned whole each time a tab is built. (An empty
+    --per-tab slot panel that received the tab later was tried first and
+    --the engine never laid out the late child; reparenting into the
+    --content panel's own list does get laid out.)
+    local modeTabs, placeholderPanel, overlayPanel
+    local modeOrder = {"walls", "zones", "surfaces", "elevation", "props"}
+    local function ContentChildren()
+        local result = {modeTabs}
+        for _,modeid in ipairs(modeOrder) do
+            if modes[modeid] ~= nil then
+                result[#result+1] = modes[modeid].panel
+            end
+        end
+        result[#result+1] = placeholderPanel
+        result[#result+1] = overlayPanel
+        return result
+    end
+
+    --Build a tab's content if it has not been built yet. Call before firing
+    --markupmode for a newly selected mode. Modes with no builder (not
+    --implemented yet) are left to placeholderPanel.
+    local function EnsureModeBuilt(modeid)
+        if modes[modeid] ~= nil or modeBuilders[modeid] == nil then
+            return
+        end
+        local record = modeBuilders[modeid]()
+        modes[modeid] = record
+        if contentPanel ~= nil then
+            contentPanel.children = ContentChildren()
+        end
+        if record.prime ~= nil then
+            record.prime()
+        end
+        --catch the new tab up on the panel-wide state the others were told
+        --about by event: the arm state lights its dot and tool strip.
+        record.panel:FireEventTree("markuparmed", m.arm.Armed())
+        record.panel:FireEventTree("refreshtools")
+    end
+
     --Horizontal strip of mode tabs across the top of the panel. On a map
     --added from a map pack a share icon sits to the right of the tabs
     --(the tabs yield a little width for it); see m.ShowMarkupShareDialog.
-    local modeTabs = gui.Panel{
+    modeTabs = gui.Panel{
         classes = {"tabBar"},
         width = "98%",
         height = 26,
@@ -1011,6 +1069,9 @@ CreateMarkupEditor = function()
                             tab:SetClass("selected", tab.data.modeid == m.mode)
                         end
                         element.parent:FireEventTree("refreshtab")
+                        --first visit to this tab builds it; must precede
+                        --markupmode so the new content uncollapses with the rest.
+                        EnsureModeBuilt(m.mode)
                         contentPanel:FireEventTree("markupmode")
                         --arm the new mode's tool right away: switching tabs is
                         --a deliberate "I want to draw this" click.
@@ -1064,18 +1125,8 @@ CreateMarkupEditor = function()
         end)(),
     }
 
-    --One record per tab from its builder ({panel, toolPanel, prime}); built
-    --in tab order, which is also the order they appear in the panel.
-    local modes = {}
-    local modeOrder = {"walls", "zones", "surfaces", "elevation", "props"}
-    modes.walls = MM.BuildWallsMode()
-    modes.zones = MM.BuildZonesMode()
-    modes.surfaces = MM.BuildFootstepsMode()
-    modes.elevation = MM.BuildElevationMode()
-    modes.props = MM.BuildPropsMode()
-
     --Placeholder for the modes that are not implemented yet.
-    local placeholderPanel = gui.Label{
+    placeholderPanel = gui.Label{
         classes = {"fgMuted", cond(m.mode == "walls" or m.mode == "zones" or m.mode == "surfaces" or m.mode == "elevation" or m.mode == "props", "collapsed")},
         text = "",
         width = "90%",
@@ -1109,7 +1160,7 @@ CreateMarkupEditor = function()
     --
     --The Fade Map slider stays: it is live in every mode (fading the art
     --helps just as much when placing props).
-    local overlayPanel = gui.Panel{
+    overlayPanel = gui.Panel{
         width = "96%",
         height = "auto",
         halign = "center",
@@ -1133,6 +1184,9 @@ CreateMarkupEditor = function()
     --
     --Arming is explicit now and a focus steal changes nothing, so the race has
     --no consequence to paper over and the workaround is gone.)
+
+    --only the tab the panel opens on is built now; the rest wait for a press.
+    EnsureModeBuilt(m.mode)
 
     contentPanel = gui.Panel{
         id = "MapMarkupPanel",
@@ -1232,16 +1286,7 @@ CreateMarkupEditor = function()
             end
         end,
 
-        children = {
-            modeTabs,
-            modes.walls.panel,
-            modes.zones.panel,
-            modes.surfaces.panel,
-            modes.elevation.panel,
-            modes.props.panel,
-            placeholderPanel,
-            overlayPanel,
-        },
+        children = ContentChildren(),
     }
 
     ThemeEngine.OnThemeChanged(mod, function()
@@ -1256,11 +1301,6 @@ CreateMarkupEditor = function()
     m.markupHud = contentPanel
     m.modePanels = modes
 
-    for _,modeid in ipairs(modeOrder) do
-        if modes[modeid].prime ~= nil then
-            modes[modeid].prime()
-        end
-    end
     contentPanel:FireEventTree("markupmode")
 
     --Prime the armed dot and the tool strip from the CURRENT arm state.
