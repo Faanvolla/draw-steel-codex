@@ -2132,18 +2132,14 @@ function TriggeredAbility.ActivateOrphanedTrigger(casterToken, triggerid)
 	local casterCreature = casterToken.properties
 	--Typed read: by the time this deferral fires, an echo can have replaced
 	--the record with an untyped stub (report VFB3EC4V crashed on record:try_get
-	--below). A stub is treated as "already consumed"; Repair removes it.
+	--below). A stub is treated as "already consumed"; Repair removes it. (An
+	--earlier fix re-typed the stub in place with setmetatable; that would run
+	--the cast from a record missing most of its fields, so the stub is dropped
+	--instead and the accessor guarantees a typed record here.)
 	local record = casterCreature:GetAvailableTriggerRecord(triggerid)
 	if record == nil then
 		--already consumed.
 		return
-	end
-
-	--Records rebuilt from incoming remote sub-path patches arrive as plain
-	--tables with no metatable, so any method call on them raises. Restore the
-	--prototype before the reads below.
-	if getmetatable(record) == nil then
-		setmetatable(record, ActiveTrigger.mt)
 	end
 
 	local aiReactionOptions = {
