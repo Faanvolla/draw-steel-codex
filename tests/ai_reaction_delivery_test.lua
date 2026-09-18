@@ -4,7 +4,7 @@
 --Snapshots cross the transport the way the server stores them: a
 --ServerTimestamp() placeholder on a property leaf resolves to the clock.
 local now = 0
-local placeholder = {}
+local placeholder = "__serverTimestamp"
 local function clone(v)
     if v == placeholder then return now*1000 end
     if type(v) ~= "table" then return v end
@@ -51,7 +51,8 @@ encode = function(v)
 end
 dmhub.ToJson = encode
 setmetatable(dmhub, {__index = function(_, k) if k == "serverTimeMilliseconds" then return now*1000 end end})
-function TimestampAgeInSeconds(t) return now-t/1000 end
+function TimestampAgeInSeconds(t) if type(t) ~= "number" then return 0 end return now-t/1000 end
+function EventTimestampAge(t) if type(t) == "number" or t == placeholder then return TimestampAgeInSeconds(t) end end
 table.shallow_copy = function(t) local r = {}; for k,v in pairs(t) do r[k]=v end; return r end
 string.starts_with = function(s,prefix) return s:sub(1,#prefix)==prefix end
 creature = {}
@@ -143,6 +144,25 @@ reset(); queue(); player.TriggerEvent=function() calls=calls+1; error("injected 
 deliver(); acknowledge(); deliver()
 _,_,err=host:GetAIActivityReactionStatus("activity")
 check(calls==1 and err:find("injected"),"evaluation errors are reported and never retried")
+--A trigger evaluated on the host's own client writes the marker locally, so
+--the host reads its own unresolved ServerTimestamp() placeholder until the
+--server echoes the number. That is a live marker, never an expired one.
+reset()
+host:BeginPendingAIActivityReaction("activity","local-prompt","Hero Death")
+host.availableTriggers={["local-prompt"]={}}
+check(host.pendingAIActivityReactions["local-prompt"].timestamp==placeholder,"writer holds the placeholder before echo")
+local n,description,failure=host:GetAIActivityReactionStatus("activity")
+check(failure==nil and n==1 and description:find("answer Hero Death"),"unresolved local marker counts as pending, not expired")
+check(host:CountPendingAIActivityReactions("activity")==1,"unresolved local marker is counted")
+now=20
+_,_,failure=host:GetAIActivityReactionStatus("activity")
+check(failure==nil,"unresolved local marker never trips the delivery deadline")
+host:CompletePendingAIActivityReaction("activity","local-prompt")
+check(host:CountPendingAIActivityReactions("activity")==0,"local completion also holds the placeholder and is terminal")
+--Damaged marker timestamps still fail loudly instead of hanging the AI.
+reset(); host.pendingAIActivityReactions={junk={activityId="activity",timestamp="garbage",state="awaiting_choice"}}
+_,_,failure=host:GetAIActivityReactionStatus("activity")
+check(failure and failure:find("could not be confirmed"),"junk marker timestamp is reported")
 --Actual prompts can wait longer than the delivery timeout, then remain pending
 --after acceptance until the cast's completion callback arrives.
 reset(); queue()

@@ -10667,7 +10667,10 @@ function creature:GetAIActivityReactionStatus(activityId)
             pending = pending + 1
             description = entry.state == "resolving" and "reaction to finish: " .. (entry.ability or "reaction")
                 or "player to answer " .. (entry.ability or "reaction")
-            local age = type(entry.timestamp) == "number" and TimestampAgeInSeconds(entry.timestamp) or math.huge
+            --The marker is a plain table leaf, so the writer's own copy holds the
+            --ServerTimestamp() placeholder until the server echo. That is a live
+            --record of age zero, not an expired one (see EventTimestampAge).
+            local age = EventTimestampAge(entry.timestamp) or math.huge
             if entry.state == "failed" then
                 failure = entry.reason or "reaction evaluation failed"
             elseif age > g_aiActivityReactionExpirySeconds then
@@ -10684,8 +10687,8 @@ function creature:CountPendingAIActivityReactions(activityId)
     local result = 0
     for _,entry in pairs(self:try_get("pendingAIActivityReactions", {})) do
         if type(entry) == "table" and entry.activityId == activityId and entry.state ~= "completed"
-            and entry.timestamp ~= nil
-            and TimestampAgeInSeconds(entry.timestamp) <= g_aiActivityReactionExpirySeconds then
+            and EventTimestampAge(entry.timestamp) ~= nil
+            and EventTimestampAge(entry.timestamp) <= g_aiActivityReactionExpirySeconds then
             result = result + 1
         end
     end
