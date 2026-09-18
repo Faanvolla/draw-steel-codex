@@ -10117,6 +10117,13 @@ end
 local g_aiReactionDeliverySeconds = 15
 local g_aiReactionRetrySeconds = 3
 
+--Records are one JSON string, so the server never sees a ServerTimestamp()
+--placeholder inside them and would leave it unresolved. Stamp them with the
+--synchronized client clock instead; TimestampAgeInSeconds uses the same units.
+local function AIReactionTimestamp()
+    return dmhub.serverTimeMilliseconds
+end
+
 local function ReadAIReactionMessage(value)
     if type(value) ~= "string" then return nil end
     local ok, result = pcall(dmhub.FromJson, value)
@@ -10217,7 +10224,7 @@ function creature:QueueAIReactionEvent(eventName, info, controller, abilityNames
     local id = dmhub.GenerateGuid()
     local message = {
         id = id, activityId = info.aiActivityId, eventName = eventName,
-        userid = controller, timestamp = ServerTimestamp(), attempt = 1,
+        userid = controller, timestamp = AIReactionTimestamp(), attempt = 1,
         info = SerializeEventValue(info), ability = table.concat(abilityNames, ", "),
     }
     --Keep a private intact copy even if the shared request is lost or damaged.
@@ -10256,7 +10263,7 @@ function creature:PumpAIReactionEvents()
                 end
             else
                 local receipt = {id = id, activityId = request.activityId,
-                    timestamp = ServerTimestamp(), state = "evaluating"}
+                    timestamp = AIReactionTimestamp(), state = "evaluating"}
                 local valid = request.id == id and type(request.timestamp) == "number"
                     and type(request.activityId) == "string" and type(request.eventName) == "string"
                     and type(request.info) == "table" and request.info.aiActivityId == request.activityId

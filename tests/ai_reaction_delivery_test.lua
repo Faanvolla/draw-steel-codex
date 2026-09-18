@@ -1,7 +1,12 @@
 --Run from C:/dev/dmhub: dependencies/lua/bin/lua.exe draw-steel-codex/tests/ai_reaction_delivery_test.lua
 --Exercise the production protocol with independent host/player snapshots and
 --a controllable transport. The scalar codec stands in for the engine's JSON API.
+--Snapshots cross the transport the way the server stores them: a
+--ServerTimestamp() placeholder on a property leaf resolves to the clock.
+local now = 0
+local placeholder = {}
 local function clone(v)
+    if v == placeholder then return now*1000 end
     if type(v) ~= "table" then return v end
     local result = {}
     for k,x in pairs(v) do result[k] = clone(x) end
@@ -25,12 +30,27 @@ end
 --The same suite can run in an isolated engine environment with its actual JSON
 --codec. All tokens, transport, and UI remain test doubles in either environment.
 if AIReactionTestJSON then encode=AIReactionTestJSON.encode; decode=AIReactionTestJSON.decode end
-local now, serial = 0, 0
+local serial = 0
 dmhub = {userid = "host", ToJson = encode, FromJson = decode, Time = function() return now end,
     LookupTokenId = function() return nil end, LookupToken = function(p) return p.token end,
     GetCharacterById = function(id) return {properties={charid=id}} end,
     GenerateGuid = function() serial = serial + 1; return "event-" .. serial end}
-function ServerTimestamp() return now*1000 end
+--ServerTimestamp() is a placeholder the server resolves only on property
+--leaves. The plain leaves this suite writes are modeled as already resolved,
+--but a placeholder inside a JSON-encoded record would never be resolved, so
+--the codec rejects one; string records must use dmhub.serverTimeMilliseconds.
+function ServerTimestamp() return placeholder end
+local rawEncode = encode
+encode = function(v)
+    local function scan(x)
+        if x == placeholder then error("ServerTimestamp() placeholder inside a JSON-encoded record") end
+        if type(x) == "table" then for _,y in pairs(x) do scan(y) end end
+    end
+    scan(v)
+    return rawEncode(v)
+end
+dmhub.ToJson = encode
+setmetatable(dmhub, {__index = function(_, k) if k == "serverTimeMilliseconds" then return now*1000 end end})
 function TimestampAgeInSeconds(t) return now-t/1000 end
 table.shallow_copy = function(t) local r = {}; for k,v in pairs(t) do r[k]=v end; return r end
 string.starts_with = function(s,prefix) return s:sub(1,#prefix)==prefix end
