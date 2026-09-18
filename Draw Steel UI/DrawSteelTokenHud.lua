@@ -1071,6 +1071,12 @@ TokenHud.RegisterPanel{
 
                 local adjacent = {}
                 if token:Distance(path) <= movingToken.tileSize then
+                    --Vertical reach: the altitude spans must overlap or touch, mirroring the
+                    --leaveadjacent dispatch in creature:OnMove (Creature.lua). The old one-sided
+                    --(mover <= observer + 1) test flagged any mover below the observer, however
+                    --far down, so an elevated enemy showed a threat that never provoked.
+                    local moverTileSize = movingToken.tileSize
+                    local observerTileSize = token.tileSize
                     local locsOccupying = token.locsOccupying
                     local steps = path.steps
                     local adjacentLocs = token.properties:AdjacentLocations()
@@ -1081,7 +1087,7 @@ TokenHud.RegisterPanel{
 
                         for _,loc in ipairs(locs) do
                             for _,adj in ipairs(adjacentLocs) do
-                                if loc.x == adj.x and loc.y == adj.y and loc.floor == adj.floor and (loc.altitude <= adj.altitude + 1) then
+                                if loc.x == adj.x and loc.y == adj.y and loc.floor == adj.floor and ((loc.altitude + moverTileSize) >= adj.altitude and loc.altitude <= (adj.altitude + observerTileSize)) then
                                     isadjacent = true
                                     break
                                 end
@@ -1091,7 +1097,7 @@ TokenHud.RegisterPanel{
                         --locations directly occupied are also considered 'adjacent'
                         for _,loc in ipairs(locs) do
                             for _,adj in ipairs(locsOccupying) do
-                                if loc.x == adj.x and loc.y == adj.y and loc.floor == adj.floor and (loc.altitude <= adj.altitude + 1) then
+                                if loc.x == adj.x and loc.y == adj.y and loc.floor == adj.floor and ((loc.altitude + moverTileSize) >= adj.altitude and loc.altitude <= (adj.altitude + observerTileSize)) then
                                     isadjacent = true
                                     break
                                 end
