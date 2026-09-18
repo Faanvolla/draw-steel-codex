@@ -118,6 +118,7 @@ local function MonsterAIThread(process)
     --per iteration.
     local turnClaimWaiting = false
     MonsterAI.ClearWaiting()
+    creature.SetAIActivityInProgress(nil)
     while true do
         g_thread = coroutine.running()
         coroutine.yield(0.1)
@@ -129,6 +130,7 @@ local function MonsterAIThread(process)
                     or "background process stop requested",
             })
             pcall(MonsterAI.ClearWaiting)
+            pcall(creature.SetAIActivityInProgress, nil)
             return
         end
 

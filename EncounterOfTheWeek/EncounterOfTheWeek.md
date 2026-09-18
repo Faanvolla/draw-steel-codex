@@ -3355,6 +3355,45 @@ covers awareness.
 
 ### "The AI is waiting on you" notice (DECIDED + BUILT 2026-09-15; luac-clean, UNTESTED live)
 
+**Ability-cast reactions (2026-09-17, user report: the Talent's Repulsive
+Ward did not hold the AI).** A prompt provoked by a monster's *cast* -- the
+`losehitpoints` trigger behind Repulsive Ward fires when the strike's damage
+lands, and the hero answers it after the cast has already closed -- was not
+one of the three waits below: `WaitForAbilityIdle` only holds while a cast
+is open. Fixed by generalising the movement-reaction machinery (the
+`aiActivityId` / `pendingAIActivityReactions` protocol that already holds
+the AI for opportunity attacks) to every AI action:
+- `DMHub Game Rules/Creature.lua`: a file-local "AI activity in progress"
+  (`creature.SetAIActivityInProgress(id)` / `GetAIActivityInProgress()`),
+  set by the AI around each action; `creature:DispatchEvent` stamps it onto
+  `info.aiActivityId` of every event raised while it is set (a mover's
+  `OnMove` stamp still wins; the ids agree). From there the existing path is
+  untouched: a player-controlled hero's dispatch becomes an
+  `aiReactionRequests` message, the hero's client creates the prompt and a
+  `pendingAIActivityReactions` marker, and the host counts both. Delivery
+  failure strings now say "reaction event" instead of "movement event".
+- `Monster AI/MonsterAI.lua`: `ExecuteAbility` opens an activity on the
+  caster (`_tmp_aiActivityId`, reusing a caller's id so
+  `ExecuteAdvanceFallback` still tracks one activity) for the cast, clears
+  it when `OnFinishCast` arrives, then holds on the new
+  `MonsterAI:WaitForActivityReactions(activityId)` -- the reaction/minion-
+  death wait extracted from `WaitForMovementActivity`, which now delegates
+  to it. It publishes "Waiting for <hero>'s Repulsive Ward" through the
+  banner notice (`NoticeTextFromReactionStatus` also strips the transient
+  "client to evaluate " delivery phrasing). A stopped AI or an unconfirmed
+  reaction aborts the turn exactly as a movement wait does.
+- `Monster AI/MonsterAIPanel.lua`: the AI thread clears the in-progress
+  activity on start and stop, so an abandoned coroutine never leaves events
+  tagged.
+Scope: every non-local trigger any hero holds that is provoked by an AI
+action now holds the AI -- damage, conditions, forced movement, allies'
+"when an ally takes damage" prompts -- not only the wards. Hostile
+(non-dismissable) prompts hold it too, as they already did for movement.
+luac-clean, ASCII-clean, all six `tests/ai_*` slices + `ai_reaction_delivery_test`
+pass; UNTESTED live (needs a Monster AI turn striking a Talent with
+Repulsive Ward: banner within ~2s on every client, AI resumes after the
+push or the dismiss).
+
 The Monster AI pauses on players in three places, and nothing on any
 client says why the monsters are not moving:
 

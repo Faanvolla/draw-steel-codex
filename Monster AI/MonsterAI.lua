@@ -77,6 +77,7 @@ local function NoticeTextFromReactionStatus(status)
         return nil
     end
     local text = status:gsub("player to answer ", "")
+    text = text:gsub("client to evaluate ", "")
     text = text:gsub("reaction to finish: (.*)$", "%1 to finish")
     return text
 end
@@ -671,7 +672,16 @@ function MonsterAI:WaitForMovementActivity(movementToken, activityId)
     while movementToken.valid and movementToken.isMoving do
         coroutine.yield(0.05)
     end
+    return self:WaitForActivityReactions(activityId)
+end
 
+--Hold the AI until every player prompt the activity provoked is answered and
+--resolved (and any minion death confirmations are in), publishing what it
+--waits on through the shared notice. The activity is a monster move
+--(opportunity attacks) or an ability cast (Repulsive Ward on the damage it
+--dealt). Returns true when clear; false plus a reason when the AI was stopped
+--or a reaction could not be confirmed (the AI is stopped with a modal).
+function MonsterAI:WaitForActivityReactions(activityId)
     local pending, status, failure = self:CountPendingActivityReactions(activityId)
     local pendingMinionDeaths = self:CountPendingMinionDeathConfirmations()
     if pending == 0 and pendingMinionDeaths == 0 and failure == nil then
@@ -4620,10 +4630,30 @@ function MonsterAI:ExecuteAbility(casterToken, ability, targets, options)
         finished = true
     end
 
-    ActivatedAbilityInvokeAbilityBehavior.ExecuteInvoke(casterToken, ability, casterToken, "inherit", symbols, options)
+    --Every event this cast raises on a hero (the damage it deals, the effects
+    --it applies) is stamped with an AI activity by creature:DispatchEvent, so a
+    --prompt it provokes -- the Talent's Repulsive Ward -- is a pending reaction
+    --the wait below holds the AI on, exactly as an opportunity attack holds a
+    --MoveToken. A caller that already opened an activity on the caster
+    --(ExecuteAdvanceFallback) keeps its id; its own later wait is then a no-op.
+    local casterProps = casterToken.properties
+    local previousActivityId = casterProps:try_get("_tmp_aiActivityId")
+    local activityId = previousActivityId or dmhub.GenerateGuid()
+    casterProps._tmp_aiActivityId = activityId
+    creature.SetAIActivityInProgress(activityId)
 
-    while not finished do
-        coroutine.yield(0.1)
+    local castOk, castErr = RunYieldingFunction(function()
+        ActivatedAbilityInvokeAbilityBehavior.ExecuteInvoke(casterToken, ability, casterToken, "inherit", symbols, options)
+
+        while not finished do
+            coroutine.yield(0.1)
+        end
+    end)
+
+    creature.SetAIActivityInProgress(nil)
+    casterProps._tmp_aiActivityId = previousActivityId
+    if not castOk then
+        error(castErr)
     end
 
     self:LogDecision("ABILITY CAST FINISHED", {
@@ -4635,6 +4665,12 @@ function MonsterAI:ExecuteAbility(casterToken, ability, targets, options)
         result = "OnFinishCast received",
         duration = dmhub.Time() - startedAt,
     })
+
+    local completed, reason = self:WaitForActivityReactions(activityId)
+    if not completed then
+        self._tmp_abortTurn = reason
+        error(reason)
+    end
     self.Sleep(options.sleep or 1.0)
 
     self:ResolvePendingMinionDeaths()
