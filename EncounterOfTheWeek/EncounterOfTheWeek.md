@@ -3435,8 +3435,16 @@ had the old code -- so verify after the user's own reload or restart):
   hidden while the initiative queue is hidden, 1s `NOTICE_GRACE_SECONDS`
   measured on the viewing client's clock).
 - **Wait sites**: turn-claim pause (`MonsterAIPanel.lua` watcher loop,
-  `FindPendingPlayerTurnClaimTrigger` now also returns the token; cleared
-  via a `turnClaimWaiting` flag when the pause lifts); movement reactions
+  `FindPendingPlayerTurnClaimTrigger` now also returns the token; a
+  `turnClaimWaiting` flag is checked at the TOP of every watcher iteration,
+  ahead of the trigger scan and the monster-selection block, and clears
+  the notice as soon as the claim is no longer pending -- the hero used
+  the trigger, dismissed it, or the queue moved on. Fixed 2026-09-16
+  (user report, UNTESTED live): the clear used to live inside the
+  `initiativeid == nil and not IsPlayersTurn()` selection block, so once
+  the hero USED Hesitation Is Weakness and their turn went live that
+  block was skipped and the banner outlived the wait for the whole hero
+  turn); movement reactions
   (`WaitForMovementActivity`, text derived from `reactionStatus` by
   `NoticeTextFromReactionStatus`: "Waiting for Shadow's Opportunity
   Attack" / "... to finish" / "Waiting for minion death confirmations");

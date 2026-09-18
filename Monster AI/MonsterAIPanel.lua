@@ -140,6 +140,20 @@ local function MonsterAIThread(process)
 
         local queue = dmhub.initiativeQueue
 
+        --Drop the turn-claim notice the moment the claim stops being pending:
+        --the hero used the trigger (their turn is now live, so the selection
+        --block below is skipped), dismissed it, or the queue moved on. Checked
+        --here, ahead of every early exit, so the banner never outlives the
+        --wait; only paid while a wait is on.
+        if turnClaimWaiting then
+            local stillPending = queue ~= nil and (not queue.hidden)
+                and (not queue:IsPlayersTurn()) and queue:CurrentInitiativeId() == nil
+                and FindPendingPlayerTurnClaimTrigger(queue) ~= nil
+            if not stillPending then
+                turnClaimWaiting = false
+                MonsterAI.ClearWaiting()
+            end
+        end
 
         --check for registered triggered abilities.
         local handledTrigger = false
@@ -213,10 +227,6 @@ local function MonsterAIThread(process)
                         claimToken.name, claimTrigger.abilityName))
                     turnClaimWaiting = true
                     return
-                end
-                if turnClaimWaiting then
-                    turnClaimWaiting = false
-                    MonsterAI.ClearWaiting()
                 end
             end
 
