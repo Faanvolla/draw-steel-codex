@@ -817,6 +817,26 @@ function MonsterAI:MoveToken(token, loc, options, continueIfActorDies)
     return result, true
 end
 
+-- Engine Distance measures only the horizontal footprint. Draw Steel uses
+-- free diagonals in 3D, measured between the creatures' occupied squares.
+-- Absolute altitude includes floor elevation and mounted riders.
+function MonsterAI.TargetDistance(actor, target)
+    local actorBottom, targetBottom = actor.altitude, target.altitude
+    local actorTop = actorBottom + math.max(1, actor.tileSize) - 1
+    local targetTop = targetBottom + math.max(1, target.tileSize) - 1
+    local vertical = math.max(0, targetBottom - actorTop, actorBottom - targetTop)
+    return math.max(actor:Distance(target), vertical * dmhub.unitsPerSquare)
+end
+
+-- Use the real token volume (including riders) at a proposed destination.
+function MonsterAI:TargetDistanceFromLoc(actor, target, loc)
+    local distance
+    self:ExecuteWithTheoreticalMovementLoc(actor, loc, function()
+        distance = self.TargetDistance(actor, target)
+    end)
+    return distance
+end
+
 function MonsterAI:ExecuteWithTheoreticalMovementLoc(token, loc, fn)
     local movementToken = self:GetMovementToken(token)
     return movementToken:ExecuteWithTheoreticalLoc(loc, fn)
@@ -936,7 +956,7 @@ function MonsterAI:HandlePrompt(invokerToken, casterToken, abilityClone, symbols
         local targets = {}
         local range = abilityClone:GetRange(casterToken.properties)
         for _,target in ipairs(expectedEntry.targets or {}) do
-            if target.token == nil or casterToken:Distance(target.token) <= range then
+            if target.token == nil or MonsterAI.TargetDistance(abilityClone:GetRangeSource(casterToken), target.token) <= range then
                 targets[#targets+1] = target
             else
                 self:LogDecision("PROMPT TARGET REJECTED", {
@@ -1006,6 +1026,22 @@ function MonsterAI:HandlePrompt(invokerToken, casterToken, abilityClone, symbols
         local handler = entry.handler
         attemptedHandlers[#attemptedHandlers+1] = entry.name
         local result = handler.handler(self, invokerToken, casterToken, abilityClone, symbols, options)
+        if result ~= nil then
+            local selectedAbility = result.abilityOverride or abilityClone
+            if selectedAbility.targetType == "target" then
+                local range = selectedAbility:GetRange(casterToken.properties, symbols)
+                for _,target in ipairs(result.targets or {}) do
+                    if target.token ~= nil and self.TargetDistance(selectedAbility:GetRangeSource(casterToken), target.token) > range then
+                        self:LogDecision("PROMPT TARGET REJECTED", {
+                            ability = selectedAbility.name,
+                            reason = "target is outside range including altitude",
+                        })
+                        result = nil
+                        break
+                    end
+                end
+            end
+        end
         if result ~= nil then
             for k,v in pairs(result) do
                 options[k] = v
@@ -2385,7 +2421,7 @@ function MonsterAI:FindClosestEnemy()
     local closestDistance = nil
     for _,enemy in ipairs(self.enemyTokens) do
         if self.TokenIsLiveCombatant(enemy) then
-            local dist = self.token:Distance(enemy)
+            local dist = MonsterAI.TargetDistance(self.token, enemy)
             if closestDistance == nil or dist < closestDistance then
                 closestDistance = dist
                 closestEnemy = enemy
@@ -2418,7 +2454,7 @@ function MonsterAI:ChargeProbe(movementToken, enemy, distance, range)
                 local dest = plan.path.destination
                 local failed = self:try_get("_tmp_failedChargePlans", {})
                 local key = movementToken.id .. "|" .. movementToken.loc.str .. "|" .. dest.str
-                if not failed[key] and enemy:Distance(dest) <= range
+                if not failed[key] and self:TargetDistanceFromLoc(movementToken, enemy, dest) <= range
                     and (best == nil or plan.path.cost < best.cost) then
                     best = {dest = dest, chargeDist = dest:DistanceInTiles(movementToken.loc),
                         cost = plan.path.cost}
@@ -2528,7 +2564,7 @@ function MonsterAI:FindValidTargetsOfStrike(token, ability, loc, range)
             local canTarget = ability:TargetPassesFilter(token, enemy, {})
             if canTarget and enemy.properties:HasNamedCondition("Hidden") and ability:HasKeyword("Strike") then
                 local ignoreRange = token.properties:CalculateNamedCustomAttribute("Ignore Hidden Within Range") or 0
-                if ignoreRange <= 0 or token:Distance(enemy) > ignoreRange then
+                if ignoreRange <= 0 or MonsterAI.TargetDistance(token, enemy) > ignoreRange then
                     canTarget = false
                 end
             end
@@ -2563,7 +2599,7 @@ function MonsterAI:FindValidTargetsOfStrike(token, ability, loc, range)
 
         for i=1,#filteredTokens do
             local enemy = filteredTokens[i]
-            local dist = token:Distance(enemy)
+            local dist = MonsterAI.TargetDistance(token, enemy)
 
             local chargeLoc = nil
             if hasCharge and dist <= chargeReach then
@@ -2575,7 +2611,7 @@ function MonsterAI:FindValidTargetsOfStrike(token, ability, loc, range)
                     probe = self:ChargeProbe(movementToken, enemy, maxChargeDistance, chargeRange)
                 end
                 if probe ~= nil then
-                    local targetDist = enemy:Distance(probe.dest)
+                    local targetDist = self:TargetDistanceFromLoc(token, enemy, probe.dest)
                     -- A stopped or zero-length arrow is not a charge. Dual-mode
                     -- strikes must also finish inside their melee variation's range.
                     if probe.chargeDist > 0
@@ -2614,7 +2650,7 @@ function MonsterAI:FindValidTargetsOfStrike(token, ability, loc, range)
                     if rangedAbility and not meleeAbility then
                         local hasNearbyEnemies = false
                         for _,enemyToken in ipairs(self.enemyTokens) do
-                            if enemyToken:Distance(tokenLoc) <= 1 then
+                            if self:TargetDistanceFromLoc(token, enemyToken, tokenLoc) <= 1 then
                                 hasNearbyEnemies = true
                                 break
                             end
@@ -2800,9 +2836,9 @@ function MonsterAI:ExecuteSquadStrike(ability)
                 local targetToken = bestOption.token
                 if memberSurvived and self.TokenIsLiveCombatant(memberToken)
                     and self.TokenIsLiveCombatant(targetToken)
-                    and (bestOption.charge == nil or (
-                        memberToken:Distance(targetToken) <= memberAbility:GetRange(memberToken.properties)
-                        and memberToken:GetLineOfSight(targetToken, memberToken.properties:GetPierceWalls()) > 0)) then
+                    and (
+                        MonsterAI.TargetDistance(memberToken, targetToken) <= memberAbility:GetRange(memberToken.properties)
+                        and memberToken:GetLineOfSight(targetToken, memberToken.properties:GetPierceWalls()) > 0) then
                     assignedTargets[targetToken.charid] = (assignedTargets[targetToken.charid] or 0) + 1
                     targetPairs[#targetPairs+1] = {a = memberId, b = targetToken.charid}
                     dmhub.Schedule(0.8, function()
@@ -3025,7 +3061,7 @@ function MonsterAI:FindBestMoveToUseBurst(token, ability, scorefn)
 
         self:ExecuteWithTheoreticalMovementLoc(token, destLoc, function()
             for _,targetToken in ipairs(allTokens) do
-                if targetToken.valid and targetToken:Distance(token) <= range and ability:TargetPassesFilter(token, targetToken, symbols) then
+                if targetToken.valid and MonsterAI.TargetDistance(targetToken, token) <= range and ability:TargetPassesFilter(token, targetToken, symbols) then
                     score = score + scorefn(targetToken)
                     targets[#targets+1] = {token = targetToken}
                 end
@@ -3456,7 +3492,7 @@ function MonsterAI:FindSynthesizedBurstPlan(token, ability)
         self:ExecuteWithTheoreticalMovementLoc(token, pathInfo.loc, function()
             for _,target in ipairs(dmhub.allTokens) do
                 if IsLiveSynthesizedTarget(target)
-                    and target:Distance(token) <= range
+                    and MonsterAI.TargetDistance(target, token) <= range
                     and ability:TargetPassesFilter(token, target, symbols) then
                     targets[#targets+1] = {token = target}
                 end
@@ -3486,7 +3522,7 @@ function MonsterAI:SynthesizedBurstTargetsAtCurrentLoc(token, ability)
     local targets = {}
     for _,target in ipairs(dmhub.allTokens) do
         if IsLiveSynthesizedTarget(target)
-            and target:Distance(token) <= range
+            and MonsterAI.TargetDistance(target, token) <= range
             and ability:TargetPassesFilter(token, target, symbols) then
             targets[#targets+1] = {token = target}
         end
@@ -3532,7 +3568,7 @@ function MonsterAI:FindSynthesizedCubePlan(token, ability)
         self:ExecuteWithTheoreticalMovementLoc(token, pathInfo.loc, function()
             for _,enemy in ipairs(self.enemyTokens or {}) do
                 if IsLiveSynthesizedTarget(enemy)
-                    and token:Distance(enemy) <= range
+                    and MonsterAI.TargetDistance(token, enemy) <= range
                     and not checked[enemy.loc.str] then
                     checked[enemy.loc.str] = true
                     local area = BuildSynthesizedArea(token, ability, "cube", enemy.loc, pathInfo.loc)
@@ -4025,7 +4061,7 @@ function MonsterAI:FindAdvancePlan(token, paths)
     local best = nil
     for _,enemy in ipairs(self.enemyTokens) do
         if self.TokenIsLiveCombatant(enemy) then
-            if mover:Distance(enemy) <= 1 and mover:GetLineOfSight(enemy) > 0 then
+            if MonsterAI.TargetDistance(mover, enemy) <= 1 and mover:GetLineOfSight(enemy) > 0 then
                 mover:ClearMovementArrow()
                 return nil
             end
@@ -4041,7 +4077,7 @@ function MonsterAI:FindAdvancePlan(token, paths)
                             local reachableGoal = false
                             if path ~= nil and path.destination.xyfloorOnly.str == goal.xyfloorOnly.str then
                                 self:ExecuteWithTheoreticalMovementLoc(token, path.destination, function()
-                                    reachableGoal = mover:Distance(enemy) <= 1 and mover:GetLineOfSight(enemy) > 0
+                                    reachableGoal = MonsterAI.TargetDistance(mover, enemy) <= 1 and mover:GetLineOfSight(enemy) > 0
                                 end)
                             end
                             if reachableGoal then
@@ -4406,7 +4442,7 @@ function MonsterAI:DistanceFromNearestEnemy(token)
     local result = 999
     for _,enemy in ipairs(self.enemyTokens) do
         if self.TokenIsLiveCombatant(enemy) then
-            local dist = token:Distance(enemy)
+            local dist = MonsterAI.TargetDistance(token, enemy)
             result = math.min(result, dist)
         end
     end
@@ -4473,7 +4509,7 @@ function MonsterAI:ExecuteAbility(casterToken, ability, targets, options)
             for _,token in ipairs(dmhub.allTokens) do
                 if self.TokenIsLiveCombatant(token)
                     and ability:TargetPassesFilter(casterToken, token, symbols)
-                    and (range == nil or token:Distance(casterToken) <= range) then
+                    and (range == nil or MonsterAI.TargetDistance(token, casterToken) <= range) then
                     targets[#targets+1] = { token = token }
                 end
             end
@@ -4520,7 +4556,7 @@ function MonsterAI:ExecuteAbility(casterToken, ability, targets, options)
                 return false
             end
             local candidateRange = candidateAbility:GetRange(actor.properties, symbols)
-            return actor:Distance(target) <= candidateRange
+            return MonsterAI.TargetDistance(candidateAbility:GetRangeSource(actor), target) <= candidateRange
                 and candidateAbility:TargetPassesFilter(actor, target, symbols)
                 and actor:GetLineOfSight(target, actor.properties:GetPierceWalls()) > 0
         end
@@ -4561,16 +4597,19 @@ function MonsterAI:ExecuteAbility(casterToken, ability, targets, options)
             })
             return false
         end
-    elseif chargeAttempted and not AbilityTargetsAreLegal(ability) then
+    elseif (chargeAttempted or (ability.targetType == "target" and not hasTargetArea))
+        and not AbilityTargetsAreLegal(ability) then
         self:LogDecision("ABILITY CAST REJECTED", {
             actor = self.TokenLogName(casterToken),
             actorId = casterToken ~= nil and casterToken.charid or nil,
             ability = ability.name,
             action = self.AbilityActionLogName(ability),
             targets = self.TargetsLogName(targets),
-            reason = "charge movement did not leave every target in legal range and line of sight",
+            reason = "actual position does not leave every target in legal range and line of sight",
         })
-        self._tmp_moveFailure = "charge left target outside legal range or line of sight"
+        if chargeAttempted then
+            self._tmp_moveFailure = "charge left target outside legal range or line of sight"
+        end
         return false
     end
 

@@ -558,7 +558,7 @@ end
 local function EnemiesAdjacentToWall(token, wallToken)
     local result = {}
     for _,tok in ipairs(dmhub.allTokens) do
-        if tok.valid and (not tok:IsFriend(token)) and (not tok.properties:IsDead()) and wallToken:Distance(tok) <= 1 then
+        if tok.valid and (not tok:IsFriend(token)) and (not tok.properties:IsDead()) and MonsterAI.TargetDistance(wallToken, tok) <= 1 then
             result[#result+1] = tok
         end
     end
@@ -583,7 +583,7 @@ MonsterAI:RegisterMove{
 
         local slams = {}
         for _,wallToken in ipairs(FindWallmasterWalls(token)) do
-            if token:Distance(wallToken) <= range then
+            if MonsterAI.TargetDistance(token, wallToken) <= range then
                 local enemies = EnemiesAdjacentToWall(token, wallToken)
                 if #enemies > 0 then
                     slams[#slams+1] = { wall = wallToken, victim = enemies[1] }
@@ -632,7 +632,7 @@ MonsterAI:RegisterMove{
 
         local best = nil
         for _,wallToken in ipairs(FindWallmasterWalls(token)) do
-            if token:Distance(wallToken) <= range then
+            if MonsterAI.TargetDistance(token, wallToken) <= range then
                 local enemies = EnemiesAdjacentToWall(token, wallToken)
                 if #enemies > 0 and best == nil then
                     best = { wall = wallToken, victim = enemies[1] }
@@ -664,9 +664,9 @@ MonsterAI:RegisterMove{
         --only worth relocating when the wallmaster has no useful wall in range:
         --no own wall square within 10 that has an enemy within 3 of it.
         for _,wallToken in ipairs(FindWallmasterWalls(token)) do
-            if token:Distance(wallToken) <= 10 then
+            if MonsterAI.TargetDistance(token, wallToken) <= 10 then
                 for _,tok in ipairs(dmhub.allTokens) do
-                    if tok.valid and (not tok:IsFriend(token)) and (not tok.properties:IsDead()) and wallToken:Distance(tok) <= 3 then
+                    if tok.valid and (not tok:IsFriend(token)) and (not tok.properties:IsDead()) and MonsterAI.TargetDistance(wallToken, tok) <= 3 then
                         return nil
                     end
                 end

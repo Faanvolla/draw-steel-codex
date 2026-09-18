@@ -22,7 +22,8 @@ end
 function FindAbilityByName(abilities, name)
     for _,a in ipairs(abilities) do if a.name == name then return a end end
 end
-dmhub = {GenerateGuid = function() return "activity" end}
+dmhub = {unitsPerSquare = 1, GenerateGuid = function() return "activity" end}
+assert(load(section("function MonsterAI.TargetDistance", "-- Use the real token volume")))()
 assert(load(section("function MonsterAI:FindAdvancePlan", "function MonsterAI:FindAndExecuteMove")))()
 local function loc(x, y)
     local result = {x = x, y = y, str = x .. "," .. y}
@@ -31,9 +32,9 @@ local function loc(x, y)
     return result
 end
 local start, nearStep, farStep = loc(0, 0), loc(1, 0), loc(2, 0)
-local nearEnemy = {valid = true, tileSize = 1, loc = loc(3, 0)}
-local farEnemy = {valid = true, tileSize = 1, loc = loc(8, 0)}
-local mover = {valid = true, tileSize = 1, loc = start, charid = "actor"}
+local nearEnemy = {valid = true, altitude = 0, tileSize = 1, loc = loc(3, 0)}
+local farEnemy = {valid = true, altitude = 0, tileSize = 1, loc = loc(8, 0)}
+local mover = {valid = true, altitude = 0, tileSize = 1, loc = start, charid = "actor"}
 function mover:Distance(enemy)
     return math.max(math.abs(self.loc.x - enemy.loc.x), math.abs(self.loc.y - enemy.loc.y))
 end

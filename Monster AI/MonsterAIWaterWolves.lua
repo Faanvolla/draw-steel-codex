@@ -550,7 +550,7 @@ MonsterAI:RegisterMove{
         local beneficiaries = 0
         local range = ability:GetRange(token.properties)
         for _,ally in ipairs(ai.allyTokens or {}) do
-            if LiveCreature(ally) and token:Distance(ally) <= range
+            if LiveCreature(ally) and MonsterAI.TargetDistance(token, ally) <= range
                 and ability:TargetPassesFilter(token, ally, {}) then
                 beneficiaries = beneficiaries + 1
             end
@@ -632,7 +632,7 @@ MonsterAI:RegisterPrompt{
         local target = dmhub.GetTokenById(plan.targetid)
         ai._tmp_waterWolfLeapPlan = nil
         if LiveCreature(target) and not target:IsFriend(casterToken)
-            and casterToken:Distance(target) <= abilityClone:GetRange(casterToken.properties)
+            and MonsterAI.TargetDistance(casterToken, target) <= abilityClone:GetRange(casterToken.properties)
             and abilityClone:TargetPassesFilter(casterToken, target, symbols) then
             return {targets = {{token = target}}}
         end

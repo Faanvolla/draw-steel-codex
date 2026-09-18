@@ -165,7 +165,7 @@ local function FindBestCubePlan(token, ability, enemies)
     local best = nil
     local checked = {}
     for _,enemy in ipairs(enemies) do
-        if LiveCreature(enemy) and token:Distance(enemy) <= ability:GetRange(token.properties)
+        if LiveCreature(enemy) and MonsterAI.TargetDistance(token, enemy) <= ability:GetRange(token.properties)
             and not checked[enemy.loc.str] then
             checked[enemy.loc.str] = true
             local area = BuildCubeArea(token, ability, enemy.loc)
@@ -192,7 +192,7 @@ local function EnemiesWithin(token, range, ability)
     local result = {}
     for _,target in ipairs(dmhub.allTokens) do
         if LiveCreature(target) and not target:IsFriend(token)
-            and token:Distance(target) <= range
+            and MonsterAI.TargetDistance(token, target) <= range
             and (ability == nil or ability:TargetPassesFilter(token, target, {})) then
             result[#result+1] = target
         end
@@ -490,7 +490,7 @@ MonsterAI:RegisterPrompt{
         local range = abilityClone:GetRange(casterToken.properties)
         for _,target in ipairs(dmhub.allTokens) do
             if LiveCreature(target) and not target:IsFriend(casterToken)
-                and casterToken:Distance(target) <= range
+                and MonsterAI.TargetDistance(casterToken, target) <= range
                 and abilityClone:TargetPassesFilter(casterToken, target, symbols) then
                 targets[#targets+1] = {token = target}
             end

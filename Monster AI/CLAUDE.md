@@ -564,3 +564,18 @@ other members' strikes.
 Run `../dependencies/lua/bin/lua.exe tests/ai_charge_test.lua` and
 `../dependencies/lua/bin/lua.exe tests/ai_advance_test.lua` from the codex root for
 charge altitude, route failure, and fallback regression coverage.
+
+### Altitude-aware targeting
+
+Use `MonsterAI.TargetDistance(actor, target)` for creature range and adjacency
+checks. It combines the engine's horizontal footprint distance with the gap
+between occupied vertical squares, in native units. Absolute token altitude
+includes floor elevation and mounted riders; `tileSize` supplies creature height.
+Use `ai:TargetDistanceFromLoc(actor, target, loc)` for a proposed movement location.
+Ordinary strikes, charge landings, squad assignments, bursts, and direct casts
+check altitude; direct casts and secondary token prompts revalidate actual range.
+Map-wide abilities and placed-area membership keep their existing targeting rules.
+
+Run `../dependencies/lua/bin/lua.exe tests/ai_altitude_test.lua` for range boundaries,
+creature size, theoretical movement, and direct-cast validation. The charge and
+minion tests also cover targets that are vertically out of reach.

@@ -4,17 +4,27 @@ local source = f:read("*a"):gsub("\r\n", "\n"); f:close()
 local first = assert(source:find("function MonsterAI:ChargeProbe", 1, true))
 local last = assert(source:find("function MonsterAI:LeapProbe", first, true))
 MonsterAI = {}
-dmhub = {Time = function() return 1 end}
+local helperStart = assert(source:find("function MonsterAI.TargetDistance", 1, true))
+local helperEnd = assert(source:find("function MonsterAI:MovementTokenIsAtLoc", helperStart, true))
+assert(load(source:sub(helperStart, helperEnd-1)))()
+dmhub = {unitsPerSquare=1, Time = function() return 1 end}
 assert(load(source:sub(first, last-1)))()
 local function loc(x, altitude)
     return {x=x, altitude=altitude, str=x .. ":" .. altitude,
         DistanceInTiles=function(self, other) return math.abs(self.x-other.x) end}
 end
 local origin, ground, relative = loc(0,2), loc(2,2), loc(2,0)
-local mover = {id="goblin", loc=origin, creatureDimensions={x=1},
+local mover = {id="goblin", altitude=2, tileSize=1, loc=origin, creatureDimensions={x=1},
     properties={CurrentMovementSpeed=function() return 6 end}}
-local enemy = {id="enemy", loc=loc(3,2), Distance=function(_, other) return math.abs(3-other.x) end}
+local enemy = {id="enemy", altitude=2, tileSize=1, loc=loc(3,2), Distance=function(_, other) return math.abs(3-other.x) end}
 function enemy.loc:LocsInRadius() return {ground} end
+function mover:Distance(other) return math.abs(self.loc.x-other.loc.x) end
+function mover:ExecuteWithTheoreticalLoc(destination, fn)
+    local old, alt = self.loc, self.altitude
+    self.loc, self.altitude = destination, destination.altitude
+    fn()
+    self.loc, self.altitude = old, alt
+end
 local mode = "legal"
 function mover:PlanCharge(dest, options)
     assert(options.chargeJumpDistance == 0 and options.chargeDistance == 6)
@@ -50,4 +60,9 @@ for _,failure in ipairs({"no path", "short"}) do
     mode="legal"
     assert(ai:ChargeProbe(mover,enemy,6,1) == nil, "same route excluded even for another strike registration")
 end
+mode="legal"; ai._tmp_failedChargePlans={}; ai._tmp_chargePlanTime=nil
+enemy.altitude=7
+assert(ai:ChargeProbe(mover,enemy,6,1) == nil, "ground charge cannot reach flying enemy")
+enemy.altitude=3; ai._tmp_chargePlanTime=nil
+assert(ai:ChargeProbe(mover,enemy,6,1), "charge permits one-square vertical diagonal")
 print("AI charge altitude, validation, and failed-route tests passed")

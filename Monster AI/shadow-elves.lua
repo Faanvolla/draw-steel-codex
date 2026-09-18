@@ -1094,7 +1094,7 @@ local function EclipseAlliesWithin(token, range)
         if other.valid and other.properties ~= nil and other.charid ~= token.charid
             and not other.properties:IsDead() and other:IsFriend(token)
             and InitiativeQueue.GetInitiativeId(other) ~= nil
-            and other:Distance(token) <= range then
+            and MonsterAI.TargetDistance(other, token) <= range then
             result[#result+1] = other
         end
     end
@@ -1287,7 +1287,7 @@ MonsterAI:RegisterVillainAction{
         local surges = 0
         local range = ability:GetRange(token.properties)
         for _,enemy in ipairs(ai.enemyTokens) do
-            if enemy:Distance(token) <= range and ability:TargetPassesFilter(token, enemy, {}) then
+            if MonsterAI.TargetDistance(enemy, token) <= range and ability:TargetPassesFilter(token, enemy, {}) then
                 targets = targets + 1
                 surges = surges + enemy.properties:GetAvailableSurges()
             end

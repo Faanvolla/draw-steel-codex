@@ -377,7 +377,7 @@ local function FindBestCubePlan(token, ability, candidates, allyPenalty)
     local checked = {}
     for _,candidate in ipairs(candidates or {}) do
         if LiveCreature(candidate)
-            and token:Distance(candidate) <= ability:GetRange(token.properties)
+            and MonsterAI.TargetDistance(token, candidate) <= ability:GetRange(token.properties)
             and not checked[candidate.loc.str] then
             checked[candidate.loc.str] = true
             local area = BuildCubeArea(token, ability, candidate.loc)
@@ -548,7 +548,7 @@ local function FindBestGrantedAlly(ai, caster, commandAbility, kind)
     local range = commandAbility:GetRange(caster.properties)
     for _,ally in ipairs(ai.allyTokens) do
         if LiveCreature(ally) and ally.charid ~= caster.charid
-            and not ally.properties.minion and caster:Distance(ally) <= range
+            and not ally.properties.minion and MonsterAI.TargetDistance(caster, ally) <= range
             and commandAbility:TargetPassesFilter(caster, ally, {}) then
             local plan = FindGrantedAttackPlan(
                 ai, ally, kind, ally.properties:CurrentMovementSpeed())
@@ -619,7 +619,7 @@ local function FindBurningLegionPlan(ai, token, ability)
     local range = ability:GetRange(token.properties)
     for _,ally in ipairs(ai.allyTokens) do
         if LiveCreature(ally) and ally.tileSize <= 1
-            and token:Distance(ally) <= range
+            and MonsterAI.TargetDistance(token, ally) <= range
             and ability:TargetPassesFilter(token, ally, {}) then
             candidates[#candidates+1] = ally
         end
@@ -659,7 +659,7 @@ local function FindEnchantmentsTargets(ai, token, ability)
     local range = ability:GetRange(token.properties)
     for _,ally in ipairs(ai.allyTokens) do
         if LiveCreature(ally) and ally.charid ~= token.charid
-            and token:Distance(ally) <= range
+            and MonsterAI.TargetDistance(token, ally) <= range
             and ability:TargetPassesFilter(token, ally, {})
             and not HasOngoingEffect(ally, enchantmentsEdgeEffectId) then
             local stamina = ally.properties:CurrentHitpoints()
@@ -685,7 +685,7 @@ local function FindHellfireTeleport(ai, token, area)
     local best = nil
     for _,enemy in ipairs(ai.enemyTokens) do
         if LiveCreature(enemy) and not targetsInArea[enemy.charid]
-            and token:Distance(enemy) <= 10 then
+            and MonsterAI.TargetDistance(token, enemy) <= 10 then
             for _,loc in ipairs(area.locations or {}) do
                 if enemy:Distance(loc) <= 2 and EmptyLoc(loc) then
                     local stamina = enemy.properties:CurrentHitpoints()
@@ -863,7 +863,7 @@ MonsterAI:RegisterMaliceAbility{
                 local damage = 0
                 for _,ally in ipairs(context.allyTokens) do
                     if LiveCreature(ally) and HasCreatureKeyword(ally, "Goblin")
-                        and ally:Distance(enemy) <= 1 then
+                        and MonsterAI.TargetDistance(ally, enemy) <= 1 then
                         damage = damage + 1
                     end
                 end
@@ -1211,7 +1211,7 @@ RegisterStrike{
         local best = nil
         for _,ally in ipairs(ai.allyTokens) do
             if LiveCreature(ally) and ally.charid ~= token.charid
-                and not ally.properties.minion and ally:Distance(originalTarget) <= 1 then
+                and not ally.properties.minion and MonsterAI.TargetDistance(ally, originalTarget) <= 1 then
                 local plan = FindGrantedAttackPlan(ai, ally, "signature", 0, originalTarget)
                 if plan ~= nil and (best == nil or plan.utility > best.plan.utility) then
                     best = {ally = ally, plan = plan}
@@ -1552,7 +1552,7 @@ MonsterAI:RegisterTactic{
         for _,ally in ipairs(self.allyTokens) do
             if LiveCreature(ally) and ally.charid ~= token.charid
                 and MonsterType(ally) == "Hobgoblin Brandbearer"
-                and ally:Distance(enemy) <= 1 then
+                and MonsterAI.TargetDistance(ally, enemy) <= 1 then
                 return 1
             end
         end
@@ -1702,7 +1702,7 @@ MonsterAI:RegisterPrompt{
         for _,ally in ipairs(dmhub.allTokens) do
             if LiveCreature(ally) and ally.charid ~= casterToken.charid
                 and not ally.properties.minion and ally:IsFriend(casterToken)
-                and casterToken:Distance(ally) <= range
+                and MonsterAI.TargetDistance(casterToken, ally) <= range
                 and abilityClone:TargetPassesFilter(casterToken, ally, symbols) then
                 targets[#targets+1] = {token = ally}
             end
@@ -1728,7 +1728,7 @@ MonsterAI:RegisterVillainAction{
         local attackers = 0
         local range = ability:GetRange(token.properties)
         for _,ally in ipairs(ai.allyTokens) do
-            if LiveCreature(ally) and token:Distance(ally) <= range
+            if LiveCreature(ally) and MonsterAI.TargetDistance(token, ally) <= range
                 and ability:TargetPassesFilter(token, ally, {}) then
                 participants = participants + 1
                 if not ally.properties.minion then
@@ -1747,7 +1747,7 @@ MonsterAI:RegisterVillainAction{
         local participants = {}
         local range = ability:GetRange(token.properties)
         for _,ally in ipairs(ai.allyTokens) do
-            if LiveCreature(ally) and token:Distance(ally) <= range
+            if LiveCreature(ally) and MonsterAI.TargetDistance(token, ally) <= range
                 and ability:TargetPassesFilter(token, ally, {}) then
                 participants[#participants+1] = ally
             end
@@ -1791,7 +1791,7 @@ MonsterAI:RegisterVillainAction{
         end
         local nearby = 0
         for _,enemy in ipairs(ai.enemyTokens) do
-            if LiveCreature(enemy) and token:Distance(enemy) <= 6 then
+            if LiveCreature(enemy) and MonsterAI.TargetDistance(token, enemy) <= 6 then
                 nearby = nearby + 1
             end
         end
@@ -1812,7 +1812,7 @@ MonsterAI:RegisterVillainAction{
         local enemies = 0
         local range = ability:GetRange(token.properties)
         for _,enemy in ipairs(ai.enemyTokens) do
-            if LiveCreature(enemy) and token:Distance(enemy) <= range
+            if LiveCreature(enemy) and MonsterAI.TargetDistance(token, enemy) <= range
                 and ability:TargetPassesFilter(token, enemy, {}) then
                 enemies = enemies + 1
             end

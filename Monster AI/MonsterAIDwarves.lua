@@ -259,7 +259,7 @@ local function FindBestCubePlanAtCurrentLoc(token, ability, candidates)
     local checked = {}
     for _,candidate in ipairs(candidates or {}) do
         if LiveCreature(candidate)
-            and token:Distance(candidate) <= ability:GetRange(token.properties)
+            and MonsterAI.TargetDistance(token, candidate) <= ability:GetRange(token.properties)
             and not checked[candidate.loc.str] then
             checked[candidate.loc.str] = true
             local area = BuildCubeArea(token, ability, candidate.loc)
@@ -373,7 +373,7 @@ local function FindDirectFreeStrike(token, target)
             local clone = DeepCopy(ability)
             ClearAbilityCosts(clone)
             if clone:TargetPassesFilter(token, target, {})
-                and token:Distance(target) <= clone:GetRange(token.properties) then
+                and MonsterAI.TargetDistance(token, target) <= clone:GetRange(token.properties) then
                 if best == nil or clone:GetRange(token.properties) > best:GetRange(token.properties) then
                     best = clone
                 end
@@ -610,7 +610,7 @@ RegisterStrike{
 --------------------------------------------------------------------------------
 
 local function FindShieldwallFollowLoc(ai, token, target)
-    if not LiveCreature(target) or token:Distance(target) <= 1 then
+    if not LiveCreature(target) or MonsterAI.TargetDistance(token, target) <= 1 then
         return nil
     end
     local best = nil
@@ -747,7 +747,7 @@ local function FindWardenEscortTarget(ai, token, ability)
     local best = nil
     local bestStamina = nil
     for _,target in ipairs(ai.enemyTokens or {}) do
-        if LiveCreature(target) and token:Distance(target) <= ability:GetRange(token.properties)
+        if LiveCreature(target) and MonsterAI.TargetDistance(token, target) <= ability:GetRange(token.properties)
             and HasCondition(target, "Restrained")
             and ability:TargetPassesFilter(token, target, {}) then
             local stamina = target.properties:CurrentHitpoints()
@@ -1105,7 +1105,7 @@ local function FindShiftTowardEnemy(ai, actor)
         actor:ExecuteWithTheoreticalLoc(pathInfo.loc, function()
             for _,enemy in ipairs(ai.enemyTokens) do
                 if LiveCreature(enemy) then
-                    distance = math.min(distance, actor:Distance(enemy))
+                    distance = math.min(distance, MonsterAI.TargetDistance(actor, enemy))
                 end
             end
         end)
@@ -1126,7 +1126,7 @@ MonsterAI:RegisterVillainAction{
         local allies = 0
         for _,ally in ipairs(ai.allyTokens) do
             if LiveCreature(ally) and ally.charid ~= token.charid
-                and token:Distance(ally) <= ability:GetRange(token.properties)
+                and MonsterAI.TargetDistance(token, ally) <= ability:GetRange(token.properties)
                 and ability:TargetPassesFilter(token, ally, {}) then
                 allies = allies + 1
             end
@@ -1139,7 +1139,7 @@ MonsterAI:RegisterVillainAction{
         local targets = {}
         for _,ally in ipairs(ai.allyTokens) do
             if LiveCreature(ally) and ally.charid ~= token.charid
-                and token:Distance(ally) <= ability:GetRange(token.properties)
+                and MonsterAI.TargetDistance(token, ally) <= ability:GetRange(token.properties)
                 and ability:TargetPassesFilter(token, ally, {}) then
                 targets[#targets+1] = {token = ally}
             end
@@ -1204,7 +1204,7 @@ local function FindAdjacentSplitShotTarget(gunner, anchor)
     local bestStamina = nil
     for _,target in ipairs(dmhub.allTokens) do
         if LiveCreature(target) and not target:IsFriend(gunner)
-            and target.charid ~= anchor.charid and target:Distance(anchor) <= 1 then
+            and target.charid ~= anchor.charid and MonsterAI.TargetDistance(target, anchor) <= 1 then
             local stamina = target.properties:CurrentHitpoints()
             if best == nil or stamina < bestStamina then
                 best = target
@@ -1400,7 +1400,7 @@ MonsterAI:RegisterPrompt{
     handler = function(ai, invokerToken, casterToken, abilityClone, symbols, options)
         local target = FindTokenByCharid(ai:try_get("_tmp_dwarfSplitShotTarget", ""))
         ai._tmp_dwarfSplitShotTarget = nil
-        if LiveCreature(target) and casterToken:Distance(target) <= 1
+        if LiveCreature(target) and MonsterAI.TargetDistance(casterToken, target) <= 1
             and abilityClone:TargetPassesFilter(invokerToken, target, symbols) then
             return {targets = {{token = target}}}
         end
@@ -1413,7 +1413,7 @@ local function FindMarauderRestraintTarget(invokerToken, abilityClone, symbols)
     local bestStamina = nil
     for _,target in ipairs(dmhub.allTokens) do
         if LiveCreature(target) and not target:IsFriend(invokerToken)
-            and invokerToken:Distance(target) <= abilityClone:GetRange(invokerToken.properties)
+            and MonsterAI.TargetDistance(invokerToken, target) <= abilityClone:GetRange(invokerToken.properties)
             and abilityClone:TargetPassesFilter(invokerToken, target, symbols) then
             local stamina = target.properties:CurrentHitpoints()
             if best == nil or stamina > bestStamina then
@@ -1450,7 +1450,7 @@ MonsterAI:RegisterPrompt{
             local target = nil
             for _,candidate in ipairs(dmhub.allTokens) do
                 if LiveCreature(candidate) and not candidate:IsFriend(invokerToken)
-                    and invokerToken:Distance(candidate) <= abilityClone:GetRange(invokerToken.properties) then
+                    and MonsterAI.TargetDistance(invokerToken, candidate) <= abilityClone:GetRange(invokerToken.properties) then
                     target = candidate
                     break
                 end

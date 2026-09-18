@@ -6,7 +6,7 @@ MonsterAI:RegisterTactic{
     score = function(self, token, tokenLoc, enemy, ability)
         local flanking = false
         for _,ally in ipairs(self.allyTokens) do
-            if ally.charid ~= token.charid and ally:Distance(enemy) <= 1 then
+            if ally.charid ~= token.charid and MonsterAI.TargetDistance(ally, enemy) <= 1 then
                 if (enemy.loc.y - tokenLoc.y) == (ally.loc.y - enemy.loc.y) and (enemy.loc.x - tokenLoc.x) == (ally.loc.x - enemy.loc.x) then
                     flanking = true
                     break

@@ -39,6 +39,7 @@ MonsterAI = {
     RefreshCombatants = noop, Sleep = noop,
 }
 local prefix = 'local g_moveResultExecuted="executed"; local g_moveResultNone="none"; local g_moveResultUnsafe="unsafe";\n'
+assert(load(section("function MonsterAI.TargetDistance", "-- Use the real token volume")))()
 assert(load(section("function MonsterAI:FindSquadActionToken()", "function MonsterAI:PlayTurnCoroutine")))()
 assert(load(section("function MonsterAI:ExecuteSquadStrike(ability)", "function MonsterAI:FindBestMoveToUseStrike")))()
 assert(load(section("function MonsterAI:CalculateRemainingMovementPaths", "function MonsterAI:CountPendingActivityReactions")))()
@@ -50,20 +51,24 @@ local checks = 0
 local function check(value, message) assert(value, message); checks = checks + 1 end
 local function fixture(count)
     local tokens, members, casts = {}, {}, {}
-    local enemy = {id = "enemy", charid = "enemy", name = "enemy", valid = true}
+    local enemy = {id = "enemy", charid = "enemy", name = "enemy", valid = true, altitude = 0, tileSize = 1}
     tokens.enemy = enemy
     dmhub = {
+        unitsPerSquare = 1,
         initiativeQueue = {hidden = false, round = 1},
         GetTokenById = function(id) return tokens[id] end,
         Schedule = function(_, fn) fn() end,
         MarkLineOfSight = function() return {DestroyLineOfSight = noop} end,
     }
     local ability = {name = "Whistling Axes", categorization = "Signature Ability"}
+    function ability:GetRange() return 1 end
     function ability:CanAfford(t) return t.actions > 0 end
     function ability:UsesSquadStrike() return true end
     ability.CanTargetAdditionalTimes = ActivatedAbility.CanTargetAdditionalTimes
     for i=1,count do
-        local t = {charid = tostring(i), name = "Minion " .. i, valid = true, actions = 1, moved = 0, loc = "start"}
+        local t = {charid = tostring(i), name = "Minion " .. i, valid = true, altitude = 0, tileSize = 1, actions = 1, moved = 0, loc = "start"}
+        function t:Distance() return 1 end
+        function t:GetLineOfSight() return 1 end
         t.properties = {minion = true, monster_type = "Dwarf Axethrower", try_get = try_get,
             has_key = function(self, key) return self[key] ~= nil end,
             GetActivatedAbilities = function() return {ability} end,
@@ -122,6 +127,14 @@ local function fixture(count)
 end
 
 local ai, tokens, run = fixture(1)
+tokens.enemy.altitude = 5
+run()
+check(#ai.casts == 0, "minions reject an elevated target even if a custom planner supplied it")
+ai, tokens, run = fixture(1)
+ai.afterMove = function() tokens.enemy.altitude = 5 end
+run()
+check(#ai.casts == 0, "minions recheck altitude after movement reactions")
+ai, tokens, run = fixture(1)
 ai.afterCast = function(n) if n == 1 then tokens["1"].actions = 1 end end
 run()
 check(#ai.casts == 2, "single minion uses its critical-hit action")
@@ -194,7 +207,7 @@ check(#ai.casts == 1 and #ai.casts[1].ids == 3, "one enemy receives at most thre
 check(ai.moveCounts["4"] == nil and tokens["4"].actions == 1, "capped-out minions do not move or spend an action")
 
 ai, tokens, run = fixture(7)
-ai.otherEnemy = {id = "other", charid = "other", name = "other", valid = true}
+ai.otherEnemy = {id = "other", charid = "other", name = "other", valid = true, altitude = 0, tileSize = 1}
 run()
 local targetCounts = {}
 for _,pair in ipairs(ai.casts[1].pairs) do targetCounts[pair.b] = (targetCounts[pair.b] or 0) + 1 end

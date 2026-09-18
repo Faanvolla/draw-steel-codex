@@ -38,26 +38,31 @@ MonsterAI = {
     LogDecision = noop, LogMove = noop, SetLogContext = noop, SetMoveLogContext = noop,
     RefreshCombatants = noop, Sleep = noop,
 }
+assert(load(section("function MonsterAI.TargetDistance", "-- Use the real token volume")))()
 assert(load(section("function MonsterAI:ExecuteSquadStrike(ability)", "function MonsterAI:FindBestMoveToUseStrike")))()
 
 local checks = 0
 local function check(value, message) assert(value, message); checks = checks + 1 end
 local function fixture(count)
     local tokens, members, casts = {}, {}, {}
-    local enemy = {id = "enemy", charid = "enemy", name = "enemy", valid = true}
+    local enemy = {id = "enemy", charid = "enemy", name = "enemy", valid = true, altitude = 0, tileSize = 1}
     tokens.enemy = enemy
     dmhub = {
+        unitsPerSquare = 1,
         initiativeQueue = {hidden = false, round = 1},
         GetTokenById = function(id) return tokens[id] end,
         Schedule = function(_, fn) fn() end,
         MarkLineOfSight = function() return {DestroyLineOfSight = noop} end,
     }
     local ability = {name = "Whistling Axes", categorization = "Signature Ability"}
+    function ability:GetRange() return 1 end
     function ability:CanAfford(t) return t.actions > 0 end
     function ability:UsesSquadStrike() return true end
     ability.CanTargetAdditionalTimes = ActivatedAbility.CanTargetAdditionalTimes
     for i=1,count do
-        local t = {charid = tostring(i), name = "Minion " .. i, valid = true, actions = 1, moved = 0, loc = "start"}
+        local t = {charid = tostring(i), name = "Minion " .. i, valid = true, altitude = 0, tileSize = 1, actions = 1, moved = 0, loc = "start"}
+        function t:Distance() return 1 end
+        function t:GetLineOfSight() return 1 end
         t.properties = {minion = true, monster_type = "Dwarf Axethrower", try_get = try_get,
             has_key = function(self, key) return self[key] ~= nil end,
             GetActivatedAbilities = function() return {ability} end,
@@ -123,7 +128,7 @@ dofile("Monster AI/MonsterAIGoblins.lua")
 local function sniperFixture(count, stationaryTargets)
     local squad, registry = fixture(count)
     local start, moved = {str = "start"}, {str = "moved"}
-    registry.other = {id = "other", charid = "other", name = "other", valid = true}
+    registry.other = {id = "other", charid = "other", name = "other", valid = true, altitude = 0, tileSize = 1}
     local bow = registry["1"].properties:GetActivatedAbilities()[1]
     bow.name = "Bow"
     function bow:GetRange() return 10 end

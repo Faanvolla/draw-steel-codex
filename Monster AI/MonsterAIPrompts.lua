@@ -198,7 +198,7 @@ MonsterAI:RegisterPrompt{
             if LiveAIControlledCreature(ally) and IsActiveCombatant(ally)
                 and ally.charid ~= casterToken.charid
                 and dmhub.TokensAreFriendly(casterToken, ally)
-                and rangeOrigin:Distance(ally) <= range
+                and MonsterAI.TargetDistance(rangeOrigin, ally) <= range
                 and abilityClone:TargetPassesFilter(casterToken, ally, symbols or {})
                 and rangeOrigin:GetLineOfSight(
                     ally, casterToken.properties:GetPierceWalls()) > 0 then
@@ -540,7 +540,7 @@ MonsterAI:RegisterPrompt{
         local best = nil
         local bestFrac = nil
         for _,tok in ipairs(dmhub.allTokens) do
-            if tok.valid and (not tok:IsFriend(monsterToken)) and (not tok.properties:IsDead()) and casterToken:Distance(tok) <= range then
+            if tok.valid and (not tok:IsFriend(monsterToken)) and (not tok.properties:IsDead()) and MonsterAI.TargetDistance(casterToken, tok) <= range then
                 local frac = tok.properties:CurrentHitpoints() / math.max(1, tok.properties.max_hitpoints)
                 if bestFrac == nil or frac < bestFrac then
                     bestFrac = frac
@@ -632,7 +632,7 @@ MonsterAI:RegisterPrompt{
         for _,tok in ipairs(dmhub.allTokens) do
             if (not forbiddenTokens[tok.charid])
                 and (not tok:IsFriend(actingToken))
-                and actingToken:Distance(tok) <= range
+                and MonsterAI.TargetDistance(actingToken, tok) <= range
                 and abilityClone:TargetPassesFilter(actingToken, tok, symbols or {}) then
                 possibleTokens[#possibleTokens+1] = tok
             end
