@@ -128,7 +128,7 @@ local function BuildActivityPane(selection)
                         valign = "center",
                         tmargin = 24,
                         text = entry == nil and "Select one of your characters."
-                            or string.format("%s goes here", NameFor(key)),
+                            or "No activities available.",
                     },
                 }
                 return

@@ -85,6 +85,7 @@ RollCheck.RegisterCustom{
         dialogOptions.rollProperties = RollProperties.new{
             type = "project_power_roll"
         }
+        dialogOptions.promptSound = "Ability.Fishing_Cast"
         return GameHud.instance.rollDialog.data.ShowDialog(dialogOptions)
     end,
 }
@@ -299,4 +300,10 @@ function FSHCast.Pump(charid)
     local cast = FSHCast.Resolve(trip, info)
     FSHTrip.SetActionId(charid, nil)
     FSHTrip.AddCast(charid, cast)
+
+    if cast.result == FSHTrip.RESULT.GOTAWAY.key then
+        audio.FireSoundEvent("Ability.Fishing_Fail")
+    else
+        audio.FireSoundEvent("Ability.Fishing_Success")
+    end
 end

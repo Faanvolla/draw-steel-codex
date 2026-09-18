@@ -209,9 +209,11 @@ function GameHud.CreateRollDialog(self)
     local m_shown = 0
     local m_richStatus = nil
 
-    local OnShow = function(richStatus)
+    local OnShow = function(richStatus, promptSound)
         print("Dice:: ROLL")
-        audio.FireSoundEvent("Notify.Diceroll")
+        if promptSound ~= false then
+            audio.FireSoundEvent(promptSound or "Notify.Diceroll")
+        end
 
         chat.events:Push()
         chat.events:Listen(resultPanel)
@@ -2886,7 +2888,7 @@ function GameHud.CreateRollDialog(self)
 
                 if resultPanel:HasClass('hidden') then
                     resultPanel:SetClass('hidden', false)
-                    OnShow(richStatus)
+                    OnShow(richStatus, options.promptSound)
                 end
 
                 if not options.nofadein then
