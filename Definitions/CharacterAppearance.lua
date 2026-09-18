@@ -5,6 +5,7 @@
 --- @field portraitId string
 --- @field offtokenPortraitId string
 --- @field portraitFrameId string
+--- @field portraitFrameMaterial string
 --- @field portraitRibbon string
 --- @field backgroundId string
 --- @field anthem string

@@ -79,6 +79,7 @@
 --- @field portraitFrameSaturation number
 --- @field portraitFrameBrightness number
 --- @field portraitFrame nil|string
+--- @field portraitFrameMaterial nil|string Id of a premium frame material registered with dmhub.tokenFrames:Register that lights this token's frame ring (normal map, roughness/metallic, sheen). nil or empty = plain frame texture. This does not change portraitFrame: set portraitFrame to the material's albedo asset as well, so clients and UI that only know the flat frame still show it. Upload with UploadAppearance.
 --- @field teleportAnimation string The id of the registered token animation (see dmhub.tokenAnimations:RegisterTeleport) played when this token teleports. Empty string -> no animation, logical teleport only.
 --- @field animation CharacterTokenAnimationLua The per-token animation interface used inside a token-animation callback. Provides Light / Billboard / PlayEffect / Tween / SetVisible primitives plus a sound passthrough. Spawns made while a scripted animation is running are tracked and stopped automatically when the animation ends.
 --- @field offTokenPortrait string
