@@ -701,8 +701,33 @@ audio.SoundEvent{
 
 
 
+--Fishing
+audio.SoundEvent{
+    name = "Ability.Fishing_Cast",
+    mixgroup = "gameplay",
+    sounds = {"abl/fishing/Abl_Fishing_Cast_01.wav","abl/fishing/Abl_Fishing_Cast_02.wav","abl/fishing/Abl_Fishing_Cast_03.wav",},
+    volume = 0.2,
+    pitchRand = 0.05,
+    ignoreDuplicates = 1,
+}
 
+audio.SoundEvent{
+    name = "Ability.Fishing_Fail",
+    mixgroup = "gameplay",
+    sounds = {"abl/fishing/Abl_Fishing_Fail_01.wav","abl/fishing/Abl_Fishing_Fail_02.wav","abl/fishing/Abl_Fishing_Fail_03.wav",},
+    volume = 0.2,
+    pitchRand = 0.05,
+    ignoreDuplicates = 1,
+}
 
+audio.SoundEvent{
+    name = "Ability.Fishing_Success",
+    mixgroup = "gameplay",
+    sounds = {"abl/fishing/Abl_Fishing_Success_01.wav","abl/fishing/Abl_Fishing_Success_02.wav","abl/fishing/Abl_Fishing_Success_03.wav",},
+    volume = 0.2,
+    pitchRand = 0.05,
+    ignoreDuplicates = 1,
+}
 
 
 

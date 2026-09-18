@@ -5269,6 +5269,11 @@ mod.shared.ShowDownloadShareDialog = function(options)
 
 			detailedDisplayBody.text = details
 
+			--one panel serves every module in this dialog, and the engine leaves the old sprite
+			--up when an image will not resolve -- without this, a module whose cover art cannot
+			--be loaded displays the previously viewed module's art under its own name.
+			detailedDisplayImage.bgimage = nil
+
 			if moduleInfo.coverart ~= nil then
 				detailedDisplayImage.bgimage = moduleInfo.coverart
 				detailedDisplayImage:SetClass("collapsed", false)

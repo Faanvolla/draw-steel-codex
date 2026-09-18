@@ -2138,6 +2138,14 @@ function TriggeredAbility.ActivateOrphanedTrigger(casterToken, triggerid)
 		--already consumed.
 		return
 	end
+
+	--Records rebuilt from incoming remote sub-path patches arrive as plain
+	--tables with no metatable, so any method call on them raises. Restore the
+	--prototype before the reads below.
+	if getmetatable(record) == nil then
+		setmetatable(record, ActiveTrigger.mt)
+	end
+
 	local aiReactionOptions = {
 		aiActivityId = record:try_get("aiActivityId", false),
 		aiReactionId = record.id,
