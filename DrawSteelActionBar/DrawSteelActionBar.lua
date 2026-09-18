@@ -1138,8 +1138,15 @@ end
 --wall crossed, or cover that came from the terrain) -- a flat shot shows nothing, so
 --ordinary targeting is unchanged. Rides the same "tiletooltip" event + diagram panel
 --as the movement diagram (GameHud.lua), anchored outside the attacker/target box so it
---never covers the arrow. Torn down with GameHud.FinishTokenMoving on unhover.
+--never covers the arrow.
+--
+--Teardown is deliberately unconditional and called from every exit: unhover, both
+--line-of-sight mark helpers (adopt AND clear -- clicking a target adopts the hover
+--arrow as a persistent ray without ever unhovering, which used to leave the diagram
+--on screen), and cancelCasting. The engine scene is released on every call, not just
+--when we believe we own the tooltip, so a lost flag can never strand the render texture.
 function CrossSection.ClearAttack()
+    dmhub.ClearAttackCrossSection()
     if not CrossSection.attackShown then
         return
     end
@@ -1153,9 +1160,7 @@ end
 --- @param sourceToken CharacterToken the attacker (or the relay the arrow is drawn from)
 --- @param targetToken CharacterToken the hovered target
 function CrossSection.ShowAttack(sourceToken, targetToken)
-    --dmhub is userdata: on an engine build without the bridge the member reads as nil.
-    if sourceToken == nil or targetToken == nil or dmhub.SetAttackCrossSection == nil
-       or GameHud.AttackTooltipPlacement == nil or not GameHud.instance then
+    if sourceToken == nil or targetToken == nil or not GameHud.instance then
         CrossSection.ClearAttack()
         return
     end
@@ -8682,6 +8687,10 @@ local m_markLineOfSightToken = nil
 
 --if m_markLineOfSight is set, it will be adopted as a persistent marking.
 local function AdoptLineOfSightMark()
+    --The hover arrow becomes a persistent ray, so the hover is over even though no
+    --unhighlight fires (the cursor never left the token). The attack cross-section
+    --belongs to the hover, so it goes now.
+    CrossSection.ClearAttack()
     if m_markLineOfSight == nil then
         return
     end
@@ -8693,6 +8702,9 @@ local function AdoptLineOfSightMark()
 end
 
 local function ClearLineOfSightMark()
+    --Before the early return: the diagram can outlive the arrow (a path that nils the
+    --mark by hand leaves nothing for this to destroy, but the tooltip is still up).
+    CrossSection.ClearAttack()
     if m_markLineOfSight == nil then
         return
     end
@@ -11209,6 +11221,9 @@ CreateAbilityController = function()
             if g_actionBar ~= nil then g_actionBar:SetClassTree("invokingAbility", false) end
             if g_abilityController ~= nil then g_abilityController.mapfocus = false end
 
+            --Explicit, not just via ClearLineOfSightMark: the central teardown for every
+            --way a cast ends, so nothing can strand the diagram.
+            CrossSection.ClearAttack()
             ClearLineOfSightMark()
             ClearRadiusMarkers()
 
@@ -13174,6 +13189,9 @@ CreateAbilityController = function()
                         i, tostring(t.loc and t.loc.floor or "nil")))
                 end
 
+                --Same adoption AdoptLineOfSightMark performs; the hover is over either way,
+                --so the attack cross-section goes with it.
+                CrossSection.ClearAttack()
                 if m_markLineOfSight ~= nil then
                     SetTargetLineOfSightRayForKey(
                         string.format("%s-%s", m_markLineOfSightSourceToken.id, m_markLineOfSightToken.id),
@@ -13235,6 +13253,7 @@ CreateAbilityController = function()
 
                 m_targetLineOfSightRays = {}
 
+                CrossSection.ClearAttack()
                 m_markLineOfSight = nil
                 m_markLineOfSightToken = nil
                 m_markLineOfSightSourceToken = nil

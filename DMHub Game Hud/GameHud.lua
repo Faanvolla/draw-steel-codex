@@ -374,15 +374,6 @@ local function DiagramProfileFromPath(token, path)
 	}
 end
 
---Releases the attack cross-section scene (see dmhub.SetAttackCrossSection). The
---bridge is absent on engine builds that predate it; dmhub is userdata, so an
---unknown member reads as nil rather than erroring.
-local function ClearAttackCrossSection()
-	if dmhub.ClearAttackCrossSection ~= nil then
-		dmhub.ClearAttackCrossSection()
-	end
-end
-
 --Rebuilds the diagram from the current move by asking the engine to build the
 --offscreen cross-section scene (see MovementCrossSection.cs) and displaying the
 --returned render texture. The panel is sized to the render texture, scaled down
@@ -571,7 +562,7 @@ local function CreateMovementDiagramPanel()
 			--the tooltip (and this panel) is torn down by FinishTokenMoving; release
 			--the offscreen render texture so nothing stays resident while idle.
 			dmhub.ClearMovementCrossSection()
-			ClearAttackCrossSection()
+			dmhub.ClearAttackCrossSection()
 		end,
 		args = function(element, args)
 			--The attack cross-section (ability targeting hovering a target): the action bar
@@ -582,7 +573,7 @@ local function CreateMovementDiagramPanel()
 				element.data.signature = "attack"
 				if GameHud.TooltipsSuppressed() or not dmhub.GetSettingValue("showmovementcrosssection") then
 					element:SetClass("collapsed", true)
-					ClearAttackCrossSection()
+					dmhub.ClearAttackCrossSection()
 					return
 				end
 				local result = args.attackDiagram
@@ -598,7 +589,7 @@ local function CreateMovementDiagramPanel()
 				return
 			end
 
-			ClearAttackCrossSection()
+			dmhub.ClearAttackCrossSection()
 
 			if args == nil or args.movingToken == nil or args.movingPath == nil or
 			   GameHud.TooltipsSuppressed() or
