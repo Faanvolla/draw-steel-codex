@@ -11900,12 +11900,269 @@ function PanelDocument.ChatBubbleStyles()
     })
 end
 
---Builds the (singleton) bubble beside the chat button at side/slot and
+--The direct child of the documents layer that CONTAINS panel (panel
+--itself when it is one), or nil when panel is not on the layer at all.
+--Draw order on the layer IS sibling order, so this is how one layer
+--citizen asks whether another is in front of it.
+function PanelDocument.LayerChildOf(panel)
+    local layer = DocumentsLayer()
+    if layer == nil or panel == nil or not panel.valid then
+        return nil
+    end
+    local node = panel
+    for _ = 1, 64 do
+        if node == layer then
+            return nil
+        end
+        local parent = nil
+        pcall(function() parent = node.parent end)
+        if parent == nil or not parent.valid then
+            return nil
+        end
+        if parent == layer then
+            return node
+        end
+        node = parent
+    end
+    return nil
+end
+
+--Where panel sits in the layer's child order (1 = furthest back), or nil
+--when it is not on the layer.
+function PanelDocument.LayerDepth(panel)
+    local node = PanelDocument.LayerChildOf(panel)
+    if node == nil then
+        return nil
+    end
+    local layer = DocumentsLayer()
+    for i, child in ipairs(layer.children) do
+        if child == node then
+            return i
+        end
+    end
+    return nil
+end
+
+--Bring whatever layer child holds panel to the FRONT of the layer.
+function PanelDocument.RaiseOnLayer(panel)
+    local node = PanelDocument.LayerChildOf(panel)
+    if node ~= nil then
+        node:SetAsLastSibling()
+    end
+end
+
+--The presented dialog when it is a FULL-SCREEN stage: the panel and its
+--depth in the layer (two returns). The Encounter of the Week montage is
+--presented through GameHud's present-to-players mechanism, which mounts
+--it as an ordinary child of the documents layer -- the same layer the
+--rails, the windows and this bubble live on -- so it buries everything
+--built before it. Nothing presented, or a small centred dialog that
+--leaves the rail corners alone, reads as no stage.
+function PanelDocument.FullscreenStage()
+    local hud = GameHud and GameHud.instance
+    if not hud then
+        return nil
+    end
+    --pcall: the accessor postdates this file, and a client on an older
+    --core hud simply has no presented panel to report.
+    local stage = nil
+    pcall(function() stage = hud.GetCurrentlyPresentedDialogPanel() end)
+    if stage == nil or not stage.valid then
+        return nil
+    end
+    local depth = PanelDocument.LayerDepth(stage)
+    if depth == nil then
+        return nil
+    end
+    local w, h = 0, 0
+    pcall(function()
+        w = stage.renderedWidth or 0
+        h = stage.renderedHeight or 0
+    end)
+    --60% of each axis: comfortably above any centred dialog and below
+    --the montage stage's 100%.
+    if w < IconRailUIWidth() * 0.6 or h < IconRailUIHeight() * 0.6 then
+        return nil
+    end
+    return stage, depth
+end
+
+--Is chat already in front of the player? A native popout (its own OS
+--window) always is. A rail window or an on-screen dock instance counts
+--only while nothing has buried it: behind a full-screen stage it is as
+--invisible as a closed window, and a message arriving then deserves the
+--bubble just the same.
+function PanelDocument.ChatInFront()
+    if PanelDocument.IsPoppedOut("chat") then
+        return true
+    end
+    local stage, stageDepth = PanelDocument.FullscreenStage()
+    local function inFront(panel)
+        if stage == nil then
+            return true
+        end
+        local depth = PanelDocument.LayerDepth(panel)
+        return depth ~= nil and depth > stageDepth
+    end
+    if PanelDocument.IsPanelActive("chat") then
+        local dialog = PanelDocument.FindHostDialog("chat")
+        if dialog == nil or inFront(dialog) then
+            return true
+        end
+    end
+    local reg = DockablePanel.GetRegistration("Chat")
+    if reg ~= nil and reg.identifier ~= nil then
+        local instance = DockablePanel.FindInstance(reg.identifier)
+        if instance ~= nil and instance.valid and instance:FindParentWithClass("offscreen") == nil and inFront(instance) then
+            return true
+        end
+    end
+    return false
+end
+
+--The chat button the bubble hangs off: side ("left"/"right"), slot and
+--the button panel itself, or nil when there is none to hang off.
+--
+--Two kinds of button exist. On a real rail it is a slotted top-level
+--child, and that is the only one looked for there -- a grouped-away or
+--overflow-parked chat button keeps its old "no bubble" answer. When a
+--custom interface owns the rail surface (Encounter of the Week keeps
+--Journal / Chat / Action Log in the bottom-left corner while it takes
+--the hud over) the button is a provider widget nested inside the rail
+--wrapper with no slot, so that case searches the wrapper's tree.
+function PanelDocument.FindChatRailButton()
+    local function railSideOf(key)
+        return cond(string.sub(key, 1, 4) == "left", "left", "right")
+    end
+
+    for railSide, rail in pairs(g_iconRails) do
+        if rail ~= nil and rail.valid then
+            for _, child in ipairs(rail.children) do
+                if child.valid and child:HasClass("iconRailButton") and child.enabled then
+                    local d = child.data
+                    if type(d) == "table" and d.key == "chat" and d.slot ~= nil then
+                        return railSideOf(railSide), d.slot, child
+                    end
+                end
+            end
+        end
+    end
+
+    if PanelDocument.RailCustomInterfaceId() == nil then
+        return nil
+    end
+
+    --the provider's tree: shallow by construction (wrapper -> strip ->
+    --button), so the walk is depth-capped rather than open-ended.
+    local function search(panel, depth)
+        if depth > 8 then
+            return nil
+        end
+        for _, child in ipairs(panel.children) do
+            --enabled is nil on anything not carrying the flag; only an
+            --explicit false means collapsed.
+            if child.valid and child.enabled ~= false then
+                if child:HasClass("iconRailButton") then
+                    local d = child.data
+                    if type(d) == "table" and d.key == "chat" then
+                        return child
+                    end
+                end
+                local found = search(child, depth + 1)
+                if found ~= nil then
+                    return found
+                end
+            end
+        end
+        return nil
+    end
+
+    for railSide, rail in pairs(g_iconRails) do
+        if rail ~= nil and rail.valid then
+            local button = search(rail, 1)
+            if button ~= nil then
+                local slot = nil
+                if type(button.data) == "table" then
+                    slot = button.data.slot
+                end
+                return railSideOf(railSide), slot, button
+            end
+        end
+    end
+    return nil
+end
+
+--Where that button IS, in layer units (x from the left edge, y from the
+--top): {left, top, right, bottom}, or nil when it cannot be measured.
+--
+--A slotted rail button is pure geometry: the rail's inset plus the slot
+--pitch, all at the Font Size zoom. A provider widget has to be measured
+--instead, the way PanelWindowPlacement measures a rail-mounted anchor --
+--positionInScreenSpace reads back in the LAYER's units (origin
+--bottom-left, y UP) and is the panel's CENTRE, while renderedWidth /
+--renderedHeight are PRE-uiscale, so the on-screen extent is those times
+--the rail zoom.
+function PanelDocument.ChatButtonRect(side, slot, button)
+    local scale = WindowUIScale()
+    if slot ~= nil then
+        local size = ICON_RAIL_BUTTON * scale
+        local top = IconRailTop() + slot * (ICON_RAIL_BUTTON + ICON_RAIL_GAP) * scale
+        local left = cond(side == "left", ICON_RAIL_LEFT, IconRailUIWidth() - ICON_RAIL_LEFT - size)
+        return { left = left, top = top, right = left + size, bottom = top + size }
+    end
+
+    local layer = DocumentsLayer()
+    if layer == nil or button == nil or not button.valid then
+        return nil
+    end
+    local rect = nil
+    pcall(function()
+        local layerLeft = layer.positionInScreenSpace.x - layer.renderedWidth / 2
+        local layerTop = layer.positionInScreenSpace.y + layer.renderedHeight / 2
+        local centerX = button.positionInScreenSpace.x - layerLeft
+        local centerY = layerTop - button.positionInScreenSpace.y
+        local halfW = button.renderedWidth * scale / 2
+        local halfH = button.renderedHeight * scale / 2
+        if halfW > 0 and halfH > 0 then
+            rect = {
+                left = centerX - halfW,
+                top = centerY - halfH,
+                right = centerX + halfW,
+                bottom = centerY + halfH,
+            }
+        end
+    end)
+    return rect
+end
+
+--Where the bubble parks in the layer's sibling order. Normally the
+--BOTTOM (SetAsFirstSibling), so every window draws over it -- the
+--deference half of window awareness. A full-screen presented stage is a
+--sibling on that same layer though, and it buries the rails, the windows
+--and the bubble alike, so while one is up the bubble goes to the FRONT
+--instead: over a montage there is nothing left for it to be under, and
+--it is the only way a chat message reaches a player mid-beat.
+function PanelDocument.ChatBubbleRestack(element)
+    local raise = PanelDocument.FullscreenStage() ~= nil
+    --nil on a fresh bubble, so the first call always places it.
+    if element.data.raised == raise then
+        return
+    end
+    element.data.raised = raise
+    if raise then
+        element:SetAsLastSibling()
+    else
+        element:SetAsFirstSibling()
+    end
+end
+
+--Builds the (singleton) bubble beside the chat button at side/slot,
+--whose measured rect is `rect` (layer units, from ChatButtonRect), and
 --registers it in chatBubbleState. Returns nil when the documents layer
 --is not available.
-function PanelDocument.CreateChatBubble(side, slot)
+function PanelDocument.CreateChatBubble(side, slot, rect)
     local layer = DocumentsLayer()
-    if layer == nil then
+    if layer == nil or rect == nil then
         return nil
     end
 
@@ -11916,8 +12173,8 @@ function PanelDocument.CreateChatBubble(side, slot)
     local scale = WindowUIScale()
     local bubbleW = PanelDocument.CHAT_BUBBLE_WIDTH
     local effW = bubbleW * scale
-    local buttonTop = IconRailTop() + slot * (ICON_RAIL_BUTTON + ICON_RAIL_GAP) * scale
-    local buttonSize = ICON_RAIL_BUTTON * scale
+    local buttonTop = rect.top
+    local buttonSize = rect.bottom - rect.top
     local gap = 12 * scale
     --the bubble is ANCHORED by the edge nearest its rail (halign =
     --side, plus the matching pivot corner for the uiscale below): left
@@ -11931,17 +12188,17 @@ function PanelDocument.CreateChatBubble(side, slot)
     --message may widen the bubble in place.
     local x, sx
     if side == "left" then
-        x = ICON_RAIL_LEFT + buttonSize + gap
+        x = rect.right + gap
         sx = x
     else
-        x = -(ICON_RAIL_LEFT + buttonSize + gap)
-        sx = IconRailUIWidth() - ICON_RAIL_LEFT - buttonSize - gap - effW
+        x = -(IconRailUIWidth() - rect.left + gap)
+        sx = rect.left - gap - effW
     end
 
     --window avoidance: probe spots anchored to the button (top-aligned,
     --bottom-aligned, below, above) with an estimated footprint, first
     --clear one wins. All covered = keep the default spot; the bubble
-    --sits under the windows (SetAsFirstSibling below) so it never
+    --parks under the windows (ChatBubbleRestack below) so it never
     --draws over one. NOT RailWindowIntersectsBand: that reads
     --renderedWidth/Height, which are PRE-uiscale units, so at a zoomed
     --Font Size it understates every window's footprint by the zoom --
@@ -11964,13 +12221,31 @@ function PanelDocument.CreateChatBubble(side, slot)
         end
     end
     local estH = 110 * scale
-    local maxY = IconRailUIHeight() - estH - 8
-    local candidates = {
-        buttonTop,
-        buttonTop + buttonSize - estH,
-        buttonTop + buttonSize + 10 * scale,
-        buttonTop - estH - 10 * scale,
-    }
+    local uiH = IconRailUIHeight()
+    local maxY = uiH - estH - 8
+    --A button in the LOWER half of the screen -- the corner buttons a
+    --custom interface keeps (Encounter of the Week parks Journal / Chat /
+    --Action Log at the bottom left) -- gets a bubble anchored by its
+    --BOTTOM edge, so each new message grows it UP the screen instead of
+    --off the bottom of it. Its candidates start from the bottom-aligned
+    --spot for the same reason.
+    local anchorBottom = (buttonTop + buttonSize / 2) > uiH * 0.5
+    local candidates
+    if anchorBottom then
+        candidates = {
+            buttonTop + buttonSize - estH,
+            buttonTop - estH - 10 * scale,
+            buttonTop,
+            buttonTop + buttonSize + 10 * scale,
+        }
+    else
+        candidates = {
+            buttonTop,
+            buttonTop + buttonSize - estH,
+            buttonTop + buttonSize + 10 * scale,
+            buttonTop - estH - 10 * scale,
+        }
+    end
     local y = nil
     for _, cy in ipairs(candidates) do
         if cy >= 8 and cy <= maxY then
@@ -11988,7 +12263,7 @@ function PanelDocument.CreateChatBubble(side, slot)
         end
     end
     if y == nil then
-        y = buttonTop
+        y = cond(anchorBottom, buttonTop + buttonSize - estH, buttonTop)
         if y > maxY then
             y = maxY
         end
@@ -11996,16 +12271,34 @@ function PanelDocument.CreateChatBubble(side, slot)
             y = 8
         end
     end
+    --y is the bubble's TOP throughout the placement above (its estimated
+    --bottom is y + estH). A bottom-anchored bubble is positioned from the
+    --screen's bottom edge instead, and y is always a DOWNWARD offset, so
+    --the inline value is negative: that many units up from the edge.
+    local inlineY = y
+    if anchorBottom then
+        inlineY = -(uiH - (y + estH))
+    end
 
     --the tail: a filled caret in the gap, pointing back at the button.
-    --Its y aims at the button's centre, clamped onto the bubble's edge
-    --when the bubble had to move away from the button's band.
-    local tailY = (buttonTop + buttonSize / 2 - y) / scale - 11
+    --It aims at the button's centre, measured from whichever edge the
+    --bubble is anchored by (so it stays put as the bubble grows), and
+    --clamped onto that edge's end of the bubble when the bubble had to
+    --move away from the button's band.
+    local tailY
+    if anchorBottom then
+        tailY = (y + estH - (buttonTop + buttonSize / 2)) / scale - 11
+    else
+        tailY = (buttonTop + buttonSize / 2 - y) / scale - 11
+    end
     if tailY < 6 then
         tailY = 6
     end
     if tailY > 72 then
         tailY = 72
+    end
+    if anchorBottom then
+        tailY = -tailY
     end
 
     local bubble
@@ -12017,9 +12310,9 @@ function PanelDocument.CreateChatBubble(side, slot)
         bgimage = true,
         blurBackground = true,
         halign = side,
-        valign = "top",
+        valign = cond(anchorBottom, "bottom", "top"),
         x = x,
-        y = y,
+        y = inlineY,
         width = "auto",
         minWidth = 110,
         maxWidth = bubbleW,
@@ -12049,8 +12342,29 @@ function PanelDocument.CreateChatBubble(side, slot)
             local data = element.data
             element:FireEvent("bubbleFade")
             RailSweepTransient("chat")
-            local anchorX, anchorY = RailAnchor(data.side, data.slot)
-            OpenIconRailWindow("Chat", { x = anchorX, y = anchorY, anchor = true })
+            if data.slot == nil then
+                --a custom interface's chat button has no rail slot to
+                --anchor a window to, so open it the way that button does.
+                DockablePanel.LaunchPanelByName("Chat", "show")
+            else
+                local anchorX, anchorY = RailAnchor(data.side, data.slot)
+                OpenIconRailWindow("Chat", { x = anchorX, y = anchorY, anchor = true })
+            end
+            --clicked while riding over a full-screen stage, the window
+            --would open BEHIND the stage; bring it forward so the click
+            --does what it looks like it does. One frame later: the window
+            --does not exist until the open above has run.
+            if data.raised then
+                dmhub.Schedule(0.1, function()
+                    if mod.unloaded then
+                        return
+                    end
+                    local dialog = PanelDocument.FindHostDialog("chat")
+                    if dialog ~= nil and dialog.valid then
+                        PanelDocument.RaiseOnLayer(dialog)
+                    end
+                end)
+            end
             RefreshRails()
         end,
 
@@ -12187,9 +12501,11 @@ function PanelDocument.CreateChatBubble(side, slot)
                 element:DestroySelf()
                 return
             end
-            --chat opened by any path while the bubble is up: the
-            --preview has done its job.
-            if PanelDocument.IsPanelActive("chat") or PanelDocument.IsPoppedOut("chat") then
+            --a stage can go up (or come down) under a live bubble.
+            PanelDocument.ChatBubbleRestack(element)
+            --chat brought in front by any path while the bubble is up:
+            --the preview has done its job.
+            if PanelDocument.ChatInFront() then
                 element:FireEvent("bubbleFade")
             end
         end,
@@ -12201,7 +12517,7 @@ function PanelDocument.CreateChatBubble(side, slot)
             width = 16,
             height = 22,
             halign = cond(side == "left", "left", "right"),
-            valign = "top",
+            valign = cond(anchorBottom, "bottom", "top"),
             x = cond(side == "left", -13, 13),
             y = tailY,
             interactable = false,
@@ -12212,11 +12528,12 @@ function PanelDocument.CreateChatBubble(side, slot)
     --the corner the bubble is anchored by FIRST -- uiscale scales
     --around the pivot, and the default centre pivot slides the scaled
     --bubble back over the rail. Pivot writes need an attached panel.
-    bubble.selfStyle.pivot = {x = cond(side == "left", 0, 1), y = 1}
+    bubble.selfStyle.pivot = {x = cond(side == "left", 0, 1), y = cond(anchorBottom, 0, 1)}
     bubble.selfStyle.uiscale = scale
     --the deference half of window awareness: bubble at the BOTTOM of
-    --the layer, so any window it could not avoid draws over it.
-    bubble:SetAsFirstSibling()
+    --the layer, so any window it could not avoid draws over it -- unless
+    --a full-screen stage is up, which it would be under too.
+    PanelDocument.ChatBubbleRestack(bubble)
     PanelDocument.chatBubbleState.panel = bubble
     return bubble
 end
@@ -12274,38 +12591,24 @@ function PanelDocument.ChatBubbleNotify(changeInfo)
         return ta < tb
     end)
 
-    --no bubble while chat is already on screen: the shown tab of a
-    --rail window, a native popout, or an on-screen dock instance.
-    if PanelDocument.IsPanelActive("chat") or PanelDocument.IsPoppedOut("chat") then
+    --no bubble while chat is already in front of the player: the shown
+    --tab of a rail window, a native popout, or an on-screen dock
+    --instance -- none of which count while a stage buries them.
+    if PanelDocument.ChatInFront() then
         return
     end
-    local reg = DockablePanel.GetRegistration("Chat")
-    if reg ~= nil and reg.identifier ~= nil then
-        local instance = DockablePanel.FindInstance(reg.identifier)
-        if instance ~= nil and instance.valid and instance:FindParentWithClass("offscreen") == nil then
-            return
-        end
-    end
 
-    --the bubble hangs off the chat button, so there must BE one: a
-    --live, un-collapsed top-level rail button. Grouped-away or
-    --overflow-parked chat has no button; dock mode collapses the
-    --rails' children (enabled goes false).
-    local side, slot = nil, nil
-    for railSide, rail in pairs(g_iconRails) do
-        if rail ~= nil and rail.valid then
-            for _, child in ipairs(rail.children) do
-                if child.valid and child:HasClass("iconRailButton") and child.enabled then
-                    local d = child.data
-                    if type(d) == "table" and d.key == "chat" then
-                        side = railSide
-                        slot = d.slot
-                    end
-                end
-            end
-        end
+    --the bubble hangs off the chat button, so there must BE one: a live,
+    --un-collapsed rail button, slotted on a real rail or supplied by a
+    --custom interface. Grouped-away or overflow-parked chat has no
+    --button; dock mode collapses the rails' children (enabled goes
+    --false).
+    local side, slot, button = PanelDocument.FindChatRailButton()
+    if side == nil then
+        return
     end
-    if side == nil or slot == nil then
+    local rect = PanelDocument.ChatButtonRect(side, slot, button)
+    if rect == nil then
         return
     end
 
@@ -12315,7 +12618,7 @@ function PanelDocument.ChatBubbleNotify(changeInfo)
         state.panel = nil
     end
     if bubble == nil then
-        bubble = PanelDocument.CreateChatBubble(side, slot)
+        bubble = PanelDocument.CreateChatBubble(side, slot, rect)
     end
     if bubble == nil then
         return
@@ -20373,9 +20676,10 @@ PanelDocument.BuildCustomInterfaceRails = function(layer)
             end,
 
             --a chat message landing while chat is closed: the bubble
-            --helper bails harmlessly when it cannot find a slotted chat
-            --button (custom widgets are not slotted), but unread badges
-            --on provider buttons update via refreshRail above.
+            --helper finds the provider's own chat button (by data.key,
+            --nested anywhere in this wrapper) and hangs the preview off
+            --it, over a full-screen stage if one is up. Unread badges on
+            --provider buttons update via refreshRail above.
             refreshChat = function(element, changeInfo)
                 PanelDocument.ChatBubbleNotify(changeInfo)
             end,

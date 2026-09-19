@@ -1190,6 +1190,10 @@ local function CreateLobbyHud(dialog, tokenInfo)
 		return nil
 	end
 
+	gamehud.GetCurrentlyPresentedDialogPanel = function()
+		return nil
+	end
+
 	local mainDialogPanel = gamehud:MainDialogPanel()
 
     local m_recordedPopup = nil
@@ -1457,6 +1461,17 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 
     gamehud.GetCurrentlyPresentedDialog = function()
         return m_presentedDialogArgs
+    end
+
+    --The presented panel itself. It is mounted on the documents layer
+    --alongside the rails and the panel windows, so anything else living
+    --there (the chat speech bubble) asks for it to work out whether it is
+    --in front of the presentation or buried behind it.
+    gamehud.GetCurrentlyPresentedDialogPanel = function()
+        if m_presentedDialog ~= nil and m_presentedDialog.valid then
+            return m_presentedDialog
+        end
+        return nil
     end
 
 

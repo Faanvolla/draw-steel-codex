@@ -802,6 +802,17 @@ GameHud.GetCurrentlyPresentedDialog = function()
 	return nil
 end
 
+-- The PANEL that presentation put on screen, or nil if nothing is presented.
+-- Presented dialogs are mounted as ordinary children of the documents layer,
+-- so callers that share that layer (the icon rails, panel windows, the chat
+-- speech bubble) need the panel itself to tell whether they are in front of
+-- it or buried behind it. Same totality story as the accessor above: the
+-- lobby hud presents nothing, and this class-level default is what keeps the
+-- call from raising there.
+GameHud.GetCurrentlyPresentedDialogPanel = function()
+	return nil
+end
+
 --Director-facing UI gate. Game modes can register a filter that suppresses
 --Director chrome (dmonly dock panels, the GM toolbar, initiative-bar strips)
 --on clients that hold Director status internally but should present as
