@@ -7279,6 +7279,14 @@ local function CreateMarkdownToolbar(opts)
         --separator row is optional in our dialect but emitting it keeps the
         --markdown portable (GitHub/Obsidian) and carries column alignment.
         ToolbarButton("Table",   14, 56, InsertHandler("\n|Header|Header|\n|---|---|\n|Cell|Cell|\n|Cell|Cell|\n", 2)),
+        --starter power roll in our block syntax: a "|Name: Attr" header line
+        --followed by one "|outcome" line per tier (an optional 4th line adds
+        --the critical tier). The header names a real characteristic so the
+        --rendered block's roll link resolves out of the box, and the tier
+        --wording matches the stylesheet showcase sample. Caret lands at the
+        --start of the name, the same place the Table button leaves it.
+        ToolbarButton("Power Roll", 14, 88, InsertHandler(
+            "\n|Might Test: Might\n|You fail.\n|You succeed at a cost.\n|You succeed.\n", 2)),
 
         GroupDivider(),
 

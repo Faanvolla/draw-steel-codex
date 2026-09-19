@@ -59,9 +59,9 @@ TokenFrames.definitions = {
             sheenFromAlbedo = 1.0,
             albedoSheenBoost = 1.6,
             --HDR: the hottest matcap regions and the specular peak go above 1.0 and bloom.
-            hdrGlow = 2.5,
-            glowThreshold = 0.7,
-            specGlow = 1.0,
+            hdrGlow = 1.8,
+            glowThreshold = 0.8,
+            specGlow = 0.6,
             lightFollowsTimeOfDay = 0.5,
             lightDir = { x = -0.3, y = 0.6, z = 0.75 },
             sheenColor = "#ffffff",

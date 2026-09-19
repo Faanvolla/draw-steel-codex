@@ -13,3 +13,8 @@ function TokenFramesLuaInterface:Register(entry) end
 --- @param id string
 --- @return table|nil
 function TokenFramesLuaInterface:Get(id) end
+
+--- Diagnostic: describes the frame material state on a token's renderer -- keyword, which maps resolved to textures (with their sizes and formats), and the parameter vectors currently on the material. Returns a table, or nil if the token has no renderer.
+--- @param token CharacterToken
+--- @return table|nil
+function TokenFramesLuaInterface:Inspect(token) end
