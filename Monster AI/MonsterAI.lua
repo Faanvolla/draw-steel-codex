@@ -1369,7 +1369,7 @@ end
 function MonsterAI:FindSquadActionToken()
     --A critical hit may belong to a different minion than the squad's first actor.
     for _,member in ipairs(self.squadMembers) do
-        if not member.skippedForTargetLimit and self.TokenIsLiveCombatant(member.token) then
+        if self.TokenIsLiveCombatant(member.token) then
             for _,ability in ipairs(member.token.properties:GetActivatedAbilities()) do
                 if ability.categorization == "Signature Ability" and ability:CanAfford(member.token) then
                     return member.token
@@ -2767,11 +2767,18 @@ function MonsterAI:ExecuteSquadStrike(ability)
         assignedTargets = liveAssignedTargets
     end
 
-    for _,squadMember in ipairs(self.squadMembers) do
+    local function PlanMember(squadMember, planningPass)
         RefreshAssignments()
         local memberToken = squadMember.token
         local memberAbility = AffordableMemberAbility(memberToken)
-        if memberAbility ~= nil and not squadMember.skippedForTargetLimit then
+        local alreadyAssigned = false
+        for _,pair in ipairs(targetPairs) do
+            if pair.a == memberToken.charid then alreadyAssigned = true; break end
+        end
+        if alreadyAssigned then
+            return
+        end
+        if memberAbility ~= nil then
             local memberName = self.TokenLogName(memberToken)
             local memberId = memberToken.charid
             local queue = dmhub.initiativeQueue
@@ -2862,9 +2869,6 @@ function MonsterAI:ExecuteSquadStrike(ability)
                     })
                 end
             else
-                --These member records last for this squad's turn. Do not let
-                --critical-hit retries give capped-out minions a fresh strike.
-                squadMember.skippedForTargetLimit = targetLimitReached
                 self:LogDecision("MINION ASSIGNMENT REJECTED", {
                     actor = memberName,
                     actorId = memberId,
@@ -2874,7 +2878,7 @@ function MonsterAI:ExecuteSquadStrike(ability)
                     reason = targetLimitReached and "all reachable targets have reached the squad target limit"
                         or "no legal target can be reached",
                 })
-                if not targetLimitReached then
+                if not targetLimitReached and planningPass == 1 then
                     advanced = self:ExecuteAdvanceFallback(memberToken) or advanced
                 end
             end
@@ -2885,13 +2889,19 @@ function MonsterAI:ExecuteSquadStrike(ability)
                 category = "Main Action",
                 move = "Minion Signature Ability",
                 ability = abilityName,
-                reason = squadMember.skippedForTargetLimit and "member already skipped for the squad target limit"
-                    or "squad member is dead or cannot afford the signature ability",
+                reason = "squad member is dead or cannot afford the signature ability",
                 result = "continuing with eligible squad members",
             })
         end
     end
 
+    --Reconsider members who advanced before resolving the shared action.
+    --They must join this volley rather than save their action for a later one.
+    for planningPass=1,2 do
+        for _,squadMember in ipairs(self.squadMembers) do
+            PlanMember(squadMember, planningPass)
+        end
+    end
     RefreshAssignments()
     local casterToken = nil
     local castAbility = nil

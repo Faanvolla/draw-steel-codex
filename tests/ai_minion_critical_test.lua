@@ -13,6 +13,22 @@ local rulesFile = assert(io.open("Draw Steel Core Rules/MCDMActivatedAbility.lua
 local rulesSource = rulesFile:read("*a")
 rulesFile:close()
 ActivatedAbility = {}
+CharacterResource = {actionResourceId = "action"}
+--Simulate the base payment for participating attackers, then exercise the real
+--Draw Steel wrapper that also spends nonparticipants' shared action.
+function ActivatedAbility:ConsumeResources(caster, options)
+    local paid = {}
+    for _,pair in ipairs(options.symbols.targetPairs) do
+        if not paid[pair.a] then
+            local t = dmhub.GetTokenById(pair.a)
+            t.actions = t.actions - 1
+            paid[pair.a] = true
+        end
+    end
+end
+local consumeStart = assert(rulesSource:find("local g_consumeResources_base =", 1, true))
+local consumeEnd = assert(rulesSource:find("function ActivatedAbility:CanTargetAdditionalTimes(", consumeStart, true))
+assert(load(rulesSource:sub(consumeStart, consumeEnd - 1)))()
 local ruleStart = assert(rulesSource:find("function ActivatedAbility:CanTargetAdditionalTimes(", 1, true))
 local ruleEnd = assert(rulesSource:find("local function GetTargetsWithTokens", ruleStart, true))
 assert(load(rulesSource:sub(ruleStart, ruleEnd - 1)))()
@@ -64,12 +80,23 @@ local function fixture(count)
     function ability:GetRange() return 1 end
     function ability:CanAfford(t) return t.actions > 0 end
     function ability:UsesSquadStrike() return true end
+    function ability:UsesSquadCoordination() return true end
+    function ability:UsesIndividualManeuver() return false end
+    function ability:GetCost()
+        return {details = {{paymentOptions = {{resourceid = "action", quantity = 1}}}}}
+    end
+    ability.ConsumeResources = ActivatedAbility.ConsumeResources
     ability.CanTargetAdditionalTimes = ActivatedAbility.CanTargetAdditionalTimes
     for i=1,count do
         local t = {charid = tostring(i), name = "Minion " .. i, valid = true, altitude = 0, tileSize = 1, actions = 1, moved = 0, loc = "start"}
         function t:Distance() return 1 end
         function t:GetLineOfSight() return 1 end
         t.properties = {minion = true, monster_type = "Dwarf Axethrower", try_get = try_get,
+            IsDead = function() return not t.valid end,
+            IsActiveInSquad = function() return true end,
+            HasManeuverOrActionRule = function() return false end,
+            GetResourceUsage = function() return 1 - t.actions end,
+            ConsumeResource = function(_, _, _, quantity) t.actions = t.actions - quantity end,
             has_key = function(self, key) return self[key] ~= nil end,
             GetActivatedAbilities = function() return {ability} end,
             CurrentMovementSpeed = function() return 5 end,
@@ -80,8 +107,12 @@ local function fixture(count)
             end,
             GetPierceWalls = function() return 0 end}
         tokens[t.charid] = t
+        function t:ModifyProperties(options) options.execute() end
         members[#members+1] = {token = t}
     end
+    local squadTokens = {}
+    for _,member in ipairs(members) do squadTokens[#squadTokens+1] = member.token end
+    for _,t in ipairs(squadTokens) do t.properties._tmp_minionSquad = {tokens = squadTokens} end
     local ai = setmetatable({squadMembers = members, squadCaptain = false, casts = casts,
         pathBudgets = {}, moveCounts = {}, _tmp_failedMoves = {}}, {__index = MonsterAI})
     function ai:SetupCombatants(t) self.token = t; self.abilities = t.properties:GetActivatedAbilities() end
@@ -96,6 +127,7 @@ local function fixture(count)
     end
     function ai:FindSquadMemberStrikeOptions(member)
         if self.noTargets then return {} end
+        if self.unreachable and self.unreachable[member.token.charid] then return {} end
         local options = {{token = enemy, loc = member.paths[1].loc, cost = 0}}
         if self.otherEnemy then
             tokens[self.otherEnemy.charid] = self.otherEnemy
@@ -114,9 +146,9 @@ local function fixture(count)
         for _,pair in ipairs(options.symbols.targetPairs) do
             local t = tokens[pair.a]
             check(t.valid and t.actions > 0, "every attacker must be alive and able to pay")
-            t.actions = t.actions - 1
             ids[#ids+1] = t.charid
         end
+        ability:ConsumeResources(caster, options)
         casts[#casts+1] = {caster = caster.charid, ids = ids, pairs = options.symbols.targetPairs}
         --The normal critical-hit rule restores a Main Action after the cast.
         if self.afterCast then self.afterCast(#casts, tokens) end
@@ -204,7 +236,7 @@ check(#ai.casts == 1, "stop request prevents the extra action")
 ai, tokens, run = fixture(8)
 run()
 check(#ai.casts == 1 and #ai.casts[1].ids == 3, "one enemy receives at most three attackers across ordinary action cycles")
-check(ai.moveCounts["4"] == nil and tokens["4"].actions == 1, "capped-out minions do not move or spend an action")
+check(ai.moveCounts["4"] == nil and tokens["4"].actions == 0, "capped-out minions spend the shared action without moving")
 
 ai, tokens, run = fixture(7)
 ai.otherEnemy = {id = "other", charid = "other", name = "other", valid = true, altitude = 0, tileSize = 1}
@@ -235,4 +267,39 @@ ai.afterMove = function(t) if t.charid == "3" then tokens["1"].valid = false end
 run()
 check(#ai.casts == 1 and #ai.casts[1].ids == 3 and ai.casts[1].ids[3] == "4",
     "an attacker killed during movement frees its target slot for a surviving minion")
+ai, tokens, run = fixture(2)
+ai.unreachable = {["2"] = true}
+ai.advanceFallback = function(t)
+    ai.unreachable[t.charid] = nil
+    return true
+end
+run()
+check(#ai.casts == 1 and #ai.casts[1].ids == 2, "advancing sniper joins the first volley, sharing a target")
+
+ai, tokens, run = fixture(2)
+ai.unreachable = {["2"] = true}
+run()
+check(#ai.casts == 1 and #ai.casts[1].ids == 1 and tokens["2"].actions == 0,
+    "unreachable squadmate spends its action and cannot start a second volley")
+
+ai, tokens, run = fixture(2)
+ai.unreachable = {["2"] = true}
+ai.afterCast = function(n)
+    if n == 1 then tokens["1"].actions = 1; ai.unreachable = nil end
+end
+run()
+check(#ai.casts == 2 and #ai.casts[2].ids == 1 and ai.casts[2].ids[1] == "1",
+    "critical action does not let an earlier nonparticipant attack")
+
+ai, tokens, run = fixture(2)
+local signature = tokens["1"].properties:GetActivatedAbilities()[1]
+signature:ConsumeResources(tokens["1"], {symbols = {targetPairs = {}}, costOverride = {details = {}}})
+check(tokens["2"].actions == 1, "free invoked strikes do not spend other squad members' main actions")
+tokens["2"].actions = 0
+signature:ConsumeResources(tokens["1"], {symbols = {targetPairs = {}}})
+check(tokens["2"].actions == 0, "already spent nonparticipants are not charged twice")
+tokens["2"].actions = 1
+tokens["2"].properties.IsActiveInSquad = function() return false end
+signature:ConsumeResources(tokens["1"], {symbols = {targetPairs = {}}})
+check(tokens["2"].actions == 1, "inactive squad members are excluded from shared action payment")
 print(string.format("PASS: %d minion critical-hit checks", checks))

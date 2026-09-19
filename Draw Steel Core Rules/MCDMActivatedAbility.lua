@@ -3337,6 +3337,34 @@ function ActivatedAbility:ConsumeResources(casterToken, options)
         return
     end
 
+    --The squad spends its action together, even when some members cannot attack.
+    --Only pay the action component here; attacking members already paid above.
+    --This runs before the roll, so critical-hit actions remain available afterward.
+    local squad = casterToken.properties:try_get("_tmp_minionSquad")
+    local participants = {[casterToken.charid] = true}
+    for _,pair in ipairs((options.symbols or {}).targetPairs or {}) do
+        participants[pair.a] = true
+    end
+    for _,tok in ipairs(squad and squad.tokens or {}) do
+        if tok ~= nil and tok.valid and not tok.properties:IsDead()
+            and tok.properties:IsActiveInSquad() and not participants[tok.charid] then
+            local cost = options.costOverride or self:GetCost(tok)
+            for _,entry in ipairs(cost.details) do
+                for _,payment in ipairs(entry.paymentOptions) do
+                    if payment.resourceid == CharacterResource.actionResourceId
+                        and (tok.properties:GetResourceUsage(payment.resourceid, "turn") or 0) < 1 then
+                        tok:ModifyProperties{
+                            description = "Squad Expends Action",
+                            execute = function()
+                                tok.properties:ConsumeResource(payment.resourceid, "turn", payment.quantity or 1, self.name)
+                            end,
+                        }
+                    end
+                end
+            end
+        end
+    end
+
     if not casterToken.properties:HasManeuverOrActionRule() then
         return
     end
