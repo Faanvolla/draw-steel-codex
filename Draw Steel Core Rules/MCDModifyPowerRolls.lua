@@ -750,8 +750,7 @@ CharacterModifier.TypeInfo.power = {
                 targetPanel:SetClass("bad", buffOrDebuff < 0)
             end
 
-            --The authored description may embed {formula} GoblinScript, e.g. a damage
-            --bonus that scales with Level, so it reads the roller's live value.
+            --Descriptions may embed {formula} GoblinScript, e.g. a Level-scaled bonus.
             local authoredDescription = StringInterpolateGoblinScript(self:try_get("description", ""), lookupFunction)
 
             targetPanel.data.init = true
