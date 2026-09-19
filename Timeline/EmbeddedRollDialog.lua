@@ -499,6 +499,13 @@ function GameHud.CreateEmbeddedRollDialog()
     -- them re-subscribe to the new dice and replay the animation.
     local m_rerolling = false
 
+    -- The re-roll rule in force for the roll on screen (nil = the plain,
+    -- unlimited Re-roll button), and how many times that roll has been
+    -- re-rolled so far. Both are reset by ShowDialog. See the "Re-roll rules"
+    -- block in DSRollDialog.lua for what a rule is.
+    local m_rerollRule = nil
+    local m_rerollsUsed = 0
+
     -- True if this row is for creature c, including a row a trigger retargeted
     -- away from c while the dialog is open (the row then carries originalid).
     local function MultiTargetIsFor(target, c)
@@ -1670,7 +1677,12 @@ function GameHud.CreateEmbeddedRollDialog()
         -- Gather power roll tier data if this is a power roll.
         local tierTexts = nil
         local rollResult = nil
-        local isPowerRoll = (rollType ~= nil and string.find(rollType, "ability_power_roll") ~= nil) or false
+        --Any power roll -- ability_power_roll, test_power_roll (characteristic
+        --tests and the Encounter of the Week montage rolls), opposed,
+        --resistance, project... -- carries a tier table. Matching only
+        --"ability_power_roll" left the remote card of a test roll with no
+        --tiers at all (and no highlightedTier to follow).
+        local isPowerRoll = (rollType ~= nil and string.find(rollType, "power_roll") ~= nil) or false
         if isPowerRoll and rollProperties ~= nil and rollProperties.tiers ~= nil then
             tierTexts = {}
             for i = 1, #rollProperties.tiers do
@@ -4168,12 +4180,106 @@ function GameHud.CreateEmbeddedRollDialog()
         }
     end
 
+    --The mechanics of re-rolling, with no gating at all. Split out from the
+    --button's press so the callers that must NOT be gated can reach it: a
+    --forceReroll modifier (RecalculateMultiTargets) and the Intel option, which
+    --has already paid its own cost. discretionary is true only when a person
+    --chose to re-roll, and is what counts against a rule's maxRerolls.
+    local function PerformReroll(discretionary)
+        print("REROLL:: DOING REROLL...", g_activeRoll)
+        if g_activeRoll == nil then
+            return
+        end
+
+        if discretionary ~= false then
+            m_rerollsUsed = m_rerollsUsed + 1
+            if rollAgainButton ~= nil then
+                rollAgainButton:FireEvent("refreshRerollRule")
+            end
+        end
+
+        local function doRerollAmend(rollFormula, extraFields)
+            if g_activeRoll == nil then return end
+            local guid = dmhub.GenerateGuid()
+            local amendArgs = {
+                guid = guid,
+                roll = tostring(rollFormula),
+                amendmentRerolls = true,
+                description = g_activeRollArgs.description .. " -- Re-rolled!",
+                amendable = g_activeRollArgs.amendable,
+                tokenid = g_activeRollArgs.tokenid,
+                silent = g_activeRollArgs.rollIsSilent,
+                instant = g_activeRollArgs.instant,
+                creature = g_activeRollArgs.creature,
+                properties = g_activeRollArgs.properties,
+                begin = function(rollInfo)
+                    m_rollInfo = rollInfo
+                    m_rerolling = true
+                    resultPanel:FireEventTree("beginRoll", rollInfo, guid)
+
+                    -- Tell remote viewers the dice are rolling again so
+                    -- they rebuild their read-only view in the rolling
+                    -- state and replay the animation.
+                    BroadcastDialogState()
+                end,
+                -- Reuse the original roll's completion handler so the
+                -- amended roll re-fires it with the REROLLED rollInfo:
+                -- it updates m_rollInfo/the total label and, critically,
+                -- rebinds Accept Result to commit the reroll's result
+                -- instead of the original roll's captured one.
+                complete = g_activeRollArgs.complete,
+            }
+            --extraFields lets an intercepting mod (RollDialog.OnReroll)
+            --supply additional roll fields -- e.g. forcedDice/instant/
+            --silent when physical dice drive the reroll.
+            for k, v in pairs(extraFields or {}) do
+                amendArgs[k] = v
+            end
+            g_activeRoll = g_activeRoll:Amend(amendArgs)
+        end
+
+        -- Hook for external mods to intercept re-rolls
+        if RollDialog.OnReroll then
+            local rerollResult = RollDialog.OnReroll({
+                rollArgs = g_activeRollArgs,
+                originalRoll = g_activeRollArgs.originalRoll or g_activeRollArgs.roll,
+                activeRoll = g_activeRoll,
+                setActiveRoll = function(roll) g_activeRoll = roll end,
+                amendWithResult = doRerollAmend,
+            })
+            if rerollResult == "intercept" then return end
+        end
+
+        doRerollAmend(g_activeRollArgs.originalRoll or g_activeRollArgs.roll)
+    end
+
+    --The cost glyph a rule can put on the Re-roll button (a Hero Token, say).
+    --Built once and re-pointed per roll; collapsed for the plain free Re-roll.
+    --Deliberately NOT the theme's buttonIcon class: that is for icon-ONLY
+    --buttons (it stretches the glyph to fill the button and tints it to @fg,
+    --which would flatten a coloured icon like the Hero Token to a silhouette).
+    --White = draw the image in its own colours; a rule wanting a monochrome
+    --glyph tinted to taste can say so with iconColor.
+    local rerollIcon = gui.Panel {
+        classes = { "collapsed" },
+        bgimage = "panels/square.png",
+        bgcolor = "white",
+        width = 18,
+        height = 18,
+        halign = "left",
+        valign = "center",
+        lmargin = 8,
+    }
+
     rollAgainButton = gui.PrettyButton {
         text = "Re-roll",
         classes = { "shownWhenPending", "button", "hideWhenAI" },
         width = 140,
         height = 30,
         fontSize = 20,
+        --flow none so the glyph sits where its own halign/valign put it
+        --(hard left, vertically centred) instead of displacing the caption.
+        flow = "none",
         styles = {
             {
                 priority = 20,
@@ -4186,65 +4292,93 @@ function GameHud.CreateEmbeddedRollDialog()
             },
         },
 
-        press = function(element)
-            print("REROLL:: DOING REROLL...", g_activeRoll)
-            if g_activeRoll == nil then
-                return
+        rerollIcon,
+
+        data = {
+            --Set by refreshRerollRule; nil for the plain Re-roll, which needs
+            --no explaining.
+            rerollTooltip = nil,
+        },
+
+        linger = function(element)
+            local text = element.data.rerollTooltip
+            if text ~= nil and text ~= "" then
+                gui.Tooltip(text)(element)
+            end
+        end,
+
+        --Re-dress the button for the rule in force: caption, cost glyph, and
+        --whether it can be pressed at all. Fired by ShowDialog, after every
+        --re-roll, and on a slow think while a rule is active (the cost may be
+        --spent elsewhere -- another player's Hero Token -- while this sits
+        --open).
+        refreshRerollRule = function(element)
+            local rule = m_rerollRule
+
+            element.text = (rule ~= nil and rule.text) or "Re-roll"
+
+            local icon = rule ~= nil and rule.icon or nil
+            rerollIcon:SetClass("collapsed", icon == nil)
+            if icon ~= nil then
+                rerollIcon.bgimage = icon
+                rerollIcon.selfStyle.bgcolor = rule.iconColor or "white"
             end
 
-            local function doRerollAmend(rollFormula, extraFields)
-                if g_activeRoll == nil then return end
-                local guid = dmhub.GenerateGuid()
-                local amendArgs = {
-                    guid = guid,
-                    roll = tostring(rollFormula),
-                    amendmentRerolls = true,
-                    description = g_activeRollArgs.description .. " -- Re-rolled!",
-                    amendable = g_activeRollArgs.amendable,
-                    tokenid = g_activeRollArgs.tokenid,
-                    silent = g_activeRollArgs.rollIsSilent,
-                    instant = g_activeRollArgs.instant,
-                    creature = g_activeRollArgs.creature,
-                    properties = g_activeRollArgs.properties,
-                    begin = function(rollInfo)
-                        m_rollInfo = rollInfo
-                        m_rerolling = true
-                        resultPanel:FireEventTree("beginRoll", rollInfo, guid)
-
-                        -- Tell remote viewers the dice are rolling again so
-                        -- they rebuild their read-only view in the rolling
-                        -- state and replay the animation.
-                        BroadcastDialogState()
-                    end,
-                    -- Reuse the original roll's completion handler so the
-                    -- amended roll re-fires it with the REROLLED rollInfo:
-                    -- it updates m_rollInfo/the total label and, critically,
-                    -- rebinds Accept Result to commit the reroll's result
-                    -- instead of the original roll's captured one.
-                    complete = g_activeRollArgs.complete,
-                }
-                --extraFields lets an intercepting mod (RollDialog.OnReroll)
-                --supply additional roll fields -- e.g. forcedDice/instant/
-                --silent when physical dice drive the reroll.
-                for k, v in pairs(extraFields or {}) do
-                    amendArgs[k] = v
-                end
-                g_activeRoll = g_activeRoll:Amend(amendArgs)
-            end
-
-            -- Hook for external mods to intercept re-rolls
-            if RollDialog.OnReroll then
-                local rerollResult = RollDialog.OnReroll({
-                    rollArgs = g_activeRollArgs,
-                    originalRoll = g_activeRollArgs.originalRoll or g_activeRollArgs.roll,
-                    activeRoll = g_activeRoll,
-                    setActiveRoll = function(roll) g_activeRoll = roll end,
-                    amendWithResult = doRerollAmend,
+            local enabled, tooltip = true, nil
+            if rule ~= nil then
+                enabled, tooltip = RollDialog.RerollRuleState(rule, {
+                    options = m_options,
+                    creature = creature,
+                    rerollsUsed = m_rerollsUsed,
                 })
-                if rerollResult == "intercept" then return end
             end
 
-            doRerollAmend(g_activeRollArgs.originalRoll or g_activeRollArgs.roll)
+            element:SetClass("disabled", not enabled)
+            element.data.rerollTooltip = tooltip
+
+            --Strictly Enforce Rolls hides the free Re-roll outright (see the
+            --block below). A rule-gated re-roll is a sanctioned game action
+            --that costs something, so it survives: un-collapse it and hand
+            --Accept Result its half of the bar back. Only touched in strict
+            --mode, where the construction-time block already wrote both.
+            if m_strictRolls then
+                local hidden = (rule == nil)
+                element.selfStyle.collapsed = cond(hidden, 1, 0)
+                proceedAfterRollButton.selfStyle.width = cond(hidden, "100%", 140)
+                proceedAfterRollButton.selfStyle.halign = cond(hidden, "center", "right")
+            end
+
+            element.thinkTime = cond(rule ~= nil, 1, nil)
+        end,
+
+        think = function(element)
+            element:FireEvent("refreshRerollRule")
+        end,
+
+        press = function(element)
+            local rule = m_rerollRule
+            if rule ~= nil then
+                local state = {
+                    options = m_options,
+                    creature = creature,
+                    rerollsUsed = m_rerollsUsed,
+                }
+
+                --Re-check rather than trust the last refresh: the button is
+                --still pressable while greyed out, and the cost may have been
+                --spent elsewhere since.
+                if not RollDialog.RerollRuleState(rule, state) then
+                    element:FireEvent("refreshRerollRule")
+                    return
+                end
+
+                if rule.Pay ~= nil and rule.Pay(state) == false then
+                    element:FireEvent("refreshRerollRule")
+                    return
+                end
+            end
+
+            PerformReroll(true)
         end,
     }
 
@@ -4261,6 +4395,9 @@ function GameHud.CreateEmbeddedRollDialog()
 
     if m_strictRolls then
         --Strictly Enforce Rolls: the result stands, so there is no Re-roll.
+        --This is the starting state; refreshRerollRule above lifts it again for
+        --a roll that carries a re-roll rule, since paying for a re-roll is not
+        --the at-will re-rolling this setting exists to stop.
         --selfStyle rather than the "collapsed" CLASS, because the trigger
         --countdown's reveal below clears that class to show the button
         --(`rollAgainButton:SetClass("collapsed", false)`) and would undo it;
@@ -4380,7 +4517,10 @@ function GameHud.CreateEmbeddedRollDialog()
             if it == nil then return end
             if g_activeRoll == nil or not g_activeRoll.amendable then return end
             if it.Spend(1, "Re-rolled a power roll") then
-                rollAgainButton:FireEvent("press")
+                --Intel has already been paid, so skip the rule's own gate and
+                --cost -- but count it, because "you must use the new roll"
+                --holds however the new roll was bought.
+                PerformReroll(true)
             end
         end,
     }
@@ -4960,7 +5100,10 @@ function GameHud.CreateEmbeddedRollDialog()
         end
 
         if needReroll then
-            rollAgainButton:FireEvent("press")
+            --The system is forcing this one (a forceReroll modifier), so it
+            --goes straight to the mechanics: no rule gate, nothing to pay, and
+            --it does not eat the roller's own one re-roll.
+            PerformReroll(false)
             return true
         end
     end
@@ -5901,6 +6044,13 @@ function GameHud.CreateEmbeddedRollDialog()
                 targetCreature = options.targetCreature
                 m_multitargets = options.multitargets
                 m_CalculateMultiTargets = options.CalculateMultiTargets
+
+                --How this roll is allowed to be re-rolled: the roll's own
+                --`rerollRule`, else the game system's default for a roll of
+                --this kind, else nil for the plain unlimited Re-roll button.
+                m_rerollRule = RollDialog.ResolveRerollRule(options)
+                m_rerollsUsed = 0
+                rollAgainButton:FireEvent("refreshRerollRule")
 
 
                 rollInput:SetClass("manualEdit", false)

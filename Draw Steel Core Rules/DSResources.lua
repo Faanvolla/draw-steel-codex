@@ -191,6 +191,43 @@ function creature:GetHeroTokenHistory()
     return CharacterResource.GetGlobalResourceHistory(CharacterResource.heroTokenId)
 end
 
+--A hero may spend 1 Hero Token to re-roll a test, and must use the new roll --
+--so one re-roll per test. Expressed as a roll-dialog re-roll rule (see the
+--"Re-roll rules" block in DSRollDialog.lua): it replaces the dialog's free
+--Re-roll button with a Hero Token one for the duration of that roll.
+--RollDialog.GetDefaultRerollRule hands this to every test a hero makes; a roll
+--can also ask for it by name via its own `rerollRule` option.
+--- @return table
+function CharacterResource.HeroTokenTestRerollRule()
+    return {
+        text = "Re-roll",
+        icon = "drawsteel/hero-token.png",
+        tooltip = "1 Hero Token: Re-roll. You must use the new roll.",
+        maxRerolls = 1,
+        spentTooltip = "You have already re-rolled this test. You must use the new roll.",
+
+        CanReroll = function(state)
+            if CharacterResource.GetGlobalResource(CharacterResource.heroTokenId) < 1 then
+                return false, "You have no Hero Tokens to spend."
+            end
+            return true
+        end,
+
+        --Read-modify-write on the shared pool, the same way the Hero Tokens box
+        --on the character panel spends them. Re-read here rather than trusting
+        --what CanReroll saw, so a token spent elsewhere between the hover and
+        --the press cannot take the pool negative.
+        Pay = function(state)
+            local tokens = CharacterResource.GetGlobalResource(CharacterResource.heroTokenId)
+            if tokens < 1 then
+                return false
+            end
+            CharacterResource.SetGlobalResource(CharacterResource.heroTokenId, tokens - 1, "Re-rolled a test")
+            return true
+        end,
+    }
+end
+
 function creature:GetEpicResources()
     local resources = self:try_get("resources")
     if resources ~= nil then

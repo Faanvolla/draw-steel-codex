@@ -2345,9 +2345,18 @@ function ActivatedAbility:Render(options, params)
 
                             },
 
-                            --Implementation chip
+                            --Implementation chip.
+                            --Synthetic abilities minted purely to carry a roll
+                            --surface (characteristic tests, target tests -- all
+                            --flagged isTest) are not compendium content, so an
+                            --automation status on them is meaningless noise.
+                            --Collapsed rather than omitted: the children here
+                            --are a positional list and a nil entry would
+                            --truncate it.
 
                             gui.Panel {
+
+                                classes = {cond(self:try_get("isTest", false), "collapsed")},
 
                                 width = "auto",
                                 height = "auto",
