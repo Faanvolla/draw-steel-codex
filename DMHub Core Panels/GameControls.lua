@@ -84,6 +84,7 @@ CreateGameControls = function()
 
 		gui.IconEditor{
 			library = "coverart",
+			captions = true,
 			classes = {"image"},
 			width = "auto",
 			height = "auto",
