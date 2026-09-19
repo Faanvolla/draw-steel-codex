@@ -1304,6 +1304,15 @@ CreateScreen = function(args)
         }
         _G.EotwPendingArrival = arrival
 
+        --Hold the loading screen through arrival setup: the engine then runs
+        --the callback below BEHIND the loading screen and keeps it up until
+        --the game side releases it -- once the opening montage stage is on
+        --screen, or right after hero placement when the week has no
+        --montage -- so nobody watches the map travel and the tokens pop in.
+        --A 20s engine timeout backstops a game side that never releases.
+        --Older engines lack the call and simply show the map as before.
+        pcall(function() dmhub.HoldLoadingScreen() end)
+
         lobby:EnterGame(gameid, function()
             --the engine fires this only once the game has finished loading,
             --so the stamp doubles as the game side's guarantee that running

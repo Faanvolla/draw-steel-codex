@@ -2901,6 +2901,43 @@ function CharacterPanel.HighlightAbilitySection(options)
     end
 end
 
+--Share the currently displayed ability with the whole table regardless of
+--whose initiative turn it is. HighlightAbilitySection only begins sharing
+--for the token on the current turn (ShouldShareAbility), which is right for
+--combat but leaves rolls made OUTSIDE the initiative queue -- an Encounter of
+--the Week montage roll -- invisible to everyone else. Callers that show a
+--roll every client should watch call this right after DisplayAbility; the
+--embedded dialog's BroadcastDialogState then flows to the read-only remote
+--card exactly as it does on a hero's combat turn, and the share is cleared
+--by the normal hideAbility path. Returns true when sharing began (or was
+--already in progress for this token).
+function CharacterPanel.ShareDisplayedAbility(token, ability)
+    if token == nil or not token.valid or not token.canControl then
+        return false
+    end
+    if g_displayedAbility == nil or (ability ~= nil and g_displayedAbility ~= ability) then
+        return false
+    end
+    if g_sharingData ~= nil then
+        return g_sharingToken ~= nil and g_sharingToken.charid == token.charid
+    end
+    BeginAbilitySharing(token, g_displayedAbility)
+    return true
+end
+
+--The shared ability document, for panels outside this file that want to
+--follow a shared roll (monitorGame on the path, then read the data): the
+--EotW montage stage highlights the tier the live dice are landing on from
+--dialogState.rollId / rollState / highlightedTier, the same fields the
+--remote card's tier table uses.
+function CharacterPanel.AbilityShareDocPath()
+    return mod:GetDocumentPath(g_abilityShareDocId)
+end
+
+function CharacterPanel.GetAbilityShareData()
+    return mod:GetDocumentSnapshot(g_abilityShareDocId).data
+end
+
 -- Update the shared ability data with targeting and modifier information.
 -- Called from ability cast code after the roll dialog is configured.
 -- data fields: targetTokenIds (string[]), modifiers ({name, guid, enabled}[])

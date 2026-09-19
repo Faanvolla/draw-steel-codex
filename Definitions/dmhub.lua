@@ -9,6 +9,7 @@
 --- @field tokenAnimations TokenAnimationsLuaInterface Registry of token animations. RegisterTeleport / RegisterDeath / RegisterTransformation register category-specific animation functions.
 --- @field tokenFrames TokenFramesLuaInterface Registry of premium token frame materials. Register{...} defines a frame (albedo + normal + roughness maps and lighting parameters); a token uses it by setting token.portraitFrameMaterial to the id (and token.portraitFrame to the material's albedo asset).
 --- @field systemHardwareRating number The power level of the system hardware. 1 or greater is a relatively high power system.
+--- @field loadingScreenHeld boolean (Read-only) True while a Lua hold keeps the game loading screen up. See HoldLoadingScreen.
 --- @field gameLoadingProgress number Game loading progress. nil = not loading a game. 0 = just started loading, 1 = fully loaded.
 --- @field whiteLabel WhiteLabel The current 'white label' version of the engine this is. May be 'dmhub' or 'mcdm'
 --- @field whiteLabelEntityName string The name of the publisher of the product the engine is running as.
@@ -191,6 +192,12 @@ dmhub = {}
 
 --- TestFunction
 function dmhub.TestFunction() end
+
+--- Keep the game loading screen up past the point the game has finished loading. Call BEFORE entering the game (it survives the switch into the game and every codemod reload). While held, the engine runs the lobby:EnterGame arrival callback behind the loading screen instead of after it clears, and the screen stays until ReleaseLoadingScreen() -- or a 20s safety timeout -- so arrival work (map travel, token placement, presenting a full-screen dialog) is never seen happening. Leaving the game clears the hold.
+function dmhub.HoldLoadingScreen() end
+
+--- Release a HoldLoadingScreen() hold: the loading screen fades out over whatever is on screen now. Harmless when nothing is held.
+function dmhub.ReleaseLoadingScreen() end
 
 --- Returns the image-editing applications detected as installed on the user's machine, each as a table with 'name' (friendly display name) and 'path' (full path to the executable on Windows, or the .app bundle on macOS), sorted by name. Detection works on Windows (via the registry uninstall and 'App Paths' keys) and macOS (by scanning /Applications and ~/Applications for known editor bundles); Linux returns an empty list. Intended to populate an editor chooser so the user can pick an installed editor without browsing for it.
 --- @return {name: string, path: string}[]

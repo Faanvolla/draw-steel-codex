@@ -956,7 +956,15 @@ end
 --  encounter:     optional authored Encounter for the live encounter (victory
 --                 conditions, rewards); nil behaves like the dialog's
 --                 "Custom" choice.
+--  immediateResult: optional "heroes" | "monsters". Skips the die: the banner
+--                 announces that side as the winner and the queue is created
+--                 with it going first (the same path the Prepare Combat
+--                 dialog's forced result uses). nil = the normal roll.
+--  surprisedTokens: optional list of tokens given the Surprised condition
+--                 (until end of encounter) before the banner shows, the way
+--                 the dialog's "All Surprised" slider marks a side.
 --Returns true, or false + a reason string when combat cannot start.
+local SetTokenSurprised
 function Encounter.StartCombatWithTokens(args)
     args = args or {}
 
@@ -993,10 +1001,21 @@ function Encounter.StartCombatWithTokens(args)
     g_selectedEncounterOpenInitiative = args.encounter
     g_selectedTokensOpenInitiative = tokens
 
+    for _,token in ipairs(args.surprisedTokens or {}) do
+        if token.valid then
+            SetTokenSurprised(token, true)
+        end
+    end
+
+    local immediateResult = nil
+    if args.immediateResult == "heroes" or args.immediateResult == "monsters" then
+        immediateResult = args.immediateResult
+    end
+
     --nil = no immediate result: the banner runs the normal claim-the-die
     --"Draw Steel" roll, and queue creation (plus readied-encounter cleanup)
     --happens when it resolves, exactly like the dialog path.
-    showDrawSteelBanner(nil)
+    showDrawSteelBanner(immediateResult)
     return true
 end
 
@@ -1358,7 +1377,8 @@ function RollInitiativeChatMessage:GetMonsterTokens()
     return result
 end
 
-local function SetTokenSurprised(tok, surprised)
+--(forward-declared above Encounter.StartCombatWithTokens, which also uses it)
+SetTokenSurprised = function(tok, surprised)
     local surprisedCondition = CharacterCondition.conditionsByName["surprised"]
     if tok.valid then
         tok:ModifyProperties {

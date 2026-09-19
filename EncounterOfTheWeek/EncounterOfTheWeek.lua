@@ -178,6 +178,134 @@ local function RecordEncounterMap(name)
     doc:CompleteChange("Encounter of the Week: encounter map", {undoable = false})
 end
 
+--Host only, at setup: the party's Hero Tokens for the session. Draw Steel
+--hands the party a number of Hero Tokens equal to the number of heroes at
+--the start of every game session, and one EotW game IS one session -- so
+--the pool is seeded here, since there is no Director to do it by hand.
+--
+--Stamped once in the state doc so a resume (or the host reconnecting and
+--running setup a second time) never refunds tokens the party has spent; a
+--game whose combat has already begun is left alone outright, which also
+--covers games that launched before this existed.
+local function SeedHeroTokens(numHeroes)
+    numHeroes = tonumber(numHeroes) or 0
+    if numHeroes <= 0 then
+        return
+    end
+
+    local doc = mod:GetDocumentSnapshot(STATE_DOC_ID)
+    if doc.data.heroTokensSeeded == true or doc.data.combatStarted == true then
+        return
+    end
+
+    --written before the stamp: a write that somehow fails leaves the seed
+    --pending rather than silently swallowing the party's tokens.
+    local ok = pcall(function()
+        CharacterResource.SetGlobalResource(CharacterResource.heroTokenId, numHeroes, "Start of the session")
+    end)
+    if not ok then
+        printf("EotW: could not seed the party's Hero Tokens")
+        return
+    end
+
+    printf("EotW: seeded %d Hero Tokens for the session", numHeroes)
+
+    doc:BeginChange()
+    doc.data.heroTokensSeeded = true
+    doc:CompleteChange("Encounter of the Week: hero tokens seeded", {undoable = false})
+end
+
+--- the players' party --------------------------------------------------
+
+--Where a stray module pregen should be parked: the party the week's OTHER
+--pregens already live in. Decided by a majority vote over module-content
+--characters that sit outside the players' party, so it needs no hardcoded
+--guid and no module download -- in mcdm-encounteroftheweek that elects
+--"Delian Tomb Pregens", where 7 of the 9 pregens are authored. Ties break on
+--the party id so repeated runs agree with each other. Returns nil when the
+--game has no such party, in which case the sweep leaves the strays alone
+--rather than inventing somewhere to put them.
+local function PregenPartyID(defaultParty)
+    local counts = {}
+    for partyid,_ in pairs(dmhub.GetTable(Party.tableName) or {}) do
+        if partyid ~= defaultParty then
+            local n = 0
+            for _,charid in ipairs(dmhub.GetCharacterIdsInParty(partyid)) do
+                if module.IsCharacterAvailableInModule(charid) then
+                    n = n + 1
+                end
+            end
+            if n > 0 then
+                counts[partyid] = n
+            end
+        end
+    end
+
+    local best, bestCount = nil, 0
+    for partyid,n in pairs(counts) do
+        if n > bestCount or (n == bestCount and best ~= nil and partyid < best) then
+            best, bestCount = partyid, n
+        end
+    end
+
+    return best
+end
+
+--Host only, at setup: the players' party holds the heroes the players
+--brought, and nothing else.
+--
+--A module's characters are installed verbatim, party and all, and
+--mcdm-encounteroftheweek itself authors two of its nine pregens (High Elf
+--Tactician, Human Null) with partyId = the default Players guid -- the
+--modules descend from the same source game, so the guid matches exactly and
+--they land in the live party. Every EotW game therefore listed two extra
+--unclaimed heroes nobody chose. Any module in a player's shop inventory that
+--shares that lineage can do the same (see "Stray extra pregens from shop
+--auto-install"), so the sweep is written against the general case.
+--
+--Only MODULE CONTENT is touched: a hero placed by EotW is a paste with a
+--fresh guid, so IsCharacterAvailableInModule is false for it, and a claimed
+--hero carries its owner's userid rather than "PARTY". Both tests must fail
+--for a record to move, and the pristine module character is only re-partied,
+--never deleted -- PlaceMyHeroes duplicates it when a player claims that
+--pregen. Cheap and idempotent, so it runs on every setup rather than being
+--stamped: a module can finish installing after the first pass.
+local function SweepPlayersParty()
+    local defaultParty = GetDefaultPartyID()
+    if defaultParty == nil then
+        return
+    end
+
+    local strays = {}
+    for _,charid in ipairs(dmhub.GetCharacterIdsInParty(defaultParty)) do
+        if module.IsCharacterAvailableInModule(charid) then
+            local token = dmhub.GetCharacterById(charid)
+            local owner = token ~= nil and token.ownerId or nil
+            if token ~= nil and (owner == nil or owner == "PARTY") then
+                strays[#strays+1] = token
+            end
+        end
+    end
+
+    if #strays == 0 then
+        return
+    end
+
+    local pregenParty = PregenPartyID(defaultParty)
+    if pregenParty == nil then
+        printf("EotW: %d unclaimed module character(s) in the players' party, but no pregen party to move them to", #strays)
+        return
+    end
+
+    for _,token in ipairs(strays) do
+        --the partyId setter force-writes ownerId = "PARTY", which is what
+        --these already are, so no ownership is lost here.
+        token.partyId = pregenParty
+        token:UploadToken("Encounter of the Week: move unclaimed pregen out of the players' party")
+        printf("EotW: moved unclaimed pregen %s out of the players' party", tostring(token.name))
+    end
+end
+
 --- the encounter map ---------------------------------------------------
 
 --The week's module may ship several encounter maps: one named exactly this
@@ -784,6 +912,15 @@ dmhub.Coroutine(function()
         pcall(UpdateBusyMirror)
         pcall(UpdateEncounterConclusion)
         pcall(function() EncounterOfTheWeekGame.EnsureMapScriptRunning() end)
+        --a montage turn that is this user's to roll (the stage's own think
+        --also polls this; the driver is the backstop when the stage is not
+        --mounted yet).
+        pcall(function()
+            local montage = rawget(_G, "EncounterMontage")
+            if montage ~= nil then
+                montage.ClientTick()
+            end
+        end)
     end
 end)
 
@@ -858,6 +995,7 @@ local function FindMapEncounter()
     end
     return nil
 end
+EncounterOfTheWeekGame.FindMapEncounter = FindMapEncounter
 
 --- monster spawning ---------------------------------------------------
 
@@ -1121,6 +1259,16 @@ local function NthFreeStartTile(ordered, n)
     return nil
 end
 
+--The free Start-zone tile nearest loc, or nil when the map has no Start
+--zone or it is full. Used by the montage runtime to seat an ally beside
+--its hero (EncounterMontage.lua).
+function EncounterOfTheWeekGame.FreeStartTileNear(loc)
+    if loc == nil then
+        return nil
+    end
+    return NthFreeStartTile(StartZoneTilesByDistance(loc), 1)
+end
+
 --how long to wait for other clients' pastes to echo back before checking
 --for stacked heroes, and how many check/repair rounds to run.
 local UNSTACK_WAIT = 1.0
@@ -1381,6 +1529,7 @@ function EncounterOfTheWeekGame.ClearEotwMarker()
     doc.data.eotw = nil
     doc.data.expectedUsers = nil
     doc.data.arrived = nil
+    doc.data.heroTokensSeeded = nil
     doc:CompleteChange("Encounter of the Week: clear game marker", {undoable = false})
     m_isEotwGame = false
 end
@@ -1419,7 +1568,8 @@ return {
             eotw.MapScriptHostThink(ctx)
         end
     end,
-    hostThinkInterval = 2,
+    --0.5s: a montage turn (drag, choose, roll) should answer promptly.
+    hostThinkInterval = 0.5,
 }
 ]==],
     }
@@ -1518,7 +1668,15 @@ local function GatherCombatSides()
             pcall(function() isHero = token.properties:IsHero() end)
             if isHero then
                 playerTokens[#playerTokens+1] = token
-            elseif not token.playerControlled then
+            elseif token.playerControlled then
+                --a monster that joined a hero during the montage (owned by
+                --the player) fights on the heroes' side.
+                local isMonster = false
+                pcall(function() isMonster = token.properties:IsMonster() end)
+                if isMonster then
+                    playerTokens[#playerTokens+1] = token
+                end
+            else
                 local isMonster = false
                 pcall(function() isMonster = token.properties:IsMonster() end)
                 if isMonster then
@@ -1545,13 +1703,50 @@ local function StartEncounterCombat(sides)
         encounter = encounterEntry.encounter
     end
 
+    --A montage clause may have decided initiative: "win"/"lose" skip the
+    --die; "surprise"/"surprised" also mark every creature on the losing
+    --side Surprised. Older cores ignore the extra args and just roll.
+    local immediateResult = nil
+    local surprisedTokens = nil
+    local outcome, outcomeEntry = nil, nil
+    pcall(function()
+        outcome, outcomeEntry = EncounterMontage.GetInitiativeOutcome()
+    end)
+    if outcome == "win" or outcome == "surprise" then
+        immediateResult = "heroes"
+    elseif outcome == "lose" or outcome == "surprised" then
+        immediateResult = "monsters"
+    end
+    if outcome == "surprise" then
+        surprisedTokens = sides.monsterTokens
+    elseif outcome == "surprised" then
+        surprisedTokens = sides.playerTokens
+        --"You cannot be surprised" (a montage boon): the heroes still lose
+        --the initiative, but nobody on their side takes the condition.
+        local immune, immuneEntry = false, nil
+        pcall(function() immune, immuneEntry = EncounterMontage.HasSurpriseImmunity() end)
+        if immune then
+            surprisedTokens = nil
+            printf("EotW: montage (%s) made the party immune to Surprised; they lose initiative only", tostring(immuneEntry))
+        end
+    end
+    if outcome ~= nil then
+        printf("EotW: montage (%s) decided initiative: %s", tostring(outcomeEntry), tostring(outcome))
+    end
+
+    --elevated: the surprised condition goes on monsters too, and the host
+    --is a player in an EotW game.
+    ElevateToHostPermissions()
     local ok, started, err = pcall(function()
         return Encounter.StartCombatWithTokens{
             playerTokens = sides.playerTokens,
             monsterTokens = sides.monsterTokens,
             encounter = encounter,
+            immediateResult = immediateResult,
+            surprisedTokens = surprisedTokens,
         }
     end)
+    DropHostPermissions()
     if not ok then
         printf("EotW: combat start unavailable: %s", tostring(started))
     elseif started ~= true then
@@ -1781,6 +1976,168 @@ local function EnforceStrictRules()
     end
 end
 
+--- the script's beats --------------------------------------------------
+
+--The current beat index, host-stamped in the montage runtime's document so
+--late joiners and resumes agree on where the script is.
+local function GetBeatIndex()
+    local index = 1
+    pcall(function()
+        local v = EncounterMontage.GetDoc().data.beat
+        if type(v) == "number" then
+            index = v
+        end
+    end)
+    return index
+end
+
+local function SetBeatIndex(index)
+    local doc = EncounterMontage.GetDoc()
+    doc:BeginChange()
+    doc.data.beat = index
+    doc:CompleteChange("Encounter of the Week: script beat", { undoable = false })
+end
+
+--Host, every tick before combat: play the map's script. Each "# Montage"
+--beat runs through EncounterMontage until it reports done; the
+--"# Encounter" beat spawns the journal encounter's monsters (idempotent)
+--and starts combat once, exactly as the pre-script flow did. A script with
+--no montage therefore behaves as before, except that the spawn now happens
+--here, on the first tick after every player has arrived, instead of during
+--the host's arrival setup. Unknown beats are skipped.
+--Finish a stage beat (a montage or a narrative -- the two that own the
+--full-screen stage) and open the next one. When the next beat is also a
+--stage beat we do NOT hide: we seed it and present it under the same dialog
+--id, so the stage's content swaps in place (and, because both beats usually
+--name the same [[scene]], the backdrop does not even blink). Its first tick
+--runs here too, so the new beat opens on its first section/round instead of
+--sitting in "arriving" until the next tick. Only a beat that hands back to
+--the map -- the encounter, or the end of the script -- hides the stage.
+local function AdvanceFromStageBeat(script, index, montage, narrative)
+    local nextBeat = script.parse.beats[index + 1]
+
+    --Order matters: SEED the next beat's state first, and only then stamp the
+    --beat index. The stage picks its body from the beat index, so stamping it
+    --first would leave one refresh in which the new body renders the PREVIOUS
+    --beat's state -- a flash of the wrong section. Seeding first just means
+    --the old body draws its own (finished) state for one more refresh, which
+    --is what is already on screen.
+    if nextBeat ~= nil and nextBeat.kind == "montage" then
+        montage.Begin(script, nextBeat, index + 1)
+        SetBeatIndex(index + 1)
+        pcall(montage.HostTick, script, nextBeat, index + 1)
+        return
+    end
+    if nextBeat ~= nil and nextBeat.kind == "narrative" and narrative ~= nil then
+        narrative.Begin(script, nextBeat, index + 1)
+        SetBeatIndex(index + 1)
+        pcall(narrative.HostTick, script, nextBeat, index + 1)
+        return
+    end
+
+    --Not a stage beat: the surface has to go, but NOT here. The encounter
+    --beat dismisses it once its monsters are placed, so the spawn happens
+    --behind the scene and the dissolve reveals a battlefield that is already
+    --set; a script that simply ends dismisses it from the "no such beat"
+    --branch of RunScriptBeat. Hiding here would snap it away instead.
+    SetBeatIndex(index + 1)
+end
+
+local m_reportedBeat = nil
+local function RunScriptBeat(ctx)
+    local montage = rawget(_G, "EncounterMontage")
+    if montage == nil then
+        --older module without the montage runtime: the pre-script flow.
+        local sides = GatherCombatSides()
+        if sides == nil then
+            return
+        end
+        ctx:RunOnce("draw-steel", function()
+            StartEncounterCombat(sides)
+        end)
+        return
+    end
+
+    local script = montage.FindMapScript()
+    local beats = script.parse.beats
+    local index = GetBeatIndex()
+    local beat = beats[index]
+    if beat == nil then
+        --the script has run out: dissolve the stage away if it is still up.
+        pcall(montage.DismissStage)
+        if m_reportedBeat ~= index then
+            m_reportedBeat = index
+            if #beats == 0 then
+                printf("EotW: this map has no script and no encounter; nothing to run")
+            else
+                printf("EotW: the script has ended (beat %d of %d) without an encounter", index, #beats)
+            end
+        end
+        return
+    end
+
+    if beat.kind == "montage" then
+        local status = montage.HostTick(script, beat, index)
+        if status == "done" then
+            printf("EotW: montage beat %d complete", index)
+            AdvanceFromStageBeat(script, index, montage, rawget(_G, "EncounterNarrative"))
+        end
+        return
+    end
+
+    if beat.kind == "narrative" then
+        local narrative = rawget(_G, "EncounterNarrative")
+        if narrative == nil then
+            --an older module without the narrative runtime: skip the beat
+            --rather than stalling the script forever.
+            printf("EotW: skipping narrative beat %d (this client has no narrative runtime)", index)
+            SetBeatIndex(index + 1)
+            return
+        end
+        local status = narrative.HostTick(script, beat, index)
+        if status == "done" then
+            printf("EotW: narrative beat %d complete", index)
+            AdvanceFromStageBeat(script, index, montage, narrative)
+        end
+        return
+    end
+
+    if beat.kind ~= "encounter" then
+        printf("EotW: skipping unknown script beat %d (%s)", index, tostring(beat.title))
+        SetBeatIndex(index + 1)
+        return
+    end
+
+    --the encounter beat: spawn (idempotent -- already-present monsters are
+    --left alone), then Draw Steel once both sides exist.
+    local numHeroes = tonumber(dmhub.GetSettingValue("numheroes")) or 5
+    local ok, err = EncounterOfTheWeekGame.SpawnEncounterMonsters(numHeroes)
+    if not ok then
+        if m_reportedBeat ~= index then
+            m_reportedBeat = index
+            printf("EotW: encounter spawn failed: %s", tostring(err))
+        end
+        return
+    end
+
+    local sides = GatherCombatSides()
+    if sides == nil then
+        return
+    end
+
+    --The monsters were placed behind the stage, so nothing popped in on a bare
+    --map. Now dissolve the stage away and let the battlefield come through it;
+    --only once it is really gone does Draw Steel roll, so the banner plays
+    --over the map rather than over a scene nobody can see past.
+    if not montage.DismissStage() then
+        return
+    end
+
+    ctx:RunOnce(string.format("draw-steel-%d", index), function()
+        StartEncounterCombat(sides)
+    end)
+end
+
 --The map script's host tick: runs only on the elected host client (the game
 --host -- the game's one Director). Drives the encounter state machine, with
 --the current stage mirrored into the script's shared state:
@@ -1811,6 +2168,10 @@ function EncounterOfTheWeekGame.MapScriptHostThink(ctx)
         --stamped independently of the stage flip so a host handover between
         --the flip and the stamp still lifts the players' confinement.
         RecordCombatStarted()
+        --surges the montage banked can only be granted with a live queue
+        --(they are a clearOutsideOfCombat resource); this is a no-op once
+        --the bank is empty.
+        pcall(EncounterMontage.ApplyPendingCombatBoons)
         EnsureAIRunning()
         CheckEncounterOutcome(queue)
         return
@@ -1829,21 +2190,14 @@ function EncounterOfTheWeekGame.MapScriptHostThink(ctx)
     end
 
     --pre-combat: wait until every expected player is in the game with their
-    --heroes on the map, then roll into combat exactly once. Gathering the
-    --sides BEFORE the run-once means an empty side (heroes still pasting,
-    --spawn failed) retries next tick instead of consuming the one shot.
+    --heroes on the map, then play the map's script beat by beat (see
+    --RunScriptBeat): montages first, then the encounter beat spawns the
+    --monsters and rolls into combat exactly once.
     if not EncounterOfTheWeekGame.AllPlayersArrived() then
         return
     end
 
-    local sides = GatherCombatSides()
-    if sides == nil then
-        return
-    end
-
-    ctx:RunOnce("draw-steel", function()
-        StartEncounterCombat(sides)
-    end)
+    RunScriptBeat(ctx)
 end
 
 --- lobby ready signal -------------------------------------------------
@@ -1886,10 +2240,98 @@ end
 --additionally stamps the game state, sets the "Number of Heroes" setting,
 --spawns the encounter monsters, and attaches the EotW map script that then
 --runs the encounter (combat entry + Monster AI).
+--- the loading-screen hold ---------------------------------------------
+
+--The titlescreen holds the loading screen for every EotW entry
+--(dmhub.HoldLoadingScreen, before lobby:EnterGame), so the engine runs the
+--arrival callback -- and so SetupOnArrival -- behind it. Someone on this
+--side has to let it go: the montage stage does, in its create event, when
+--the week opens on a montage; otherwise SetupOnArrival does, right after
+--hero placement. The engine's 20s timeout backstops both.
+local function ReleaseLoadingScreen()
+    pcall(function() dmhub.ReleaseLoadingScreen() end)
+end
+
+--True when a script stage is (or is about to be) on screen for this client:
+--a live montage or narrative state whose beat belongs to this map's script.
+local function MontageStageExpected()
+    local expected = false
+    pcall(function()
+        local montage = rawget(_G, "EncounterMontage")
+        if montage ~= nil then
+            local m = montage.GetState()
+            if m ~= nil and m.phase ~= "done" and montage.CurrentBeat() ~= nil then
+                expected = true
+            end
+        end
+        local narrative = rawget(_G, "EncounterNarrative")
+        if narrative ~= nil then
+            local n = narrative.GetState()
+            if n ~= nil and n.phase ~= "done" and narrative.CurrentBeat() ~= nil then
+                expected = true
+            end
+        end
+    end)
+    return expected
+end
+
+--Host, during arrival setup and BEFORE its heroes are placed: if the map's
+--script opens on a montage or a narrative and the script has not started,
+--seed and present it (Begin -- the "arriving" phase, which the host tick
+--opens once the party is in). Resuming mid-beat re-presents the stage. So
+--the stage, not the map, is what every loading screen reveals.
+local function BeginOpeningMontage()
+    local montage = rawget(_G, "EncounterMontage")
+    if montage == nil or montage.Begin == nil then
+        return
+    end
+    local narrative = rawget(_G, "EncounterNarrative")
+    local ok, err = pcall(function()
+        local m = montage.GetState()
+        if m ~= nil and m.phase ~= "done" and montage.CurrentBeat() ~= nil then
+            if not montage.IsPresented() then
+                montage.Present(m.beatIndex)
+            end
+            return
+        end
+        if narrative ~= nil then
+            local n = narrative.GetState()
+            if n ~= nil and n.phase ~= "done" and narrative.CurrentBeat() ~= nil then
+                if not narrative.IsPresented() then
+                    narrative.Present(n.beatIndex)
+                end
+                return
+            end
+        end
+        if m ~= nil or (narrative ~= nil and narrative.GetState() ~= nil) then
+            --a finished beat is still on the document: the host tick moves
+            --the script on, it does not restart here.
+            return
+        end
+        if GetBeatIndex() ~= 1 then
+            return
+        end
+        local script = montage.FindMapScript(true)
+        local beat = script.parse.beats[1]
+        if beat == nil then
+            return
+        end
+        if beat.kind == "montage" then
+            montage.Begin(script, beat, 1)
+        elseif beat.kind == "narrative" and narrative ~= nil then
+            narrative.Begin(script, beat, 1)
+        end
+    end)
+    if not ok then
+        printf("EotW: could not begin the opening beat: %s", tostring(err))
+    end
+end
+
 function EncounterOfTheWeekGame.SetupOnArrival(args)
     args = args or {}
     dmhub.Coroutine(function()
         if mod.unloaded then
+            ReleaseLoadingScreen()
             return
         end
 
@@ -1914,9 +2356,22 @@ function EncounterOfTheWeekGame.SetupOnArrival(args)
             --stamp it, so members arriving after the lobby record expires,
             --and every resume, land on the same map.
             RecordEncounterMap(encounterMap)
+
+            --an opening montage goes up before the heroes land, so it is
+            --the stage that the held loading screen reveals.
+            BeginOpeningMontage()
         end
 
         PlaceMyHeroes(args.heroes, args.clipboardIds)
+
+        --the heroes are in: let the loading screen go, unless a montage
+        --stage is what this player should be looking at -- then its create
+        --event releases the hold once it is on screen.
+        if MontageStageExpected() then
+            printf("EotW: leaving the loading screen to the montage stage")
+        else
+            ReleaseLoadingScreen()
+        end
 
         --arrival is recorded AFTER hero placement: once every expected
         --player's arrival is visible, their heroes are on the map, so the
@@ -1937,10 +2392,18 @@ function EncounterOfTheWeekGame.SetupOnArrival(args)
                 dmhub.SetSettingValue("numheroes", numHeroes)
             end
 
-            local ok, err = EncounterOfTheWeekGame.SpawnEncounterMonsters(numHeroes)
-            if not ok then
-                printf("EotW: encounter spawn failed: %s", tostring(err))
-            end
+            --the players' party lists the heroes the players brought, and
+            --nothing else: park any unclaimed pregen the week's module
+            --authored into it with the rest of the pregens. After hero
+            --placement, so a hero of this client's is never mistaken for
+            --one, and late enough that the module has finished installing.
+            SweepPlayersParty()
+
+            --the party starts the session with one Hero Token per hero.
+            SeedHeroTokens(numHeroes)
+
+            --the monsters are spawned by the host tick when the script's
+            --encounter beat begins (after any montage), not here.
 
             --there is no Director in an EotW game: every player may control
             --initiative (select turns, advance rounds) for their side.

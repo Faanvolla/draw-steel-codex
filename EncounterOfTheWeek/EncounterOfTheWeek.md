@@ -190,6 +190,72 @@ Consequences to keep in mind:
   entirely (`s_autoInstallSkipGameIds` already exists as a mechanism) so a
   player's owned modules cannot leak content into a curated weekly encounter.
 
+### Two of our OWN pregens are authored into the Players party (ROOT-CAUSED + FIXED 2026-09-18; Lua live on disk, repaired in the running game, NOT deployed)
+
+The same symptom with a different, closer-to-home cause: a two-player game
+(`FleetArcaneVelvetScaletooth`) listed **six** heroes in the party UI with only
+four placed. Live diagnosis:
+
+| in the Players party (`0339ff3e-...`) | source |
+|---|---|
+| Dwarf Fury, Human Censor (owner = player B), Polder Shadow, Human Talent (owner = player A) | the four EotW-placed copies, `placedHeroes` agrees |
+| **High Elf Tactician, Human Null** (owner = `PARTY`, no token on the map) | module characters, `IsCharacterAvailableInModule` = true |
+
+`module.DownloadModuleSnapshot("mcdm-encounteroftheweek")` shows the cause is in
+the **published module itself**, not in an installed third-party module and not
+in placement: of its 9 pregens, 7 carry `partyId = 7870ffcb-...`
+(*Delian Tomb Pregens*), but **High Elf Tactician and Human Null carry
+`partyId = 0339ff3e-...`** -- the very guid the EotW game's default party uses
+(both descend from the same venla-deliantomb source game, so the guid matches
+exactly). Any roster UI that lists the default party therefore shows them as two
+unclaimed heroes. Purely cosmetic -- they have no token, no owner and take no
+turn -- but it reads as "where did these two come from".
+
+**Chosen fix (user direction 2026-09-18): the runtime sweep** -- the players'
+party holds the heroes the players brought, and nothing else. It fixes games
+that already exist, needs no republish, and catches third-party strays too.
+`SweepPlayersParty()` in `EncounterOfTheWeek/EncounterOfTheWeek.lua`, called
+from the host-only tail of `SetupOnArrival` just before `SeedHeroTokens`:
+
+- **What moves**: a character in the default party is a stray only if
+  `module.IsCharacterAvailableInModule(charid)` is true AND its `ownerId` is
+  nil or `"PARTY"`. A hero EotW placed is a paste with a fresh guid (so the
+  first test fails) and a claimed hero carries its owner's userid (so does the
+  second) -- both would have to be wrong at once to touch a real hero. The
+  module character is **re-partied, never deleted**: `PlaceMyHeroes`
+  duplicates it when a player claims that pregen.
+- **Where they go**: `PregenPartyID()` elects the party the week's other
+  pregens already live in, by a majority vote over module-content characters
+  outside the default party (ties break on party id). No hardcoded guid, no
+  module download -- in this module it elects *Delian Tomb Pregens*, 7 votes.
+  If the game has no such party (a future week that authors ALL its pregens
+  into the Players party) the sweep logs and leaves them alone rather than
+  inventing somewhere to put them; the root fix for that is option 1 below.
+- **When**: host only, after hero placement and after the module has certainly
+  installed, on every setup -- it is cheap and idempotent, so no `eotwstate`
+  stamp (a module can finish installing after a first pass).
+- Verified live in `FleetArcaneVelvetScaletooth` by running the same body
+  through the MCP bridge: the vote elected the pregen party, exactly the two
+  strays were flagged and moved, and the Players party went from 6 to the 4
+  placed heroes. The Lua itself is **untested in a real arrival** and, being
+  part of the weekly module rather than core codex, is **not deployed**.
+
+Still worth doing at the root, independently:
+
+1. **Source + republish**: move those two characters into the *Delian Tomb
+   Pregens* party in the authoring game and republish
+   `mcdm-encounteroftheweek`, so new games never have the strays in the first
+   place and the sweep stays a safety net.
+2. (Rejected for now) **Give EotW games a fresh default-party guid** so no
+   inherited module content can ever land in it. Widest blast radius; every
+   EotW code path that says `GetDefaultPartyID()` would have to agree.
+
+Diagnosis recipe (fast, no UI): `dmhub.GetCharacterIdsInParty(partyid)` per
+entry of the `parties` table, then `module.IsCharacterAvailableInModule(charid)`
+to separate module content from placed copies, then
+`module.DownloadModuleSnapshot` for the authored `partyId`. Note
+`dmhub.GetAllCharacters()` returns 0 in this build -- use the per-party lists.
+
 ## Dev setting
 
 - Pattern: `setting{ id = "dev:encounteroftheweek", default = false, storage = "preference" }` with **no `editor`** so it never shows in settings UI; toggled via `/toggle dev:encounteroftheweek` in chat (`Commands.lua:451`). Template: `EncounterWrangler.lua:44-53`.
@@ -1380,8 +1446,55 @@ launch protocol:
   table content is LAYERED (read-through `AssetStore.Module` merge), not copied
   into the game store; snapshot content (maps/floors/characters) is copied.
   Consequence: **the weekly module needs its encounter doc ticked under
-  Compendium > documents -- nothing else; the `[[encounter]]` annotation (and its
+  Compendium > documents; the `[[encounter]]` annotation (and its
   banked spawnlocs) rides inside the doc record** (see Encounter spawning above).
+  That used to be the whole story ("nothing else"); since the document became a
+  script it is not -- see the next subsection.
+
+### Compendium content the script needs (AUDITED 2026-09-19)
+
+What the publisher seeds today (`build_seed`, `tools/eotw_publish/publish_eotw.py`)
+is the encounter map, every document reachable from it, the `Start`
+environmental keyword, the pregen heroes and the pinned codemods -- plus
+whatever `ModuleDependencySearcher` reaches transitively from those guids.
+Everything the montage and narrative beats do rides on **core** machinery and
+adds no compendium rows of its own:
+
+- The Surprised condition, temporary Stamina, surges, the hero-token global
+  resource and the malice resource are all core Draw Steel rules content.
+- The Recovery Value boon is a real ongoing-effect asset, but it is
+  **manufactured at run time** in the game's own `characterOngoingEffects`
+  table (`EnsureRecoveryBoonEffect` / `PrepareBoonAssets`,
+  `EncounterMontage.lua`), one row per distinct `+N`, created at the start of
+  the beat. Nothing about it has to be authored or ticked, and a week may
+  invent any value. (The run-time creation is not a convenience -- it is the
+  `GetTableCached` trap; see step 37.)
+- The initiative clauses need the **core hook**
+  `Encounter.StartCombatWithTokens{immediateResult, surprisedTokens}`
+  (`Draw Steel UI/DSInitiativeRoll.lua`) -- core codex, not module content, and
+  still uncommitted as of 2026-09-19. A week must not use those clauses until
+  that hook is in the retail core.
+
+**The one real hole is name resolution.** `you gain <qty> <item>` and
+`a <monster> joins you` resolve against `tbl_Gear` and `assets.monsters` **by
+name, at run time**. In the module those names are plain prose inside a journal
+document -- not guid references -- so `ModuleDependencySearcher` can never see
+them and they can never become a dependency or a ticked row by themselves. An
+unresolvable name fails silently at the table: the clause is applied, nothing is
+granted, and the publish reported no warning.
+
+- **Today: nothing extra to tick.** The live script names only
+  `Healing Potion` (`data/objectTables/tbl-gear/healing-potion.yaml`) and
+  `Wode Elf Sentry` (`data/monsters/wode-elf-sentry.yaml`), both owned by the
+  core Draw Steel data module that every game has installed.
+- **The rule for future weeks**: any item or monster a clause names that is not
+  in the core data module must be ticked by hand in ModShare (Compendium >
+  `tbl_Gear` / the bestiary section), exactly as the encounter document is.
+  Until Phase 7 step 35 lands, `/eotwscript` in the authoring game is the only
+  check -- it resolves every name against the game's tables -- and it is a check
+  of the AUTHORING game, not of the published module, so a name that resolves
+  only because of a module the authoring game happens to have installed will
+  still be missing for players.
 
 ## Publishing the weekly module headlessly (BUILT 2026-08-30)
 
@@ -1543,7 +1656,7 @@ Engine side (NEEDS BUILD): the mapFloors loop in `ModuleManager.cs` now skips a
 manifest with a null `floors` and logs which module was malformed, so a bad
 payload can no longer wedge a game mid-install.
 
-## Playtesting against local asset directories (DECIDED + BUILT 2026-08-30; engine NEEDS BUILD, UNTESTED)
+## Playtesting against local asset directories (DECIDED + BUILT 2026-08-30; engine shipped in the 2026-09-18 build)
 
 Local-assets mode -- the dev feature that replaces a game's cloud `/assets`
 with an ordered overlay of YAML directory trees, hot-reloads external edits
@@ -1623,6 +1736,82 @@ Consequences worth knowing before using it:
   published module. This is an iteration tool, not a way to ship a fix
   mid-week.
 
+- **There is no "dev game" flag, and none is needed.** Nothing marks a game
+  as a developer game; the gates are the account-level `dev` setting and a
+  non-empty directory list, and the EotW list is matched to the game by the
+  account's EotW slot rather than by anything stored on the game. So the
+  whole question "can I make the EotW game a dev game" reduces to "is
+  `localassets:eotwdirs` set on this client".
+- **A cloud-loading playtest is silent.** If the list is empty the game
+  loads the published module with no warning -- `MaybeActivate` just
+  returns. The only positive signal is the `LocalAssets:: ACTIVE for game
+  ...` line in the log, which names the EotW list when it contributed.
+  **Check the setting before a playtest**; it was found empty on 2026-09-18
+  (see that day's status entry), which is exactly how an iteration session
+  ends up quietly testing last week's published content.
+
+### Handing this to another developer
+
+Everything is client-side and there is nothing to arrange with the host, so
+the whole recipe is:
+
+1. Dev mode on (`dev`), and `dev:encounteroftheweek` on -- toggle the latter
+   from chat with `/toggle dev:encounteroftheweek`. The first gates
+   local-assets mode in the engine; the second only gates the settings block
+   (`CreateEotwLocalAssetsSection` returns nothing without both).
+2. Settings > Editing > **Encounter of the Week Assets (Developer)** -- add
+   their content directories, top-most first. The status line tells them
+   which state they are in ("Not set" / "applies to your EotW game (id)" /
+   "Active ... N directories" / "reload the game to apply").
+3. Create or join the EotW game from the Encounter of the Week screen as
+   usual. Both flows route through `lobby:JoinGameEotw`, which writes the
+   account's EotW slot, and the slot is what the engine matches the
+   directories against -- so a JOINING developer gets their own overlay just
+   as the host does.
+4. It binds at game load. Already in the game when they set it? Leave and
+   re-enter.
+
+On path syntax (Windows): type the path exactly as Explorer shows it. `\`
+and `/` are equally fine and `C:\dev\eotw` and `C:/dev/eotw` are the same
+directory -- every path goes through `Path.GetFullPath` and then
+`NormalizePath`, which folds separators to `/` and lowercases. Nothing is
+escaped: the setting holds the raw string and the JSON encoding of the
+preference is handled by the encoder/decoder on both sides, so a single
+backslash is correct (a doubled one in this repo's Lua or Python is only
+that language's own string escaping). Surrounding whitespace is trimmed
+per line (`ReadEotwDirs`). A trailing separator used to be a trap --
+`Path.GetFullPath` preserves it, so `C:\dev\eotw\` normalized to
+`c:/dev/eotw/` and every `norm == root || norm.StartsWith(root + "/")`
+containment test (`DirIndexForPath`, the duplicate/nesting check in
+`ReadConfiguredDirs`, the move guard in `MoveItemFile`, and
+`GitStatusService`, which keys its cache on the same function) compared
+against `c:/dev/eotw//` and matched nothing, so files under the directory
+were attributed to no root at all. **FIXED 2026-09-19 (engine NEEDS
+BUILD)**: `LocalAssetDirectory.NormalizePath` now strips trailing slashes,
+which fixes every caller at once since they all share it; it stops short of
+emptying the path, so the unix root `/` survives and a drive root becomes
+`c:`, self-consistently. Until that build ships, tell them to leave the
+trailing backslash off.
+
+Directories must be in local-assets YAML layout -- `<root>/<category>/<item>.yaml`,
+with `objectTables/<tableid>/<item>.yaml` plus a `_meta.yaml` per table, and
+a `_manifest.yaml` at the root. The `draw-steel-data` tree
+(`draw-steel-codex/data`) already is one, which is why it is the second
+entry in the canonical pair; a tree produced by the in-game export is too.
+
+Two things to warn them about:
+
+- **Their working copy is writable from inside the game.** Any asset edit
+  during the session rewrites the YAML file it came from. Their content repo
+  should be clean before a playtest so the write-back reads as a diff.
+- **They will be playing a different rules set from everyone else.** The
+  overlay is that one client's CurrentGame store, and CurrentGame outranks
+  both Module and Core, so an edited ability or monster behaves one way on
+  their machine and another way on every other player's. Useful for seeing
+  their own content; not a way to test what the table will actually
+  experience.
+
+
 ## In-game flow
 
 - Map on entry: SUPERSEDED 2026-09-15 by "Choosing the week's encounter" -- with several encounter maps in the module, every client now travels to the chosen map on arrival (`EnsureOnEncounterMap`), waiting for the switch to land before placing heroes. The engine's natural fallback (`GameController.cs:4871`, lowest-ord map) only decides which map loads first; keeping the default "Encounter" lowest-ord still saves the extra loading beat in the common case. Original note: rather than forcing a map switch, **make "Encounter" the module's only (or lowest-ord) map** so the natural fallback selection picks it with no extra loading beat. `executeOnArrive` on `lobby:EnterGame(gameid, fn)` (fires after loading completes, `GameController.cs:7170`) and `dmhub.RegisterEventHandler("EnterGame", ...)` are both available if forcing is needed; `map:Travel()` / `game.ChangeMap(map, floor)` do the switch.
@@ -1656,6 +1845,11 @@ entirely as leafy EotW-module code plus small named hooks in core:
   gate on the die click -- verified in source). Queue creation, live-encounter
   attachment, `Commands.rollinitiative()` population, malice/villain-action
   seeding all happen in the existing banner-resolution path, unchanged.
+  Since 2026-09-18 it also takes optional `immediateResult = "heroes" |
+  "monsters"` (forced winner, no die -- the banner's existing forced-result
+  path) and `surprisedTokens = {...}` (each gets Surprised until end of
+  encounter before the banner shows); the montage's initiative clauses
+  drive both (see "Encounter scripts", effect application).
 - **Core hook: Director-UI presentation filter** (`DMHub Core UI/Hud.lua`,
   right after `RegisterGameType("GameHud", "Hud")`):
   `GameHud.RegisterDirectorUIFilter(fn)` + `GameHud.DirectorUIVisible()`.
@@ -2795,6 +2989,42 @@ reading `dmhub.isDM` -- now bind the host too, while the Monster AI's
 capability paths read `IsDMOrPlayerHost()`. Needs the engine build; on an
 old engine the host remains exempt (the pre-2026-08-29 behavior).
 
+### Hero Tokens at the start of the session (DECIDED + BUILT 2026-09-18; UNTESTED)
+
+User direction (2026-09-18): at the start of an EotW session the players get
+Hero Tokens equal to the number of heroes in the party -- the Draw Steel
+per-session award, which in a normal game a Director hands out and which an
+EotW game has nobody to do. One EotW game IS one session, so the pool is
+seeded once, at setup.
+
+- `SeedHeroTokens(numHeroes)` in `EncounterOfTheWeek/EncounterOfTheWeek.lua`
+  (next to the other host-only setup helpers), called from the host's
+  `SetupOnArrival` block immediately after `numHeroes` is resolved and the
+  `numheroes` setting written -- so the party count the tokens follow is the
+  same one the encounter scales to. `numHeroes` is the lobby's filled-slot
+  count (clamped 3..7), i.e. one token per hero.
+- It writes the shared pool through
+  `CharacterResource.SetGlobalResource(CharacterResource.heroTokenId,
+  numHeroes, "Start of the session")` -- the same `globalResourcesv2` mod
+  document the character panel's Hero Tokens box, the roll dialog's Hero
+  Token re-roll rule, and the hud's Encounter pools strip all read. Hero
+  Tokens are NOT `clearOutsideOfCombat`, so seeding before combat sticks;
+  players see the strip already showing the party's tokens while the montage
+  plays, and montage tests can spend them.
+- **Seeded once**: `heroTokensSeeded` in the `eotwstate` doc. A resume, or
+  the host reconnecting and running setup a second time, must not refund
+  tokens the party has already spent. A game whose `combatStarted` is stamped
+  is skipped outright, which also keeps a game that launched before this
+  existed from being topped up mid-encounter on a resume. `ClearEotwMarker()`
+  clears the stamp along with the rest of the dev marker state.
+- The resource write is pcall-guarded and stamps only on success: a failed
+  write leaves the seed pending rather than silently costing the party its
+  tokens, and cannot take down the rest of the host's setup coroutine
+  (`AttachMapScript`, `SignalGameReady`).
+- Not decided: whether anything re-awards tokens later (the Director's
+  "reward a token for good play" beat has no EotW equivalent yet), and
+  whether the post-encounter flow should clear the pool.
+
 ### Victory/defeat auto-detection, player Proceed, and auto-exit (DECIDED + BUILT 2026-08-28)
 
 User direction (2026-08-28): the game detects the encounter's victory/defeat
@@ -3487,6 +3717,1381 @@ Original plan, kept for the rationale:
   running the Monster AI in a normal game should also see it (default yes;
   it is a status, not a tutorial).
 
+## Encounter scripts: montage beats before combat (DECIDED + BUILT 2026-09-18; Lua only; VERIFIED in the authoring game end to end, real EotW game UNTESTED; UNCOMMITTED)
+
+User direction (2026-09-18): the map's journal document stops being "the
+place we find the `[[encounter]]`" and becomes a **script** -- the ordered
+list of things that happen in the week's session. Combat ("an encounter")
+is one kind of beat and keeps working exactly as it does today; the first
+new beat is a **montage**. This section is the design; Phase 7 in the
+Development Plan is the build order and its status. Everything is Lua in
+the EotW codemod; **no engine change was needed**, and the only core codex
+change is the two optional args on `Encounter.StartCombatWithTokens`
+(`immediateResult`, `surprisedTokens`) that the initiative clauses use
+(added 2026-09-18, see "Effect application").
+
+Built 2026-09-18 (all in `EncounterOfTheWeek/`, the three new files
+registered in the codemod through the MCP CodeMod workflow, order:
+EncounterOfTheWeek, EncounterScript, EncounterMontage, EncounterOfTheWeekHud,
+EncounterMontageStage):
+- `EncounterScript.lua` -- the pure parser (grammar below), unit-tested by
+  `tests/encounter_script_test.lua` (64 checks, run with the bundled
+  `lua.exe` from the codex root).
+- `EncounterMontage.lua` -- the runtime: the `eotwscript` document, script
+  discovery + cache, host arbitration (`HostTick`), the owning client's roll
+  launch (`ClientTick`), effect application, name resolution, the
+  `/eotwscript` and `/eotwmontage state|reset` dev commands.
+- `EncounterMontageStage.lua` -- the stage, a `GameHud` presentable dialog
+  (`eotwmontage`).
+- `EncounterOfTheWeek.lua` -- the beat machine (`RunScriptBeat`) in the host
+  tick, the spawn moved out of `SetupOnArrival`, allies on the players'
+  side in `GatherCombatSides`, `hostThinkInterval` 2 -> 0.5, the driver's
+  `ClientTick` backstop, `FindMapEncounter` + `FreeStartTileNear` exports.
+- `EncounterOfTheWeekHud.lua` -- `CreateHeroCard(entry, opts)` (halign,
+  draggable + drag callbacks, click-instead-of-press), the shared
+  `g_heroCardRules`, `CreateAllyCard`, ally rows under the roster cards, the
+  `EncounterOfTheWeekHud` export table.
+The authoring game's `Encounter` document (`98a5a5bf`, filed under
+`Encounter: Goblin Ambush`) already holds the sample script, and both names
+it references resolve (`Healing Potion` in tbl_Gear, `Wode Elf Sentry`
+bestiary id `4311a1bd`).
+
+### The sample script
+
+The document below is the reference input. It is what the parser, the
+runtime and the stage are built against, and it is the authoring template
+for future weeks.
+
+```
+# Montage
+
+[[scene]]
+
+## Round 1
+
+## Opportunity: Mysterious Cottage
+
+A mysterious cottage lays off the path. Dare you approach?
+
+Options: Approaching the cottage, you see a witch within, brewing some potions in her cauldron.
+
+### Negotiate with her for some aid
+
+|Negotiation Test: Presence (Empathize, Lie, Flirt)
+|You fail at the test
+|You gain one Healing Potion
+|Each party member gains one Healing Potion
+
+### Steal some potions
+
+|Thievery Test: Agility (Climb, Disguise, Sneak)
+|You lose 6 Stamina.
+|You lose 6 Stamina. Each party members gains one Healing Potion.
+|Each party members gains one Healing Potion
+
+## Opportunity: Elvish Village
+
+An Elvish Village is nestled in the forest. Approach and ask for aid?
+
+Options: Approaching the village you ask them for aid against dangers ahead.
+
+### Ask for Aid
+
+|Negotiation Test: Presence (Empathize, Nature)
+|You fail at the test
+|A Wode Elf Sentry joins you. +2 Malice
+|A Wode Elf Sentry joins you
+
+## Threat: Dangerous Beasts
+
+Dangerous beasts lurk in the forest, a constant threat.
+
+Consequence: Each party member loses 5 stamina.
+
+Options: You try to deal with the threat.
+
+### Hunt the Beasts
+
+|Hunting Test: Might or Agility (Endurance, Track)
+|You lose 5 stamina.
+|You lose 5 stamina, the threat is vanquished.
+|The threat is vanquished.
+
+### Outsmart the Beasts
+
+|Strategy Test: Reason (Strategy, Animal Handling)
+|You fail at the test.
+|+2 malice, the threat is vanquished.
+|The threat is vanquished.
+
+# Encounter
+
+[[encounter]]
+```
+
+The live game's script (2026-09-18) is an expanded version of this one, and
+since the narrative beat landed it is bracketed by two of them (see
+"The week's script as it stands"): two
+rounds, three opportunities and two threats in round 1, three opportunities
+and two threats in round 2 (the Goblin Scouts ambush moved there), and one
+of each of the boon clauses from step 37 -- a shrine that banks surges, a
+hunter's camp whose hearty meal raises Recovery Value, a hot spring that
+heals, and warded stones that grant temporary stamina. Two authoring traps
+it exposed, both silent:
+
+- **Every power roll needs a `### option` heading above it.** A `|Name: Attr`
+  block that follows a `## Threat:`/`## Opportunity:` directly is orphaned:
+  the parser warns ("not under a '### option'"), drops the roll, and the
+  entry ends up with no options at all.
+- **Skill names in the `Attr` parentheses must match
+  `Skill.skillsDropdownOptions` exactly** -- they are matched by substring,
+  and a name that matches nothing simply contributes no skill, with no
+  warning. The sample's "Tracking" and "Animal Handling" were both wrong;
+  the real names are `Track` and `Handle Animals`.
+
+### Script discovery and the beat list
+
+- **Which document**: the same search `FindMapEncounter` does today (the
+  document filed under the encounter map's journal folder; info bubbles
+  are encounter-only because a bubble carries no beats). Nothing new has
+  to be registered or named; the week's document simply grows a `# Montage`
+  section above its `# Encounter` section.
+- **Beats** are the document's `#` (H1) headings, in order. Recognized
+  kinds, case-insensitive: `# Montage`, `# Narrative` (see "Narrative
+  beats" below) and `# Encounter`. Anything else is ignored with a parser
+  warning, so the format can grow (negotiation) without breaking older
+  clients.
+- **Back-compat**: a document with no `#` beats at all but a
+  `[[encounter]]` island (every week published so far) is exactly one
+  implicit encounter beat. A script with no montage beat therefore plays
+  as today.
+- The `[[encounter]]` island is still found by `Encounter.GetEncountersOnCurrentMap`
+  + the parentFolder filter; the parser only decides WHEN it spawns.
+
+### Montage grammar
+
+Parsed from the raw markdown text (`doc:GetTextContent()`), line-based, in
+a pure module with no engine dependencies so it can be unit-tested with
+the bundled `lua.exe`:
+
+- `[[scene]]` / `[[scene:name]]` inside the montage section: the
+  `RichScene` annotation (`doc.annotations["scene"]`, resolved with the
+  same candidate-key rule as `GetReferencedAnnotations`) supplies
+  `.image`, the coverart shown behind the stage. Missing or imageless =
+  plain dark backdrop.
+- Prose between `# Montage` and the first `##` is the montage intro (shown
+  in the stage header).
+- `## Round N`: opens round N. Entries that follow are introduced in that
+  round and **persist into every later round** (user direction 2026-09-18:
+  both opportunities and threats persist; an entry is only ever removed by
+  being taken or vanquished). No round heading at all = one implicit round.
+- `## Opportunity: <Name>` / `## Threat: <Name>`: an entry in the current
+  round. Its body, up to the next `##`/`#`:
+  - plain paragraphs = the description shown on the card;
+  - a paragraph starting `Options:` = the approach text, shown when a hero
+    approaches, above the option list;
+  - a paragraph starting `Consequence:` (threats only) = the effect line
+    applied at the end of the montage if the threat was never vanquished.
+- `### <Option name>`: an option of the entry. Its power roll is the
+  `|Name: Attr` header line plus three (optionally four, the critical
+  tier) `|text` lines -- the journal's own block syntax, matched with the
+  same two regexes `MarkdownDocument` uses (`^\|(?<name>[^|]+): (?<attr>[^|]+)$`
+  and `^\|(?<text>[^|]*)$`). `Attr` is turned into characteristics + skills
+  the way `PowerRollDisplay`'s press handler already does it: every
+  `creature.attributesInfo` description that appears in the text
+  (`Might or Agility` -> both), every `Skill.skillsDropdownOptions` name
+  that appears in the parenthesized list. That mapping is duplicated in
+  the codemod rather than factored into core so the codemod keeps working
+  against the retail core it ships with.
+- **Effect clauses**: each tier line is split on `.`, `,` and `;` and each
+  clause is matched case-insensitively against the grammar below. Quantities
+  are digits or `one`..`ten`; `a`/`an` = 1.
+
+  | clause | effect |
+  |---|---|
+  | `you gain <qty> <item>` | give `<item>` x qty to the acting hero |
+  | `each party member[s] gain[s] <qty> <item>` | give to every hero |
+  | `you lose <n> stamina` | acting hero takes n damage |
+  | `each party member[s] lose[s] <n> stamina` | every hero takes n damage |
+  | `you heal <n> stamina` (also `regain`/`recover`; `each party member heals ...`) | heal the acting hero / every hero |
+  | `you gain <n> temporary stamina` (also `each party member gains ...`) | temporary Stamina, taking the higher of old and new (Draw Steel: it does not stack) |
+  | `[at the start of the next combat[,]] you gain <n> surge[s]` (also `each party member gains ...`) | banked on the script document and paid out when the encounter's combat starts |
+  | `your recovery value is increased by <n>` (also `+<n> recovery value`, `each party member's recovery value ...`) | an ongoing effect ("Montage Boon: Recovery Value +N") with an `attribute`/`recoveryvalue` modifier, until the next respite |
+  | `[+]<n> hero token[s]` (also `you gain <n> hero tokens`) | the party's hero-token pool += n |
+  | `[+]<n> malice` | malice pool += n |
+  | `a`/`an <monster> joins you` | spawn `<monster>` as the acting player's ally |
+  | `the threat is vanquished` (also `you vanquish the threat`) | the threat is resolved |
+  | `you begin the encounter surprised` (also `you start the next encounter surprised`, `you are surprised`, `the party begins ... surprised`) | next encounter: monsters go first, every creature on the heroes' side (heroes + allies) starts Surprised |
+  | `you surprise the enemy`/`enemies` (also `the enemy is surprised`) | next encounter: heroes go first, every monster starts Surprised |
+  | `you cannot be surprised` (also `can't`, `you are immune to surprise`, `the party ...`, `each party member ...`) | party-wide: a `surprised` outcome still loses the initiative, but NO hero or ally takes the Surprised condition |
+  | `you win [the] initiative` | next encounter: heroes go first, no die |
+  | `you lose [the] initiative` | next encounter: monsters go first, no die |
+  | `you fail (at )?the test`, anything unmatched | narrative only (shown, no effect) |
+
+  The four **initiative** clauses (user direction 2026-09-18) work on power
+  roll tiers and on `Consequence:` lines alike, and are the same effect kind
+  (`initiative`, `outcome = "win"|"lose"|"surprise"|"surprised"`). The last
+  one applied during the montage wins -- a later tier or consequence
+  overrides an earlier one. "Surprise" means losing initiative PLUS the
+  Surprised condition on every creature of the losing side.
+
+  Item names resolve against `tbl_Gear` by name (case-insensitive; a
+  trailing `s` is tried without). Monster names resolve against
+  `assets.monsters[*].name` (case-insensitive). Both are looked up at RUN
+  time on the host, not at parse time, but the parser records every name
+  it saw so the validators can check them.
+- The parser returns `{beats, warnings}`; warnings name the line and the
+  problem (unknown beat kind, entry outside a beat, option with no power
+  roll, unrecognized clause). A dev chat command, `/eotwscript`, prints the
+  parse of the current map's script with its warnings, and resolves the
+  item/monster names against the game's tables. The publisher gets the same
+  checks later (a Python port of the grammar -- a second copy that must
+  stay in step, like the map-name rule).
+
+### Runtime state and authority
+
+A new shared document in the codemod, `eotwscript`, next to `eotwstate`:
+
+```
+{
+  beat = 1,                      -- index into the parsed beat list (host-stamped)
+  montage = {
+    beatIndex = 1, round = 1, phase = "rounds" | "consequences" | "done",
+    acted = { [heroCharid] = true },          -- this round
+    taken = { [entryId] = true },             -- opportunities consumed
+    vanquished = { [entryId] = true },        -- threats resolved
+    turn = nil | { seq, userid, heroid, heroName, entryId,
+                   status = "choosing"|"rolling"|"assist"|"assisting"|"resolved",
+                   optionIndex, optionName, rollSeq, tier, total, natural,
+                   tierText, applied = { "..." }, resolvedAt = serverTime,
+                   attrid, skillid,          -- what the acting hero rolled with
+                   baseTier, baseTotal,      -- the test's own result, pre-assist
+                   assistOpenedAt,
+                   assist = nil | { userid, heroid, heroName, skillid, skillName,
+                                    status, rollSeq, tier, total, natural,
+                                    outcome = "bane"|"edge"|"doubleedge" } },
+    consequences = { entryId, ... }, consequenceIndex, lastApplied,
+    requests = { [userid] = { seq, kind, time, ... } }, handled = { [userid] = seq },
+    log = { { round, heroid, heroName, entryId, entryName, optionName, tier, total, applied }, ... },
+    seq = n,
+  },
+  allies = { [heroCharid] = { charid, ... } },
+  items = { [heroCharid] = { { itemid, name, qty }, ... } },
+  initiative = nil | { outcome = "win"|"lose"|"surprise"|"surprised", entryName, at },
+}
+```
+
+`items` is the hero's haul: every `you gain <qty> <item>` / `each party
+member gains ...` clause that actually landed on that hero, in grant order.
+It is written by `ApplyEffects` (host, inside the same open change that
+applies the effect) next to the real inventory write, so the stage can show
+the haul without walking every hero's inventory diff. A repeat grant of the
+same item bumps `qty` in place rather than appending a second entry, so the
+stage shows one icon per distinct item. Like `allies` it lives at the TOP
+level -- the haul spans the whole montage, not one beat -- and
+`/eotwmontage reset` clears it.
+
+`initiative` lives at the TOP level (like `allies`), not under `montage`,
+because `montage.*` is rebuilt for every montage beat while the outcome
+must survive until the encounter beat starts combat. `/eotwmontage reset`
+clears it with the rest.
+
+Entry ids are `r<n>/<kind>/<slug>` (e.g. `r1/threat/dangerous-beasts`) so a
+resumed client re-parsing the same text lands on the same ids.
+
+**Host-arbitrated, single writer for state.** Players never edit
+`montage.*` directly; they stamp `requests[userid]` (each with a rising
+`seq`) exactly like `proceedRequested` today, and the host tick validates
+and applies. That keeps "one hero acts at a time" and "each hero once per
+round" true under concurrent drags from several clients. The tick is the
+existing map-script host tick; its `hostThinkInterval` drops from 2 to
+0.5 s (a doc read when idle) so a drag answers within half a second.
+
+Turn lifecycle:
+
+1. **approach** (player): `{kind="approach", heroid, entryId}`. Valid when
+   the hero's `ownerId` is the requester (or `"PARTY"` -- the authoring
+   game's pregens), the hero has not acted this round, the entry has been
+   introduced by the current round and is not taken/vanquished, and no
+   turn is in flight. Host writes `turn = {status="choosing"}`. A `back`
+   request from the same player withdraws the approach before choosing.
+2. **choose** (same player): `{kind="choose", optionIndex}`. Host sets
+   `status="rolling"` and stamps a fresh `rollSeq`. A `cancel` of that
+   rollSeq (the roll dialog dismissed) returns the turn to choosing.
+3. **roll** (the OWNING client, not the host): the client whose
+   `loginUserid == turn.userid` sees a rolling turn whose `seq` it has not
+   handled and rolls the way a characteristic clicked on the character
+   panel does (`creature:ShowCharacteristicRollDialog`, user direction
+   2026-09-18): a synthetic test ability (`ActivatedAbility.Create{isTest}`
+   named after the option's roll) is displayed in the timeline sidebar and
+   the roll dialog is embedded in its card (`CharacterPanel.DisplayAbility`
+   + `EmbedDialogInAbility`, falling back to the standalone dialog when the
+   sidebar is unavailable), with a `RollPropertiesPowerTable` of the
+   option's tiers, `2d10 + best listed characteristic`, the Skilled +2 chip
+   when the hero has a listed skill, the normal `GetModifiersForPowerRoll`
+   edges/banes, and the roller as a synthetic single target so post-roll
+   edges/banes refresh the tier. `completeRoll` stamps
+   `requests[userid] = {kind="rolled", seq, tier, total}` and hides the
+   card. The roller's machine is authoritative for the dice (Dice
+   Reference), and the 3D dice are networked, so every client watches the
+   same roll land. Strict rules already remove re-roll/edit affordances for
+   players. UNRENDERED since the switch: confirm the sidebar draws above
+   the stage (the centered dialog did).
+   **Every other client gets the read-only remote copy of the dialog**
+   (user direction 2026-09-18), the same one shown while a hero rolls on
+   its combat turn. In combat that share begins in
+   `CharacterPanel.HighlightAbilitySection`, gated on the token being on
+   the current initiative turn (`ShouldShareAbility`); a montage has no
+   queue, so `Timeline/AbilitySidebar.lua` gained
+   `CharacterPanel.ShareDisplayedAbility(token, ability)` (begins the
+   `abilityTimelineShare` share for the displayed card with no turn gate;
+   still requires `canControl`) and the montage's launch calls it right
+   after `DisplayAbility` succeeds. From there everything is the combat
+   path: the embedded dialog's `BroadcastDialogState` writes `dialogState`
+   (rollState, rollId, highlightedTier, tier texts) into the share, the
+   remote sidebar renders the card + tier table with the header "<hero> is
+   using <option roll>", and `hideAbility` clears the share 0.2 s after
+   the card goes. FOUND on the first live look (2026-09-18): the remote
+   card showed the modifiers and "2d10+2" but NO tier table, because
+   `BroadcastDialogState` (`Timeline/EmbeddedRollDialog.lua`) only gathered
+   `tierTexts` / `isPowerRoll` for roll types containing
+   `ability_power_roll`; the montage (like a characteristic test) rolls
+   `test_power_roll`. It now matches any `*power_roll`, so test, opposed,
+   resistance and project rolls share their tiers too. Remote card
+   otherwise VERIFIED to appear; tier table + live highlight UNTESTED
+   after the fix.
+4. **assist window** (host, optional -- see "Assisting a test" below): if
+   the roll landed below tier 3 and some other hero could still help,
+   `status="assist"` and nothing is applied yet. A `{kind="assist", heroid}`
+   from that hero's owner moves it to `"assisting"`; the helper's client
+   rolls and stamps `{kind="assistRolled", rollSeq, tier, total}`, which
+   shifts the test's tier and falls through to resolve. `{kind="noassist"}`
+   from the acting player (or the host's 30 s timeout) resolves on the
+   test's own tier. With no eligible hero, or at tier 3, step 4 is skipped
+   entirely and the roll resolves as it always did.
+5. **resolve** (host, in an `ElevateToHostPermissions` coroutine): apply the
+   chosen tier's clauses, record `acted[heroid]`, `taken[entryId]` for an
+   opportunity, `vanquished[entryId]` when a clause says so, append to
+   `log`, set `status="resolved"` with what was applied (the stage shows
+   "+1 Healing Potion", "-6 Stamina", "+2 Malice", "Wode Elf Sentry joins
+   Kira"). After a ~4 s linger the host clears `turn`.
+6. **round end**: when every hero has acted -- or nothing is left to
+   approach -- `round += 1` and `acted` resets. Past the last round,
+   `phase = "consequences"`; with no unvanquished threat, straight to
+   `"done"`.
+7. **consequences**: every threat never vanquished (across all rounds),
+   one at a time. Anyone stamps `{kind="continue"}`; the host applies that
+   threat's `Consequence:` clauses, advances `consequenceIndex`, and after
+   the last sets `phase = "done"` -- the beat advances.
+
+Effect application (host, elevated):
+
+- item: `token:ModifyProperties{ execute = function() props:SetItemQuantity(itemid, current + qty) end }`
+  on the target hero(es) (`current` from `inventory[itemid].quantity`).
+- stamina: `props:InflictDamageInstance(n, "untyped", {}, "Montage: <entry>", {})`
+  inside `ModifyProperties`, so the character panel's damage history and
+  the Hero Death rule see it like any damage (fallback on error: a plain
+  `damage_taken` bump clamped at max stamina).
+- malice: `CharacterResource.SetMalice(GetMalice() + n, "Montage: <entry>")`.
+  The malice resource is `clearOutsideOfCombat: false` so this works
+  before combat, and Draw Steel ADDS its start-of-combat malice to the
+  pool (`DSInitiativeRoll.lua`, "Start of Combat Malice") rather than
+  re-seeding it, so montage malice carries into the fight with no banking.
+- ally: `game.SpawnTokenFromBestiaryLocally(monsterid, loc, {fitLocation=true})`
+  at the nearest free Start-zone tile to the hero (reuse
+  `StartZoneTilesByDistance`/`NthFreeStartTile`), then `partyId` (if any)
+  BEFORE `ownerId = turn.userid` (the partyId setter clobbers owner --
+  see memory), `properties.eotwAllyOf = heroCharid`, `token:UploadToken()`,
+  and `allies[heroCharid]` records the charid. The ally is player-controlled,
+  so the Monster AI leaves it alone and its owner drives it in combat like
+  a second hero.
+- initiative: `ApplyEffects` (which now receives the open script `doc` in
+  its ctx) writes `doc.data.initiative = {outcome, entryName, at}` and the
+  stage's applied list shows "The heroes will begin the encounter
+  surprised" / "... surprise the enemy" / "... win initiative" / "... lose
+  initiative" (`EncounterScript.DescribeInitiativeOutcome`). Nothing
+  touches a token yet. When the encounter beat starts combat,
+  `StartEncounterCombat` reads `EncounterMontage.GetInitiativeOutcome()`
+  and maps it: win/surprise -> `immediateResult = "heroes"`, lose/surprised
+  -> `"monsters"`; surprise -> `surprisedTokens = sides.monsterTokens`,
+  surprised -> `sides.playerTokens` (heroes AND montage allies, per
+  `GatherCombatSides`). Both go to the **core hook** `Encounter.StartCombatWithTokens`
+  (`Draw Steel UI/DSInitiativeRoll.lua`), which gained those two optional
+  args: it runs the file-local `SetTokenSurprised` (now forward-declared;
+  Surprised, duration `eoe`, exactly what the Prepare Combat dialog's "All
+  Surprised" slider does, and at the same pre-queue moment) on each listed
+  token, then `showDrawSteelBanner(immediateResult)` -- the banner's
+  existing forced-result path, so the queue is created with the right side
+  first and no die is offered. The call is wrapped in
+  `ElevateToHostPermissions` because the EotW host is a player and the
+  condition also goes on monsters. Against a retail core without the hook
+  the extra args are ignored and the normal roll happens (graceful, but the
+  outcome is then lost -- the hook must ship with the core before a week
+  uses these clauses).
+
+### Assisting a test (DECIDED + BUILT 2026-09-18; Lua only; luac-clean; UNTESTED live)
+
+User direction (2026-09-18): a hero who is not taking a montage beat can
+still be part of it. Once a test has been rolled and fallen short, a second
+hero may step in and lend a hand, at the cost of their own turn this round.
+
+**When it is offered.** After the acting hero's roll resolves -- the test is
+rolled FIRST, not assisted blind -- and only when it landed **below tier 3**
+and at least one hero is eligible. At tier 3 (or the crit tier) the turn
+resolves immediately as it always did. Nothing is applied while the window is
+open: the assist modifies the test's own result, so the effects wait for it.
+
+**Who is eligible.** A hero who
+
+- is not the hero taking the test, and has not acted this round;
+- is trained in one of the skills the option's power roll lists (the
+  parenthesised list of `|Name: Attr (Skill, Skill)`), and
+- that skill is **not the one the acting hero is already using** for their own
+  Skilled +2. Two heroes cannot bring the same skill to bear on one test; the
+  acting hero uses at most one skill, so the rest of the list stays open.
+
+The acting hero's characteristic and skill are reported by their own client in
+the `rolled` request (`attrid`, `skillid`) -- the roller already computes both
+to build its dialog -- and the host validates eligibility from them.
+
+**The assist roll.** Dragging an eligible hero into the assist slot stamps
+`{kind="assist", heroid}`; the host picks that hero's qualifying skill, writes
+`turn.assist` and moves the turn to `"assisting"`. That hero's client rolls
+`2d10 + <the characteristic the test used>` with the ASSISTING hero's own
+modifier and an automatic Skilled +2 for the skill they are assisting with
+(user direction: "the same characteristic, but with their skill, so they are
+automatically skilled on it"), through the same timeline-sidebar presentation
+and share as any montage roll, against a fixed tier table that is never
+authored:
+
+| tier | outcome |
+|---|---|
+| 1 (11 or lower) | the test has a bane on it |
+| 2 (12-16) | the test has an edge on it |
+| 3 (17+) | the test has a double edge on it |
+
+**What it does to the test.** `EncounterMontage.ApplyAssistToTier` applies the
+Draw Steel edge/bane rules to the result already on the table rather than
+re-rolling it: a bane is -2 on the total, an edge +2 (re-tiered at the 12 and
+17 thresholds `RollUtils.DiceResultToTier` uses), and a double edge raises the
+tier by one, capped at 3. So an assist can make things **worse** -- a bane can
+drag a tier 2 back to tier 1. The turn then resolves on the new tier and its
+clauses are applied as usual.
+
+**One assist per test** (user direction): the slot fills and closes. The
+assisting hero is marked as having acted this round whatever they rolled.
+
+**An empty window is never shown** (user direction 2026-09-19). The `rolled`
+branch only opens it when `EligibleAssistants` is non-empty, the host tick
+closes an open one the moment the list goes empty (no waiting out the clock),
+and the stage renders "Taking the result..." rather than an empty slot if it
+ever catches that frame.
+
+Found the first time this ran: the window opened with "Nobody here has an
+applicable skill." because the STAGE's candidate list was empty while the
+host's was not. `EncounterMontage.CurrentBeat()` returns `(beat, script)`, and
+it was being passed as the trailing argument of
+`EligibleAssistants(m, CurrentBeat())` -- Lua expands BOTH values there, so
+`script` arrived as the `heroes` parameter and `ipairs` walked it as empty,
+making every hero silently ineligible. Bind the beat to a local before
+passing it. Worth remembering generally: every multi-return engine helper is
+a trap in a trailing argument position.
+
+**Closing the window.** The acting player gets a "Take the result" button
+(`{kind="noassist"}`, refused from anyone else); the host also closes the
+window after `ASSIST_WINDOW_SECONDS` (30) so an absent party cannot wedge the
+montage. A cancelled assist roll (`{kind="assistCancel"}`) returns the turn to
+`"assist"` and frees the slot -- the helper has not spent their turn. A slot
+that is claimed and then never rolled (the dialog closed some other way, or
+the client went away) is handed back after `ASSIST_ROLL_SECONDS` (90), after
+which the 30 s window clock -- which never restarts -- closes it out. Between
+them there is no state the turn can be parked in indefinitely.
+
+Related tightening made here: `{kind="back"}` now only withdraws an approach
+while the turn is still `"choosing"`. It used to fire at any status short of
+resolved, which after this change could have thrown away a rolled test -- and
+an assist already spent on it.
+
+**On the stage.** While the window is open the turn panel shows the option
+with the rolled tier landed, the line "<hero> rolled tier N (total)", and an
+**assist slot** (`eotwAssistSlot`, a `dragTarget`) naming who could help and
+with which skill. Every eligible hero's card -- not just the local user's --
+wears a pulsing "!" badge at its top centre (`eotwAssistBadge`; the trigger
+corner owns the top left and the condition chips the top right). Dragging or
+clicking a hero now carries a **mode**, `"approach"` or `"assist"`, so a hero
+picked up to assist does not light up the Opportunity/Threat columns and a
+hero picked up to take a beat does not light up the assist slot; the
+click-a-hero-then-click-the-target path works for both. While the assist
+rolls, the panel shows the assist tier table with the live tier highlight
+(`LiveTierRows` over `EncounterMontage.ASSIST_TIERS`). The resolved panel adds
+one line -- "Kira helped: an edge -- tier 1 becomes tier 2" -- and the log
+entry records `assistName` / `assistOutcome`.
+
+**Files.** `EncounterOfTheWeek/EncounterMontage.lua` (the `ASSIST_TIERS` /
+`ASSIST_OUTCOMES` tables, `OptionSkills`, `AssistSkillFor`,
+`EligibleAssistants`, `LocalUserCanAssist`, `ApplyAssistToTier`, the
+`assist` / `assistRolled` / `assistCancel` / `noassist` requests, the host
+timeout, and a `ResolveTurn` helper factored out of the `rolled` branch so
+the assisted and unassisted paths close a turn identically) and
+`EncounterOfTheWeek/EncounterMontageStage.lua` (the slot, the badge, the drag
+mode, the assist branches of the turn panel). The roll launcher was factored
+into a shared `ShowMontageRoll` plus `LaunchRoll` / `LaunchAssistRoll`, with
+the Skilled-chip and best-characteristic loops pulled out as
+`ApplySkilledModifier` / `BestCharacteristic`. No parser change -- the assist
+tiers are fixed, not authored -- and no engine change.
+
+### Combat with allies
+
+- `GatherCombatSides`: a `playerControlled` non-hero token goes on the
+  players' side (today it is dropped from both lists).
+- `CountLivingHeroes` / defeat: unchanged -- allies are not heroes; the
+  party is defeated when the HEROES are down.
+- Victory: `StartCombatWithTokens` gets the allies in `playerTokens`, so
+  the live encounter's evaluators count them as the players' side. VERIFY
+  that `CheckVictory` does not count a surviving ally as a monster.
+- The AI: `MonsterAI` acts on non-player tokens; an owned ally is never
+  picked up. VERIFY with `/testai`.
+- Hero Death rule: applies to heroes only (`IsHero()`); an ally that dies
+  is just removed by the normal death flow.
+
+### The stage (UI)
+
+A full-screen presentation shown to every client while the montage beat
+is live, drawn over the map (the map itself is idle during a montage; the
+Start-zone confinement stays on underneath):
+
+- **Mounting**: `GameHud.RegisterPresentableDialog{ id = "eotwmontage",
+  keeplocal = false, create = ... }` and the host presents it with
+  `GameHud.PresentDialogToUsers` when the beat starts (re-presenting each
+  tick it finds it missing), hides it with `HidePresentedDialog` when the
+  beat ends. The presented-dialog document persists, so a late joiner or a
+  resume gets the stage back. Read in source (`GameHud.lua:1449-1570`): the
+  receiving `refreshGame` instantiates the registered dialog on EVERY
+  client with no Director gate, and the presenter writes the document
+  through an ordinary doc change, so a player host can present. Still to
+  see live. Fallback if it misbehaves: an `overlayPanel` slot on
+  `GameHud.RegisterCustomInterface`.
+- **Backdrop**: the scene image, full-bleed (`bgimage`, aspect-fit like
+  `FullscreenDisplay`), dimmed under the columns. No dependency on the
+  FullscreenDisplay document.
+- **Left column: Opportunities**, **right column: Threats** of the current
+  round: name, description, a status ribbon (available / taken /
+  vanquished). Threat cards carry the malice diamond
+  (`CreateMaliceDiamond` in the hud, to be exported). Cards are
+  `dragTarget = true`.
+- **The columns hold only what is in play** (user direction 2026-09-19).
+  An entry listed under a later round used to sit on the stage from the
+  start, greyed out under an "Appears in round 2" line; it is now not
+  carded at all until its round comes, and then **materializes** -- the
+  card is put into a transparent, slightly small, slightly low state with
+  `SetClassTreeImmediate("eotwEntryAppear", true)` (immediate = no ramp)
+  and the class comes off a frame later, so the rule ramps back out over
+  its own `transitionTime` and that is the animation. Several entries
+  entering together are staggered 0.15 s apart. Going the other way, an
+  entry the party **dealt with fades away when the round ends** rather
+  than lingering greyed out: the round turning (or, for the last round,
+  the phase leaving `rounds`) fires each done card's `leave` event, which
+  puts `eotwEntryLeave` on it and destroys it 0.5 s later; the new round's
+  arrivals wait that fade out so the hand-over reads as one movement.
+  Two facts the implementation turns on: style **opacity is not inherited
+  by children** (`SheetPanel` applies it to its own background,
+  `SheetLabel` to its own text), so the fade classes go on the whole card
+  subtree and their opacity rules are written *without* `eotwEntryCard` in
+  the selector so they match the labels too -- while `scale`/`y` are
+  transform-level and so stay on the card alone; and a build from cold (a
+  join or a resume mid-montage) must not put back what has already faded
+  away, so it only cards entries still in play plus whatever was dealt
+  with in the round that is still running. `m_cards` in `CreateStage`
+  holds the live cards by entry id; a card that has begun to leave is
+  dropped from it at once.
+- **Bottom row: hero cards** -- the existing `CreateHeroCard` (exported
+  from `EncounterOfTheWeekHud.lua`), `draggable = true`, plus
+  `showStats = true` (user direction 2026-09-18): the montage is where the
+  party weighs who should take which beat, so its cards -- and only its
+  cards, not the right rail's -- carry the hero's numbers. The five
+  characteristics run down the card's right edge as one chip each, initial
+  plus score ("M +2", MARIP order, taken from `creature.attributesInfo`
+  sorted by `order` rather than hardcoded), floating under the condition
+  chips and above the overlay. Every chip is the same fixed width
+  (`STAT_CHIP_WIDTH`, user direction 2026-09-18 -- auto width sized "M +2"
+  and "I +1" differently and left the column ragged) and holds two labels:
+  the letter left-aligned in its own column, the score right-aligned in
+  the other, so both line up down the strip. The hero's trained skills
+  (`ProficientInSkill` over `Skill.SkillsInfo`, already name-sorted) are
+  listed comma separated on the line under the name, inside the overlay;
+  the sweep is re-run at most every 5s rather than on every 0.5s card
+  tick. The skills block is 46 tall (four lines at font size 9, enough for
+  a ten-skill hero) and the montage card grows by exactly that -- 176 ->
+  222 -- so the portrait keeps its area; `HERO_ROW_HEIGHT` in
+  `EncounterMontageStage.lua` is 320 to match.
+  `canDragOnto` = the card's hero is the local user's (`canControlAsUser`),
+  has not acted, the target entry is available and no turn is in flight.
+  `drag(element, target)` stamps the approach request. **The card is only
+  `draggable` when the same gate (`EncounterMontage.LocalUserCanAct`) passes**
+  (user report 2026-09-18): gating the drop alone still let a player pick up
+  and haul another player's hero around the stage, which reads as permitted.
+  `draggable` is therefore computed at card creation and re-set on every
+  `refreshMontage` tick of the hero column, so it follows turns and the
+  acted set; `CreateHeroCard`'s `draggable` opt is now the card's starting
+  state (registered whenever it is non-nil, false included) rather than a
+  flag that merely turns the drag callbacks on. Acted heroes render
+  desaturated and dimmed. Clicking a card still pops out the (read-only)
+  character panel, on `click` rather than `press` so a drag's release does
+  not open it. NOT built: a click-to-select fallback for people who do not
+  drag. Beneath each hero card, a half-size **ally card** per
+  `allies[heroid]` entry (portrait + name + stamina bar), also under the
+  right-rail roster cards.
+- **The haul strip** (user direction 2026-09-18): down the LEFT edge of
+  each montage hero card, one icon per distinct item that hero has been
+  granted this montage (`EncounterMontage.GetItems(charid)` over
+  `data.items`). The icon is the gear row's `item:GetIcon()`, 30 square,
+  with an `xN` chip in its corner when the quantity is above one; hovering
+  one shows the item's full compendium card (`CreateItemTooltip`, the
+  inventory's own tooltip). A newly granted item **drops in and is heard**:
+  the icon is born with a `dropIn` class whose rule raises it a slot-height
+  (`y = -(ITEM_ICON_SIZE + 14)`, negative y is up) and makes it
+  transparent; taking the class off a frame later ramps that rule back out
+  over its own `transitionTime` (0.4 s, `easeOutCubic`), which is the fall,
+  and at that moment the client plays the same pickup sound the in-combat
+  `giveItem` float plays over a token -- `UI.Inv_Item_Pickup_Special` for
+  an `EquipmentCategory.IsTreasure` item, `UI.Inv_Item_Pickup_Gnrc`
+  otherwise. Several items landing in one refresh are staggered 0.18 s
+  apart so they read as separate pickups. A **repeat** grant bumps an
+  existing icon's quantity rather than adding one, so that gain instead
+  pulses the icon it owns (`PulseClass("bump")`, scale 1.3) and plays the
+  same sound. Because "each party member gains X" lands the same item in
+  four strips at the same instant, an identical sound event inside 0.1 s is
+  dropped -- four copies of one sample is a mush, not four pickups.
+  Items already in the document when the strip is built appear instantly
+  and silently, so a hero-row rebuild (an ally joining, which changes
+  `HeroSignature`) does not replay the whole montage. The gutter is always
+  reserved, empty or not, so the row of cards does not shuffle sideways the
+  moment the first item lands.
+
+  Two engine facts, both established live while building this and worth not
+  rediscovering: style transitions are computed **per rule**, so the
+  `transitionTime` must live on the rule whose match is changing -- a rule
+  describing the *resting* state does not animate anything; and style `y`
+  **accumulates** across every matching rule (`instance.pos += y`) instead
+  of being overridden by the most specific one, so a "landed" rule setting
+  `y = 0` alongside a still-matching `y = -44` rule leaves the panel at
+  -44 forever. A class present at construction applies at full strength
+  immediately (no ramp-in), which is what makes "born raised, ramp the rule
+  out" the right shape for a drop.
+- **Center: the turn panel**, driven by `montage.turn`: the acting hero's
+  portrait and the entry name; the `Options:` approach text; the option
+  list, each showing `Name: Attr` and its tier lines (only the acting
+  player's client gets press handlers; everyone else sees the same list);
+  "Rolling..." while the dice fly; then the landed tier highlighted and the
+  applied-effects list. Everyone sees the same thing at the same time.
+  **While the dice tumble, the tier they are currently landing on is
+  highlighted live** (user direction 2026-09-18), the way the remote
+  ability card's tier table and the initiative banner do it.
+  `LiveTierRows` in `EncounterMontageStage.lua` replaces the static rows
+  on the chosen option while `turn.status == "rolling"`: it monitors the
+  share document (`CharacterPanel.AbilityShareDocPath()` /
+  `GetAbilityShareData()`, two more exports added to
+  `Timeline/AbilitySidebar.lua`), and when `dialogState.rollState` is
+  "rolling" it finds the chat message by `dialogState.rollId`, subscribes
+  to each die's `chat.DiceEvents(guid)`, and on every `diceface` event
+  recomputes the running tier (`RollUtils.DiceResultToTier` over the
+  running total with the message's own edges/banes/tier shifts) and moves
+  the `landed`/`dim` classes across the rows. A 0.1 s think locks the tier
+  in once the last die's `timeRemaining` elapses; after that, or whenever
+  `rollState` is "finished", the broadcast `highlightedTier` (which
+  follows post-roll edges/banes) is applied instead. The roller's own
+  client reads the document it writes, so there is one code path for
+  everyone; on a core without the exports the rows stay static. Once the
+  host resolves the turn the body rebuilds with `turn.tier` highlighted as
+  before. BUILT 2026-09-18, luac-clean, UNTESTED live.
+- **The rail behind the stage** (user direction 2026-09-18): the hud's
+  right rail keeps rendering while a montage beat is presented, and its
+  **pools strip is wanted there** -- hero tokens and malice read in the
+  same place as in combat. Its **hero roster is not**: the column is
+  combat-only, because the stage already draws a hero card per player
+  along the bottom. `CreateRightRailPanel` (EncounterOfTheWeekHud.lua)
+  therefore owns a 0.5s think that sets the `collapsed` class on the
+  roster child whenever `EncounterMontage.IsPresented()`; the toggle
+  lives on the rail rather than inside the roster so it keeps ticking
+  while the roster is down, and the roster's own `Refresh` bails out and
+  drops its signature while collapsed so the column rebuilds from
+  scratch when the montage ends. KNOWN DUPLICATE: the stage mounts its
+  own copy of `CreateEncounterPoolsPanel` at the same screen spot
+  (below), so two identical strips now stack there -- harmless
+  visually, but one of them should go; not decided which. BUILT + Lua
+  reloaded clean 2026-09-18; UNTESTED against a live montage.
+- **Consequences**: after the last round, the columns give way to one
+  threat at a time in the center -- name, malice diamond, consequence
+  text -- with a Continue button for anyone; the applied effects flash
+  before the next one.
+- **Header**: the montage's title, the intro prose, then "Round N of M" and
+  who is still to act. The **intro prose is the party's standing context**
+  for the whole beat (user direction 2026-09-19): whatever the document
+  writes under `# Montage` before the first `##` is shown there from the
+  moment the stage comes up until it goes away -- through every turn, every
+  roll and the consequences phase -- so a player who joins late, or who
+  looks up mid-montage, can still read what this journey is. It is styled
+  to be read at a glance rather than as a caption (`eotwMontageIntro`, 19pt
+  italic warm-white over the 16pt grey `eotwStageSubtitle` it also carries),
+  and it **wraps to as many lines as the writing needs**: the header is
+  `height = "auto"` with `minHeight = HEADER_HEIGHT` instead of a fixed 76,
+  and a `SyncHeaderHeight` helper (called from `Refresh` and from the 0.5s
+  think) re-derives the body's `100%-N` height from what the header
+  actually rendered, so the entry columns, the turn panel and the hero row
+  all move down together and nothing is clipped. Runaway prose is capped:
+  the label's `maxHeight` is 186 (about seven wrapped lines -- a generous
+  read-aloud paragraph) and the arithmetic clamps at `HEADER_HEIGHT_MAX`
+  260, so the header can never eat the entry columns. The narrative stage
+  keeps the plain 16pt subtitle and its fixed header; only the montage was
+  changed.
+- **Encounter pools** (user direction 2026-09-18): the stage covers the
+  right rail, so it mounts the rail's own malice + hero-token strip
+  (`CreateEncounterPoolsPanel`, exported from the hud) floating at the
+  rail's spot -- top inset 64, right margin 12 -- so players read it in
+  the same place and form as during combat. UNRENDERED since the edit.
+
+The parser, the runtime and the stage are built as three separable
+modules (`EncounterScript.lua`, `EncounterMontage.lua`,
+`EncounterMontageStage.lua`) so a Director-run montage in a normal game
+can reuse the first two later; only the hero-card row and the
+custom-interface wiring are EotW-specific.
+
+### Sequencing changes in the codemod
+
+Today `SetupOnArrival` spawns the monsters during host setup and the host
+tick rolls into combat once everyone has arrived. With scripts:
+
+- the host tick owns a **beat machine** on top of the existing stage
+  mirror: `(nil)` -> wait for arrival -> for each beat: `montage` (present
+  the stage, run the turn lifecycle to `done`, hide it) or `encounter`
+  (spawn the `[[encounter]]` monsters scaled to `numheroes`, then the
+  existing `draw-steel` run-once) -> `combat` -> `complete`.
+- `SpawnEncounterMonsters` therefore moves from `SetupOnArrival` to the
+  start of the encounter beat, so a montage plays on a monster-free map.
+  For a script with no montage the only visible difference is that the
+  spawn happens on the first host tick after arrival instead of during
+  setup; joiners still enter on `ready` as now.
+- `eotwscript.beat` is stamped by the host, so late joiners and resumes
+  land in the right beat; the stage is rebuilt from the document text +
+  the state doc on any client.
+- `EnsureAIRunning` stays gated on the initiative queue -- the AI is never
+  started during a montage.
+
+### Stage beats hand over without showing the map (FOUND + FIXED 2026-09-19; the mounted stage VERIFIED live, the cut itself UNTESTED)
+
+User report (2026-09-19): a narrative beat followed by a montage "flashed to
+revealing the map for a moment" instead of cutting straight across -- jarring
+in general, and worse when the two beats name the same `[[scene]]` and the
+cut should be invisible.
+
+**Cause.** `RunScriptBeat` finished a stage beat by hiding the stage and
+stamping the next beat index, and the NEXT beat only seeded and presented
+itself on the following host tick. Between them the presented-dialog document
+said "no dialog", so every client had nothing over the map for a tick plus a
+present round trip -- half a second or more of battlefield in the middle of
+the story.
+
+**Fix.** `AdvanceFromStageBeat` (EncounterOfTheWeek.lua) replaces the
+hide-then-advance in both the montage and the narrative branches. When the
+NEXT beat is also a stage beat it does not hide at all: it stamps the index,
+`Begin`s the next beat (seeding its state and presenting the SAME dialog id
+with the new `beatIndex`) and runs its first `HostTick` in the same pass, so
+the new beat opens on its first round/section instead of sitting in
+"arriving". Only a beat that really hands back to the map -- the encounter, or
+the end of the script -- calls `Hide`. GameHud's `refreshGame` destroys the
+old presented dialog and creates the new one inside a single handler
+(`GameHud.lua`, the `presentdialog` monitor), so the swap is one frame with
+nothing uncovered in between, and an unchanged backdrop image is already
+loaded.
+
+**Round two (2026-09-19), after the first fix was not enough.** The user
+played it solo and reported a *long* pause after pressing the option and then
+"the entire screen flickers" on the way to the montage. Two separate causes,
+both now fixed:
+
+- **The pause was the lingers.** A narrative section held `RESOLVED_LINGER_SECONDS`
+  (5s) showing its outcome, then the finished beat held `DONE_LINGER_SECONDS`
+  (4s) showing the very same panel again: **nine seconds** after a "Proceed"
+  that did nothing at all. The resolved linger is now chosen when the section
+  resolves and recorded on the state (`m.resolvedLinger`): 4s when the option's
+  rules text actually applied something worth reading, and
+  `RESOLVED_LINGER_QUIET` (0.4s) when it applied nothing. The done linger drops
+  to 0.3s, because the resolved panel has already had its time and the "done"
+  phase renders the same thing. A plain story beat now turns over in about a
+  second, host tick included.
+- **The flicker was GameHud rebuilding the dialog.** Presenting carried the
+  beat index in the dialog's args, and `refreshGame` destroys and re-creates a
+  presented dialog whenever its args change -- so every beat change tore the
+  whole surface down and built it again, one frame of nothing over the map.
+  The args are now CONSTANT (`EncounterMontage.Present` passes `{}`) and what is
+  presented is a new **mounted script stage**, `CreateScriptStage`, created once
+  for the whole run of stage beats. It owns everything the two kinds share --
+  the opaque background, the scene art, the dim, the pools strip, the
+  action-bar hide, the loading-screen release -- and holds ONE body inside it,
+  the montage's or the narrative's, swapped when the beat kind changes.
+  `CreateStage` and `CreateNarrativeStage` take `args.embedded` and skip the
+  chrome when they are that body. Two beats naming the same `[[scene]]`
+  therefore cut with nothing moving but the cards. VERIFIED live: the mounted
+  stage re-presented over a running montage with the columns, turn panel, hero
+  row and pools all intact.
+
+  Note for a session that upgrades mid-script: a stage presented by the old
+  code still has `{beatIndex = N}` in its args, so the FIRST handover after the
+  upgrade still rebuilds once. Re-presenting (`EncounterMontage.Present`) at any
+  quiet moment spends that rebuild where nobody minds it.
+
+**Round three (2026-09-19): the flicker was the presenter re-presenting.**
+Round two was still not it -- the background blinked even with the scene
+unchanged. Code read, no app: `GameHud`'s `presentDialog` handler nils
+`m_presentedDialog` for any non-`keeplocal` dialog **without destroying the
+panel it is forgetting** (`GameHud.lua`), and the `refreshGame` that follows
+the document write cannot destroy what it no longer has a reference to, so it
+builds a second one on top. `EncounterMontage.Begin` presented
+unconditionally, and `AdvanceFromStageBeat` calls `Begin` at every handover --
+so on the PRESENTING client (the host, which is the whole table when someone
+plays solo) every beat change stacked a fresh stage over an orphaned one, and
+the new stage's backdrop had to load and aspect-fit from scratch while the old
+one sat underneath. That is the flicker. Other clients never saw it: their
+args matched, so they early-returned.
+
+Three fixes, all code-only:
+
+- **`EncounterMontage.Present` returns early when `IsPresented()`.** The
+  presented-dialog document already says the stage is up and every client reads
+  the live beat from the script document, so there is nothing to re-send. This
+  also ends the orphan leak -- each orphan kept ticking AND kept its claim on
+  the ref-counted action-bar hide, so the count could never fall back to zero
+  and the bar would have stayed hidden into combat.
+- **`AdvanceFromStageBeat` seeds the next beat's state BEFORE stamping the beat
+  index.** The stage picks its body from the index, so stamping first left one
+  refresh in which the new body rendered the PREVIOUS beat's state -- a flash of
+  the wrong section. Seeding first means the outgoing body draws its own
+  finished state for one more refresh, which is what is already on screen.
+- **`CurrentSceneImage` only lets a narrative SECTION choose the scene while the
+  live narrative state belongs to the beat being drawn.** Across a handover the
+  previous beat's state is briefly still on the document; borrowing its section
+  would have swapped the backdrop to something not on screen and straight back
+  (latent -- it needs a per-section `[[scene:x]]`, which no week uses yet).
+
+The wrapper also carries `StageRules()` now: the backdrop, the dim and the
+pools strip used to hang under a stage root that had them, and moving them out
+would otherwise have changed their style scope.
+
+Traced end to end on paper, the handover is now four document writes (seed,
+beat index, the new beat's first tick, its request pass) producing exactly ONE
+body swap and ZERO writes to the backdrop.
+
+### The stage dissolves away to reveal the fight (DECIDED + BUILT 2026-09-19; UNTESTED live)
+
+User report (2026-09-19): after the last narrative section, combat started and
+the Draw Steel banner played, but the narrative UI and its scene stayed on
+screen -- the party was left staring at the scene instead of the battlefield.
+And, wanted: the stage should not simply vanish, it should "disappear nice and
+elegantly with the typical cut-scene transition we use", revealing combat.
+
+**Why it stayed up** was the duplicate-stage bug above: the session was running
+the code from before that fix, so the presenter had stacked a stage at every
+beat change, and `HidePresentedDialog` destroys only the ONE panel GameHud is
+still tracking. The orphans underneath stayed exactly where they were. The
+`Present` guard fixes that on its own.
+
+**The transition.** `dmhub.StartScreenTransition(onReady)` is the engine's own
+dissolve -- the one the titlescreen loading screen uses. It snapshots the
+screen into a RenderTexture drawn over all UI, calls `onReady` once the
+snapshot is captured (that is when you change what is underneath), and
+`CrossFade(1 -> 0)` thins the snapshot away to reveal it; `Destroy()` frees the
+texture. The one existing caller, `DMHub Core UI/ThemeSettingsDialog.lua`, is
+the idiom this copies, `fadeOut` helper and all.
+
+**The sequence now**, with the spawn hidden behind the scene the way the
+loading screen hides the opening montage:
+
+1. The last stage beat finishes. `AdvanceFromStageBeat` stamps the next beat
+   index and **does not hide** -- the stage stays up over the map.
+2. The encounter beat spawns its monsters behind it (idempotent, as before) and
+   gathers the sides. Nothing pops in on a bare map.
+3. `EncounterMontage.DismissStage()` stamps `stageDismissAt` on the script
+   document: one shared clock, so the cut lands together on every screen.
+4. Every client's stage sees the stamp, snapshots the screen, hides itself
+   underneath the snapshot (revealing the finished battlefield) and dissolves
+   the snapshot away over `STAGE_DISMISS_SECONDS` (0.8).
+5. The host takes the panel down for real once that has played, and only THEN
+   does the encounter beat roll Draw Steel -- so the banner plays over the map
+   rather than over a scene nobody can see past.
+
+`DismissStage` returns true only once the stage is really gone, and the
+encounter beat holds on it, so it is bounded: after `STAGE_DISMISS_SECONDS +
+STAGE_DISMISS_TIMEOUT` (4s) it logs and carries on regardless rather than
+letting a stuck surface wedge the fight. The stamp is deliberately NOT cleared
+by the hide (a cleared stamp would just be re-stamped on the next tick -- an
+endless dissolve); it clears when the stage is observed gone, on the timeout,
+and at the start of any later stage beat so a new one never inherits it. An
+engine without the transition bridge falls back to hiding outright.
+
+A script that simply runs out (no encounter beat) dissolves the stage from
+`RunScriptBeat`'s "no such beat" branch.
+
+**A restart mid-roll used to wedge the turn.** Found while testing this:
+restarting the app while a montage roll was in flight killed the relaunch
+coroutine on `GameHud.instance.rollDialog` -- `GameHud.instance` is `false`
+until the hud exists, and indexing `false` raises -- which left
+`m_launchedRollSeq` consumed and the turn stuck in "rolling" for the rest of
+the session. `ShowRollDialog` now reads the hud defensively and takes its
+existing graceful bail, which clears the watermark so the client tick simply
+tries again once the hud is up.
+
+**The action bar had to follow.** Both stages hide the bar through the
+transient `hideactionbar` setting, capturing the old value on create and
+restoring it on destroy. With a handover the new stage is created around the
+old one's destroy, which either flickered the bar back for a frame or -- if
+create ran first -- captured `true` and left the bar hidden for good. It is
+now REF COUNTED in `EncounterMontageStage.lua` (`AcquireActionBarHide` /
+`ReleaseActionBarHide`): the first stage up captures and hides, the last one
+down restores, and the restore is deferred 0.15s so a handover that releases
+before it acquires cannot blink the bar.
+
+### The loading-screen hold: the loading screen reveals the montage (DECIDED + BUILT 2026-09-18; C# NEEDS BUILD; Lua UNTESTED; UNCOMMITTED)
+
+**The problem.** Entering a real EotW game whose script opens with a
+montage, the host saw the map and the tokens spawn in, and only then the
+cut to the montage. Two structural causes: the engine cleared the loading
+screen (`FinishLoadingCo`: `GameHarness.loading = false`) and only THEN
+fired the `lobby:EnterGame` callback, so `SetupOnArrival` (map travel,
+`PlaceMyHeroes`) always ran on a visible map; and the stage was presented
+only by the host tick's beat machine, gated on `AllPlayersArrived()` (every
+player stamped + 3s settle), then the 1s cadence, then the `presentdialog`
+round trip -- 4-6s of bare map for the host, and members waited out their
+own arrival + settle too.
+
+**The fix: an engine hold on the loading screen, and an early montage.**
+
+- **Engine** (`GameController.cs`, static so it survives the titlescreen ->
+  game handoff and every codemod reload): `dmhub.HoldLoadingScreen()` /
+  `dmhub.ReleaseLoadingScreen()` / read-only `dmhub.loadingScreenHeld`
+  (bridge in `LuaInterface.cs`, stubs in `Definitions/dmhub.lua`). When a
+  hold is set as `FinishLoadingCo` reaches the end of the image wait, it
+  fires `executeOnArrive` FIRST (behind the loading screen), then spins
+  until the hold is released or `LOADING_SCREEN_HOLD_TIMEOUT` (20s) or the
+  game is being left, and only then flips `GameHarness.loading = false`
+  (titlescreen `endLoading` -> fade -> deactivate 1s later). The unheld
+  path is byte-for-byte the old order. `GameHarness.LeaveGame` clears any
+  hold so one can never leak into the next entry. The timeout logs a
+  `Debug.LogWarning` naming how long it waited.
+- **Titlescreen** (`Codex Titlescreen/EncounterOfTheWeek.lua`, Enter
+  World): `pcall(dmhub.HoldLoadingScreen)` right before `lobby:EnterGame`,
+  for EVERY EotW entry (host, member, resume). Old engines lack the call and
+  degrade to the old behaviour. Mixed-version hazard: a NEW engine with an
+  OLD game-side module never releases and eats the 20s timeout -- deploy
+  the codemod together with (or before) the build.
+- **Game side, host** (`EncounterOfTheWeek.lua`, `SetupOnArrival`): after
+  `EnsureOnEncounterMap` + `RecordEncounterMap` and BEFORE `PlaceMyHeroes`,
+  `BeginOpeningMontage()`: if the script has not started (no montage state,
+  beat index 1) and beat 1 is a montage, `EncounterMontage.Begin(script,
+  beat, 1)` seeds the state and presents the stage; a resume mid-montage
+  re-presents it. The stage root is opaque, so hero placement happens
+  under it, and it is what everyone's loading screen reveals.
+- **Game side, everyone**: after `PlaceMyHeroes`, `SetupOnArrival` releases
+  the hold UNLESS `MontageStageExpected()` (a live montage state, phase not
+  done, whose beat is a montage of this map's script) -- then the stage's
+  own `create` event releases it, via a 0.1s `releaseLoadingScreen`
+  scheduled event so the first layout is in. Releasing twice is harmless;
+  `mod.unloaded` at setup entry also releases.
+- **The "arriving" phase** (`EncounterMontage.Begin` seeds `phase =
+  "arriving"`): the stage is up but nobody can act (`LocalUserCanAct` and
+  `HandleRequest` both require `"rounds"`). `HostTick` -- which the map
+  script only runs once `AllPlayersArrived()` -- flips it to `"rounds"` on
+  its first tick. The stage renders it as "Waiting for the party to
+  arrive..." in the round label and a "Gathering the party" turn panel.
+  `HostTick`'s own seeding now goes through `Begin` too, so later montage
+  beats start in "arriving" and open on the very next tick.
+
+**Residual / untested.** The whole thing is unbuilt (C#) and unexercised
+(Lua): verify the host's loading screen dissolves straight onto the stage
+in "arriving", that a member's does the same, that a week with no montage
+releases right after placement (no hero pop-in either now), and that
+leaving mid-hold does not stall. `SetupOnArrival` now runs while
+`GameHarness.loading` is still true; nothing in the setup path was found
+to read it, but map travel under a held loading screen is the one thing
+to watch. If setup errors out before its release, the 20s timeout is the
+only exit -- acceptable, but log-visible.
+
+### The action bar is hidden while the montage stage is up (BUILT 2026-09-18; UNTESTED)
+
+Observed in a montage test: the action bar painted straight through the
+full-screen stage (the offending panel traced to `DrawSteelActionBar.lua`
+via `DSActionBar.lua`'s custom-action-bar host). The bar renders above
+windows (`renderOnTop`), so the stage's opacity and z-order cannot cover
+it. The bar already monitors the transient `hideactionbar` setting
+(`DMHub Titlescreen/Settings.lua`), which nothing else writes, so the
+stage uses it: `CreateStage`'s `create` handler remembers the current
+value and sets it true; its `destroy` handler puts the old value back
+(`EncounterOfTheWeek/EncounterMontageStage.lua`). Transient storage means
+a stage that somehow dies without `destroy` costs at most the session, and
+a restart always clears it.
+
+### No welcome documents in EotW games (DECIDED + BUILT 2026-09-18; UNTESTED)
+
+`DocumentSystem/DocumentNewUser.lua` opened the "New Player Welcome"
+journal document on entering an EotW game: its EnterGame gate is "no
+character owned yet", and an EotW player's heroes are pasted during
+arrival setup, after that fires. `ShowDocumentOnStart` now returns early
+in an EotW game (both the director and the new-player welcome). It checks
+at the last moment, after the hud exists, with three pcall-guarded signals
+because the EotW codemod may not have loaded yet: `EncounterOfTheWeekGame.
+IsEotwGame()`, `lobby.eotwGameid == dmhub.gameid`, and the titlescreen's
+parked `_G.EotwPendingArrival.gameid == dmhub.gameid`.
+
+### Out of scope for the first cut
+
+~~Narration~~ (built 2026-09-18, see "Narrative beats")/negotiation beats;
+victories and the montage's Draw Steel
+success/failure tally; a Director-facing montage runner in normal games;
+publisher validation of the script (a later step, once the grammar has
+settled in play); skipping a hero whose owner has disconnected (recorded
+in Open Questions); a click-to-select alternative to dragging. Several
+montages per script DO work (each beat runs to done in turn).
+
+### Testing it
+
+**Verified 2026-09-18 in the authoring game** (`e96656f3`, map
+`Encounter: Goblin Ambush`, whose `Encounter` document carries the sample
+script; `eotw:forcecustomui` on; the Director driving the party-owned
+pregens; requests injected over MCP exactly as a drop would stamp them):
+the stage presents over the map with the scene backdrop, three entry
+cards, the hero row; approach -> choosing panel (portrait, approach text,
+both options with tier rows, Back); choose -> the real roll dialog opens
+for the acting user (2d10 + Presence, the option's tiers); a real roll of
+6 resolved tier 1, marked the hero acted and the opportunity taken;
+injected tier results exercised every effect kind: item grant (2 x Healing
+Potion into the inventory), ally (a `Wode Elf Sentry 1` spawned on the
+nearest Start tile, party + owner set, `eotwAllyOf` stamped, its card
+under the hero on the stage AND in the rail roster), malice (+2, visible
+in the pools strip), stamina loss (21 -> 16); all heroes acted -> the
+consequences phase showed the threat with the malice diamond; Continue
+applied "Every hero loses 5 Stamina" and the montage finished and hid.
+Zero console errors across the whole run. The residue (ally token, malice,
+stamina, potions, the state document) was cleaned back out afterwards.
+
+**Outside an EotW game** there is no map-script host tick, so
+`/eotwmontage start` runs a dev driver (the first montage beat of the
+current map's script, ticked every 0.5s); `/eotwmontage stop` halts it,
+`/eotwmontage state` prints the document. `/eotwmontage reset` restarts
+the whole test (host only in an EotW game): deletes the montage's allies
+and the encounter beat's spawned monsters, clears the script state,
+zeroes malice, heals every hero to full, clears the combat flags and
+detaches the EotW map script so the self-heal re-attaches a fresh record
+(clean run-once watermarks) and the script plays again from beat 1. It
+refuses while combat is running -- end combat first. `/eotwscript` dumps
+the parse and resolves names.
+
+**Still to verify**:
+- ~~the real drag gesture on the hero cards~~ VERIFIED 2026-09-18 through
+  the input bridge (a virtual drag of a card onto an entry stamped the
+  approach). Discoverability was the problem in the user's first run, so
+  the stage now also highlights droppable entries while a hero is dragged
+  or clicked, supports click-a-hero-then-click-an-entry (a card whose hero
+  can act selects on click; otherwise the click opens the character panel),
+  and the idle hint names the local user's heroes still to act. These
+  additions are UNRENDERED since the edit;
+- a real EotW game on staging with two clients: the map script's beat
+  machine, a non-host player rolling on their own client, the presented
+  dialog appearing for a joiner, then spawn -> Draw Steel with the ally
+  on the heroes' side (AI ignoring it, victory not counting it);
+- ~~the roll dialog renders with a transparent backdrop over the stage~~
+  superseded: rolls now go through the timeline sidebar (see the turn
+  lifecycle); confirm it draws above the stage;
+- the hero-row layout fixes made after the run (cards packed at the
+  center, row tall enough for ally cards) and the 6s "done" linger with
+  the last consequence shown, both unrendered since the edit;
+- **the whole assist path** (step 39), nothing of which has run: the
+  eligibility rule, the "!" badge, the slot and its drag/click drops, the
+  assist roll's dialog and share, the tier shift, "Take the result", and
+  the 30 s timeout. The authoring game could not be used to exercise it on
+  the day it was built -- the running app hit the known stale-codemod trap
+  (`reload_lua` logged the mod's files as loaded but `EncounterMontage`
+  still exposed the pre-edit table, no `READ CONTENTS` lines), which for
+  the EotW codemod has only ever been cleared by a restart. Restart first,
+  then confirm `EncounterMontage.ApplyAssistToTier` exists before testing.
+
+## Narrative beats (DECIDED + BUILT 2026-09-18; Lua only; VERIFIED end to end in the authoring game; real EotW game UNTESTED; UNCOMMITTED)
+
+User direction (2026-09-18): as well as montages and an encounter, a script
+can have **narrative** beats. A narrative shows a scene and some text, and
+asks the party to choose; an option can carry the same rules text a power
+table's tier can ("+1 hero token"), or nothing at all -- a plain "Proceed".
+Some choices the party has to **agree** on; others each hero takes **on
+their own**. If they cannot agree, it is settled at random, the stage
+flashing between the players before it lands. **Everyone chooses before the
+next section begins.**
+
+It reuses the montage's machinery wholesale: the same script document, the
+same `eotwscript` state document (under its own key), the same
+host-arbitrates/players-stamp-requests authority model, the same
+`ApplyEffects` (so every montage clause works in a narrative option), and
+the same stage frame -- scene backdrop, header, hero cards along the
+bottom with their haul strips and ally cards, the encounter pools where
+the rail keeps them. No engine change, no core change.
+
+### The grammar
+
+```
+# Narrative
+
+[[scene]]
+
+The party sets out at dawn.
+
+## The Crossroads
+
+The road forks at a weathered shrine.
+
+Choose together: Which way do you go?
+
+### Take the high road
+
+The long way, but the safer one.
+
+|+1 hero token
+
+### Take the low road
+
+|+2 malice
+
+## The Shrine
+
+Each of you may leave an offering.
+
+Choose individually:
+
+### Offer a coin
+
+|You gain 1 Healing Potion
+
+### Walk on
+
+## A Quiet Mile
+
+Nothing happens for a while, and the road turns south.
+```
+
+- `# Narrative` is a beat like `# Montage`. A script may hold several, in
+  any order around the montage and the encounter.
+- `[[scene]]` above the first `##` is the beat's backdrop; a `[[scene:x]]`
+  **inside** a section is that section's, overriding the beat's for as long
+  as it is on screen. A section with neither gets a plain dark backdrop.
+- Prose between `# Narrative` and the first `##` is the beat intro (shown
+  under the title on the FIRST section only).
+- `## <Name>` is a **section**: they play one at a time, in document order,
+  and the beat is done when the last one resolves. Its body:
+  - plain paragraphs = the text that appears;
+  - a `Choose together:` / `Choose individually:` paragraph = the mode,
+    plus whatever follows the colon as the prompt line. Spellings are
+    matched loosely: anything containing "together", "as one", "as a
+    group", "agree" or "unanimous" means agreed; "individual",
+    "separately", "each hero", "each of you", "each player" or "their own"
+    means each hero on their own. A bare `Options:` / `Choose:` / `Choice:`
+    sets only the prompt.
+  - **Default is `together`.** A section with two or more options and no
+    marker gets a parser warning naming it.
+- `### <Option>` is an option. Its prose is the option's description, and
+  each `|line` under it is **rules text**: exactly the clause grammar a
+  montage tier line uses (the table under "Montage grammar"), several
+  clauses per line, several lines per option. An option with no `|` lines
+  is a narrative-only choice.
+- A section with **no options at all** gets one implicit `Proceed` option,
+  so text that simply appears still waits for everybody.
+- Section ids are `s<n>/<slug>` so a re-parse lands on the same ids.
+- Power rolls in a narrative option are NOT supported (a `|Name: Attr` line
+  is read as a clause and ends up as unrecognized narrative text). If a
+  choice needs a test, it belongs in a montage.
+
+### Who chooses, and what their choice does
+
+User direction (2026-09-18): **the unit of choice differs by mode** --
+"each hero on their own" is per HERO, "everyone must agree" is per PLAYER.
+
+- **individual**: every hero must choose. A player running three heroes
+  chooses three times. A hero is dragged onto the option they take (or
+  clicked, then the option clicked), exactly the gesture that approaches a
+  montage entry.
+- **together**: every PLAYER must choose, one voice each however many
+  heroes they run, by clicking the option. The voters are the distinct
+  `ownerId`s of the party's heroes; party-owned heroes ("PARTY", the
+  authoring game's pregens) collapse into ONE pseudo-voter that anyone at
+  the table may fill -- which is why a split decision cannot be produced in
+  the authoring game without hand-writing the state.
+- A choice can be changed until the last one is in; nothing resolves early.
+
+**What an option's rules text targets** (user direction 2026-09-18):
+
+- **together**: the party. Every targeted clause is re-aimed at the whole
+  party before it is applied, so `You gain 1 Healing Potion` on an agreed
+  option gives one to every hero. `ally` is the exception -- one ally
+  joins, anchored on the decider's hero (or the first hero), not one per
+  hero.
+- **individual**: each option is applied ONCE, for the group of heroes who
+  took it (`ctx.heroEntries`). Self-target clauses land on each of them;
+  a party-target clause ("Each party member gains...") lands on the whole
+  party once rather than once per chooser; and a pool clause (malice, hero
+  tokens, initiative, surprise) applies once for that option, not once per
+  hero. Decided this way so an option cannot multiply the malice pool by
+  the size of the party; an author who wants it per hero should say so with
+  separate sections.
+
+### Settling a disagreement
+
+When every player has voted in an agreed-upon section and they do not all
+match, the host picks one of them at **random** (`math.random` over the
+voters who cast a vote, so a 2-1 split is decided by a voter, not by the
+majority -- it is a coin flip between the people, as asked), writes
+`decision = { candidates, winner, optionIndex, startedAt }` and moves to
+`phase = "deciding"`. Nothing is applied yet.
+
+Every client then flashes through the candidates for
+`DECIDE_FLASH_SECONDS` (3.2): the banner says "The party is split!", the
+name and their option change under it, the option card they voted for and
+their hero cards light up, and a click plays on each step. The sequence is
+a pure function of `decision.startedAt` and the shared clock
+(`FlashCandidateIndex` in `EncounterMontageStage.lua`) -- there is no
+animation state to sync -- decelerating on an ease-out curve over
+`DECIDE_FLASH_STEPS` (21) steps arranged so the last step lands exactly on
+the winner. (If the step count divides the candidate count the flash would
+START on the winner and give it away, so it is bumped by one in that case.)
+When the flash is over the host applies the winner's option, exactly as an
+unanimous vote would have been applied.
+
+### Runtime state
+
+A second key on the montage's document, `eotwscript`:
+
+```
+narrative = {
+  beatIndex, sectionIndex,
+  phase = "arriving"|"choosing"|"deciding"|"resolved"|"done",
+  choices = { [voterKey] = { optionIndex, userid, heroid, name, at } },
+  decision = nil | { candidates = { { key, name, optionIndex, optionName, heroids } },
+                     winner, winnerName, optionIndex, optionName, startedAt },
+  result = nil | { mode, optionIndex, optionName, decidedBy, applied = {...},
+                   groups = { { optionIndex, optionName, heroNames, applied } } },
+  resolvedAt, doneAt, startedAt, log = {...},
+  requests = { [userid] = { seq, kind, ... } }, handled = { [userid] = seq },
+  seq,
+}
+```
+
+`voterKey` is a userid in an agreed section and a hero charid in an
+individual one. Players stamp `requests[userid]` (`choose` /`unchoose`) and
+the host validates and applies them on its tick, the montage's model
+exactly. `phase = "arriving"` exists for the same reason the montage's
+does: the stage is what the held loading screen reveals, and nobody can act
+until the host tick -- which only runs once the whole party is in -- opens
+the first section. A resolved section lingers 5s, the finished beat 4s.
+
+Effects go through `EncounterMontage.ApplyEffects` with
+`source = "Narrative"` (so damage and resource history read "Narrative:
+The Crossroads"), which grew two things for this: `ctx.heroEntries` (a list
+of self-targets rather than one) and an `ally` clause that spawns one ally
+per target. Its applied lines now name every hero a clause landed on, with
+the verb agreeing ("Kira and Osk gain 5 Temporary Stamina").
+
+### The stage
+
+The same presented dialog (`eotwmontage`) serves both beat kinds:
+`StageFor(args)` reads the beat kind for the presented `beatIndex` and
+builds either `CreateStage` (montage) or `CreateNarrativeStage`. That keeps
+the loading-screen hold, the action-bar hiding, the backdrop, the pools
+strip and the hero row in one place; the montage's chrome was factored into
+`CreateBackdrop` / `CreateDim` / `CreatePoolsPanel` for the two to share.
+
+The middle is a single centred panel that hugs its content: the section
+text, the prompt (the author's line plus "The party must agree." / "Each
+hero chooses for themselves."), the option cards in a centred wrapping row,
+then -- once resolved -- what each option did. Option cards are drop
+targets in an individual section and buttons in an agreed one. Under each
+hero card is the choice they (or their player) made; while an agreed vote
+is still open every card just says "Ready", because a vote nobody can see
+is an honest one. A pulsing "?" marks every hero still owed a choice, and
+the header lists who is still to choose.
+
+### Open ends
+
+- **A player who never chooses wedges the section.** There is no timeout
+  (unlike the montage's assist window) because auto-choosing for someone is
+  worse than waiting. The host has `/eotwnarrative force`, which resolves
+  on the choices already in. The disconnected-player question is the same
+  one the montage has in Open Questions, and wants one answer for both.
+- Several heroes taking the same individual option produce one applied
+  entry naming all of them; the stage shows one block per option.
+- No Director-facing narrative runner in a normal game (the same
+  separation the montage has: `EncounterScript` + `EncounterNarrative` are
+  reusable, the hero row and the EotW hud wiring are not).
+
+### Testing it
+
+Outside a real EotW game there is no map-script host tick, so
+`/eotwnarrative start` runs a dev driver over the first narrative beat of
+the current map's script (ticked every 0.5s), `/eotwnarrative stop` halts
+it, `/eotwnarrative state` prints the section, the options and who has and
+has not chosen, `/eotwnarrative force` resolves on what is in, and
+`/eotwnarrative reset` clears the state. `/eotwscript` dumps the parse of a
+narrative beat with its sections, modes and clause effects.
+
+**Verified 2026-09-18 in the authoring game** (`e96656f3`), driving a
+three-section test script (agreed / individual / implicit-proceed) through
+the dev driver with the map's own `[[scene]]` as the backdrop. The script
+was injected by pointing `EncounterMontage.FindMapScript` at a parsed test
+document for the session rather than editing the week's real `Encounter`
+document, which was left untouched and re-verified afterwards. What ran:
+the stage presenting with the scene, title, intro, text, prompt and both
+option cards; an agreed section resolving off one click (+1 Hero Token
+really landing in the pool) and showing the chosen card with its chooser;
+the individual section taking a **click-a-hero-then-click-an-option** and
+two real **drag** gestures (through the input bridge) onto different
+options, resolving into two groups, with 5 Temporary Stamina on exactly the
+two heroes who took the offering; the implicit "Proceed" section; and a
+hand-seeded split decision flashing through three named players, lighting
+their hero cards and option cards in turn, landing on the winner and
+applying +2 Malice. Zero console errors. All residue (hero tokens, malice,
+temporary stamina, the state document) was cleaned back out.
+
+### The week's script as it stands (2026-09-18)
+
+The authoring game's `Encounter` document (`98a5a5bf`) now parses as FOUR
+beats -- narrative, montage, narrative, encounter -- with no warnings:
+
+1. **`# Narrative`** (the opening). `## Ajax's Patrols` sets it up: the
+   party is off the road because Ajax's patrols are sweeping the highway,
+   they are making for Blackbottom, and the forest crossing is a day and a
+   night of hard ground. One option, `### Press on`. Then
+   `## Goblins in the Wode`: the cut notches and the print in the mud, and
+   a `Choose together:` on how they cross --
+   `### Keep to the deep wood` (slow, off any trail a goblin watches) or
+   `### Follow the game trails` (fast, and watched). **Neither option
+   carries rules text**: it is a flavour vote, so it changes no balance,
+   but it is a real agreed-upon choice and a split gets the random flash.
+   Attach clauses to it whenever the week wants them to matter.
+2. **`# Montage`** -- unchanged.
+3. **`# Narrative`** (the ambush). One section, `## Surrounded`: the forest
+   goes silent, the bracken moves on every side, the ring closes before the
+   first goblin screams. One option, `### Draw steel!`, which is the last
+   thing anyone presses before combat.
+4. **`# Encounter`** -- unchanged.
+
+Both narrative beats reuse the document's existing `[[scene]]` annotation
+(the forest-road art), which suits both the journey and the ambush; a
+second RichScene would have to be authored in the journal to give the
+ambush its own backdrop. VERIFIED on screen: beat 1 both sections
+(including the agreed vote resolving and showing "The party moves on") and
+beat 3's card.
+
+**Still to verify**: a real EotW game with two clients -- a genuine
+multi-player agreed vote and a genuine disagreement (the authoring game
+collapses all party-owned heroes into one voter, so the flash could only be
+driven by hand); the narrative beat as beat 1 behind the held loading
+screen; a narrative beat between a montage and the encounter (beat
+advance, stage swap); an ally or item clause on a narrative option; and
+`/eotwnarrative force`.
+
 ---
 
 # Development Plan
@@ -3823,6 +5428,228 @@ Begin is now the only launch path, with the resume row for re-entry.)
 
 Deliverable: end-to-end -- lobby to fought encounter with AI-run monsters.
 
+## Phase 7 -- Encounter scripts: montage beats before combat (BUILT 2026-09-18 through step 33 plus 36-39, plus step 46 on 2026-09-19; UNTESTED live)
+
+Design in "Encounter scripts: montage beats before combat" under
+Architecture Notes. All Lua in the EotW codemod (three new top-level files
+registered through the MCP CodeMod workflow, `register_lua_file`), one
+possible core hook. Steps are ordered so each is testable on its own; 29
+and 30 change nothing visible for a script with no montage.
+
+29. [x] **Parser** (BUILT + unit-tested 2026-09-18): `EncounterOfTheWeek/EncounterScript.lua` -- pure Lua,
+    no engine globals. `EncounterScript.Parse(text) -> {beats, warnings}`
+    per the grammar (beats, rounds, entries, options, power rolls, effect
+    clauses), plus `EncounterScript.ParseAttr(attr, attributesInfo,
+    skillOptions)` (the characteristic/skill mapping, injected so the
+    module stays engine-free). Unit tests under `draw-steel-codex/tests/`
+    run with `dependencies/lua/bin/lua.exe` against the sample script and
+    edge cases (no beats + `[[encounter]]`, no round heading, four-tier
+    roll, unknown clause -> warning). Dev command `/eotwscript` dumps the
+    parse of the current map's script with warnings and resolves item and
+    monster names against the game.
+30. [x] **Beat machine + deferred spawn** (BUILT 2026-09-18, UNTESTED): `FindMapScript` (same discovery
+    as `FindMapEncounter`, returns doc + parse), the `eotwscript` state
+    doc, the host tick's beat loop, `SpawnEncounterMonsters` moved from
+    `SetupOnArrival` to the encounter beat, `hostThinkInterval` 2 -> 0.5.
+    Test: today's published week (no montage) plays identically.
+31. [x] **Montage runtime** (BUILT + VERIFIED in the authoring game 2026-09-18): `EncounterOfTheWeek/EncounterMontage.lua` --
+    request stamping (player side), host validation + turn lifecycle,
+    round/consequence progression, the owning client's roll launch
+    (`ShowDialog` as in `RollCustomPowerTableTest`, tier out of
+    `completeRoll`), effect application under elevation (items, stamina,
+    malice, allies), `allies` bookkeeping. Testable headless over MCP
+    (`execute_lua` stamping requests, inspecting the doc) before any UI.
+    Build-time checks recorded in the design: the untyped damage-type
+    string, whether Draw Steel re-seeds malice, the roll-dialog tier field.
+32. [x] **Stage UI** (BUILT + VERIFIED in the authoring game 2026-09-18; drag gesture itself unexercised): `EncounterOfTheWeek/EncounterMontageStage.lua` --
+    the presentable dialog (or the `overlayPanel` fallback), scene
+    backdrop, opportunity/threat columns, draggable hero-card row with
+    ally mini-cards, the turn panel, the consequences reveal. Iterate in
+    the test harness / `eotw:forcecustomui` before a live game. Export
+    `CreateHeroCard` and `CreateMaliceDiamond` from the hud. Refined
+    2026-09-19: the header is auto-height and the intro prose is the
+    party's standing context for the beat (see the Header bullet under
+    "The stage (UI)").
+33. [~] **Combat with allies** (sides + ally cards BUILT 2026-09-18, ally spawn + cards VERIFIED; the AI / victory / action-bar checks in a real combat are UNVERIFIED): `GatherCombatSides` puts player-controlled
+    non-heroes on the players' side; ally mini-cards under the right-rail
+    roster cards too; verify the AI ignores allies, victory does not count
+    them as monsters, and the owner can drive one from the action bar.
+34. [ ] **Authoring + live test** (the sample script is already in the authoring game's `Encounter` document; the rest is open): put the sample script into the
+    authoring game's encounter document (`C:\dev\eotw`, `room-1.yaml` or a
+    new doc filed under the map), make sure `Wode Elf Sentry` and `Healing
+    Potion` resolve in the published module (the sentry must come from the
+    module or a dependency), republish, run a two-client game end to end:
+    montage -> consequences -> spawn -> Draw Steel with an ally.
+35. [ ] **Publisher validation** (later): port the grammar's checks to
+    `tools/eotw_publish/publish_eotw.py` -- unknown beat, option without a
+    roll, unrecognized clause, unresolvable item/monster -- as per-map
+    warnings like the existing encounter checks.
+
+36. [x] **Initiative clauses** (BUILT 2026-09-18, luac-clean, parser
+    unit-tested (77 checks), runtime + core hook UNTESTED live,
+    UNCOMMITTED): `you begin the encounter surprised`, `you surprise the
+    enemy`, `you win initiative`, `you lose initiative` on tiers and
+    `Consequence:` lines. Parser (`EncounterScript.ParseInitiativeClause`,
+    `DescribeInitiativeOutcome`), runtime (`doc.data.initiative`,
+    `EncounterMontage.GetInitiativeOutcome`), encounter beat
+    (`StartEncounterCombat` in `EncounterOfTheWeek.lua`), core hook
+    (`Encounter.StartCombatWithTokens{immediateResult, surprisedTokens}` in
+    `Draw Steel UI/DSInitiativeRoll.lua`). Test: put `Consequence: You
+    begin the encounter surprised.` on a threat, leave it unvanquished,
+    Continue through the consequences -> the banner should announce the
+    monsters with no die and every hero (and ally) should carry Surprised
+    in the queue; then a tier with `You surprise the enemy` -> heroes
+    announced, every monster Surprised; `You win/lose initiative` -> the
+    side announced, nobody Surprised. Also check the stage's applied line.
+
+37. [x] **Boon clauses** (BUILT 2026-09-18, luac-clean, parser unit-tested
+    (93 checks), runtime VERIFIED live for heal / temporary stamina /
+    Recovery Value / hero tokens; the surge payout's in-combat half
+    UNTESTED): five reward clauses beyond items and malice --
+    `you heal <n> stamina`, `you gain <n> temporary stamina`,
+    `at the start of the next combat you gain <n> surges`,
+    `your recovery value is increased by <n>`, `+<n> hero token`, each with
+    an `each party member` spelling (hero tokens are one shared pool, so
+    they have no target). Also `you vanquish the threat` as the active
+    spelling of `the threat is vanquished`. Parser: the boon block at the
+    top of `ParseClause`, matched BEFORE the generic
+    `you gain <qty> <item>` rule, which would otherwise read
+    "you gain 5 temporary stamina" as an item named "temporary stamina".
+    Runtime (`EncounterMontage.lua`): `HealStamina`, `GrantTemporaryStamina`
+    (takes the higher of old and new -- Draw Steel temporary Stamina does
+    not stack), `GrantRecoveryBoon`, `GrantSurges`, and the hero-token pool
+    via `CharacterResource.Set/GetGlobalResource`.
+
+    Two traps worth keeping:
+
+    - **Recovery Value needs an ongoing-effect ASSET.** The boon is an
+      ongoing effect named `Montage Boon: Recovery Value +N`, holding one
+      `behavior = "attribute"` / `attribute = "recoveryvalue"` modifier,
+      applied `until_rest`. `creature:ApplyOngoingEffect` looks the asset up
+      through `GetTableCached`, whose snapshot only refreshes on the
+      `refreshTables` event -- an asset uploaded in the same breath as the
+      grant is INVISIBLE and the apply silently returns nil.
+      `EncounterMontage.PrepareBoonAssets(beat)` therefore creates every
+      value the beat needs from `EncounterMontage.Begin`, and
+      `GrantRecoveryBoon` reports failure rather than a phantom grant if the
+      asset still is not visible.
+    - **Surges cannot be granted before combat.** Surges are a
+      `clearOutsideOfCombat` resource: `creature:AddUnboundedResource` drops
+      the grant outright when `dmhub.initiativeQueue` is nil or hidden. They
+      are therefore BANKED on the script document (`data.surges =
+      { [heroCharid] = n }`, top level like `initiative`, cleared by
+      `/eotwmontage reset`) and paid out by
+      `EncounterMontage.ApplyPendingCombatBoons`, driven from the host
+      tick's queue-live branch in `MapScriptHostThink` -- not from
+      `StartEncounterCombat`, where the queue may not be live yet. The
+      function re-checks the queue itself, so an early call leaves the bank
+      for the next tick.
+
+38. [x] **Surprise immunity** (BUILT 2026-09-18, parser unit-tested (101
+    checks), grant + doc state VERIFIED live, the combat-start branch
+    UNTESTED): `you cannot be surprised` -- the heroes still LOSE the
+    initiative to a `surprised` outcome, but the Surprised condition is
+    withheld from the whole party (every hero and ally), whoever earned the
+    boon. Parser: `EncounterScript.ParseSurpriseImmunityClause`, effect kind
+    `nosurprise`, **checked before the initiative clauses** -- the existing
+    `^you .*surprised$` rule matches "you cannot be surprised" and would
+    otherwise make it mean its exact opposite (this is how it first landed
+    in the live document, silently and with no warning). Runtime:
+    `doc.data.noSurprise = { entryName, at }` at the TOP level like
+    `initiative`, read by `EncounterMontage.HasSurpriseImmunity` and applied
+    in `StartEncounterCombat`, which nils `surprisedTokens` while leaving
+    `immediateResult = "monsters"` alone. Cleared by `/eotwmontage reset`.
+    It does not touch the `surprise` outcome (that Surprises monsters).
+
+39. [x] **Assisting a test** (BUILT 2026-09-18, luac-clean, parser tests
+    still 101/101 -- no parser change; **UNTESTED live**): design in
+    "Assisting a test" under Architecture Notes. A test that lands below
+    tier 3 opens an assist window; a hero trained in one of the test's
+    listed skills -- one the acting hero is not already using -- may be
+    dragged into the assist slot, rolls the same characteristic with their
+    own modifier and an automatic Skilled +2 against the fixed bane / edge /
+    double-edge table, and the result shifts the test's tier before its
+    effects are applied. Costs the helper their turn. One assist per test.
+    `EncounterMontage.lua` + `EncounterMontageStage.lua`; no engine change.
+
+    Test: approach an entry whose roll lists two or more skills, roll a tier
+    1 or 2 with a hero trained in one of them while another hero is trained
+    in a different one -- the second hero should grow a "!" and the assist
+    slot should name them and their skill. Drag them in, roll: a tier 2
+    assist (edge) should push a 15 to a 17 and tier 2 to tier 3; a tier 1
+    (bane) should be able to drop a 12 back to tier 1; a tier 3 (double
+    edge) should raise the tier with the total unchanged. Then check that
+    the helper is marked as acted, that "Take the result" resolves on the
+    test's own tier, that the 30 s timeout does the same, and that a tier 3
+    test never opens the window at all.
+
+46. [x] **Entries come and go with the rounds** (BUILT 2026-09-19,
+    luac-clean, **UNTESTED live**): a later round's entries are no longer
+    carded ahead of time under an "Appears in round N" line -- they
+    materialize when their round arrives, and an entry the party dealt
+    with fades out and is destroyed when the round ends. Design in the
+    "columns hold only what is in play" bullet under "The stage (UI)".
+    `EncounterMontageStage.lua` only; no parser, runtime or engine change.
+
+    Test: a two-round montage (the sample script's `Through the Wode`
+    qualifies). Round 1 should show only the round-1 entries. Take an
+    opportunity and vanquish a threat, then let every hero act: as round 2
+    opens, those two cards should fade away and go, and the round-2 entries
+    should ramp in one after another. Then reload mid-round 2 -- what was
+    dealt with in round 1 must not come back, and what was dealt with in
+    round 2 should still be there with its "Taken" / "Vanquished" line.
+
+Deliverable: the week's document is a script; a montage plays before the
+fight with every player dragging their heroes onto opportunities and
+threats, rolling in front of everyone, and its outcomes (items, stamina,
+healing, temporary stamina, Recovery Value, surges, hero tokens, malice,
+allied monsters, unresolved-threat consequences) carrying into the combat.
+
+## Phase 8 -- Narrative beats (BUILT 2026-09-18; VERIFIED in the authoring game; real EotW game UNTESTED)
+
+Design in "Narrative beats" under Architecture Notes. All Lua in the EotW
+codemod; one new top-level file registered through the MCP CodeMod workflow
+(`EncounterNarrative.lua`, ordered after `EncounterMontage`); no engine and
+no core change.
+
+40. [x] **Parser** (BUILT + unit-tested 2026-09-18): the `# Narrative` beat
+    in `EncounterScript.lua` -- sections, per-section scenes, the
+    together/individual marker with its loose spellings, options with `|`
+    rules-text lines, the implicit `Proceed`, the "no marker" warning, plus
+    `NarrativeSections` / `FindSection` / `SectionCount`, narrative names in
+    `ReferencedNames` and narrative beats in `Describe`. Tests in
+    `tests/encounter_script_test.lua` (150 checks, up from 101).
+41. [x] **Runtime** (BUILT + VERIFIED 2026-09-18):
+    `EncounterOfTheWeek/EncounterNarrative.lua` -- the `narrative` state
+    key, voters per mode, the request/validate/apply loop, the
+    agreed/individual resolution split, the random decision and its flash
+    window, section progression, `ForceResolve`, the `/eotwnarrative` dev
+    command and dev driver. Plus, in `EncounterMontage.lua`,
+    `ctx.heroEntries` + `ctx.source` + the multi-target `ally` branch in
+    `ApplyEffects`, the exported `RecordAlly`, and `narrative` in the
+    reset.
+42. [x] **Stage** (BUILT + VERIFIED 2026-09-18): `CreateNarrativeStage` in
+    `EncounterMontageStage.lua` behind `StageFor`, sharing the factored
+    `CreateBackdrop` / `CreateDim` / `CreatePoolsPanel`; option cards as
+    buttons and drop targets, the hero row with its choice line and "?"
+    badge, the split-decision flash (`FlashCandidateIndex`), and the
+    narrative style rules.
+43. [x] **Beat machine** (BUILT 2026-09-18; the real-game path UNTESTED):
+    `RunScriptBeat` runs a narrative beat and advances past it (and skips
+    it with a warning on a client whose module has no narrative runtime);
+    `MontageStageExpected` and `BeginOpeningMontage` cover both beat kinds,
+    so a week that opens on a narrative is what the held loading screen
+    reveals.
+44. [ ] **Live test in a real EotW game**: two clients, an agreed section
+    with a genuine disagreement (the flash over real players), an
+    individual section with each player dragging their own heroes, a
+    narrative before AND after a montage, and an item/ally clause on a
+    narrative option.
+45. [ ] **Publisher validation**: fold the narrative checks into the Python
+    port alongside the montage's (step 35) -- unknown marker, option
+    without rules text where one was clearly meant, unresolvable item or
+    monster name, a section with no options and no text.
+
 ---
 
 # Open Questions
@@ -3965,9 +5792,376 @@ Deliverable: end-to-end -- lobby to fought encounter with AI-run monsters.
   a Lua silhouette stopgap -- see "Pregen portraits at the titlescreen" under
   "Pregen heroes from the module".
 
+- **Montage rules the sample script leaves open** (RAISED 2026-09-18 while
+  planning Phase 7; the user confirmed every default below on 2026-09-18
+  except the round rule, which changed -- see its entry):
+  - *Is an opportunity consumed after one approach?* Default: yes -- one
+    hero takes it, whatever the roll, and it greys out. A threat stays
+    until a tier says it is vanquished, so several heroes may try it.
+  - ~~*Do entries belong to the round they are listed under?*~~ DECIDED
+    2026-09-18 (user): both opportunities and threats persist round to
+    round; a round heading only introduces entries. Unvanquished threats
+    still standing at the end all deliver their consequence.
+  - *May two heroes act at once?* Default: no -- turns are serialized so
+    every client watches the same roll. Each hero acts once per round;
+    the round ends when every hero on the map has acted.
+  - *Who advances the end-of-montage consequence reveals?* Default:
+    anyone (like Proceed on the victory screen).
+  - *A hero whose owner has left the game* blocks the round forever.
+    Default for v1: nothing; a host-visible "skip hero" control is the
+    likely follow-up.
+  - *Where does an ally spawn?* Default: the free Start-zone tile nearest
+    its hero. It lives for the rest of the game; when it dies it is just
+    gone (the Hero Death rule is heroes-only).
+  - *`Options:` text* is shown once a hero approaches, above the option
+    list; it is not on the card.
+
 ---
 
 # Status
+
+- 2026-09-19 (the cut to combat, latest): **The stage now dissolves away to
+  reveal the battlefield instead of hanging over it. BUILT code-only, NOT
+  run.** User report: after the last narrative section the Draw Steel banner
+  played but the narrative UI and scene stayed on screen. The staying-up half
+  was the duplicate-stage bug from round three (their session predated that
+  fix; `HidePresentedDialog` only destroys the one panel GameHud still tracks,
+  so the orphans remained). The requested half is new: the encounter beat now
+  spawns its monsters BEHIND the stage, then `EncounterMontage.DismissStage`
+  stamps a shared clock and every client plays `dmhub.StartScreenTransition`
+  -- the engine dissolve the titlescreen uses -- hiding the stage under the
+  snapshot and thinning it away to reveal the finished battlefield; Draw Steel
+  only rolls once the stage is really gone, bounded by a 4s timeout so a stuck
+  surface cannot wedge the fight. Design under "The stage dissolves away to
+  reveal the fight". Files: `EncounterOfTheWeek/EncounterMontage.lua`
+  (`DismissStage`, `DismissAt`, `ClearDismiss`, `STAGE_DISMISS_SECONDS`),
+  `EncounterOfTheWeek/EncounterOfTheWeek.lua` (the beat machine stops hiding;
+  the encounter beat dismisses then fights),
+  `EncounterOfTheWeek/EncounterMontageStage.lua` (`FadeOutScreenTransition`,
+  `Dismiss`), `EncounterOfTheWeek/EncounterNarrative.lua` (Begin clears the
+  stamp).
+
+- 2026-09-19 (the flicker, round three, latest): **The background no longer
+  reloads between beats: the presenting client was stacking a second stage on
+  top of the first. FIXED code-only, NOT run.** `GameHud.presentDialog` forgets
+  the mounted panel without destroying it, so presenting a dialog that is
+  already presented builds a duplicate -- and `Begin` presented unconditionally
+  at every handover. `EncounterMontage.Present` now returns early when the
+  stage is already up (which also stops the orphans that would have left the
+  action bar hidden into combat); `AdvanceFromStageBeat` seeds the next beat's
+  state before stamping the beat index, so no refresh renders the new body over
+  the old beat's state; and the scene only follows a narrative section while
+  that section's beat is the one being drawn. Files:
+  `EncounterOfTheWeek/EncounterMontage.lua`,
+  `EncounterOfTheWeek/EncounterOfTheWeek.lua`,
+  `EncounterOfTheWeek/EncounterMontageStage.lua`. Design under "Stage beats
+  hand over without showing the map", round three. Needs a restart to load,
+  then the montage -> narrative cut should not touch the backdrop at all.
+
+- 2026-09-19 (seamless beat cuts, round two, latest): **The pause and the
+  flicker between a narrative and a montage are both fixed. Mounted stage
+  VERIFIED live; the cut itself still to be seen.** User report: playing solo,
+  a long wait after pressing the option and then a full-screen flicker on the
+  way to the montage. The wait was 5s + 4s of lingers on a section that applied
+  nothing (now 0.4s + 0.3s, and 4s only when something actually landed); the
+  flicker was GameHud tearing down and rebuilding the presented dialog because
+  its args carried the beat index. The presented args are constant now and a
+  single mounted `CreateScriptStage` owns the shared chrome with the montage or
+  narrative body swapped inside it. Also fixed: a restart taken mid-roll wedged
+  the montage turn in "rolling" forever (`GameHud.instance` is `false` during
+  load and indexing it raised, eating the retry). Files:
+  `EncounterOfTheWeek/EncounterNarrative.lua` (`m.resolvedLinger`,
+  `RESOLVED_LINGER_QUIET`, `DONE_LINGER_SECONDS` 4 -> 0.3),
+  `EncounterOfTheWeek/EncounterMontage.lua` (constant present args, the
+  `ShowRollDialog` hud guard), `EncounterOfTheWeek/EncounterMontageStage.lua`
+  (`CreateScriptStage`, `args.embedded` on both bodies). Design under
+  "Stage beats hand over without showing the map".
+
+- 2026-09-19 (latest): **Montage entry cards now come and go with the rounds:
+  a later round's entries are no longer shown ahead of time, and what the
+  party dealt with fades away when the round ends. BUILT; luac-clean;
+  UNTESTED live.** User report: the columns showed every entry of the beat
+  from the start, the future ones greyed out under "Appears in round 2".
+  They now materialize on their own round (staggered) and leaving cards fade
+  out and are destroyed before the new arrivals ramp in. Design under "The
+  stage (UI)", the "columns hold only what is in play" bullet. File:
+  `EncounterOfTheWeek/EncounterMontageStage.lua` (`CreateEntryCard`'s
+  `appearIn` / `leave` / `gone`, and `SyncEntries` / `AddEntriesForRound` /
+  `RetireDoneEntries` / `ClearEntries` in `CreateStage`, replacing the
+  build-everything-once `BuildEntries`). **Not seen running**: the live app
+  (`ConnectedJaggedPerfectWarden`, mid-montage on beat 2 round 1) refused to
+  pick the edit up -- `code.GetMod("cdc19d98-...")`'s `localContents` for
+  `EncounterMontageStage` stayed at the pre-edit bytes through a reload, the
+  known stale-watcher trap, so a restart is needed to see it. Worth watching
+  for on that first run: the stagger and fade times (0.15 / 0.5 / 0.5 s) and
+  whether waiting out the fade before the new round's cards appear reads as
+  deliberate or slow.
+
+- 2026-09-19: **Montage <-> narrative beats now cut straight to each
+  other; the map no longer flashes between them. FOUND + FIXED; UNTESTED
+  live.** User report: after a narrative section the montage came up only
+  after a moment of bare map. The beat machine hid the stage and let the next
+  beat present itself a tick later; it now hands over under the same dialog
+  id without ever taking the stage down, and the action-bar hide is ref
+  counted so the bar neither blinks through the cut nor sticks hidden after
+  it. Design under "Stage beats hand over without showing the map". Files:
+  `EncounterOfTheWeek/EncounterOfTheWeek.lua` (`AdvanceFromStageBeat`),
+  `EncounterOfTheWeek/EncounterMontageStage.lua` (the ref-counted
+  `AcquireActionBarHide` / `ReleaseActionBarHide`). The live EotW game
+  (`ConnectedJaggedPerfectWarden`) reloaded the fix on a restart taken
+  mid-montage and came straight back onto its stage, so the next
+  montage -> narrative handover in that session is the live test.
+
+- 2026-09-19 (module content audit, latest): **Audited what compendium content
+  the weekly module must carry for the script beats; nothing is missing today,
+  but a silent hole was identified.** Recorded as "Compendium content the script
+  needs" under Module + codemod bundling. Nothing was added to the module or the
+  codex for montage effects beyond two things already noted elsewhere: the
+  Recovery Value ongoing effect is manufactured at run time in the game's own
+  table rather than shipped, and the initiative clauses depend on the core
+  `Encounter.StartCombatWithTokens{immediateResult, surprisedTokens}` hook (core
+  codex, still uncommitted -- no week may use those clauses until it ships).
+  Every other effect (Surprised, temporary Stamina, surges, hero tokens, malice)
+  is core rules content. The hole: item and monster clauses resolve by NAME
+  against `tbl_Gear` / `assets.monsters` at run time, and those names are prose
+  in a journal document, invisible to `ModuleDependencySearcher` -- so custom
+  gear or a custom monster named by a week must be ticked by hand in ModShare or
+  it silently grants nothing, with no publish-time warning. The live script only
+  names `Healing Potion` and `Wode Elf Sentry`, both core data-module content,
+  so no ticking is needed for this week. Phase 7 step 35 (publisher validation)
+  remains the fix; the publisher has no montage awareness at all today.
+
+- 2026-09-19 (local-assets path normalization): **Trailing-separator
+  bug in the local-assets directory list FIXED (engine NEEDS BUILD,
+  UNTESTED).** Raised while writing the setup instructions for another
+  developer. In the directory list, `\` and `/` are interchangeable and
+  nothing is escaped (the setting holds the raw string; the preference's
+  JSON encoding is the encoder's business) -- but a path typed as
+  `C:\dev\eotw\` was silently inert. `Path.GetFullPath` preserves a
+  trailing separator (verified against .NET), so the root normalized to
+  `c:/dev/eotw/`, and every containment test in the feature is
+  `norm == root || norm.StartsWith(root + "/")` -- which then compares
+  against `c:/dev/eotw//` and matches nothing, attributing no file to that
+  root: `DirIndexForPath`, the duplicate/nesting check in
+  `ReadConfiguredDirs`, the `MoveItemFile` guard, and `GitStatusService`,
+  which keys its per-directory cache on the same function. Fixed in
+  `LocalAssetDirectory.NormalizePath` rather than at the roots, so all
+  callers are corrected at once and a directory keys identically whether or
+  not it was typed with a trailing slash; the trim stops at length 1, so the
+  unix root `/` survives and a drive root becomes `c:`, self-consistently,
+  since roots and the files beneath them share the function. Recipe and
+  path-syntax rules are in "Handing this to another developer".
+
+- 2026-09-19 (the montage intro as standing context): **The prose
+  under `# Montage` now reads as the party's context line for the whole
+  beat. BUILT + VERIFIED on screen in the authoring game; UNCOMMITTED.**
+  User direction: if the document has text right below the montage, use it
+  as text showing at the top throughout the montage, to give the players
+  context. The plumbing already existed -- the parser has always made that
+  paragraph `beat.intro` and the stage has always shown it in the header --
+  but at 16pt grey it read as a caption, and a header pinned at
+  `HEADER_HEIGHT = 76` had no room for more than the one line it happened to
+  hold, so anything longer would have run into the entry columns. Changed in
+  `EncounterOfTheWeek/EncounterMontageStage.lua`: a new `eotwMontageIntro`
+  style (19pt italic `#efe4cc`, `maxWidth` 1000, `maxHeight` 186) carried
+  alongside `eotwStageSubtitle` on the montage's intro label; the montage
+  header is `height = "auto"` with `minHeight = HEADER_HEIGHT`; and
+  `SyncHeaderHeight` (called from `Refresh` and from the stage's 0.5s think)
+  re-derives the body's `100%-N` height from `header.renderedHeight`,
+  clamped to the new `HEADER_HEIGHT_MAX = 260`. VERIFIED: the live script's
+  one-line intro reads clearly and the stage reflows by the ~15 it grew;
+  pushed to a four-line paragraph by hand, the header wraps and the columns,
+  turn panel and hero row all move down with nothing clipped. The narrative
+  stage was deliberately left alone (plain subtitle, fixed header). Design
+  under "The stage (UI)", the Header bullet. Note again for the next
+  session: `reload_lua` did NOT pick up edits to this file (the known
+  dead-watcher trap; the tell was an `inspect_ui` backtrace whose line
+  numbers lagged the working copy) -- only `restart_dmhub` did, and after a
+  restart the presented dialog must be re-presented.
+
+- 2026-09-18 (the week's script gets its narrative beats): **The
+  authoring game's `Encounter` document now opens with a narrative and has
+  a second one between the montage and the fight. WRITTEN + VERIFIED on
+  screen.** User direction: an introductory narrative explaining that the
+  heroes are working through the forest to avoid Ajax's searching patrols,
+  hoping to reach Blackbottom, wary of goblins, with the scene set for a
+  hard journey; then a second narrative, after the montage, where they find
+  themselves surrounded by goblins before the combat. Written straight into
+  the live document (`98a5a5bf`) with `SetTextContent` + `Upload`, by
+  splicing around the existing text rather than retyping it, so the montage
+  and encounter beats are byte-identical; the pre-edit text is in this
+  session's `_G.g_eotwScriptBackup`. Contents and the one decision worth
+  knowing (the crossing choice is deliberately flavour-only, no rules text)
+  are under "The week's script as it stands". Parse: 4 beats, 0 warnings.
+
+- 2026-09-18 (narrative beats, latest): **A script can have `# Narrative`
+  beats. DECIDED + BUILT + VERIFIED end to end in the authoring game;
+  UNCOMMITTED.** User direction: as well as montages and an encounter there
+  can be narrative sections, each with a `[[scene]]`, text that appears, and
+  options that either have to be agreed upon or are taken by each hero on
+  their own; an option can carry the same rules text a power table can
+  ("+1 hero token") or just be a "Proceed"; a disagreement on an agreed
+  option is settled at random, flashing between the players before it
+  decides; and everyone chooses before the next section. Design in
+  [Narrative beats](#narrative-beats-decided--built-2026-09-18-lua-only-verified-end-to-end-in-the-authoring-game-real-eotw-game-untested-uncommitted),
+  build order in Phase 8. Files: `EncounterOfTheWeek/EncounterScript.lua`
+  (the beat + its grammar), `EncounterOfTheWeek/EncounterNarrative.lua`
+  (NEW, registered in the codemod after `EncounterMontage`),
+  `EncounterOfTheWeek/EncounterMontageStage.lua` (`CreateNarrativeStage`
+  behind `StageFor`, the shared chrome, the flash),
+  `EncounterOfTheWeek/EncounterMontage.lua` (`ctx.heroEntries`,
+  `ctx.source`, multi-target allies, `RecordAlly`, reset),
+  `EncounterOfTheWeek/EncounterOfTheWeek.lua` (the beat machine),
+  `tests/encounter_script_test.lua` (150 checks). Decisions recorded with
+  the user: sections live under one `# Narrative` beat; individual choices
+  are per hero and agreed choices are per player; an agreed option's rules
+  text applies to the whole party. Note for the next session: `reload_lua`
+  could not load edits to these files (the known dead-watcher / stale
+  codemod trap) -- **restart the app after editing them**, and after a
+  restart the presented dialog must be re-presented to pick up stage edits.
+  Also: `register_lua_file` put `EncounterNarrative.lua` in the codemod's
+  file list (confirmed persisted, and a cold restart loads it), but the
+  repo's `main.lua` mirror has NOT been rewritten with its `require` yet --
+  do not hand-edit it; let the app's mod tools write it.
+
+- 2026-09-18 (montage roll visibility): **Remote roll dialog for the
+  other clients + live tier highlight on the stage while the dice roll.
+  BUILT, luac-clean, UNTESTED live, UNCOMMITTED.** User direction: show
+  the read-only remote copy of the montage roll dialog to everyone else
+  (as on a hero's combat turn) and highlight the tier the live roll is
+  landing on in the stage's option card, updating as the dice tumble.
+  Files: `Timeline/AbilitySidebar.lua` (new exports
+  `CharacterPanel.ShareDisplayedAbility`, `AbilityShareDocPath`,
+  `GetAbilityShareData`), `EncounterOfTheWeek/EncounterMontage.lua` (share
+  call after `DisplayAbility`), `EncounterOfTheWeek/EncounterMontageStage.lua`
+  (`SetLandedTier`, `LiveTierRows`, `OptionCard` uses it while rolling).
+  Design under "Runtime state and authority" step 3 and "The stage (UI)",
+  the turn-panel bullet. `reload_lua` in the running game (montage mid
+  round 1, a Human Censor rolling) did not load the core change, so a
+  restart is needed to test. Test: two clients, drag a hero onto a threat,
+  choose an option, roll -- the other client should get the remote card
+  with the option's tier table at the sidebar, and on both clients the
+  stage's option card should move the gold highlight between tiers while
+  the dice tumble, then settle on the landed tier before the host resolves.
+  Also confirm the remote card draws above the stage (same open question
+  as the local card).
+
+- 2026-09-18: **Local-assets playtesting of an EotW game works in
+  the current build; the global directory list was simply EMPTY.** Asked
+  whether an EotW game could be forced to be a "dev game" so it loads
+  assets from local YAML instead of the cloud. There is no dev-game flag:
+  the mechanism is the global `localassets:eotwdirs` list built on
+  2026-08-30, and the engine half (`LocalAssetDirectory.ReadEotwDirs` /
+  `IsEotwGame`, commit `d00fca8b3`, 2026-08-31) is in the
+  2026-09-18 player build, so the "NEEDS BUILD" caveat on that section is
+  retired. Live check on the running client: `dev` = true,
+  `dev:encounteroftheweek` = true, slot game
+  `FleetArcaneVelvetScaletooth`, but `localassets:eotwdirs` read `""` --
+  so every recent playtest had been loading the published module. Reset to
+  the canonical pair, `C:\dev\eotw` then
+  `C:\dev\dmhub\draw-steel-codex\data` (matching the authoring game's
+  `localassets:dirs`), via `dmhub.SetSettingValue`. Takes effect on the
+  next game load, so an EotW game already running must be re-entered.
+  UNTESTED: an EotW game actually loading its assets from the directories
+  -- still the one unverified link in the chain.
+
+- 2026-09-18: **Montage initiative clauses: BUILT, luac-clean,
+  parser unit tests pass (77); runtime and core hook UNTESTED live
+  (code-only session); UNCOMMITTED.** Tier lines and `Consequence:` lines
+  can say `You begin the encounter surprised`, `You surprise the enemy`,
+  `You win initiative`, `You lose initiative`; the host remembers the last
+  one in `eotwscript.initiative` and the encounter beat starts combat with
+  the forced winner and the Surprised condition on the losing side, through
+  two new optional args on the core `Encounter.StartCombatWithTokens`.
+  Files: `EncounterScript.lua`, `EncounterMontage.lua`,
+  `EncounterOfTheWeek.lua`, `Draw Steel UI/DSInitiativeRoll.lua`,
+  `tests/encounter_script_test.lua`. Phase 7 step 36 has the live test
+  script. Deploy note: the core file must be deployed/reloaded together
+  with the codemod files (deploy.ps1 copies all git-modified Lua).
+- 2026-09-18: **Montage hero cards show characteristics and
+  skills. BUILT + VERIFIED on screen in the authoring game; UNCOMMITTED.**
+  `CreateHeroCard` in `EncounterOfTheWeek/EncounterOfTheWeekHud.lua` gained
+  an `opts.showStats` mode (`CreateStatStrip` + `CreateSkillsLine`, two new
+  style rules, taller card and overlay); `CreateHeroColumn` in
+  `EncounterMontageStage.lua` passes it and `HERO_ROW_HEIGHT` grew to 320.
+  Design under "Bottom row: hero cards". Note for the next session: the
+  EotW codemod's file watcher is dead in this session (the known
+  deploy-kills-the-watcher bug), so `reload_lua` cannot pick up edits to
+  these files -- only an app restart loads them.
+
+- 2026-09-18: **Hero Tokens are seeded at session start: one per
+  hero. DECIDED + BUILT; UNTESTED, UNCOMMITTED.** `SeedHeroTokens` in
+  `EncounterOfTheWeek/EncounterOfTheWeek.lua`, called from the host's
+  `SetupOnArrival` right after the `numheroes` write, stamped once in the
+  `eotwstate` doc (`heroTokensSeeded`) so resumes never refund spent tokens.
+  Lua only, luac-clean; could not be exercised locally (the running game is
+  not an EotW game, so the codemod is not even loaded there). Design in
+  [Hero Tokens at the start of the session](#hero-tokens-at-the-start-of-the-session-decided--built-2026-09-18-untested).
+
+- 2026-09-18 (haul strip): **Items acquired during a montage show beside
+  the hero's stage card. DECIDED + BUILT; drop-in + sound VERIFIED live in
+  the authoring game, UNCOMMITTED.** User
+  direction: show the icons of any items acquired during the montage down
+  the left side of the hero card, with the item's details on mouse over,
+  and have a new item appear above and animate down into position. The host
+  now records each granted item on the script document
+  (`data.items[heroCharid]`, written by `RecordItem` beside the inventory
+  write in `EncounterMontage.ApplyEffects`; read back through
+  `EncounterMontage.GetItems`, cleared by `/eotwmontage reset`), and
+  `EncounterMontageStage.lua` grows `CreateItemIcon` / `CreateItemStrip`
+  plus an `eotwItemIcon` / `eotwItemQty` style pair; `CreateHeroColumn`
+  now puts the strip and the card side by side in a `cardRow`. Design under
+  "The stage (UI)", the haul strip bullet. Lua only, luac-clean.
+
+  Later the same day, on user direction ("items should animate in nicely,
+  appearing above their starting position, fading in and moving downward
+  into position... and play a satisfying sound event the same as when a
+  character gets an item in combat"), the drop-in was rebuilt and given
+  sound. The first attempt animated by writing `selfStyle.y` /
+  `selfStyle.opacity` with a `transitionTime`, which does not animate at
+  all -- transitions only run when a *rule's* match changes. A second
+  attempt put the timing on a resting-state rule (`~dropIn`), which fades
+  but never moves, because style `y` accumulates over matching rules. The
+  shipped shape (born with `dropIn`, ramp that rule out) was proven with a
+  throwaway panel in the running app -- square raised 300px, transition
+  slowed to 8 s, pixel-sampled mid-flight -- and then exercised in the real
+  strip with `ITEM_DROP_TIME` temporarily at 4 s and items injected into
+  `data.items`: icons fall from above, fading in, staggered, and land
+  cleanly. Both sound events fire without error; `EquipmentCategory`
+  resolves at stage runtime.
+
+- 2026-09-18 (montage): **Montage VERIFIED end to end in the authoring
+  game** (stage, approach, choose, real roll, every effect kind, the
+  consequences phase, completion; zero errors). `/eotwmontage start`
+  added as the dev driver for games without the EotW map script. Details
+  under "Testing it" in the design section. Real two-client EotW game
+  still UNTESTED; UNCOMMITTED.
+
+- 2026-09-18 (later): **Encounter scripts + montage beats: BUILT (steps
+  29-33), luac-clean, parser unit-tested (64 checks), UNCOMMITTED.** Three new codemod files (`EncounterScript.lua`,
+  `EncounterMontage.lua`, `EncounterMontageStage.lua`, registered via the
+  MCP CodeMod workflow) plus edits to the codemod and hud; no engine or
+  core change. The user decided opportunities persist round to round like
+  threats. Files are on disk in the repo (which IS the app's git folder);
+  a Lua reload picks them up. The ordered test recipe is under "Testing
+  it" in the design section; the next `/week` session should start there.
+
+- 2026-09-18: **Encounter scripts + montage beats: PLANNED.** User
+  direction: the map's document becomes a script of beats;
+  `# Montage` (scene backdrop, `## Round N`, `## Opportunity:` /
+  `## Threat:` entries with `###` options carrying journal power-roll
+  blocks whose tier text is parsed into effects -- items, stamina, malice,
+  an allied monster, "the threat is vanquished") plays before the
+  `# Encounter` beat; unvanquished threats deliver their `Consequence:` at
+  the end. Design in
+  [Encounter scripts](#encounter-scripts-montage-beats-before-combat-planned-2026-09-18-nothing-built)
+  (grammar, the `eotwscript` state doc, host-arbitrated turns with the
+  owning client rolling, effect application, the presentable-dialog
+  stage, allies in combat, the beat machine that moves the monster spawn
+  to the encounter beat); build order is Phase 7 (steps 29-35). Defaults
+  taken on the open rules are listed under "Montage rules the sample
+  script leaves open" in Open Questions -- confirm or change them before
+  step 31. No engine change expected; three new codemod files to register.
 
 - 2026-09-16: **"New Director Window" works from an EotW game for dev+admin
   hosts. DECIDED + BUILT; engine NEEDS BUILD, UNTESTED, UNCOMMITTED** (core
@@ -4062,7 +6256,7 @@ Deliverable: end-to-end -- lobby to fought encounter with AI-run monsters.
   `* -text` (`f0fa701`) so git never converts the line endings of files the
   engine writes itself. No remote; local history only. Nothing else changed --
   the engine and the publisher both just read the directory. The "shows up as a
-  git diff" claim in [Playtesting against local asset directories](#playtesting-against-local-asset-directories-decided--built-2026-08-30-engine-needs-build-untested)
+  git diff" claim in [Playtesting against local asset directories](#playtesting-against-local-asset-directories-decided--built-2026-08-30-engine-shipped-in-the-2026-09-18-build)
   was false when written and is now true; it has been corrected either way.
 
 - 2026-08-31: **Module version 8 PUBLISHED** -- the first version
@@ -4335,7 +6529,7 @@ Deliverable: end-to-end -- lobby to fought encounter with AI-run monsters.
   - UNTESTED: the engine half (all tooltip sources), and the suppression actually engaging in a live EotW pre-combat phase.
 
 - 2026-08-30: **Encounter of the Week games can now be played against local asset directories. BUILT; engine NEEDS BUILD, UNTESTED end to end.**
-  - Local-assets mode was per-game, and an EotW game is created fresh for each encounter, so it could never be aimed at one: playtests always ran the last published module. A global `localassets:eotwdirs` list now follows the account's EotW slot. Design and consequences in [Playtesting against local asset directories](#playtesting-against-local-asset-directories-decided--built-2026-08-30-engine-needs-build-untested).
+  - Local-assets mode was per-game, and an EotW game is created fresh for each encounter, so it could never be aimed at one: playtests always ran the last published module. A global `localassets:eotwdirs` list now follows the account's EotW slot. Design and consequences in [Playtesting against local asset directories](#playtesting-against-local-asset-directories-decided--built-2026-08-30-engine-shipped-in-the-2026-09-18-build).
   - Engine: `ReadEotwDirs` + `IsEotwGame` in `Assets/Scripts/LocalAssetDirectory.cs` (appended below the per-game list; `ReadSettingString` gained a global-setting mode). MSBuild-clean, NOT built -- until the build lands, the setting can be configured but nothing consumes it.
   - Codex (deployed): the setting in `DMHub Titlescreen/Settings.lua`, and `CreateEotwLocalAssetsSection` + the shared `CreateDirectoryListPanels`/`SmallButton` refactor in `DMHub Titlescreen/SettingsScreen.lua`.
   - Verified live in the running client: the new block renders under the existing Local Assets section, Copy From This Game fills it from the game's own dirs, and the status line names the slot game. The per-game section still renders correctly after the widget refactor. What remains untested is the part the engine build gates -- an EotW game actually loading its assets from the directories.
@@ -5050,3 +7244,22 @@ Deliverable: end-to-end -- lobby to fought encounter with AI-run monsters.
   trigger was suppressed by a "can't use triggered actions" effect or by
   an empty resource pool; a hint on the hero card badge/tooltip or a
   one-line notice when a would-be prompt is suppressed would close it.
+37. [x] **Loading-screen hold** (BUILT 2026-09-18; C# NEEDS BUILD; Lua UNTESTED):
+    engine `dmhub.HoldLoadingScreen` / `ReleaseLoadingScreen` (`GameController.cs`,
+    `LuaInterface.cs`, `Definitions/dmhub.lua`); the titlescreen holds on every
+    EotW Enter World; the host presents an opening montage in `SetupOnArrival`
+    before hero placement (`EncounterMontage.Begin`, new "arriving" phase);
+    the stage's `create` releases the hold, `SetupOnArrival` releases it after
+    placement when no montage is expected. Design under "The loading-screen
+    hold" above. Test: host and member both dissolve from the loading screen
+    straight onto the stage; a no-montage week shows no hero pop-in.
+38. [x] **Two module pregens sit in the Players party** (ROOT-CAUSED + FIXED
+    2026-09-18; Lua NOT deployed, real arrival UNTESTED): the published
+    `mcdm-encounteroftheweek` snapshot authors High Elf Tactician and Human
+    Null with `partyId` = the default Players party guid, so every EotW game
+    listed two unclaimed, unplaced extra heroes. Fixed by the host-only
+    `SweepPlayersParty()` in `SetupOnArrival`, which parks any unclaimed
+    module character from the players' party with the rest of the pregens;
+    the running game was repaired by hand the same way. Cause, the safety
+    tests, and the still-open source republish are under "Two of our OWN
+    pregens are authored into the Players party".

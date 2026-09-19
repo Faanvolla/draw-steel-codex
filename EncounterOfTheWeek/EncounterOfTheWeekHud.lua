@@ -65,10 +65,17 @@ local function CollectHeroes()
     return result
 end
 
+--the montage allies ride in the signature too, so a monster joining a
+--hero rebuilds the column with its card.
 local function RosterSignature(heroes)
     local parts = {}
     for _, entry in ipairs(heroes) do
-        parts[#parts+1] = string.format("%s:%s", entry.charid, tostring(entry.mine))
+        local allies = {}
+        local montage = rawget(_G, "EncounterMontage")
+        if montage ~= nil and montage.GetAllies ~= nil then
+            pcall(function() allies = montage.GetAllies(entry.charid) or {} end)
+        end
+        parts[#parts+1] = string.format("%s:%s:%s", entry.charid, tostring(entry.mine), table.concat(allies, ","))
     end
     return table.concat(parts, "|")
 end
@@ -117,6 +124,247 @@ end
 
 --- Hero cards ---------------------------------------------------------------
 
+--The hero-card style rules, shared by the right-rail roster and the montage
+--stage (EncounterMontageStage.lua): both wrap them in their own MergeTokens /
+--MergeStyles call so the theme tokens resolve for that cascade root.
+--the montage card's extras (opts.showStats): the characteristics strip down
+--the right edge and the skills line under the name. Declared up here rather
+--than beside the other card constants because the style rules need them.
+local SKILLS_HEIGHT = 46
+local STAT_ROW_HEIGHT = 12
+local STAT_CHIP_WIDTH = 30
+
+local g_heroCardRules = {
+    {
+        selectors = {"eotwHeroCard"},
+        bgcolor = "#151515",
+        border = 1,
+        borderColor = "#000000cc",
+        transitionTime = 0.15,
+    },
+    {
+        selectors = {"eotwHeroCard", "hover"},
+        brightness = 1.15,
+        borderColor = "#ffffff88",
+    },
+    {
+        selectors = {"eotwHeroCard", "mine"},
+        border = 2,
+        borderColor = "#6fa8ffcc",
+    },
+    {
+        selectors = {"eotwHeroCard", "mine", "hover"},
+        borderColor = "#9cc4ffff",
+    },
+    {
+        selectors = {"eotwCardOverlay"},
+        bgcolor = "#000000c0",
+    },
+    {
+        selectors = {"eotwCardOverlay", "mine"},
+        bgcolor = "#0d1e31d0",
+    },
+    {
+        selectors = {"eotwHeroName"},
+        fontSize = 12,
+        bold = true,
+        color = "#ffffff",
+        width = "100%",
+        height = 15,
+        textAlignment = "left",
+        textWrap = false,
+        bmargin = 3,
+    },
+    --montage only (opts.showStats): one chip per characteristic ("M +2")
+    --stacked down the card's right edge, and the comma-separated skills
+    --line under the name. Both read over artwork, hence the dark chip and
+    --the light-but-not-white skills text.
+    --one fixed chip width for all five rows (auto width let "M +2" and
+    --"I +1" size differently, which left the column ragged), with the
+    --letter in a left column and the score in a right one so both line up
+    --down the strip.
+    {
+        selectors = {"eotwStatChip"},
+        width = STAT_CHIP_WIDTH,
+        height = STAT_ROW_HEIGHT,
+        halign = "right",
+        flow = "horizontal",
+        bgimage = "panels/square.png",
+        bgcolor = "#000000b0",
+        cornerRadius = 3,
+        hpad = 3,
+        borderBox = true,
+        tmargin = 1,
+    },
+    {
+        selectors = {"eotwStatKey"},
+        fontSize = 9,
+        bold = true,
+        color = "#ffffff",
+        width = 10,
+        height = "100%",
+        halign = "left",
+        valign = "center",
+        textAlignment = "left",
+        textWrap = false,
+    },
+    {
+        selectors = {"eotwStatValue"},
+        fontSize = 9,
+        bold = true,
+        color = "#ffffff",
+        width = 14,
+        height = "100%",
+        halign = "right",
+        valign = "center",
+        textAlignment = "right",
+        textWrap = false,
+    },
+    {
+        selectors = {"eotwSkillsLine"},
+        fontSize = 9,
+        color = "#c6d0da",
+        width = "100%",
+        height = SKILLS_HEIGHT,
+        textAlignment = "topleft",
+        textWrap = true,
+        bmargin = 2,
+    },
+    {
+        selectors = {"eotwResIcon"},
+        width = 17,
+        height = 17,
+        halign = "left",
+        valign = "center",
+        bgcolor = "white",
+    },
+    {
+        selectors = {"eotwResValue"},
+        fontSize = 14,
+        bold = true,
+        color = "#ffffff",
+        width = "auto",
+        height = "auto",
+        --both the icon and the value align left so the flow packs
+        --them together instead of spreading them across the row.
+        halign = "left",
+        valign = "center",
+        lmargin = 3,
+    },
+    --the health bar's state tints, copied from the character
+    --panel's HealthFill styles: success/warning/danger are the
+    --documented theme tiers for stamina. The gradient overrides
+    --the global fillBarFill's flat horizontal shade with a glossy
+    --vertical one; grayscale stops so the bgcolor tint carries
+    --the state color.
+    {
+        selectors = {"fillBarFill", "healthFill"},
+        bgcolor = "@success",
+        gradient = gui.Gradient{
+            point_a = {x = 0, y = 0},
+            point_b = {x = 0, y = 1},
+            stops = {
+                { position = 0, color = "#5A5A5A" },
+                { position = 0.45, color = "#8E8E8E" },
+                { position = 0.55, color = "#B4B4B4" },
+                { position = 1, color = "#E4E4E4" },
+            },
+        },
+    },
+    {
+        selectors = {"healthFill", "winded"},
+        transitionTime = 0.4,
+        bgcolor = "@warning",
+    },
+    {
+        selectors = {"healthFill", "dying"},
+        transitionTime = 0.4,
+        bgcolor = "@danger",
+    },
+    {
+        selectors = {"fillBarFill", "eotwTempFill"},
+        bgcolor = "@accent",
+        gradient = gui.Gradient{
+            point_a = {x = 0, y = 0},
+            point_b = {x = 0, y = 1},
+            stops = {
+                { position = 0, color = "#6A6A6A" },
+                { position = 1, color = "#E4E4E4" },
+            },
+        },
+    },
+    {
+        selectors = {"eotwBarLabel"},
+        fontSize = 10,
+        bold = true,
+        color = "#ffffff",
+        width = "100%",
+        height = "100%",
+        textAlignment = "center",
+        textWrap = false,
+    },
+    {
+        selectors = {"eotwSurgeIcon"},
+        width = 12,
+        height = 12,
+        valign = "center",
+        lmargin = 1,
+        bgimage = "game-icons/surge.png",
+        bgcolor = "white",
+    },
+    --the hurt flash: a red wash over the whole card for a moment when the
+    --creature loses stamina. It has to be its own floating overlay rather
+    --than a tint on the card, because refreshCard writes
+    --selfStyle.bgcolor = "white" to keep the portrait untinted and
+    --selfStyle beats every class rule. Its own class also keeps it out of
+    --the fight over {eotwHeroCard} borderColor that the stage's
+    --selected/flashing rules would win.
+    --
+    --PulseClass applies the {hurt} rule instantly and then ramps it back
+    --out over THAT rule's transitionTime, so the fade timing lives there,
+    --not on the resting rule. The resting rule keeps the border WIDTH so
+    --only the color animates -- a border whose width changed would shift
+    --the panel's content box mid-flash.
+    {
+        selectors = {"eotwHurtFlash"},
+        bgimage = "panels/square.png",
+        bgcolor = "#ff3b3b00",
+        border = 3,
+        borderColor = "#ff808000",
+    },
+    {
+        selectors = {"eotwHurtFlash", "hurt"},
+        bgcolor = "#ff3b3baa",
+        borderColor = "#ff8080ff",
+        transitionTime = 0.45,
+        easing = "easeOutCubic",
+    },
+    --the heal flash: the same overlay in green, for the other direction.
+    --Everything the hurt flash's note above says applies here too -- it is
+    --a second floating wash for the same reasons, and the fade lives on
+    --the {healed} rule's transitionTime.
+    --
+    --A hero can be healed and hurt in the same instant (a montage clause
+    --that costs Stamina and a heal landing together), so these are two
+    --overlays rather than one with two colors: each pulses on its own and
+    --the later one simply sits on top.
+    {
+        selectors = {"eotwHealFlash"},
+        bgimage = "panels/square.png",
+        bgcolor = "#3bff7b00",
+        border = 3,
+        borderColor = "#80ffa000",
+    },
+    {
+        selectors = {"eotwHealFlash", "healed"},
+        bgcolor = "#3bff7b99",
+        borderColor = "#80ffa0ff",
+        transitionTime = 0.45,
+        easing = "easeOutCubic",
+    },
+}
+
+
 local CARD_WIDTH = 132
 local CARD_HEIGHT = 176
 local OVERLAY_HEIGHT = 58
@@ -125,12 +373,71 @@ local OVERLAY_HEIGHT = 58
 local CONDITION_CHIP_SIZE = 26
 local CONDITION_ICON_SIZE = 18
 
+--The wash a card wears for a moment when its creature's stamina moves: red
+--({eotwHurtFlash}, pulsed "hurt") for a loss, green ({eotwHealFlash},
+--pulsed "healed") for a heal. The card pulses them from its own
+--staminaLost / staminaGained handlers, which the card's stamina bar fires
+--up the hierarchy.
+local function CreateCardFlash(class, cornerRadius)
+    return gui.Panel{
+        classes = {class},
+        floating = true,
+        width = "100%",
+        height = "100%",
+        halign = "center",
+        valign = "center",
+        cornerRadius = cornerRadius,
+        interactable = false,
+    }
+end
+
+--The roster and the montage stage each build their own card for the same
+--hero, so one point of damage (or one heal) gets noticed twice. Keyed by
+--charid, these remember the stamina total the sound last fired for and
+--when: whichever card sees the change first plays it and the other stays
+--silent. (Attack.Hit already de-duplicates itself over 0.2s, but the two
+--surfaces refresh on different cadences -- 0.5s on the stage, 1s on the
+--roster -- so they can easily notice the same hit further apart than that.)
+--
+--The window is what makes it a de-duplicator rather than a mute: landing
+--on the same total again later -- healed back up and hit for the same
+--amount -- is a new hit and must sound like one.
+local CARD_SOUND_DEDUP = 2
+local g_hurtSound = {}
+local g_healSound = {}
+
+--2D, with no tokenid: the card is what the player is looking at, and
+--during a montage the map is not even on screen to position it in.
+local function FireCardSound(seen, charid, total, eventName)
+    local now = dmhub.Time()
+    local last = seen[charid]
+    if last ~= nil and last.total == total and now - last.t < CARD_SOUND_DEDUP then
+        return
+    end
+    seen[charid] = { total = total, t = now }
+    audio.FireSoundEvent(eventName)
+end
+
+--How the bar slides to a new stamina value instead of snapping to it, so
+--damage reads as a drain. The ease is exponential (tau), with a floor on
+--the speed -- a full bar in MAX_TIME seconds -- so the exponential tail
+--still lands promptly instead of creeping.
+local STAMINA_SLIDE_TAU = 0.14
+local STAMINA_SLIDE_MAX_TIME = 0.7
+local STAMINA_SLIDE_THINK = 0.02
+
 --The stamina bar: the character panel's health bar in miniature -- a
 --theme-bordered track whose border and fill both track the
 --healthy/winded/dying state (success/warning/danger, the documented
 --stamina tiers), with a glossy vertical gradient on the fill, the
 --cur/max numbers centered in white, and a temp-stamina segment in the
 --accent color riding the end of the fill when the hero has any.
+--
+--A drop in stamina drains the fill down over ~0.3-0.7s (the numbers count
+--with it), fires the generic hit sound, and fires "staminaLost" up the
+--hierarchy so the card it sits on can flash red. A rise in stamina does
+--the mirror image: the generic heal sound and "staminaGained", so the
+--card flashes green.
 local function CreateStaminaBar(charid)
     local fill = gui.Panel{
         classes = {"fillBarFill", "healthFill"},
@@ -159,6 +466,51 @@ local function CreateStaminaBar(charid)
         text = "",
         interactable = false,
     }
+
+    --what the fill is drawn at right now, easing toward the true fraction
+    --(m_targetPct). nil until the first refresh, which snaps: a card built
+    --mid-encounter must not animate up from empty.
+    local m_shownPct = nil
+    local m_targetPct = 0
+    --the clock for the slide, and the marker that one is running.
+    local m_slideTime = nil
+    --the values the numbers read.
+    local m_cur, m_max, m_temp = 0, 0, 0
+    --stamina + temp stamina as of the last refresh, so a drop can be
+    --spotted. nil until the first refresh, so a card built on an already
+    --hurt hero does not flash on arrival.
+    local m_seenTotal = nil
+    --stamina ALONE as of the last refresh, for spotting a heal. Temp
+    --stamina is deliberately left out of this one: a grant of temp is not
+    --healing (it has its own Notify.TempStamina_Gain elsewhere), and
+    --counting it would flash the card green for it. nil on the same terms
+    --as m_seenTotal.
+    local m_seenCur = nil
+
+    --paint the two fills and the numbers from m_shownPct.
+    local function Paint()
+        local pct = m_shownPct or 0
+        fill.selfStyle.width = string.format("%f%%", pct * 98)
+        local tempPct = 0
+        if m_max > 0 and m_temp > 0 then
+            tempPct = math.min(1 - pct, m_temp / m_max)
+        end
+        tempFill.selfStyle.width = string.format("%f%%", tempPct * 98)
+        --mid-slide the number counts with the bar; once it lands the true
+        --value shows. Only while stamina is positive: a dying hero's is
+        --negative while the bar is pinned empty, and counting down to that
+        --through the fraction would not reach it.
+        local shown = m_cur
+        if m_shownPct ~= m_targetPct and m_cur > 0 then
+            shown = math.ceil(pct * m_max)
+        end
+        local text = string.format("%d/%d", shown, m_max)
+        if m_temp > 0 then
+            text = string.format("%s +%d", text, m_temp)
+        end
+        numbers.text = text
+    end
+
     return gui.Panel{
         classes = {"bordered"},
         width = "100%",
@@ -172,6 +524,16 @@ local function CreateStaminaBar(charid)
         fill,
         tempFill,
         numbers,
+
+        --any character change (damage, healing, temp stamina) lands here
+        --straight away, so the flash and the hit sound follow the hit
+        --rather than the card's own refresh cadence (0.5s on the montage
+        --stage, 1s on the roster), which stays as the fallback.
+        monitorGame = "/characters",
+        refreshGame = function(element)
+            element:FireEvent("refreshCard")
+        end,
+
         refreshCard = function(element)
             local tok = dmhub.GetCharacterById(charid)
             if tok == nil or not tok.valid or tok.properties == nil then
@@ -180,33 +542,78 @@ local function CreateStaminaBar(charid)
             local c = tok.properties
             local cur, max, temp = 0, 0, 0
             local winded, dying = false, false
-            pcall(function()
+            local ok = pcall(function()
                 cur = c:CurrentHitpoints()
                 max = c:MaxHitpoints()
                 temp = c:TemporaryHitpoints() or 0
                 winded = cur <= c:BloodiedThreshold()
                 dying = c:IsDying()
             end)
-            local pct = 0
-            if max > 0 then
-                pct = math.max(0, math.min(1, cur / max))
+            --a failed read leaves cur at 0, which would read as a wipeout
+            --and drain the bar for no reason: leave it where it is.
+            if not ok or max <= 0 then
+                return
             end
-            local tempPct = 0
-            if max > 0 and temp > 0 then
-                tempPct = math.min(1 - pct, temp / max)
+            m_cur, m_max, m_temp = cur, max, temp
+            m_targetPct = math.max(0, math.min(1, cur / max))
+
+            --stamina lost: flash the card and play the hit. Temp stamina
+            --is counted in, so a hit fully soaked by temp still reads as
+            --one -- it is still damage taken.
+            local total = cur + temp
+            if m_seenTotal ~= nil and total < m_seenTotal then
+                element:FireEventOnParents("staminaLost", m_seenTotal - total)
+                FireCardSound(g_hurtSound, charid, total, "Attack.Hit")
             end
-            fill.selfStyle.width = string.format("%f%%", pct * 98)
-            tempFill.selfStyle.width = string.format("%f%%", tempPct * 98)
+            m_seenTotal = total
+
+            --stamina gained: flash the card green and play the heal. Off
+            --`cur` rather than the total, so temp stamina landing does not
+            --read as a heal, and a hero healed out of dying (cur going
+            --from negative to positive) still does.
+            if m_seenCur ~= nil and cur > m_seenCur then
+                element:FireEventOnParents("staminaGained", cur - m_seenCur)
+                FireCardSound(g_healSound, charid, cur, "Ability.Heal_Generic")
+            end
+            m_seenCur = cur
+
+            if m_shownPct == nil then
+                m_shownPct = m_targetPct
+            elseif m_shownPct ~= m_targetPct then
+                if m_slideTime == nil then
+                    m_slideTime = dmhub.Time()
+                end
+                element.thinkTime = STAMINA_SLIDE_THINK
+            end
+
             fill:SetClass("winded", winded)
             fill:SetClass("dying", dying)
             element:SetClass("borderSuccess", not winded and not dying)
             element:SetClass("borderWarning", winded and not dying)
             element:SetClass("borderDanger", dying)
-            local text = string.format("%d/%d", cur, max)
-            if temp > 0 then
-                text = string.format("%s +%d", text, temp)
+            Paint()
+        end,
+
+        --only runs while the bar is catching up to a new value; the last
+        --step takes thinkTime back off.
+        think = function(element)
+            local now = dmhub.Time()
+            local dt = math.max(0, math.min(0.25, now - (m_slideTime or now)))
+            m_slideTime = now
+            local diff = m_targetPct - (m_shownPct or 0)
+            local step = diff * (1 - math.exp(-dt / STAMINA_SLIDE_TAU))
+            local floorStep = dt / STAMINA_SLIDE_MAX_TIME
+            if math.abs(step) < floorStep then
+                step = floorStep * cond(diff < 0, -1, 1)
             end
-            numbers.text = text
+            if math.abs(step) >= math.abs(diff) then
+                m_shownPct = m_targetPct
+                m_slideTime = nil
+                element.thinkTime = nil
+            else
+                m_shownPct = (m_shownPct or 0) + step
+            end
+            Paint()
         end,
     }
 end
@@ -398,7 +805,125 @@ local function CreateTriggerCorner(charid)
     }
 end
 
-local function CreateHeroCard(entry)
+--MONTAGE ONLY (opts.showStats). The five characteristics down the card's
+--right edge, one chip each, initial + score ("M +2") so the whole set fits
+--in the artwork's margin. Ordered by the attribute's own `order` (Might,
+--Agility, Reason, Intuition, Presence -- MARIP), read from the game system
+--rather than hardcoded so a system with other characteristics still works.
+local function CreateStatStrip(charid)
+    local attrList = {}
+    for _, info in pairs(creature.attributesInfo) do
+        attrList[#attrList+1] = info
+    end
+    table.sort(attrList, function(a, b) return a.order < b.order end)
+
+    local rows = {}
+    for _, info in ipairs(attrList) do
+        local attrid = info.id
+        local initial = string.sub(info.description, 1, 1)
+        rows[#rows+1] = gui.Panel{
+            classes = {"eotwStatChip"},
+            interactable = false,
+            gui.Label{
+                classes = {"eotwStatKey"},
+                text = initial,
+                interactable = false,
+            },
+            gui.Label{
+                classes = {"eotwStatValue"},
+                text = "",
+                interactable = false,
+                refreshCard = function(element)
+                    local tok = dmhub.GetCharacterById(charid)
+                    if tok == nil or not tok.valid or tok.properties == nil then
+                        return
+                    end
+                    local value = nil
+                    pcall(function() value = tok.properties:GetAttribute(attrid):Modifier() end)
+                    if value == nil then
+                        return
+                    end
+                    element.text = string.format("%+d", value)
+                end,
+            },
+        }
+    end
+
+    --below the condition chips (top-right) and above the overlay, so the
+    --strip never collides with either.
+    return gui.Panel{
+        floating = true,
+        halign = "right",
+        valign = "top",
+        x = -3,
+        y = 34,
+        width = "auto",
+        height = "auto",
+        flow = "vertical",
+        interactable = false,
+        children = rows,
+    }
+end
+
+--MONTAGE ONLY (opts.showStats). The hero's trained skills, comma separated,
+--on the line under their name. Skills do not change during an encounter, so
+--the (30-odd skill) proficiency sweep runs at most every few seconds rather
+--than on every refreshCard tick.
+local SKILLS_RECHECK_SECONDS = 5
+
+local function CreateSkillsLine(charid)
+    return gui.Label{
+        classes = {"eotwSkillsLine"},
+        text = "",
+        interactable = false,
+        data = { nextCheck = 0, text = nil },
+        refreshCard = function(element)
+            local now = dmhub.Time()
+            if now < element.data.nextCheck then
+                return
+            end
+            element.data.nextCheck = now + SKILLS_RECHECK_SECONDS
+            local tok = dmhub.GetCharacterById(charid)
+            if tok == nil or not tok.valid or tok.properties == nil then
+                return
+            end
+            local names = {}
+            pcall(function()
+                --Skill.SkillsInfo is already sorted by name.
+                for _, skill in ipairs(Skill.SkillsInfo) do
+                    if tok.properties:ProficientInSkill(skill) then
+                        names[#names+1] = skill.name
+                    end
+                end
+            end)
+            local text = table.concat(names, ", ")
+            if text == element.data.text then
+                return
+            end
+            element.data.text = text
+            element.text = text
+        end,
+    }
+end
+
+--opts (all optional):
+--  halign      the card's halign (default "right", the roster's edge)
+--  draggable   non-nil = the drag callbacks below are passed through to
+--              the panel (the montage stage); the value itself is the
+--              card's starting draggable state, which the caller may flip
+--              later (the stage makes only the local user's own heroes
+--              draggable, and only while they can act)
+--  canDragOnto, drag, beginDrag   drag callbacks (see Definitions/Panel.lua)
+--  useClick    use the click event for the character-panel popout instead
+--              of press (press also fires when a drag gesture ends)
+--  click       replaces the character-panel popout with this handler
+--              (element, OpenCharacterPanel) -- the second argument is the
+--              default behavior, for handlers that fall back to it
+--  showStats   the montage stage's fuller card: the characteristics strip
+--              down the right edge and the skills line under the name (the
+--              roster's cards are too crowded for either)
+local function CreateHeroCard(entry, opts)
+    opts = opts or {}
     local charid = entry.charid
     local mineClass = nil
     if entry.mine then
@@ -481,14 +1006,32 @@ local function CreateHeroCard(entry)
     }
 
     --the bottom-third overlay: name, stamina bar, resource icons on a
-    --semi-opaque plate over the artwork.
+    --semi-opaque plate over the artwork. On the montage card the skills
+    --line sits under the name, and the plate grows to make room for it.
+    local overlayChildren = { nameLabel }
+    if opts.showStats then
+        overlayChildren[#overlayChildren+1] = CreateSkillsLine(charid)
+    end
+    overlayChildren[#overlayChildren+1] = CreateStaminaBar(charid)
+    overlayChildren[#overlayChildren+1] = CreateResourceRow(charid)
+
+    local overlayHeight = OVERLAY_HEIGHT
+    local cardHeight = CARD_HEIGHT
+    if opts.showStats then
+        overlayHeight = OVERLAY_HEIGHT + SKILLS_HEIGHT
+        --the plate grows downward out of the artwork rather than eating into
+        --it: the card itself gets the extra height (EncounterMontageStage's
+        --HERO_ROW_HEIGHT budgets for it).
+        cardHeight = CARD_HEIGHT + SKILLS_HEIGHT
+    end
+
     local overlay = gui.Panel{
         classes = {"eotwCardOverlay", mineClass},
         floating = true,
         halign = "center",
         valign = "bottom",
         width = "100%",
-        height = OVERLAY_HEIGHT,
+        height = overlayHeight,
         flow = "vertical",
         bgimage = "panels/square.png",
         cornerRadius = 8,
@@ -497,33 +1040,36 @@ local function CreateHeroCard(entry)
         borderBox = true,
         interactable = false,
 
-        nameLabel,
-        CreateStaminaBar(charid),
-        CreateResourceRow(charid),
+        children = overlayChildren,
     }
+
+    --the red wash for a hit and the green one for a heal, over the artwork
+    --and the overlay alike.
+    local hurtFlash = CreateCardFlash("eotwHurtFlash", 8)
+    local healFlash = CreateCardFlash("eotwHealFlash", 8)
 
     --the card IS the portrait: full-bleed artwork with the overlay and
     --condition chips floating on top.
-    return gui.Panel{
+    local function OpenCharacterPanel(element)
+        audio.FireSoundEvent("Mouse.Click")
+        local toggle = rawget(_G, "ToggleCharacterPanelDocument")
+        if toggle ~= nil then
+            --anchored to this card: the window opens right beside it
+            --instead of at the remembered/center position.
+            toggle(charid, nil, element)
+        end
+    end
+
+    local cardArgs = {
         classes = {"eotwHeroCard", mineClass},
         width = CARD_WIDTH,
-        height = CARD_HEIGHT,
-        halign = "right",
+        height = cardHeight,
+        halign = opts.halign or "right",
         cornerRadius = 8,
         bgimage = "panels/square.png",
         swallowPress = true,
 
         data = { charid = charid, mine = entry.mine },
-
-        press = function(element)
-            audio.FireSoundEvent("Mouse.Click")
-            local toggle = rawget(_G, "ToggleCharacterPanelDocument")
-            if toggle ~= nil then
-                --anchored to this card: the window opens right beside it
-                --instead of at the remembered/center position.
-                toggle(charid, nil, element)
-            end
-        end,
 
         refreshCard = function(element)
             local tok = dmhub.GetCharacterById(charid)
@@ -539,9 +1085,19 @@ local function CreateHeroCard(entry)
                 element.bgimage = portrait
                 element.selfStyle.bgcolor = "white"
                 local rect = nil
-                pcall(function() rect = tok:GetPortraitRectForAspect(CARD_WIDTH / CARD_HEIGHT, portrait) end)
+                pcall(function() rect = tok:GetPortraitRectForAspect(CARD_WIDTH / cardHeight, portrait) end)
                 element.selfStyle.imageRect = rect
             end
+        end,
+
+        --fired up from the stamina bar in the overlay when this hero loses
+        --or regains stamina.
+        staminaLost = function(element)
+            hurtFlash:PulseClass("hurt")
+        end,
+
+        staminaGained = function(element)
+            healFlash:PulseClass("healed")
         end,
 
         conditionsRow,
@@ -549,6 +1105,123 @@ local function CreateHeroCard(entry)
         CreateSurgeCorner(charid),
         CreateTriggerCorner(charid),
     }
+    if opts.showStats then
+        cardArgs[#cardArgs+1] = CreateStatStrip(charid)
+    end
+    --last, so the washes sit over every other layer of the card.
+    cardArgs[#cardArgs+1] = hurtFlash
+    cardArgs[#cardArgs+1] = healFlash
+    if opts.click ~= nil then
+        cardArgs.click = function(element)
+            opts.click(element, OpenCharacterPanel)
+        end
+    elseif opts.useClick then
+        cardArgs.click = OpenCharacterPanel
+    else
+        cardArgs.press = OpenCharacterPanel
+    end
+    if opts.draggable ~= nil then
+        cardArgs.draggable = opts.draggable == true
+        cardArgs.canDragOnto = opts.canDragOnto
+        cardArgs.drag = opts.drag
+        cardArgs.beginDrag = opts.beginDrag
+    end
+    return gui.Panel(cardArgs)
+end
+
+--A half-size card for a monster that joined a hero during a montage
+--(EncounterMontage): portrait, name and stamina bar. Sits under the hero's
+--card in the roster and on the montage stage.
+local ALLY_CARD_WIDTH = 62
+local ALLY_CARD_HEIGHT = 80
+
+local function CreateAllyCard(charid)
+    local nameLabel = gui.Label{
+        classes = {"eotwHeroName"},
+        fontSize = 10,
+        height = 12,
+        text = "",
+        interactable = false,
+    }
+    local overlay = gui.Panel{
+        classes = {"eotwCardOverlay"},
+        floating = true,
+        halign = "center",
+        valign = "bottom",
+        width = "100%",
+        height = 30,
+        flow = "vertical",
+        bgimage = "panels/square.png",
+        cornerRadius = 6,
+        hpad = 3,
+        vpad = 2,
+        borderBox = true,
+        interactable = false,
+        nameLabel,
+        CreateStaminaBar(charid),
+    }
+    local hurtFlash = CreateCardFlash("eotwHurtFlash", 6)
+    local healFlash = CreateCardFlash("eotwHealFlash", 6)
+    return gui.Panel{
+        classes = {"eotwHeroCard", "eotwAllyCard"},
+        width = ALLY_CARD_WIDTH,
+        height = ALLY_CARD_HEIGHT,
+        halign = "left",
+        hmargin = 1,
+        cornerRadius = 6,
+        bgimage = "panels/square.png",
+        swallowPress = true,
+        data = { charid = charid },
+        press = function(element)
+            audio.FireSoundEvent("Mouse.Click")
+            local toggle = rawget(_G, "ToggleCharacterPanelDocument")
+            if toggle ~= nil then
+                toggle(charid, nil, element)
+            end
+        end,
+        linger = function(element)
+            gui.Tooltip(nameLabel.text)(element)
+        end,
+        refreshCard = function(element)
+            local tok = dmhub.GetCharacterById(charid)
+            if tok == nil or not tok.valid then
+                element:SetClass("collapsed", true)
+                return
+            end
+            element:SetClass("collapsed", false)
+            nameLabel.text = tok.name or ""
+            local portrait = nil
+            pcall(function() portrait = tok.offTokenPortrait end)
+            if portrait ~= nil and portrait ~= "" then
+                element.bgimage = portrait
+                element.selfStyle.bgcolor = "white"
+                local rect = nil
+                pcall(function() rect = tok:GetPortraitRectForAspect(ALLY_CARD_WIDTH / ALLY_CARD_HEIGHT, portrait) end)
+                element.selfStyle.imageRect = rect
+            end
+        end,
+        --fired up from the stamina bar in the overlay.
+        staminaLost = function(element)
+            hurtFlash:PulseClass("hurt")
+        end,
+        staminaGained = function(element)
+            healFlash:PulseClass("healed")
+        end,
+        overlay,
+        hurtFlash,
+        healFlash,
+    }
+end
+
+--The montage allies of a hero (charids), or an empty list.
+local function AlliesOf(charid)
+    local montage = rawget(_G, "EncounterMontage")
+    if montage == nil or montage.GetAllies == nil then
+        return {}
+    end
+    local allies = {}
+    pcall(function() allies = montage.GetAllies(charid) end)
+    return allies or {}
 end
 
 --- The roster panel ---------------------------------------------------------
@@ -641,6 +1314,14 @@ local function CreateHeroRosterPanel()
     end
 
     local function Refresh(element)
+        --Collapsed for the duration of a montage beat (the rail below
+        --owns the class): nothing to rebuild, and dropping the signature
+        --makes the column rebuild from scratch when it comes back.
+        if element:HasClass("collapsed") then
+            m_signature = nil
+            return
+        end
+
         local heroes = CollectHeroes()
         local sig = RosterSignature(heroes)
         if sig ~= m_signature then
@@ -667,6 +1348,25 @@ local function CreateHeroRosterPanel()
                     end
                 end
                 cards[#cards+1] = card
+                --monsters that joined this hero in the montage ride under
+                --its card as half-size cards.
+                local allies = AlliesOf(entry.charid)
+                if #allies > 0 then
+                    local minis = {}
+                    for _, allyId in ipairs(allies) do
+                        minis[#minis+1] = CreateAllyCard(allyId)
+                    end
+                    cards[#cards+1] = gui.Panel{
+                        width = CARD_WIDTH,
+                        height = "auto",
+                        flow = "horizontal",
+                        wrap = true,
+                        halign = "right",
+                        bmargin = 3,
+                        children = minis,
+                    }
+                    height = height + (ALLY_CARD_HEIGHT + 3) * math.ceil(#allies / 2)
+                end
             end
             m_contentHeight = height
             element.children = cards
@@ -686,130 +1386,7 @@ local function CreateHeroRosterPanel()
         halign = "right",
         valign = "top",
 
-        styles = ThemeEngine.MergeTokens{
-            {
-                selectors = {"eotwHeroCard"},
-                bgcolor = "#151515",
-                border = 1,
-                borderColor = "#000000cc",
-                transitionTime = 0.15,
-            },
-            {
-                selectors = {"eotwHeroCard", "hover"},
-                brightness = 1.15,
-                borderColor = "#ffffff88",
-            },
-            {
-                selectors = {"eotwHeroCard", "mine"},
-                border = 2,
-                borderColor = "#6fa8ffcc",
-            },
-            {
-                selectors = {"eotwHeroCard", "mine", "hover"},
-                borderColor = "#9cc4ffff",
-            },
-            {
-                selectors = {"eotwCardOverlay"},
-                bgcolor = "#000000c0",
-            },
-            {
-                selectors = {"eotwCardOverlay", "mine"},
-                bgcolor = "#0d1e31d0",
-            },
-            {
-                selectors = {"eotwHeroName"},
-                fontSize = 12,
-                bold = true,
-                color = "#ffffff",
-                width = "100%",
-                height = 15,
-                textAlignment = "left",
-                textWrap = false,
-                bmargin = 3,
-            },
-            {
-                selectors = {"eotwResIcon"},
-                width = 17,
-                height = 17,
-                halign = "left",
-                valign = "center",
-                bgcolor = "white",
-            },
-            {
-                selectors = {"eotwResValue"},
-                fontSize = 14,
-                bold = true,
-                color = "#ffffff",
-                width = "auto",
-                height = "auto",
-                --both the icon and the value align left so the flow packs
-                --them together instead of spreading them across the row.
-                halign = "left",
-                valign = "center",
-                lmargin = 3,
-            },
-            --the health bar's state tints, copied from the character
-            --panel's HealthFill styles: success/warning/danger are the
-            --documented theme tiers for stamina. The gradient overrides
-            --the global fillBarFill's flat horizontal shade with a glossy
-            --vertical one; grayscale stops so the bgcolor tint carries
-            --the state color.
-            {
-                selectors = {"fillBarFill", "healthFill"},
-                bgcolor = "@success",
-                gradient = gui.Gradient{
-                    point_a = {x = 0, y = 0},
-                    point_b = {x = 0, y = 1},
-                    stops = {
-                        { position = 0, color = "#5A5A5A" },
-                        { position = 0.45, color = "#8E8E8E" },
-                        { position = 0.55, color = "#B4B4B4" },
-                        { position = 1, color = "#E4E4E4" },
-                    },
-                },
-            },
-            {
-                selectors = {"healthFill", "winded"},
-                transitionTime = 0.4,
-                bgcolor = "@warning",
-            },
-            {
-                selectors = {"healthFill", "dying"},
-                transitionTime = 0.4,
-                bgcolor = "@danger",
-            },
-            {
-                selectors = {"fillBarFill", "eotwTempFill"},
-                bgcolor = "@accent",
-                gradient = gui.Gradient{
-                    point_a = {x = 0, y = 0},
-                    point_b = {x = 0, y = 1},
-                    stops = {
-                        { position = 0, color = "#6A6A6A" },
-                        { position = 1, color = "#E4E4E4" },
-                    },
-                },
-            },
-            {
-                selectors = {"eotwBarLabel"},
-                fontSize = 10,
-                bold = true,
-                color = "#ffffff",
-                width = "100%",
-                height = "100%",
-                textAlignment = "center",
-                textWrap = false,
-            },
-            {
-                selectors = {"eotwSurgeIcon"},
-                width = 12,
-                height = 12,
-                valign = "center",
-                lmargin = 1,
-                bgimage = "game-icons/surge.png",
-                bgcolor = "white",
-            },
-        },
+        styles = ThemeEngine.MergeTokens(g_heroCardRules),
 
         create = function(element)
             Refresh(element)
@@ -1040,6 +1617,8 @@ end
 --pack against the right edge; the roster's own fit-to-screen shrink
 --pivots on its top-right corner so the strip above it is untouched.
 local function CreateRightRailPanel()
+    local roster = CreateHeroRosterPanel()
+
     return gui.Panel{
         id = "eotwRightRail",
         width = "auto",
@@ -1048,7 +1627,23 @@ local function CreateRightRailPanel()
         halign = "right",
         valign = "top",
         CreateEncounterPoolsPanel(),
-        CreateHeroRosterPanel(),
+        roster,
+
+        --The hero roster is combat-only (user direction 2026-09-18):
+        --while a montage beat is on screen the stage draws its own hero
+        --cards along the bottom, so the side column would just duplicate
+        --them. The pools strip above stays up either way -- it carries
+        --malice and the party's hero tokens, which the stage does not
+        --show. The toggle lives here, on a panel that is never collapsed
+        --itself, so it keeps ticking while the roster is down.
+        thinkTime = 0.5,
+        think = function(element)
+            local montagePresented = false
+            pcall(function()
+                montagePresented = EncounterMontage.IsPresented()
+            end)
+            roster:SetClass("collapsed", montagePresented)
+        end,
     }
 end
 
@@ -1135,6 +1730,13 @@ local function CreatePanelButton(panelName)
         blurBackground = true,
         swallowPress = true,
 
+        --the rail-button identity shared chrome looks for. No slot: a
+        --provider widget is not on the rail's slot grid. The chat speech
+        --bubble finds its anchor this way (DocumentSystem's
+        --FindChatRailButton), so a message arriving while chat is closed
+        --bubbles off THIS button during the takeover, montage included.
+        data = { key = panelKey },
+
         press = function(element)
             audio.FireSoundEvent("Mouse.Click")
             DockablePanel.LaunchPanelByName(panelName, "toggle")
@@ -1198,6 +1800,21 @@ local function CreateCornerButtonsPanel()
         halign = "left",
         children = buttons,
     }
+end
+
+--- Exports -------------------------------------------------------------------
+
+--Shared with the montage stage (EncounterMontageStage.lua), which shows the
+--same hero cards along the bottom of the screen.
+EncounterOfTheWeekHud = rawget(_G, "EncounterOfTheWeekHud") or {}
+EncounterOfTheWeekHud.CreateHeroCard = CreateHeroCard
+EncounterOfTheWeekHud.CreateAllyCard = CreateAllyCard
+EncounterOfTheWeekHud.CreateStaminaBar = CreateStaminaBar
+EncounterOfTheWeekHud.CreateMaliceDiamond = CreateMaliceDiamond
+EncounterOfTheWeekHud.CreateEncounterPoolsPanel = CreateEncounterPoolsPanel
+EncounterOfTheWeekHud.CollectHeroes = CollectHeroes
+EncounterOfTheWeekHud.HeroCardRules = function()
+    return g_heroCardRules
 end
 
 --- The custom-interface registration ----------------------------------------
