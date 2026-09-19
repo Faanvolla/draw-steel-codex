@@ -34,6 +34,13 @@ local g_triggerListMaxHeight = 520
 local g_triggerScrollbarWidth = 20
 local g_triggerListWidth = g_triggerCardOuterWidth + g_triggerScrollbarWidth
 
+--Candidate portraits on a trigger card. A merged prompt can offer half the
+--party at once, so these are sized to fit three per row across the card
+--rather than to show a single target large.
+local g_triggerPortraitSize = 34
+local g_triggerPortraitImageSize = 28
+local g_triggerPortraitMargin = 1
+
 -- Build the candidate retarget list for a triggered ability that changes its
 -- target. Every token passing the all-inclusive changeTargetFilter is returned
 -- in `targets`. A token that additionally fails one of the "reasoned" filters is
@@ -668,26 +675,40 @@ mod.shared.CreateTriggerPanel = function()
 							local targetPanels = {}
 							for _,target in ipairs(trigger.targets) do
 								local token = dmhub.GetTokenById(target)
-								targetPanels[#targetPanels+1] = gui.Panel{
-									width = 48,
-									height = 48,
-									hmargin = 2,
-									--of several candidates, only the one picked stays shown.
-									refresh = function(element)
-										local live = availableTriggers ~= nil and availableTriggers[key] or nil
-										element:SetClass("collapsed", live ~= nil and live.chosenTargetId ~= false and live.chosenTargetId ~= target)
-									end,
-									gui.CreateTokenImage(token, {
-										width = 40,
-										height = 40,
-										halign = "center",
-										valign = "center",
-									}),
-								}
+								--a candidate that has despawned draws an empty cell in the grid, and
+								--the picker refuses it anyway, so leave it out entirely.
+								if token ~= nil and token.valid then
+									targetPanels[#targetPanels+1] = gui.Panel{
+										width = g_triggerPortraitSize,
+										height = g_triggerPortraitSize,
+										hmargin = g_triggerPortraitMargin,
+										--of several candidates, only the one picked stays shown; one that
+										--dies while the card is up drops out as well.
+										refresh = function(element)
+											local live = availableTriggers ~= nil and availableTriggers[key] or nil
+											local tok = dmhub.GetTokenById(target)
+											local hide = tok == nil or (not tok.valid)
+											if (not hide) and live ~= nil then
+												hide = live.chosenTargetId ~= false and live.chosenTargetId ~= target
+											end
+
+											element:SetClass("collapsed", hide)
+										end,
+										gui.CreateTokenImage(token, {
+											width = g_triggerPortraitImageSize,
+											height = g_triggerPortraitImageSize,
+											halign = "center",
+											valign = "center",
+										}),
+									}
+								end
 							end
 
                             if #targetPanels > 0 then
                                 targetPanels[#targetPanels+1] = gui.Panel{
+                                    --only shown once a retarget is picked, so it must start hidden:
+                                    --until refresh first runs it would hold a cell in the grid.
+                                    classes = {"collapsed"},
                                     refresh = function(element)
                                         if availableTriggers == nil then
                                             return
@@ -710,9 +731,16 @@ mod.shared.CreateTriggerPanel = function()
                                 }
 
                                 targetPanels[#targetPanels+1] = gui.Panel{
-                                    width = 48,
-                                    height = 48,
-                                    hmargin = 2,
+                                    width = g_triggerPortraitSize,
+                                    height = g_triggerPortraitSize,
+                                    hmargin = g_triggerPortraitMargin,
+                                    --the wrapper has to collapse too, not just the image inside it:
+                                    --a hidden image still leaves its cell in the portrait grid.
+                                    classes = {"collapsed"},
+                                    refresh = function(element)
+                                        local live = availableTriggers ~= nil and availableTriggers[key] or nil
+                                        element:SetClass("collapsed", live == nil or (not live.retargetid))
+                                    end,
                                     gui.CreateTokenImage(nil, {
                                         refresh = function(element)
                                             if availableTriggers == nil then
@@ -727,8 +755,8 @@ mod.shared.CreateTriggerPanel = function()
                                                 element:SetClass("collapsed", true)
                                             end
                                         end,
-                                        width = 40,
-                                        height = 40,
+                                        width = g_triggerPortraitImageSize,
+                                        height = g_triggerPortraitImageSize,
                                         halign = "center",
                                         valign = "center",
                                     }),
@@ -1669,12 +1697,12 @@ mod.shared.CreateTriggerPanel = function()
 									local modeToken = dmhub.GetTokenById(targetid)
 									if modeToken ~= nil then
 										modeTargetPanels[#modeTargetPanels+1] = gui.Panel{
-											width = 34,
-											height = 34,
-											hmargin = 1,
+											width = g_triggerPortraitSize,
+											height = g_triggerPortraitSize,
+											hmargin = g_triggerPortraitMargin,
 											gui.CreateTokenImage(modeToken, {
-												width = 28,
-												height = 28,
+												width = g_triggerPortraitImageSize,
+												height = g_triggerPortraitImageSize,
 												halign = "center",
 												valign = "center",
 											}),
