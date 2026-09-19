@@ -1067,7 +1067,8 @@ local g_rulePatterns = {
 
             --Name the ability the shift comes from in the action bar prompt, so a
             --player facing back-to-back shifts (e.g. Fade, then an item's shift) can tell them apart.
-            if abilityClone:try_get("promptOverride") == nil and ability.name ~= nil then
+            --The standard Shift ships with promptOverride = "", so treat empty as unset.
+            if (abilityClone:try_get("promptOverride") or "") == "" and ability.name ~= nil then
                 abilityClone.promptOverride = string.format("%s: you can shift up to %s square%s", ability.name, distance, cond(distance == "1", "", "s"))
             end
 
