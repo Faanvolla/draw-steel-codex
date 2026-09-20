@@ -21,15 +21,47 @@
 --           tags = {name,...},
 --           -- montage only:
 --           intro = "", sceneTag = "scene"|"scene:x"|nil,
---           rounds = { { number, line, entries = { entry, ... } }, ... },
+--           rounds = { { number, line, entries = { entry, ... },
+--                        scaling = { scalingDirective, ... } }, ... },
 --           -- narrative only:
---           intro = "", sceneTag = ..., sections = { section, ... } }
---  entry = { id, kind = "opportunity"|"threat", name, round, line,
+--           intro = "", sceneTag = ..., sections = { section, ... },
+--           -- encounter only:
+--           setup = { setupInstruction, ... } }
+--  setupInstruction = { kind = "placeobjects"|"unknown", label = "Trap", line,
+--                       text = "Place 4 Snare Trap objects in Trap zones and delete other Trap zones",
+--                       -- placeobjects: qty = 4, object = "Snare Trap",
+--                       -- zone = "trap" (lower-cased keyword name), deleteOthers = bool }
+--  A "Label: Place <n> <Object> object(s) in <Zone> zone(s) [and delete
+--  (the) other <Zone> zones]" paragraph under "# Encounter" is a setup
+--  instruction the host runs once, right before the monsters are spawned:
+--  <n> tiles are drawn at random from every <Zone> zone on the map, one
+--  <Object> is placed on each, and with the delete clause every <Zone>
+--  tile that was NOT drawn is removed from its zone record (a record left
+--  with no tiles is deleted). Any other "Label:" paragraph there is an
+--  unknown instruction (warning).
+--  scalingDirective = { min = 3, max = 5 (nil = open-ended), line,
+--                       removals = { opportunity = 1, threat = 1 },
+--                       text = "3-5 Players: -1 Opportunity, -1 Threat" }
+--  A "3-5 Players: -1 Opportunity, -1 Threat" line directly under a
+--  "## Round N" heading. At that party size the round drops that many of
+--  each kind, drawn at random (once, when the party has arrived) from the
+--  entries THAT round introduces, skipping any marked "(Required)".
+--  EncounterScript.ChooseRemovedEntries makes the draw; the montage stores
+--  it and never shows or mentions what it dropped.
+--  entry = { id, kind = "opportunity"|"threat", name, required, round, line,
 --            description = "", approach = "", consequence = nil | { text, effects },
 --            options = { option, ... } }
 --  option = { name, line, text = "", roll = nil | { name, attr, tiers = {...},
 --             teasers = { [tierIndex] = "..." | nil },
---             effects = { [tierIndex] = { effect, ... } } } }
+--             effects = { [tierIndex] = { effect, ... } },
+--             riders = { rider, ... } } }
+--  rider = { effect = "allow"|"edge"|"doubleedge"|"bane"|"doublebane",
+--            text = "You are skilled in Magic or you are an Elementalist",
+--            line, requirement = { text, unrecognized = bool,
+--              alternatives = { { kind = "skill"|"language"|"kindred"|"unknown",
+--                                 name = "magic" (normalized), text = clause }, ... } } }
+--  See "riders" below for the line grammar and EvaluateRiders for how a
+--  hero's facts are weighed against them.
 --  A tier line may read "teaser => full text": tiers[t] is the full text
 --  (the only part the effect grammar sees) and teasers[t] is what players
 --  see before the roll lands. Lines without "=>" have no teaser.
@@ -40,10 +72,11 @@
 --                      effects = { effect, ... } }
 --  effect = { kind = "item"|"stamina"|"heal"|"temphp"|"surges"|"recovery"|
 --                    "loserecovery"|"herotoken"|"malice"|"ally"|"vanquish"|
---                    "initiative"|"nosurprise"|"knowstamina"|"narrative",
+--                    "initiative"|"nosurprise"|"knowstamina"|"revealzones"|"narrative",
 --             target = "self"|"party", qty = n, name = "...", text = clause,
 --             outcome = "win"|"lose"|"surprise"|"surprised" (initiative only),
 --             keyword = "goblin" (knowstamina only: lower-cased, singular),
+--             zone = "trap" (revealzones only: lower-cased, singular keyword name),
 --             unrecognized = true (narrative clauses the grammar did not match) }
 
 EncounterScript = rawget(_G, "EncounterScript") or {}
@@ -97,8 +130,6 @@ end
 
 --- effect clauses ---------------------------------------------------------
 
---Split one tier line into clauses on . , ; -- each clause trimmed, empties
---dropped.
 --The mode marker paragraph of a narrative section: "Choose together:",
 --"Choose individually:", "Each hero chooses:", ... Returns "together",
 --"individual", "prompt" (a bare "Options:"/"Choose:" that only carries the
@@ -124,13 +155,47 @@ local function NarrativeMode(label)
     return nil
 end
 
+--Split one tier line into clauses on . , ; ! ? -- each clause trimmed,
+--empties dropped, and each kept with its POSITION: { text, from, to },
+--1-based inclusive byte offsets of the trimmed clause in the original
+--line. The offsets are what lets a display highlight the recognized words
+--in place (EncounterScript.MarkupRules).
+--
+--! and ? are separators because flavour prose in front of a mechanical
+--clause is the norm ("You make off with some potions! Each party member
+--gains one Healing Potion"); without them the whole line is one
+--unrecognized clause and the mechanical half never lands.
+local function SplitClauseSpans(text)
+    text = text or ""
+    local spans = {}
+    local n = #text
+    local pos = 1
+    while pos <= n + 1 do
+        local cut = string.find(text, "[%.,;!%?]", pos)
+        local last = (cut or n + 1) - 1
+        if last >= pos then
+            local piece = string.sub(text, pos, last)
+            --trim by measuring what comes off each end, so the offsets
+            --still point at the clause inside the untouched line.
+            local from = pos + #string.match(piece, "^%s*")
+            local to = last - #string.match(piece, "%s*$")
+            if to >= from then
+                spans[#spans + 1] = { text = string.sub(text, from, to), from = from, to = to }
+            end
+        end
+        if cut == nil then
+            break
+        end
+        pos = cut + 1
+    end
+    return spans
+end
+
+--Just the clause text, in order.
 local function SplitClauses(text)
     local result = {}
-    for piece in string.gmatch(text .. ";", "([^%.,;]*)[%.,;]") do
-        local clause = trim(piece)
-        if clause ~= "" then
-            result[#result + 1] = clause
-        end
+    for _, span in ipairs(SplitClauseSpans(text)) do
+        result[#result + 1] = span.text
     end
     return result
 end
@@ -275,6 +340,13 @@ local function ParseClause(clause)
         return { kind = "knowstamina", keyword = keyword, text = clause }
     end
 
+    --"reveal traps during the next combat": the Trap zones become visible
+    --to the players (and their zone overlay is switched on) for the fight.
+    local zone = EncounterScript.ParseRevealZonesClause(lc)
+    if zone ~= nil then
+        return { kind = "revealzones", zone = zone, text = clause }
+    end
+
     --"you cannot be surprised": party-wide immunity for the next encounter.
     --Checked BEFORE the initiative clauses, whose "^you .*surprised$" rule
     --would otherwise read this as its own opposite (the heroes begin the
@@ -339,6 +411,116 @@ function EncounterScript.ParseKnowStaminaClause(lc)
     return keyword
 end
 
+--Lower-case a keyword name and drop a trailing plural "s" ("traps" ->
+--"trap"; "boss" keeps its s). nil for an empty name or a phrase.
+local function SingularKeyword(name)
+    name = trim(lower(name or ""))
+    if name == "" or string.find(name, " ", 1, true) ~= nil then
+        return nil
+    end
+    if #name > 3 and string.sub(name, -1) == "s" and string.sub(name, -2) ~= "ss" then
+        name = string.sub(name, 1, -2)
+    end
+    return name
+end
+
+--"Reveal Traps during the next combat" and its spellings. Returns the zone
+--keyword name, lower-cased and singular ("traps" -> "trap"), or nil. The
+--name is matched at run time against the map's environmental keywords, so
+--any zone type an author paints can be revealed this way.
+--  "reveal traps" / "reveal the traps" / "reveal the trap zones"
+--  "reveal traps during the next combat" / "... in the next encounter" / "... during combat"
+--  "the traps are revealed" / "the trap zones are revealed during the next combat"
+function EncounterScript.ParseRevealZonesClause(lc)
+    lc = trim(lc)
+    --the timing suffix is flavour: the reveal always lands when combat comes.
+    lc = string.gsub(lc, "%s+during the next %a+$", "")
+    lc = string.gsub(lc, "%s+in the next %a+$", "")
+    lc = string.gsub(lc, "%s+during combat$", "")
+    lc = string.gsub(lc, "%s+in combat$", "")
+    lc = string.gsub(lc, "%s+for the next %a+$", "")
+    local rest = string.match(lc, "^reveal (.+)$")
+    if rest == nil then
+        rest = string.match(lc, "^(.-) are revealed$") or string.match(lc, "^(.-) is revealed$")
+    end
+    if rest == nil then
+        return nil
+    end
+    rest = trim(rest)
+    rest = string.match(rest, "^the (.+)$") or string.match(rest, "^all (.+)$")
+        or string.match(rest, "^every (.+)$") or rest
+    rest = string.gsub(rest, "%s+zones?$", "")
+    return SingularKeyword(rest)
+end
+
+--The player-facing line for a zone reveal: "The Traps will be revealed
+--during the next combat".
+function EncounterScript.DescribeRevealZones(zone)
+    zone = tostring(zone or "")
+    local shown = string.upper(string.sub(zone, 1, 1)) .. string.sub(zone, 2) .. "s"
+    return string.format("The %s will be revealed during the next combat", shown)
+end
+
+--A setup instruction under "# Encounter" (the paragraph after its label):
+--  "Place 4 Snare Trap objects in Trap zones and delete other Trap zones"
+--  "Place one Pit object in the Pit zones"
+--  "Place 4 Snare Trap objects in Trap zones and remove the remaining Trap zones"
+--Returns { kind = "placeobjects", qty, object, zone, deleteOthers } or nil.
+function EncounterScript.ParseSetupInstruction(text)
+    local original = trim(text or "")
+    local lc = lower(original)
+    lc = string.gsub(lc, "%.$", "")
+    local qtyWord, rest = string.match(lc, "^place (%S+) (.+)$")
+    if qtyWord == nil then
+        return nil
+    end
+    local qty = EncounterScript.ParseQuantity(qtyWord)
+    if qty == nil then
+        return nil
+    end
+    local object, zoneText = string.match(rest, "^(.-) objects? in (.+)$")
+    if object == nil then
+        return nil
+    end
+    object = trim(object)
+    local zone, tail = string.match(zoneText, "^(.-) zones?(.*)$")
+    if zone == nil then
+        return nil
+    end
+    zone = string.match(zone, "^the (.+)$") or zone
+    zone = SingularKeyword(zone)
+    if object == "" or zone == nil then
+        return nil
+    end
+    tail = trim(tail or "")
+    local deleteOthers = false
+    if tail ~= "" then
+        local verb, others = string.match(tail, "^and (%a+) (.+)$")
+        if verb ~= "delete" and verb ~= "remove" then
+            return nil
+        end
+        others = string.match(others, "^the (.+)$") or others
+        others = string.match(others, "^other (.+)$") or string.match(others, "^remaining (.+)$")
+            or string.match(others, "^unused (.+)$") or string.match(others, "^extra (.+)$")
+        if others == nil then
+            return nil
+        end
+        others = string.gsub(others, "%s+zones?$", "")
+        if SingularKeyword(others) ~= zone then
+            return nil
+        end
+        deleteOthers = true
+    end
+    --the object name keeps the author's capitalisation: it is what the
+    --lookup reports when nothing matches.
+    local objectStart = #("place " .. qtyWord .. " ") + 1
+    local objectShown = trim(string.sub(original, objectStart, objectStart + #object - 1))
+    if lower(objectShown) ~= object then
+        objectShown = object
+    end
+    return { kind = "placeobjects", qty = qty, object = objectShown, zone = zone, deleteOthers = deleteOthers }
+end
+
 --"You cannot be surprised" and its spellings. The heroes still LOSE the
 --initiative to a "surprised" outcome -- only the Surprised condition is
 --withheld, and from the whole party, whoever earned it.
@@ -398,6 +580,51 @@ function EncounterScript.AttrWithoutSkills(attr)
     return trim(stripped)
 end
 
+--- riders ------------------------------------------------------------------
+--
+--A test may carry riders: "|<Effect>: <requirement>" lines after its
+--tiers (Allow / Edge / Double Edge / Bane / Double Bane, with "you are
+--skilled in X" / "you speak X" / "you are a X" requirements). The grammar
+--and the weighing live in core, TestRiders (DMHub Game Rules/TestRiders.lua),
+--shared with the journal's own power-roll blocks; these are the names the
+--rest of the codemod (and the tests) use. TestRiders is looked up at call
+--time so this module still loads on its own.
+local function Riders()
+    local tr = rawget(_G, "TestRiders")
+    if tr == nil then
+        error("TestRiders (DMHub Game Rules/TestRiders.lua) is not loaded")
+    end
+    return tr
+end
+
+function EncounterScript.RiderLabel(effect)
+    return Riders().Label(effect)
+end
+
+function EncounterScript.RiderBoons(effect)
+    return Riders().Boons(effect)
+end
+
+function EncounterScript.ParseRiderLine(text)
+    return Riders().ParseRiderLine(text)
+end
+
+function EncounterScript.NormalizeName(name)
+    return Riders().NormalizeName(name)
+end
+
+function EncounterScript.ParseRequirement(text)
+    return Riders().ParseRequirement(text)
+end
+
+function EncounterScript.RequirementMet(req, facts)
+    return Riders().RequirementMet(req, facts)
+end
+
+function EncounterScript.EvaluateRiders(riders, facts)
+    return Riders().Evaluate(riders, facts)
+end
+
 --Split a tier line on its first "=>" into (teaser, fullText). A line with
 --no "=>" returns (nil, line). Both halves are trimmed; an empty teaser is
 --returned as "" so the caller can warn.
@@ -419,13 +646,59 @@ function EncounterScript.TierDisplayText(roll, t, landed)
     return teaser
 end
 
+--Parse a tier line (or a Consequence: line) into its effects, each with
+--the position of the clause it came from: { from, to, effect }.
+function EncounterScript.ParseEffectSpans(text)
+    local result = {}
+    for _, span in ipairs(SplitClauseSpans(text or "")) do
+        result[#result + 1] = { from = span.from, to = span.to, effect = ParseClause(span.text) }
+    end
+    return result
+end
+
 --Parse a tier line (or a Consequence: line) into its effects.
 function EncounterScript.ParseEffects(text)
     local result = {}
-    for _, clause in ipairs(SplitClauses(text or "")) do
-        result[#result + 1] = ParseClause(clause)
+    for _, span in ipairs(EncounterScript.ParseEffectSpans(text)) do
+        result[#result + 1] = span.effect
     end
     return result
+end
+
+--Does this parsed clause actually DO anything? "narrative" is both the
+--flavour the grammar recognizes as flavour ("you fail the test") and
+--everything it did not understand at all; every other kind changes the
+--game state.
+function EncounterScript.EffectIsMechanical(effect)
+    return effect ~= nil and effect.kind ~= "narrative"
+end
+
+--Wrap every mechanically recognized clause of a line in open ... close,
+--leaving the flavour, the punctuation and anything the grammar did not
+--understand exactly as written. The caller supplies the tags (the stage
+--passes rich-text colour tags), so this stays engine-free and testable.
+function EncounterScript.MarkupRules(text, open, close)
+    text = text or ""
+    if open == nil or open == "" then
+        return text
+    end
+    close = close or ""
+    local out = {}
+    local copied = 1
+    for _, span in ipairs(EncounterScript.ParseEffectSpans(text)) do
+        if EncounterScript.EffectIsMechanical(span.effect) then
+            out[#out + 1] = string.sub(text, copied, span.from - 1)
+            out[#out + 1] = open
+            out[#out + 1] = string.sub(text, span.from, span.to)
+            out[#out + 1] = close
+            copied = span.to + 1
+        end
+    end
+    if copied == 1 then
+        return text
+    end
+    out[#out + 1] = string.sub(text, copied)
+    return table.concat(out)
 end
 
 --- power roll attr ---------------------------------------------------------
@@ -454,12 +727,157 @@ function EncounterScript.ParseAttr(attr, attributesInfo, skillOptions)
     return characteristics, skills
 end
 
+--- party-size scaling -------------------------------------------------------
+
+--A "3-5 Players: -1 Opportunity, -1 Threat" line under a "## Round N"
+--heading: at that party size the round drops that many of each kind, drawn
+--at random from the entries the round introduces (see ChooseRemovedEntries).
+--The range may be "3", "3-5" or "3+", and "Players" may be "Heroes".
+--Returns { min, max = nil when open-ended,
+--          removals = { opportunity = 1, threat = 1 }, text } or nil.
+function EncounterScript.ParseScalingDirective(text)
+    local original = trim(text or "")
+    local lc = string.gsub(lower(original), "%.$", "")
+    local range, word, rest = string.match(lc, "^([%d][%d%s%-+]*)%s+(%a+)%s*:%s*(.+)$")
+    if range == nil then
+        return nil
+    end
+    if word ~= "players" and word ~= "player" and word ~= "heroes" and word ~= "hero" then
+        return nil
+    end
+    range = trim(range)
+    local min, max
+    local lo, hi = string.match(range, "^(%d+)%s*%-%s*(%d+)$")
+    if lo ~= nil then
+        min, max = tonumber(lo), tonumber(hi)
+    elseif string.match(range, "^%d+%+$") then
+        min = tonumber(string.match(range, "^(%d+)%+$"))
+    elseif string.match(range, "^%d+$") then
+        min, max = tonumber(range), tonumber(range)
+    else
+        return nil
+    end
+    if min == nil or (max ~= nil and max < min) then
+        return nil
+    end
+
+    local removals = {}
+    local any = false
+    for clause in string.gmatch(rest, "[^,;]+") do
+        clause = trim(clause)
+        if clause ~= "" then
+            --"-1 opportunity"; a bare "1 opportunity" means the same thing,
+            --and nothing is ever ADDED by a directive.
+            local sign, qtyWord, kind = string.match(clause, "^([%-+]?)%s*(%S+)%s+(%a+)$")
+            if kind == nil or sign == "+" then
+                return nil
+            end
+            local qty = EncounterScript.ParseQuantity(qtyWord)
+            if qty == nil or qty < 0 then
+                return nil
+            end
+            kind = string.gsub(kind, "ies$", "y")
+            kind = string.gsub(kind, "s$", "")
+            if kind ~= "opportunity" and kind ~= "threat" then
+                return nil
+            end
+            removals[kind] = (removals[kind] or 0) + qty
+            any = true
+        end
+    end
+    if not any then
+        return nil
+    end
+    return { min = min, max = max, removals = removals, text = original }
+end
+
+--Does this line LOOK like a party-size directive? A typo'd one then warns
+--instead of quietly becoming montage intro prose.
+function EncounterScript.IsScalingDirectiveLine(text)
+    local lc = lower(trim(text or ""))
+    return string.match(lc, "^%d[%d%s%-+]*%s+players?%s*:") ~= nil
+        or string.match(lc, "^%d[%d%s%-+]*%s+heroe?s?%s*:") ~= nil
+end
+
+--How many entries of each kind a round drops for a party of `partySize`.
+--Every directive whose range covers the size applies, cumulatively.
+function EncounterScript.ScalingRemovals(round, partySize)
+    local removals = {}
+    partySize = tonumber(partySize) or 0
+    for _, d in ipairs((round and round.scaling) or {}) do
+        if partySize >= d.min and (d.max == nil or partySize <= d.max) then
+            for kind, n in pairs(d.removals) do
+                removals[kind] = (removals[kind] or 0) + n
+            end
+        end
+    end
+    return removals
+end
+
+--Does any round of this montage carry a party-size directive?
+function EncounterScript.HasScaling(beat)
+    for _, r in ipairs((beat and beat.rounds) or {}) do
+        if #(r.scaling or {}) > 0 then
+            return true
+        end
+    end
+    return false
+end
+
+--Does the round that introduces this entry carry a party-size directive?
+--Such a round shows nothing at all until the removals have been rolled: a
+--card that is about to be removed must never appear.
+function EncounterScript.RoundHasScaling(beat, roundNumber)
+    for _, r in ipairs((beat and beat.rounds) or {}) do
+        if r.number == roundNumber and #(r.scaling or {}) > 0 then
+            return true
+        end
+    end
+    return false
+end
+
+--The entry ids a montage beat removes for a party of `partySize`, as
+--{ [entryId] = true }. Candidates are only the entries the directive's own
+--round INTRODUCES -- never one carried over from an earlier round -- and
+--never one whose heading said "(Required)". A round that asks for more than
+--it has drops everything it can.
+--`rand(n)` returns an integer in 1..n; math.random by default (the tests
+--pass a deterministic one).
+function EncounterScript.ChooseRemovedEntries(beat, partySize, rand)
+    rand = rand or function(n) return math.random(n) end
+    local removed = {}
+    for _, r in ipairs((beat and beat.rounds) or {}) do
+        local removals = EncounterScript.ScalingRemovals(r, partySize)
+        for _, kind in ipairs({ "opportunity", "threat" }) do
+            local count = removals[kind] or 0
+            if count > 0 then
+                local pool = {}
+                for _, e in ipairs(r.entries) do
+                    if e.kind == kind and not e.required then
+                        pool[#pool + 1] = e.id
+                    end
+                end
+                for _ = 1, math.min(count, #pool) do
+                    local idx = rand(#pool)
+                    removed[pool[idx]] = true
+                    table.remove(pool, idx)
+                end
+            end
+        end
+    end
+    return removed
+end
+
 --- the document ------------------------------------------------------------
 
 local function SplitLines(text)
     local lines = {}
     text = string.gsub(text or "", "\r\n", "\n")
     text = string.gsub(text, "\r", "\n")
+    --the journal stores a soft line break (shift+enter) as a vertical
+    --tab; its own renderer treats it as a newline, so we must too, or a
+    --rider typed that way rides along inside the tier line above it.
+    text = string.gsub(text, "\v", "\n")
     for line in string.gmatch(text .. "\n", "(.-)\n") do
         lines[#lines + 1] = line
     end
@@ -484,7 +902,7 @@ function EncounterScript.Parse(text)
 
     local function EnsureRound(lineIndex)
         if round == nil then
-            round = { number = 1, line = lineIndex, entries = {}, implicit = true }
+            round = { number = 1, line = lineIndex, entries = {}, scaling = {}, implicit = true }
             beat.rounds[#beat.rounds + 1] = round
         end
         return round
@@ -528,6 +946,28 @@ function EncounterScript.Parse(text)
             beat.intro = cond(beat.intro == "", text, beat.intro .. "\n\n" .. text)
             return
         end
+        if beat.kind == "encounter" then
+            --"Label: instruction" paragraphs are setup instructions the host
+            --runs before spawning the monsters; other prose is notes.
+            --One instruction per LINE (adjacent lines are one paragraph).
+            local lineIndex = paragraphLine
+            for _, l in ipairs(SplitLines(text)) do
+                local label, rest = string.match(trim(l), "^([%a][%a '%-]*):%s*(.*)$")
+                if label ~= nil then
+                    local instruction = EncounterScript.ParseSetupInstruction(rest)
+                    if instruction == nil then
+                        Warn(lineIndex, "unrecognized encounter setup instruction '%s: %s'; ignored", label, rest)
+                        instruction = { kind = "unknown" }
+                    end
+                    instruction.label = trim(label)
+                    instruction.text = trim(rest)
+                    instruction.line = lineIndex
+                    beat.setup[#beat.setup + 1] = instruction
+                end
+                lineIndex = lineIndex + 1
+            end
+            return
+        end
         if beat.kind ~= "montage" then
             return
         end
@@ -550,8 +990,38 @@ function EncounterScript.Parse(text)
                 entry.consequence = { text = rest, effects = EncounterScript.ParseEffects(rest) }
                 return
             end
+            if EncounterScript.IsScalingDirectiveLine(text) then
+                Warn(paragraphLine, "party-size directive '%s' must sit directly under its '## Round N' heading, above the entries; ignored", trim(text))
+                return
+            end
             entry.description = cond(entry.description == "", text, entry.description .. "\n\n" .. text)
             return
+        end
+        if round ~= nil then
+            --directly under a "## Round N" heading: party-size directives
+            --("3-5 Players: -1 Opportunity, -1 Threat"), one per LINE.
+            --Anything else in the paragraph is still montage prose.
+            local leftover = {}
+            local lineIndex = paragraphLine
+            for _, l in ipairs(SplitLines(text)) do
+                local t = trim(l)
+                if EncounterScript.IsScalingDirectiveLine(t) then
+                    local directive = EncounterScript.ParseScalingDirective(t)
+                    if directive == nil then
+                        Warn(lineIndex, "party-size directive '%s' not understood; ignored (use '3-5 Players: -1 Opportunity, -1 Threat')", t)
+                    else
+                        directive.line = lineIndex
+                        round.scaling[#round.scaling + 1] = directive
+                    end
+                elseif t ~= "" then
+                    leftover[#leftover + 1] = t
+                end
+                lineIndex = lineIndex + 1
+            end
+            if #leftover == 0 then
+                return
+            end
+            text = table.concat(leftover, "\n")
         end
         beat.intro = cond(beat.intro == "", text, beat.intro .. "\n\n" .. text)
     end
@@ -587,6 +1057,8 @@ function EncounterScript.Parse(text)
             elseif kind == "narrative" then
                 beat.intro = ""
                 beat.sections = {}
+            elseif kind == "encounter" then
+                beat.setup = {}
             end
             result.beats[#result.beats + 1] = beat
             round, entry, section, option = nil, nil, nil, nil
@@ -612,14 +1084,25 @@ function EncounterScript.Parse(text)
                 local entryKind, entryName = string.match(title, "^(%a+):%s*(.+)$")
                 entryKind = entryKind ~= nil and lower(entryKind) or nil
                 if roundNumber ~= nil then
-                    round = { number = tonumber(roundNumber), line = i, entries = {} }
+                    round = { number = tonumber(roundNumber), line = i, entries = {}, scaling = {} }
                     beat.rounds[#beat.rounds + 1] = round
                     entry, option = nil, nil
                 elseif entryKind == "opportunity" or entryKind == "threat" then
                     EnsureRound(i)
+                    --"## Opportunity: Hunter's Camp (Required)": never
+                    --removed by a party-size directive, and the tag itself
+                    --is not part of the name shown anywhere.
+                    local entryTitle = trim(entryName)
+                    local required = false
+                    local beforeTag, tag = string.match(entryTitle, "^(.-)%s*%(([^()]*)%)%s*$")
+                    if beforeTag ~= nil and lower(trim(tag)) == "required" and trim(beforeTag) ~= "" then
+                        required = true
+                        entryTitle = trim(beforeTag)
+                    end
                     entry = {
                         kind = entryKind,
-                        name = trim(entryName),
+                        name = entryTitle,
+                        required = required,
                         round = round.number,
                         line = i,
                         description = "",
@@ -701,13 +1184,32 @@ function EncounterScript.Parse(text)
                 Warn(i, "'|' line is not a power roll header (|Name: Attr); ignored")
             else
                 local tiers = {}
+                local riders = {}
                 local j = i + 1
-                while j <= #lines and #tiers < 4 do
+                while j <= #lines do
                     local tierText = string.match(trim(lines[j]), "^|([^|]*)$")
                     if tierText == nil then
                         break
                     end
-                    tiers[#tiers + 1] = trim(tierText)
+                    --"|Edge: you speak Caelian" is a rider, not a tier
+                    local effect, requirementText = EncounterScript.ParseRiderLine(trim(tierText))
+                    if effect ~= nil then
+                        if requirementText == "" then
+                            Warn(j, "rider '%s' has no requirement; ignored", trim(tierText))
+                        else
+                            local requirement = EncounterScript.ParseRequirement(requirementText)
+                            for _, alt in ipairs(requirement.alternatives) do
+                                if alt.kind == "unknown" then
+                                    Warn(j, "requirement '%s' not understood (use 'you are skilled in X', 'you speak X' or 'you are a X'); never met", alt.text)
+                                end
+                            end
+                            riders[#riders + 1] = { effect = effect, text = requirementText, requirement = requirement, line = j }
+                        end
+                    elseif #tiers >= 4 then
+                        break
+                    else
+                        tiers[#tiers + 1] = trim(tierText)
+                    end
                     j = j + 1
                 end
                 if #tiers < 3 then
@@ -717,7 +1219,7 @@ function EncounterScript.Parse(text)
                 elseif option.roll ~= nil then
                     Warn(i, "option '%s' already has a power roll; '%s' ignored", option.name, trim(name))
                 else
-                    local roll = { name = trim(name), attr = trim(attr), tiers = tiers, teasers = {}, effects = {} }
+                    local roll = { name = trim(name), attr = trim(attr), tiers = tiers, teasers = {}, effects = {}, riders = riders }
                     for t, tierText in ipairs(tiers) do
                         local teaser, fullText = EncounterScript.SplitTeaser(tierText)
                         if teaser == "" then
@@ -756,6 +1258,19 @@ function EncounterScript.Parse(text)
                 Warn(b.line, "montage has no opportunities or threats")
             end
             for _, r in ipairs(b.rounds) do
+                for _, d in ipairs(r.scaling or {}) do
+                    for kind, n in pairs(d.removals) do
+                        local pool = 0
+                        for _, e in ipairs(r.entries) do
+                            if e.kind == kind and not e.required then
+                                pool = pool + 1
+                            end
+                        end
+                        if n > pool then
+                            Warn(d.line, "'%s' drops %d %s but round %d introduces only %d that may be removed", d.text, n, kind, r.number, pool)
+                        end
+                    end
+                end
                 for _, e in ipairs(r.entries) do
                     if #e.options == 0 then
                         Warn(e.line, "%s '%s' has no options", e.kind, e.name)
@@ -797,7 +1312,7 @@ function EncounterScript.Parse(text)
 
     --implicit encounter: no beats at all, but an [[encounter]] island
     if #result.beats == 0 and result.hasEncounterTag then
-        result.beats[1] = { kind = "encounter", title = "Encounter", line = 0, tags = { "encounter" }, implicit = true }
+        result.beats[1] = { kind = "encounter", title = "Encounter", line = 0, tags = { "encounter" }, setup = {}, implicit = true }
     end
 
     return result
@@ -913,6 +1428,16 @@ function EncounterScript.Describe(parse)
     end
     for bi, b in ipairs(parse.beats or {}) do
         line("beat %d: %s (%s)%s", bi, b.title, b.kind, cond(b.implicit, " [implicit]", ""))
+        if b.kind == "encounter" then
+            for _, ins in ipairs(b.setup or {}) do
+                if ins.kind == "placeobjects" then
+                    line("  setup %s: place %d x '%s' in %s zones%s", ins.label, ins.qty, ins.object, ins.zone,
+                        cond(ins.deleteOthers, ", delete the other " .. ins.zone .. " zones", ""))
+                else
+                    line("  setup %s: UNRECOGNIZED '%s'", ins.label, ins.text)
+                end
+            end
+        end
         if b.kind == "narrative" then
             if b.sceneTag ~= nil then
                 line("  scene: [[%s]]", b.sceneTag)
@@ -938,8 +1463,18 @@ function EncounterScript.Describe(parse)
             end
             for _, r in ipairs(b.rounds) do
                 line("  round %d%s", r.number, cond(r.implicit, " (implicit)", ""))
+                for _, d in ipairs(r.scaling or {}) do
+                    local parts = {}
+                    for kind, n in pairs(d.removals) do
+                        parts[#parts + 1] = string.format("-%d %s", n, kind)
+                    end
+                    table.sort(parts)
+                    line("    scaling: %d%s players -> %s", d.min,
+                        cond(d.max == nil, "+", cond(d.max == d.min, "", "-" .. tostring(d.max))),
+                        table.concat(parts, ", "))
+                end
                 for _, e in ipairs(r.entries) do
-                    line("    %s: %s  [%s]", e.kind, e.name, e.id)
+                    line("    %s: %s%s  [%s]", e.kind, e.name, cond(e.required, " (required)", ""), e.id)
                     if e.consequence ~= nil then
                         line("      consequence: %s", e.consequence.text)
                         for _, effect in ipairs(e.consequence.effects) do
@@ -959,6 +1494,13 @@ function EncounterScript.Describe(parse)
                                 for _, effect in ipairs(o.roll.effects[t]) do
                                     line("          - %s", EncounterScript.DescribeEffect(effect))
                                 end
+                            end
+                            for _, rider in ipairs(o.roll.riders or {}) do
+                                local alts = {}
+                                for _, alt in ipairs(rider.requirement.alternatives) do
+                                    alts[#alts + 1] = string.format("%s=%s", alt.kind, alt.name)
+                                end
+                                line("        %s: %s (%s)", EncounterScript.RiderLabel(rider.effect), rider.text, table.concat(alts, " | "))
                             end
                         end
                     end
@@ -1012,6 +1554,8 @@ function EncounterScript.DescribeEffect(effect)
         return EncounterScript.DescribeSurpriseImmunity()
     elseif effect.kind == "knowstamina" then
         return EncounterScript.DescribeKnowStamina(effect.keyword)
+    elseif effect.kind == "revealzones" then
+        return EncounterScript.DescribeRevealZones(effect.zone)
     end
     return string.format("narrative%s: %s", cond(effect.unrecognized, " (unrecognized)", ""), effect.text)
 end

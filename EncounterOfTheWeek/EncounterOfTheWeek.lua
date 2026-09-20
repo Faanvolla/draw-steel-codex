@@ -930,6 +930,13 @@ dmhub.Coroutine(function()
                 montage.ClientTick()
             end
         end)
+        --zones the script revealed: this client's zone overlay shows them.
+        pcall(function()
+            local zones = rawget(_G, "EncounterZones")
+            if zones ~= nil then
+                zones.ClientTick()
+            end
+        end)
     end
 end)
 
@@ -2154,8 +2161,17 @@ local function RunScriptBeat(ctx)
         return
     end
 
-    --the encounter beat: spawn (idempotent -- already-present monsters are
-    --left alone), then Draw Steel once both sides exist.
+    --the encounter beat: the script's setup instructions (traps placed in
+    --their zones, the spare zones trimmed away) and then the spawn
+    --(idempotent -- already-present monsters are left alone), then Draw
+    --Steel once both sides exist.
+    local zones = rawget(_G, "EncounterZones")
+    if zones ~= nil then
+        local okSetup, errSetup = pcall(zones.RunEncounterSetup, beat)
+        if not okSetup then
+            printf("EotW: encounter zone setup failed: %s", tostring(errSetup))
+        end
+    end
     local numHeroes = tonumber(dmhub.GetSettingValue("numheroes")) or 5
     local ok, err = EncounterOfTheWeekGame.SpawnEncounterMonsters(numHeroes)
     if not ok then
@@ -2169,6 +2185,12 @@ local function RunScriptBeat(ctx)
     local sides = GatherCombatSides()
     if sides == nil then
         return
+    end
+
+    --A montage that revealed the traps: the zones turn player-visible now,
+    --behind the stage, so they are on the map when it comes through.
+    if zones ~= nil then
+        pcall(zones.ApplyPendingReveals)
     end
 
     --The monsters were placed behind the stage, so nothing popped in on a bare

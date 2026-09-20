@@ -731,7 +731,6 @@ local function CreateRecoveriesCircle(charid)
     }
     return gui.Panel{
         classes = {"eotwRecoveriesCircle"},
-        interactable = false,
         label,
         refreshCard = function(element)
             local tok = dmhub.GetCharacterById(charid)
@@ -748,6 +747,28 @@ local function CreateRecoveriesCircle(charid)
             end)
             label.text = tostring(current)
             element:SetClass("empty", current <= 0)
+        end,
+        linger = function(element)
+            local tok = dmhub.GetCharacterById(charid)
+            if tok == nil or not tok.valid or tok.properties == nil then
+                return
+            end
+            local current, max, recoveryValue = 0, 0, nil
+            pcall(function()
+                local c = tok.properties
+                local id = CharacterResource.recoveryResourceId
+                max = c:GetResources()[id] or 0
+                local used = c:GetResourceUsage(id, "long") or 0
+                current = math.max(0, max - used)
+                recoveryValue = c:RecoveryAmount()
+            end)
+            local lines = {
+                string.format("<b>Recoveries: %d / %d</b>", current, max),
+            }
+            if recoveryValue ~= nil then
+                lines[#lines+1] = string.format("Recovery Value: %d Stamina", recoveryValue)
+            end
+            gui.Tooltip(table.concat(lines, "\n"))(element)
         end,
     }
 end

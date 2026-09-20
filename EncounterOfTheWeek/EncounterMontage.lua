@@ -33,6 +33,7 @@
 --    consequences = { entryId, ... }, consequenceIndex, lastApplied = {...},
 --    requests = { [userid] = { seq, kind, ... } }, handled = { [userid] = seq },
 --    log = { { round, heroid, heroName, entryId, entryName, optionName, tier, applied }, ... },
+--          (a passed turn logs { round, passed = true, heroid, heroName, entryId, entryName })
 --    seq = n,
 --  }
 --  data.allies   = { [heroCharid] = { charid, ... } }  -- monsters that joined a hero
@@ -50,6 +51,10 @@
 --                  -- surges banked by "at the start of the next combat you
 --                     gain N surges", paid out (and cleared) by
 --                     ApplyPendingCombatBoons when combat starts.
+--  data.zoneSetup, data.revealZones, data.zonesRevealed
+--                  -- the encounter's zone setup (placed traps) and the
+--                     "Reveal Traps" banked/applied reveals; see
+--                     EncounterZones.lua.
 
 local mod = dmhub.GetModLoading()
 
@@ -294,12 +299,40 @@ local function UserControlsHero(userid, heroEntry)
     return false
 end
 
+--Party-size scaling: a "3-5 Players: -1 Opportunity" line under a round
+--heading drops entries at random. The draw is made ONCE, by the host, when
+--the party has arrived (m.removed, set by EncounterMontage.RollRemovals);
+--a removed entry simply never exists as far as anyone can see -- it is
+--never shown, never approachable, and never mentioned.
+function EncounterMontage.EntryRemoved(m, entry)
+    if m == nil or entry == nil then
+        return false
+    end
+    return (m.removed or {})[entry.id] == true
+end
+
+--Is this entry hidden from the board right now? Removed, or introduced by
+--a round whose directives have not been rolled yet -- until the draw is
+--made a card that is about to be removed must not flash up first.
+function EncounterMontage.EntryHidden(m, beat, entry)
+    if EncounterMontage.EntryRemoved(m, entry) then
+        return true
+    end
+    if m ~= nil and m.removed == nil and EncounterScript.RoundHasScaling(beat, entry.round) then
+        return true
+    end
+    return false
+end
+
 --Is this entry open for an approach in the given state?
 function EncounterMontage.EntryAvailable(m, entry)
     if entry == nil or m == nil then
         return false
     end
     if entry.round > (m.round or 1) then
+        return false
+    end
+    if EncounterMontage.EntryRemoved(m, entry) then
         return false
     end
     if entry.kind == "opportunity" then
@@ -354,6 +387,51 @@ function EncounterMontage.OptionSkills(option)
         return {}
     end
     return skills
+end
+
+--- riders ------------------------------------------------------------------
+--A test's riders ("|Allow: you are skilled in Magic", "|Edge: you speak
+--Caelian") are weighed against the FACTS of the hero taking it. This is
+--the one place those facts are read off a creature; the grammar and the
+--weighing are pure (EncounterScript.EvaluateRiders), so the host's gate,
+--the roll launch and the stage all agree.
+
+--What a hero is, for rider requirements (skills, languages, class /
+--subclass / ancestry), read off the creature by core (TestRiders).
+function EncounterMontage.HeroFacts(charid)
+    local tok = dmhub.GetCharacterById(charid)
+    if tok == nil or not tok.valid or tok.properties == nil then
+        return { skill = {}, language = {}, kindred = {} }
+    end
+    return TestRiders.CreatureFacts(tok.properties)
+end
+
+--How an option's riders fall for a hero (EncounterScript.EvaluateRiders
+--result), or nil when the option has no riders at all.
+function EncounterMontage.RiderVerdict(charid, option)
+    if option == nil or option.roll == nil or option.roll.riders == nil or #option.roll.riders == 0 then
+        return nil
+    end
+    local verdict = nil
+    local ok, err = pcall(function()
+        verdict = EncounterScript.EvaluateRiders(option.roll.riders, EncounterMontage.HeroFacts(charid))
+    end)
+    if not ok then
+        printf("EotW montage: rider verdict failed: %s", tostring(err))
+        return nil
+    end
+    return verdict
+end
+
+--The names of the riders a hero does not meet, for a refusal message.
+function EncounterMontage.DescribeUnmet(verdict)
+    local parts = {}
+    for _, rider in ipairs((verdict or {}).unmet or {}) do
+        if rider.effect == "allow" then
+            parts[#parts + 1] = rider.text
+        end
+    end
+    return table.concat(parts, "; ")
 end
 
 --The skill this hero could assist the option's test with: one the roll
@@ -1183,6 +1261,18 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                 else
                     printf("EotW montage: MonsterKnowledge is unavailable; %s not applied", tostring(effect.text))
                 end
+            elseif effect.kind == "revealzones" then
+                --"Reveal Traps during the next combat": banked on the
+                --document, applied by the encounter beat right before the
+                --stage dissolves (EncounterZones.ApplyPendingReveals), when
+                --the players' zone overlay is switched on too.
+                local zones = rawget(_G, "EncounterZones")
+                if zones ~= nil and ctx.doc ~= nil then
+                    zones.BankReveal(ctx.doc, effect.zone, ctx.entryName)
+                    applied[#applied + 1] = EncounterScript.DescribeRevealZones(effect.zone)
+                else
+                    printf("EotW montage: EncounterZones is unavailable; %s not applied", tostring(effect.text))
+                end
             elseif effect.kind == "narrative" then
                 applied[#applied + 1] = effect.text
             end
@@ -1551,14 +1641,28 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
             startedAt = dmhub.serverTime,
         }
         return string.format("%s approaches %s", hero.name, entry.name)
-    elseif kind == "back" then
-        --only before the dice are cast: once a test has rolled, its result
-        --(and any assist already spent on it) is not withdrawable.
-        if m.turn ~= nil and m.turn.userid == userid and m.turn.status == "choosing" then
-            m.turn = nil
-            return "approach withdrawn"
+    elseif kind == "pass" then
+        --there is no free withdrawal from an approach: the hero may only
+        --stand there and do nothing, which spends their turn this round.
+        local t = m.turn
+        if t == nil or t.userid ~= userid or t.status ~= "choosing" then
+            return "ignored pass: not choosing"
         end
-        return "ignored back"
+        local entry = EncounterScript.FindEntry(beat, t.entryId)
+        m.acted = m.acted or {}
+        m.acted[t.heroid] = true
+        m.log = m.log or {}
+        m.log[#m.log + 1] = {
+            round = m.round,
+            passed = true,
+            heroid = t.heroid,
+            heroName = t.heroName,
+            entryId = t.entryId,
+            entryName = entry ~= nil and entry.name or "",
+            applied = {},
+        }
+        m.turn = nil
+        return string.format("%s does nothing", t.heroName or "A hero")
     elseif kind == "choose" then
         local t = m.turn
         if t == nil or t.userid ~= userid or t.status ~= "choosing" then
@@ -1568,6 +1672,12 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         local option = entry ~= nil and entry.options[tonumber(req.optionIndex) or 0] or nil
         if option == nil or option.roll == nil then
             return "ignored choose: no such option"
+        end
+        --an Allow rider the hero does not meet locks the option; the stage
+        --never sends this, but the host is the authority.
+        local verdict = EncounterMontage.RiderVerdict(t.heroid, option)
+        if verdict ~= nil and not verdict.allowed then
+            return string.format("ignored choose: %s does not meet '%s'", t.heroName, EncounterMontage.DescribeUnmet(verdict))
         end
         m.seq = (m.seq or 0) + 1
         t.optionIndex = tonumber(req.optionIndex)
@@ -1778,6 +1888,84 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
     return "ignored unknown request " .. tostring(kind)
 end
 
+--Host: make the party-size draw for this beat and write it to the montage
+--state, so every client agrees on what is on the board. Rolled once, at the
+--moment the party has arrived (the hero roster is only trustworthy then --
+--Begin can run before a single hero token is placed). A beat with no
+--directives still gets an empty set: `m.removed == nil` is what the stage
+--reads as "the draw has not been made, show nothing yet".
+local function RollRemovals(m, beat)
+    local heroes = EncounterMontage.Heroes()
+    local removed = EncounterScript.ChooseRemovedEntries(beat, #heroes)
+    m.removed = removed
+    --kept on the document so the draw is still explicable long after the
+    --console scrollback is gone.
+    m.removedForPartySize = #heroes
+    --The draw is invisible to the party, so the console is the ONLY record
+    --of what a week actually played with: log the party size, every
+    --directive and whether it fired, and each entry that went. All of this
+    --is printf (the Director's console / the log), never the montage log
+    --the stage shows.
+    if EncounterScript.HasScaling(beat) then
+        printf("EotW montage: party-size scaling -- %d heroes", #heroes)
+        for _, r in ipairs(beat.rounds or {}) do
+            for _, d in ipairs(r.scaling or {}) do
+                local applies = #heroes >= d.min and (d.max == nil or #heroes <= d.max)
+                printf("EotW montage:   round %d: '%s' -- %s", r.number, d.text,
+                    cond(applies, "APPLIES", "out of range at this party size"))
+            end
+        end
+        local n = 0
+        for _, entry in ipairs(EncounterScript.MontageEntries(beat)) do
+            if removed[entry.id] then
+                n = n + 1
+                printf("EotW montage:   round %d REMOVED %s '%s' [%s]",
+                    entry.round, entry.kind, entry.name, entry.id)
+            elseif entry.required and EncounterScript.RoundHasScaling(beat, entry.round) then
+                printf("EotW montage:   round %d kept %s '%s' (Required)",
+                    entry.round, entry.kind, entry.name)
+            end
+        end
+        printf("EotW montage: party-size scaling removed %d of %d entries",
+            n, #EncounterScript.MontageEntries(beat))
+    end
+    return removed
+end
+
+--A readable account of the party-size draw for "/eotwmontage state": what
+--the montage document holds is a set of entry ids, which says nothing on
+--its own. Returns a list of lines (empty when the beat has no directives).
+function EncounterMontage.DescribeRemovals(beat, m)
+    local out = {}
+    if beat == nil or not EncounterScript.HasScaling(beat) then
+        return out
+    end
+    local removed = (m or {}).removed
+    if removed == nil then
+        out[#out + 1] = "party-size scaling: not rolled yet (the party has not arrived)"
+        return out
+    end
+    out[#out + 1] = string.format("party-size scaling (rolled for %s heroes):",
+        tostring(m.removedForPartySize or "?"))
+    for _, r in ipairs(beat.rounds or {}) do
+        for _, d in ipairs(r.scaling or {}) do
+            out[#out + 1] = string.format("  round %d directive: %s", r.number, d.text)
+        end
+    end
+    local n = 0
+    for _, entry in ipairs(EncounterScript.MontageEntries(beat)) do
+        if removed[entry.id] then
+            n = n + 1
+            out[#out + 1] = string.format("  REMOVED round %d %s '%s' [%s]",
+                entry.round, entry.kind, entry.name, entry.id)
+        end
+    end
+    if n == 0 then
+        out[#out + 1] = "  nothing was removed"
+    end
+    return out
+end
+
 --Host: seed the state for a montage beat and present the stage to everyone.
 --The beat starts in the "arriving" phase -- the stage is up, but nobody can
 --act -- and HostTick moves it to "rounds" on its first tick, which the map
@@ -1822,9 +2010,19 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
         --the rounds.
         doc:BeginChange()
         doc.data.montage.phase = "rounds"
+        RollRemovals(doc.data.montage, beat)
         doc:CompleteChange("Montage: the party has arrived", { undoable = false })
         m = doc.data.montage
         printf("EotW montage: beat %d -- the party has arrived; round 1 begins", beatIndex)
+    end
+
+    if m.removed == nil and m.phase ~= "arriving" then
+        --belt and braces: a montage that somehow reached the rounds without
+        --the draw (a state written by an older client) makes it now.
+        doc:BeginChange()
+        RollRemovals(doc.data.montage, beat)
+        doc:CompleteChange("Montage: party-size scaling", { undoable = false })
+        m = doc.data.montage
     end
 
     if m.phase == "done" then
@@ -1924,7 +2122,8 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
             --consequence.
             local list = {}
             for _, entry in ipairs(EncounterScript.MontageEntries(beat)) do
-                if entry.kind == "threat" and not (m.vanquished or {})[entry.id] then
+                if entry.kind == "threat" and not (m.vanquished or {})[entry.id]
+                    and not EncounterMontage.EntryRemoved(m, entry) then
                     list[#list + 1] = entry.id
                 end
             end
@@ -2173,6 +2372,14 @@ end
 
 --Show the roll dialog for the current turn's option: 2d10 + the best of
 --the listed characteristics, the Skilled chip for a listed skill, the tiers
+--The rider effects the hero earned ("Edge: you speak Caelian") become
+--pre-ticked chips in the roll dialog; core builds them (TestRiders).
+local function AppendRiderModifiers(modifiers, verdict, rollType)
+    TestRiders.AppendModifiers(modifiers, verdict, rollType)
+end
+
+--Show the roll dialog for the current turn's option: 2d10 + the best of
+--the listed characteristics, the Skilled chip for a listed skill, the tiers
 --from the script. Mirrors creature:RollCustomPowerTableTest (MCDMCreature.lua)
 --with a completion that reports the tier -- and what it rolled with, which
 --is what decides who may assist it -- to the host.
@@ -2193,6 +2400,7 @@ local function LaunchRoll(turn, entry, option, heroToken)
         modifiers = c:GetModifiersForPowerRoll(roll, rollType, { attribute = attrid, title = title })
     end
     local usedSkillId = ApplySkilledModifier(c, modifiers, skills)
+    AppendRiderModifiers(modifiers, EncounterMontage.RiderVerdict(heroToken.charid, option), rollType)
 
     ShowMontageRoll {
         creature = c,
@@ -2437,6 +2645,12 @@ function EncounterMontage.ResetTest()
         if knowledge ~= nil and knowledge.ClearKeywordReveals ~= nil then
             knowledge.ClearKeywordReveals()
         end
+        --placed trap objects come off the map and the trimmed/revealed
+        --zones go back to how the author painted them.
+        local zones = rawget(_G, "EncounterZones")
+        if zones ~= nil and zones.ResetMap ~= nil then
+            zones.ResetMap(doc)
+        end
     end)
     DropHostPermissions()
     if not ok then
@@ -2454,6 +2668,9 @@ function EncounterMontage.ResetTest()
     doc.data.surges = nil
     doc.data.noSurprise = nil
     doc.data.surprised = nil
+    doc.data.zoneSetup = nil
+    doc.data.revealZones = nil
+    doc.data.zonesRevealed = nil
     doc:CompleteChange("Montage test reset", { undoable = false })
 
     --EotW game: the combat flags and the map script's run-once state.
@@ -2530,6 +2747,17 @@ pcall(function()
             else
                 local doc = EncounterMontage.GetDoc()
                 print(json(doc.data))
+                local ok, script = pcall(EncounterMontage.FindMapScript)
+                if ok and script ~= nil then
+                    for _, b in ipairs(script.parse.beats) do
+                        if b.kind == "montage" then
+                            for _, l in ipairs(EncounterMontage.DescribeRemovals(b, doc.data.montage)) do
+                                print(l)
+                            end
+                            break
+                        end
+                    end
+                end
             end
         end,
     }

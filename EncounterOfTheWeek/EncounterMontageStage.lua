@@ -508,6 +508,54 @@ local function StageRules()
             selectors = {"eotwOptionCard", "chosen"},
             borderColor = "#ffd66bff",
         },
+        --a test only some heroes may take: violet when this hero unlocked
+        --it, dimmed and inert when they did not
+        {
+            selectors = {"eotwOptionCard", "unlocked"},
+            borderColor = "#c58cffc0",
+            bgcolor = "#1d1626f0",
+        },
+        {
+            selectors = {"eotwOptionCard", "unlocked", "actionable", "hover"},
+            borderColor = "#e2c6ffff",
+        },
+        {
+            selectors = {"eotwOptionCard", "locked"},
+            borderColor = "#ffffff18",
+            brightness = 0.55,
+        },
+        {
+            selectors = {"eotwRider"},
+            fontSize = 13,
+            color = "#a8a8a8",
+            width = "100%",
+            height = "auto",
+            textAlignment = "left",
+            bmargin = 3,
+        },
+        {
+            selectors = {"eotwRider", "unlocked"},
+            color = "#d9b3ff",
+            bold = true,
+        },
+        {
+            selectors = {"eotwRider", "locked"},
+            color = "#e08c8c",
+        },
+        {
+            selectors = {"eotwRider", "met"},
+            color = "#9be29b",
+            bold = true,
+        },
+        {
+            selectors = {"eotwRider", "hurt"},
+            color = "#e08c8c",
+            bold = true,
+        },
+        {
+            selectors = {"eotwRider", "unmet"},
+            color = "#6a6a6a",
+        },
         {
             selectors = {"eotwOptionName"},
             fontSize = 18,
@@ -768,19 +816,40 @@ local function MaliceIcon(size)
     }
 end
 
---A tier with a "teaser => full text" line shows only its teaser until it
---is the landed tier (EncounterScript.TierDisplayText); tiers not achieved
---keep their teaser.
+--The recognized-rules colours: the green the applied-effect lines already
+--use, and a muted version of it for a dimmed row.
+local RULES_COLOR = "#8ee08e"
+local RULES_COLOR_DIM = "#5d7a5d"
+
+--What one tier row reads. A tier with a "teaser => full text" line shows
+--only its teaser until it is the landed tier
+--(EncounterScript.TierDisplayText); tiers not achieved keep their teaser.
+--
+--Wherever the FULL text is on show -- the landed tier, and any tier
+--written without a teaser -- every clause the effect grammar recognizes is
+--coloured the applied-effect green, so a player can see at a glance which
+--words the montage will actually act on and which are flavour. A teaser is
+--never marked: the grammar only ever parses the full text.
+local function TierText(roll, t, landed, dim)
+    local text = EncounterScript.TierDisplayText(roll, t, landed)
+    local teaser = roll.teasers ~= nil and roll.teasers[t] or nil
+    if (not landed) and teaser ~= nil then
+        return text
+    end
+    local color = dim and RULES_COLOR_DIM or RULES_COLOR
+    return EncounterScript.MarkupRules(text, string.format("<color=%s>", color), "</color>")
+end
+
 local function TierRows(roll, landedTier, dimOthers)
     local rows = {}
     for t in ipairs(roll.tiers) do
-        local tierText = EncounterScript.TierDisplayText(roll, t, landedTier == t)
         local range = TIER_RANGES[t] or ""
         if #roll.tiers == 4 and t == 3 then
             range = "17-18"
         end
         local landed = landedTier == t
         local dim = dimOthers and landedTier ~= nil and not landed
+        local tierText = TierText(roll, t, landed, dim)
         rows[#rows + 1] = gui.Panel{
             width = "100%",
             height = "auto",
@@ -808,7 +877,7 @@ local function SetLandedTier(rows, landedTier)
         end
         local d = row.data
         if d ~= nil and d.roll ~= nil then
-            row.children[2].text = EncounterScript.TierDisplayText(d.roll, t, landed)
+            row.children[2].text = TierText(d.roll, t, landed, dim)
         end
     end
 end
@@ -1116,6 +1185,63 @@ local function IsMyTurn(m)
     return m.turn ~= nil and m.turn.userid == dmhub.loginUserid
 end
 
+--One line per rider on a test ("Edge: You speak Caelian"), coloured by how
+--it fell for the hero at the entry when a verdict is known: an Allow rider
+--reads "Unlocked" (violet) once met; an edge/bane rider lights green/red
+--when it applies and dims when it does not. With no verdict (nobody at the
+--entry) the lines are plain.
+--A hero who does not meet an Allow requirement is not read the requirement
+--back at them: every unmet Allow on the card collapses into one plain line
+--(user direction 2026-09-19).
+local function RiderRows(roll, verdict)
+    local rows = {}
+    local saidLocked = false
+    for _, row in ipairs(TestRiders.DescribeRows(roll.riders, verdict)) do
+        local text = string.format("%s: %s", row.label, row.text)
+        if row.state == "locked" then
+            if saidLocked then
+                goto continue
+            end
+            saidLocked = true
+            text = "You are missing a requirement for this option"
+        end
+        rows[#rows + 1] = gui.Label{
+            classes = Classes("eotwRider", row.state),
+            text = text,
+            interactable = false,
+        }
+        ::continue::
+    end
+    return rows
+end
+
+--The last card on a turn: the hero stands there and does nothing. It reads
+--like an option and costs like one -- the turn ends, spent.
+local function PassCard()
+    return gui.Panel{
+        classes = {"eotwOptionCard", "actionable"},
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        pad = 10,
+        borderBox = true,
+        vmargin = 5,
+        bgimage = "panels/square.png",
+        children = {
+            gui.Label{ classes = {"eotwOptionName"}, text = "Pass", interactable = false },
+            gui.Label{
+                classes = {"eotwEntryDesc"},
+                text = "Not very heroic, but you choose to do nothing",
+                interactable = false,
+            },
+        },
+        press = function(element)
+            audio.FireSoundEvent("Mouse.Click")
+            EncounterMontage.SendRequest("pass", {})
+        end,
+    }
+end
+
 local function OptionCard(entry, option, index, m)
     local mine = IsMyTurn(m) and m.turn.status == "choosing"
     local chosen = m.turn ~= nil and m.turn.optionIndex == index
@@ -1133,8 +1259,19 @@ local function OptionCard(entry, option, index, m)
     if option.text ~= "" then
         children[#children + 1] = gui.Label{ classes = {"eotwEntryDesc"}, text = option.text, interactable = false }
     end
+    --the option's riders, weighed against the hero standing at the entry:
+    --an unmet Allow locks the card; a met one marks it special and says why.
+    local verdict = nil
+    if m.turn ~= nil and m.turn.heroid ~= nil then
+        verdict = EncounterMontage.RiderVerdict(m.turn.heroid, option)
+    end
+    local locked = verdict ~= nil and not verdict.allowed
+    local unlocked = verdict ~= nil and verdict.gated and verdict.allowed
     if option.roll ~= nil then
         children[#children + 1] = gui.Label{ classes = {"eotwOptionRoll"}, text = string.format("%s: %s", option.roll.name, EncounterScript.AttrWithoutSkills(option.roll.attr)), interactable = false }
+        for _, row in ipairs(RiderRows(option.roll, verdict)) do
+            children[#children + 1] = row
+        end
         local rows
         if chosen and m.turn.status == "rolling" then
             rows = LiveTierRows(option.roll)
@@ -1146,7 +1283,7 @@ local function OptionCard(entry, option, index, m)
         end
     end
     return gui.Panel{
-        classes = Classes("eotwOptionCard", mine and "actionable", chosen and "chosen"),
+        classes = Classes("eotwOptionCard", mine and not locked and "actionable", chosen and "chosen", locked and "locked", unlocked and "unlocked"),
         width = "100%",
         height = "auto",
         flow = "vertical",
@@ -1156,7 +1293,7 @@ local function OptionCard(entry, option, index, m)
         bgimage = "panels/square.png",
         children = children,
         press = function(element)
-            if not mine or option.roll == nil then
+            if not mine or option.roll == nil or locked then
                 return
             end
             audio.FireSoundEvent("Mouse.Click")
@@ -1337,7 +1474,11 @@ local function BuildTurnChildren(m, beat)
         local last = (m.log or {})[#(m.log or {})]
         if last ~= nil and not last.consequence then
             Add(gui.Panel{ width = "60%", height = 1, bgimage = "panels/square.png", bgcolor = "#ffffff30", halign = "center", vmargin = 10 })
-            Add(gui.Label{ classes = {"eotwTurnText"}, text = string.format("%s: %s (%s, tier %d)", last.heroName or "", last.entryName or "", last.optionName or "", last.tier or 0) })
+            if last.passed then
+                Add(gui.Label{ classes = {"eotwTurnText"}, text = string.format("%s approached %s and did nothing.", last.heroName or "A hero", last.entryName or "") })
+            else
+                Add(gui.Label{ classes = {"eotwTurnText"}, text = string.format("%s: %s (%s, tier %d)", last.heroName or "", last.entryName or "", last.optionName or "", last.tier or 0) })
+            end
             for _, line in ipairs(last.applied or {}) do
                 Add(gui.Label{ classes = {"eotwAppliedLine"}, text = line })
             end
@@ -1373,16 +1514,10 @@ local function BuildTurnChildren(m, beat)
             Add(OptionCard(entry, option, i, m))
         end
         if IsMyTurn(m) then
-            Add(gui.Button{
-                text = "Back",
-                halign = "center",
-                tmargin = 8,
-                width = 120,
-                height = 36,
-                click = function(element)
-                    EncounterMontage.SendRequest("back", {})
-                end,
-            })
+            --no free withdrawal: having approached, the only way out is to
+            --do nothing, which costs the hero their turn (user direction
+            --2026-09-19).
+            Add(PassCard())
         end
     elseif t.status == "rolling" then
         local option = entry.options[t.optionIndex or 0]
@@ -1563,6 +1698,13 @@ local function CreateItemIcon(entry, animate, delay, charid)
         classes[#classes + 1] = "dropIn"
     end
 
+    local m_qty = nil
+    --Set while a giveItem is in flight and this icon is showing the handed-
+    --off outcome ahead of the host's reply. Cleared by the Update the
+    --resulting refresh brings, or by the safety restore below.
+    local m_handoff = false
+    local HandOff
+
     local icon = gui.Panel{
         classes = classes,
         bgimage = "panels/square.png",
@@ -1588,6 +1730,13 @@ local function CreateItemIcon(entry, animate, delay, charid)
                 return
             end
             audio.FireSoundEvent("Mouse.Click")
+            --The item is gone from this hero the moment it is dropped, as
+            --far as this strip is concerned. Without that, clearing
+            --"dragging" snaps the icon back into its old slot at full
+            --opacity and it sits there until the host's giveItem reply
+            --comes back -- the flash. Show the outcome now and let the
+            --refresh reconcile it.
+            HandOff()
             EncounterMontage.SendRequest("giveItem", { heroid = charid, targetId = target.data.charid, itemid = entry.itemid })
         end,
         hover = function(element)
@@ -1606,8 +1755,6 @@ local function CreateItemIcon(entry, animate, delay, charid)
         qtyLabel,
     }
 
-    local m_qty = nil
-
     --`animateChange` is for a refresh that lands while the stage is up: a
     --repeat grant bumps this icon's quantity rather than adding an icon, so
     --that gain announces itself with the same sound and a pulse.
@@ -1625,6 +1772,17 @@ local function CreateItemIcon(entry, animate, delay, charid)
             icon.selfStyle.bgcolor = "#232a33"
         end
         local qty = newEntry.qty or 1
+        if m_handoff then
+            if qty > (m_qty or 0) then
+                --a refresh driven by something else, carrying a document
+                --that predates our giveItem: keep showing the handoff
+                --rather than snapping the item back for an instant.
+                return
+            end
+            --the document has caught up with the handoff.
+            m_handoff = false
+            icon:SetClass("collapsed", false)
+        end
         qtyLabel.text = cond(qty > 1, string.format("x%d", qty), "")
         qtyLabel:SetClass("collapsed", qty <= 1)
         if animateChange and m_qty ~= nil and qty > m_qty then
@@ -1632,6 +1790,35 @@ local function CreateItemIcon(entry, animate, delay, charid)
             PlayItemPickupSound(newEntry.itemid)
         end
         m_qty = qty
+    end
+
+    --One of this item has just been handed to another hero. A stack simply
+    --loses one from its count; the last one leaves the strip, which is what
+    --the refresh will do to it anyway, so collapsing it now means the
+    --strip reflows once rather than snapping back and then reflowing.
+    HandOff = function()
+        local prevQty = m_qty or 1
+        local qty = prevQty - 1
+        m_handoff = true
+        m_qty = qty
+        if qty <= 0 then
+            icon:SetClass("collapsed", true)
+        else
+            qtyLabel.text = cond(qty > 1, string.format("x%d", qty), "")
+            qtyLabel:SetClass("collapsed", qty <= 1)
+        end
+        --if the reply never lands (rejected, or the host went away) put the
+        --icon back rather than leaving the haul short an item forever.
+        dmhub.Schedule(2, function()
+            if mod.unloaded or icon == nil or not icon.valid or not m_handoff then
+                return
+            end
+            m_handoff = false
+            m_qty = prevQty
+            icon:SetClass("collapsed", false)
+            qtyLabel.text = cond(prevQty > 1, string.format("x%d", prevQty), "")
+            qtyLabel:SetClass("collapsed", prevQty <= 1)
+        end)
     end
 
     Update(entry)
@@ -2067,6 +2254,9 @@ local function CreateStage(args)
     local m_cards = {}
     local m_entryRound = nil
     local m_entryPhase = nil
+    --true while a round's party-size draw has not been made yet: its entries
+    --are withheld entirely rather than shown and then taken away.
+    local m_entryDrawPending = false
 
     local function EntryDone(m, entry)
         if entry.kind == "opportunity" then
@@ -2086,6 +2276,7 @@ local function CreateStage(args)
         local delay = startDelay or 0
         for _, entry in ipairs(EncounterScript.MontageEntries(beat)) do
             if entry.round == round and m_cards[entry.id] == nil
+                and not EncounterMontage.EntryHidden(m, beat, entry)
                 and (keepDone or not EntryDone(m, entry)) then
                 local card = CreateEntryCard(entry, cond(animate, delay, nil))
                 m_cards[entry.id] = card
@@ -2135,7 +2326,12 @@ local function CreateStage(args)
     local function SyncEntries(m, beat, rebuilt)
         local round = m.round or 1
         local phase = m.phase
-        if rebuilt or m_entryRound == nil or round < m_entryRound then
+        --the draw landing is a rebuild: the entries it let through have to
+        --arrive, and the round number has not changed to bring them in.
+        local drawPending = m.removed == nil and EncounterScript.HasScaling(beat)
+        local drawLanded = m_entryDrawPending and not drawPending
+        m_entryDrawPending = drawPending
+        if rebuilt or m_entryRound == nil or round < m_entryRound or drawLanded then
             ClearEntries()
             for r = 1, round do
                 --what was dealt with in the round still running stays on

@@ -3047,6 +3047,154 @@ Lua reload gotcha struck again on this build: `reload_lua` recompiled
 stale content for `Draw Steel Core Rules`; `restart_dmhub` picked the
 edits up.
 
+#### Test riders: Allow / Edge / Bane requirements on a montage test (DECIDED + BUILT 2026-09-19; Lua only; parser unit-tested; VERIFIED on screen in the authoring game via the dev driver; UNCOMMITTED)
+
+User direction (2026-09-19): a montage test should be able to carry
+**riders**, each an *effect* plus a *requirement*. Effects: **Allow** (the
+test can only be taken by a hero who meets the requirement -- it still
+appears for everyone, locked for those who do not, and highlighted as
+special, with the reason, for a hero who does) and **Edge / Double Edge /
+Bane / Double Bane** (modifiers to the hero's roll). Requirements: "You
+are skilled in X" (a skill), "You speak X" (a language), "You are a X" (a
+class or ancestry), joinable with `or`. The motivating example, now in the
+live game's script, is a third option at the Witch's cottage that only a
+hero with a magic-related skill or an Elementalist can take.
+
+**Grammar** (parsed by the pure `EncounterScript`, unit-tested in
+`tests/encounter_script_test.lua`):
+
+```
+### Consult her on the arcane
+
+|Arcana Test: Reason (Magic, Alchemy, Psionics)
+|You fail at the test => ...
+|You gain a small boon => ...
+|You gain a large boon => ...
+|Allow: You are skilled in Magic, Alchemy or Psionics, or you are an Elementalist
+|Edge: You speak Caelian
+```
+
+- A rider is a `|` line after the tiers whose text starts with an effect
+  word and a colon: `Allow` (aliases `Allowed`, `Require`, `Requires`,
+  `Required`), `Edge`, `Double Edge`, `Bane`, `Double Bane`;
+  case-insensitive. `EncounterScript.ParseRiderLine` recognizes only those
+  words, so a tier line that happens to contain a colon ("You succeed:
+  ...") is still a tier, and the tier loop stops counting at the first
+  rider (a rider may follow a fourth tier). Stored on the roll as
+  `roll.riders = { { effect = "allow"|"edge"|"doubleedge"|"bane"|"doublebane",
+  text, requirement, line }, ... }`.
+- A **requirement** is alternatives joined by `or` (commas and semicolons
+  count as `or` too). Each alternative is one of three kinds
+  (`EncounterScript.ParseRequirement`):
+  - `skill`: "you are skilled in X" (also "skilled with/at", "trained in",
+    "you have the X skill");
+  - `language`: "you speak X" (also "you know X", "fluent in X"; a trailing
+    "language" is dropped);
+  - `kindred`: "you are a/an X" -- a class, a subclass or an ancestry.
+  A bare name in a list inherits the previous clause's kind, so "you are
+  skilled in Magic, Alchemy or Psionics, or you are an Elementalist" is
+  three skills and one kindred; the bare ones are spelled back out ("you
+  are skilled in Psionics") so the stage can quote them. A clause with no
+  recognized verb is `unknown`, warned in `/eotwscript`, and never met.
+  Names are compared normalized (`EncounterScript.NormalizeName`: lower
+  case, single spaces, and a compendium "Elf, High" becomes "high elf", so
+  authors write "High Elf"); a fact that ENDS with the wanted name also
+  counts, so "you are an Elf" matches a High Elf.
+- **Weighing** (`EncounterScript.EvaluateRiders(riders, facts)`, pure):
+  every Allow line must be met (several lines AND together; use `or`
+  inside one line for alternatives) or the roll is not `allowed`; each met
+  edge/bane rider adds to `boons`/`banes` and lands in `applied` with the
+  clause that met it; met Allow lines land in `unlocked`, unmet riders of
+  any kind in `unmet`. No riders = allowed, nothing applied.
+
+**Facts** come off the acting hero's creature in one place,
+`EncounterMontage.HeroFacts(charid)`: skills via `ProficientInSkill` over
+the skill table, languages via `LanguagesKnown()` mapped through the
+`languages` table's names, kindred = every `GetClassesAndSubClasses()`
+name plus `Race()` and `Subrace()` names. `EncounterMontage.RiderVerdict
+(charid, option)` returns the evaluation (nil when the roll has no riders)
+and is what the three consumers share:
+
+1. **The host gate**: the `choose` request is refused ("ignored choose:
+   <hero> does not meet '<requirement>'") when the verdict is not allowed,
+   whatever a client sends.
+2. **The roll launch** (`LaunchRoll`): each applied edge/bane rider becomes
+   a synthetic `power` CharacterModifier (`AppendRiderModifiers`:
+   `modtype` edge/double_edge/bane/double_bane, `rollType` test_power_roll,
+   `activationCondition = true`) pushed onto the dialog's modifier list
+   pre-ticked with the clause as its justification -- so the dialog shows
+   a named chip ("Edge: You speak Caelian") next to the Skilled chip and
+   the roll text reads "2d10+2 1 edge", exactly as an equipped modifier
+   would. The player may untick it like any chip.
+3. **The stage** (`EncounterMontageStage`, `RiderRows` + `OptionCard`):
+   every rider is a line under the roll header, weighed against the hero
+   standing at the entry (`m.turn.heroid`; plain grey lines when nobody
+   is). An Allow rider reads "Requires: <as written>" in red while unmet
+   and "Unlocked: <the clause that met it>" in violet once met; the whole
+   card goes violet (`unlocked` class) when gated and allowed, or dims and
+   stops being actionable (`locked` class; the press handler also ignores
+   it) when not. An edge rider reads green and a bane red when it applies,
+   dim grey when it does not.
+
+VERIFIED 2026-09-19 in the authoring game (dev driver, pregens deployed
+on the encounter map, `eotw:forcecustomui` on): the Dwarf Fury at the
+cottage sees the arcane option locked with the red Requires line and the
+host logs the refusal when a choose is injected for it; the Human Null
+(Psionics) sees it violet with "Unlocked: you are skilled in Psionics",
+chooses it, and the roll dialog opens with the Edge chip ticked (a
+temporary `|Edge: You speak Caelian` line, removed again afterwards) and
+"2d10+2 1 edge". Facts read correctly off all three pregens (e.g. the
+Tactician: `high elf, tactician, vanguard`).
+
+**Riders are a core feature now (2026-09-19, later the same day).** The user
+asked for riders to work in the journal in general: a `|Edge: You speak
+Yllyric` line under a journal power roll rendered as the CRITICAL tier. So
+the grammar moved out of the codemod into core,
+`DMHub Game Rules/TestRiders.lua` (registered through the MCP CodeMod
+workflow, after Language): `TestRiders.ParseRiderLine / ParseRider /
+ParseRequirement / RequirementMet / Evaluate / DescribeRows / NormalizeName`
+are the pure half (still lua.exe-testable; the parser test now `dofile`s
+it first), and `TestRiders.CreatureFacts(creature) / VerdictFor / 
+AppendModifiers` the engine half. `EncounterScript`'s rider functions are
+thin delegates (looked up at call time), `EncounterMontage.HeroFacts` and
+the stage's `RiderRows` call core. The journal (`MarkdownDocument.lua`):
+
+- the power-roll block parser keeps consuming `|` lines after the three
+  tiers while they are riders (told by their effect word) or the one
+  optional critical line, in either order; riders land on the token as
+  `riders`, and the island height estimate counts them;
+- `PowerRollDisplay` grew a rider-rows panel under the tiers (one label
+  per rider, coloured by `TestRiders.DescribeRows`). In the player view the
+  rows are weighed against `dmhub.currentToken`; in the Director's view
+  they are plain. A player whose hero is locked out sees the roll link go
+  dead (the `link` class is dropped) and the press does nothing; a player
+  who earned an edge/bane gets it as a pre-ticked chip because
+  `creature:RollCustomPowerTableTest` now takes a fifth `options` argument
+  whose `modifiers` are appended to the dialog's list;
+- the Director's "Request Rolls" path ignores riders (it requests from
+  several heroes at once; per-hero weighing there is a later step).
+
+Also fixed on the way: the journal stores a shift+enter soft break as a
+VERTICAL TAB, which its own renderer treats as a newline. `EncounterScript`
+now splits on it too; before, a rider typed that way rode along inside
+the tier line above it and the montage never saw it.
+
+VERIFIED 2026-09-19: the Encounter document renders "Requires: ..." under
+the arcane test as a rider row (no CRITICAL badge); the user's own
+`|Edge: You speak Yllyric` under the enclave test parses as a rider in
+both the journal and the montage; `RollCustomPowerTableTest` with rider
+modifiers opens the dialog (the Tactician does not speak Yllyric, so no
+chip -- the chip itself was verified on the montage path earlier).
+Player-view rendering of the coloured rows in the journal is UNTESTED
+(needs a player client with a current token).
+
+Dev-driver gap found on the way: outside an EotW game nothing writes the
+stage's beat pointer (`EncounterMontage.GetDoc().data.beat`, normally
+stamped by the map-script host in `EncounterOfTheWeek.lua`), so with a
+narrative beat first in the script the stage rendered the (empty)
+narrative surface over the running montage. Work-around used: set
+`data.beat = 2` on the document by hand. Not fixed.
+
 #### Hidden tier outcomes: a teaser before the roll, the real text after (DECIDED + BUILT 2026-09-19; Lua only; parser unit-tested; live UNTESTED; UNCOMMITTED)
 
 User direction (2026-09-19): a montage power roll should be able to show a
@@ -4138,7 +4286,10 @@ the bundled `lua.exe`:
   both opportunities and threats persist; an entry is only ever removed by
   being taken or vanquished). No round heading at all = one implicit round.
 - `## Opportunity: <Name>` / `## Threat: <Name>`: an entry in the current
-  round. Its body, up to the next `##`/`#`:
+  round. A trailing `(Required)` -- `## Opportunity: Hunter's Camp (Required)`
+  -- is stripped from the name (it is never shown anywhere) and marks the
+  entry as one a party-size directive may never remove. Its body, up to the
+  next `##`/`#`:
   - plain paragraphs = the description shown on the card;
   - a paragraph starting `Options:` = the approach text, shown when a hero
     approaches, above the option list;
@@ -4151,6 +4302,12 @@ the bundled `lua.exe`:
   and `^\|(?<text>[^|]*)$`). A tier line may read `teaser => full text`:
   players see the teaser until that tier lands, and only the full text is
   parsed for effects (see "Hidden tier outcomes" under Monster Info).
+  After the tier lines a roll may carry **rider** lines,
+  `|<Effect>: <requirement>` -- `Allow` (alias `Requires`), `Edge`,
+  `Double Edge`, `Bane`, `Double Bane` -- that gate or modify the test for
+  the hero taking it (see "Test riders" under Monster Info for the
+  requirement grammar). A `|` line that starts with one of those words and
+  a colon is never a tier, so a rider may follow a fourth tier line.
   `Attr` is turned into characteristics + skills
   the way `PowerRollDisplay`'s press handler already does it: every
   `creature.attributesInfo` description that appears in the text
@@ -4158,9 +4315,104 @@ the bundled `lua.exe`:
   that appears in the parenthesized list. That mapping is duplicated in
   the codemod rather than factored into core so the codemod keeps working
   against the retail core it ships with.
+### Scaling a montage to the party (DECIDED + BUILT 2026-09-20; Lua only; parser unit-tested with the bundled interpreter; runtime UNTESTED live -- needs a restart; UNCOMMITTED)
+
+User direction (2026-09-20): a week should be able to trim itself for a
+small party. Directly under a `## Round N` heading, one line per rule:
+
+```
+## Round 1
+3-5 Players: -1 Opportunity, -1 Threat
+3 Players: -1 Threat
+```
+
+At that party size the round drops that many entries of each kind, **drawn
+at random**, and the party is never told: a removed opportunity or threat
+simply never appears on the stage, is never approachable, and (for a
+threat) delivers no consequence. There is no "this was removed" signal of
+any kind.
+
+Grammar (`EncounterScript.ParseScalingDirective`, pure and unit-tested):
+
+- The range is `3`, `3-5` or `3+` (open-ended). `Players` may be spelled
+  `Player`, `Heroes` or `Hero`. Case does not matter.
+- The removals are a comma- (or semicolon-) separated list of
+  `-<n> <Opportunity|Threat>`, singular or plural; `<n>` may be a digit or
+  a word (`-one Opportunity`). A leading `+` is rejected -- a directive only
+  ever removes.
+- A line that LOOKS like a directive (`^<digits> Players:`) but does not
+  parse warns rather than silently becoming montage intro prose, and so
+  does one written below the round's entries instead of directly under the
+  heading.
+
+Decisions (2026-09-20):
+
+- **Scope**: a directive draws only from the entries **its own round
+  introduces**. An entry carried over from an earlier round is never yanked
+  off the board mid-montage.
+- **Overlap**: every directive whose range covers the party size applies,
+  **cumulatively**. The pair above gives a party of 3 `-1 Opportunity` and
+  `-2 Threat`, and a party of 4 or 5 `-1 Opportunity, -1 Threat`.
+- **Timing**: the draw is made **once**, by the host, at the moment the
+  party has arrived -- the `arriving` -> `rounds` transition in
+  `EncounterMontage.HostTick`, not `Begin` (which can run before a single
+  hero token is placed, so the roster is not yet trustworthy there). The
+  whole beat's rounds are drawn at once, so a player joining or dropping
+  later cannot change the montage.
+- **`(Required)`**: an entry whose heading ends `(Required)` is out of the
+  pool. If a round asks for more than it has removable entries, it drops
+  everything it can and the parse warns.
+
+Implementation:
+
+- `EncounterScript.lua`: `round.scaling = { scalingDirective, ... }`
+  (`{min, max, removals, text, line}`), `entry.required`,
+  `ParseScalingDirective`, `IsScalingDirectiveLine`, `ScalingRemovals`,
+  `HasScaling`, `RoundHasScaling`, and `ChooseRemovedEntries(beat,
+  partySize, rand)` -- the draw itself, which takes an injected `rand` so
+  the tests are deterministic. `/eotwscript` prints each round's directives
+  and marks required entries.
+- `EncounterMontage.lua`: `RollRemovals` (file-local) writes
+  `m.removed = { [entryId] = true }` on the montage document at the
+  arrival transition, with a belt-and-braces re-roll in `HostTick` for a
+  state written by an older client. `EncounterMontage.EntryRemoved` and
+  `EncounterMontage.EntryHidden` and `EncounterMontage.DescribeRemovals` are what everything else
+  reads; `EntryAvailable` refuses a removed entry, and the end-of-montage
+  consequence list skips removed threats. `/eotwmontage reset` clears the
+  montage state, so it re-rolls.
+- **Logging.** The draw is invisible to the party, so the console is the
+  only account of what a week actually played with. `RollRemovals` prints
+  the party size, every directive with `APPLIES` / `out of range at this
+  party size`, one line per entry it removed (round, kind, name, id), each
+  `(Required)` entry it therefore kept in a scaled round, and a final
+  `removed N of M entries`. It is all `printf` -- the Director's console
+  and the log, never the montage log the stage shows a player. The draw is
+  also durable: `m.removedForPartySize` goes on the montage document beside
+  `m.removed`, and `/eotwmontage state` prints
+  `EncounterMontage.DescribeRemovals` -- the directives and the removed
+  entries by NAME -- under the raw JSON, so a montage can still be
+  explained long after the scrollback is gone.
+- `EncounterMontageStage.lua`: `AddEntriesForRound` skips anything
+  `EntryHidden` says to skip. **Until the draw is made (`m.removed == nil`)
+  a round that carries a directive shows NO entries at all** -- a card that
+  is about to be removed must never flash up first -- and the draw landing
+  is treated as a rebuild (`drawLanded`) so the survivors arrive, since the
+  round number has not changed to bring them in. Rounds without directives
+  are unaffected and show during `arriving` as before.
+- Tests: `tests/encounter_script_test.lua` (260 checks, up from 233).
+
 - **Effect clauses**: each tier line is split on `.`, `,` and `;` and each
   clause is matched case-insensitively against the grammar below. Quantities
   are digits or `one`..`ten`; `a`/`an` = 1.
+
+  The splitter keeps each clause's POSITION (`SplitClauseSpans` ->
+  `EncounterScript.ParseEffectSpans`, 1-based inclusive byte offsets into
+  the untouched line), which is what lets a display point at the words it
+  understood: `EncounterScript.MarkupRules(text, open, close)` wraps every
+  clause whose effect is mechanical (`EffectIsMechanical` -- everything but
+  `narrative`) and leaves the flavour, the punctuation and anything
+  unrecognized exactly as written. The tags are the caller's, so the parser
+  stays engine-free and testable.
 
   | clause | effect |
   |---|---|
@@ -4183,6 +4435,7 @@ the bundled `lua.exe`:
   | `you win [the] initiative` | next encounter: heroes go first, no die |
   | `you lose [the] initiative` | next encounter: monsters go first, no die |
   | `you know the stamina of <keyword>` (also `learn`, `the party knows ...`, `each party member knows ...`; `goblins` -> `goblin`) | monster intelligence: the exact stamina of every monster carrying that stat-block keyword, in Monster Info and on its token bar, for the rest of the campaign (see "Montage outcome: You know the Stamina of Goblins") |
+  | `reveal <zone>s [during the next combat]` (also `reveal the <zone> zones`, `the <zone>s are revealed ...`; the timing suffix is optional flavour) | the `<zone>` markup zones (an environmental keyword by name, e.g. Trap) turn player-visible when the encounter beat comes, and every client's zone overlay switches that type on (see "Encounter setup instructions and zone reveals") |
   | `you fail (at )?the test`, anything unmatched | narrative only (shown, no effect) |
 
   The four **initiative** clauses (user direction 2026-09-18) work on power
@@ -4244,6 +4497,113 @@ the bundled `lua.exe`:
   checks later (a Python port of the grammar -- a second copy that must
   stay in step, like the map-name rule).
 
+### Encounter setup instructions and zone reveals (DECIDED + BUILT 2026-09-19; Lua only; parser unit-tested; setup/reveal/reset VERIFIED headlessly in the authoring game over MCP; the live encounter beat and a player client's overlay UNTESTED; UNCOMMITTED)
+
+User direction (2026-09-19): traps on the map. The author paints "Trap"
+markup zones wherever a trap COULD be (the Trap environmental keyword is
+in the module; the live Encounter map has six Trap zone records covering
+15 tiles) and writes, under `# Encounter`:
+
+```
+Trap: Place 4 Snare Trap objects in Trap zones and delete other Trap zones.
+```
+
+When the encounter beat comes, the host picks four of those tiles at random,
+places a "Snare Trap" object on each, and removes every other Trap tile from
+the map, so the only Trap zones left are the ones with a trap in them. The
+zones stay hidden from the players (the Trap keyword's default is not
+player-visible) -- unless a montage test earned `Reveal Traps during the
+next combat`, in which case the surviving zones become player-visible and
+every player's zone overlay is switched on so they can see where the snare
+traps are.
+
+**Grammar** (`EncounterScript`, unit-tested in `tests/encounter_script_test.lua`):
+
+- Under `# Encounter`, every LINE of the form `Label: Place <n> <Object>
+  object[s] in [the] <Zone> zone[s] [and delete|remove [the] other|remaining|
+  unused|extra <Zone> zone[s]]` is a setup instruction
+  (`EncounterScript.ParseSetupInstruction` -> `{ kind = "placeobjects", label,
+  qty, object = "Snare Trap", zone = "trap", deleteOthers }`, collected in
+  `beat.setup`). `<n>` is digits or `one`..`ten`. `<Object>` is an object
+  asset's display name (its `description` -- object nodes expose no `name`).
+  `<Zone>` is an environmental keyword name, lower-cased and singularised. A
+  delete clause naming a different zone is rejected. Any other `Label:` line
+  there is kept as `kind = "unknown"` with a parser warning, so the format can
+  grow. Adjacent lines are one paragraph in the journal, so the parser splits
+  the paragraph and reads one instruction per line. `/eotwscript` lists them
+  as `setup Trap: place 4 x 'Snare Trap' in trap zones, delete the other trap
+  zones`.
+- The montage/narrative clause `reveal <zone>s` (`EncounterScript.ParseRevealZonesClause`
+  -> `{ kind = "revealzones", zone = "trap" }`): `Reveal Traps`, `Reveal the
+  trap zones`, `The traps are revealed during the next encounter`, with an
+  optional trailing `during|in the next <word>` / `during|in combat` / `for the
+  next <word>`. A multi-word name is narrative. Described as "The Traps will be
+  revealed during the next combat"; mechanical, so the stage colours it.
+
+**Runtime** (`EncounterOfTheWeek/EncounterZones.lua`, registered in the codemod
+after `EncounterScript`; all Lua, no engine change):
+
+- `EncounterZones.RunEncounterSetup(beat)` -- host, called by the encounter
+  beat in `RunScriptBeat` BEFORE `SpawnEncounterMonsters`, so the traps go
+  down behind the stage with the monsters. Idempotent: once
+  `doc.data.zoneSetup` exists it returns at once, so the beat may call it
+  every tick. Per instruction: the object asset by name
+  (`FindObjectAsset`), every zone record of the keyword on the current map
+  (`ZoneRecords`, matching by keyword id with the record's `keywordName` as
+  the heal-by-name fallback, skipping `category` surfaces/holes and negative
+  floors), all their tiles pooled, `qty` drawn uniformly without replacement
+  (`math.random`, on the host, once -- the result is what the document
+  records), one `floor:SpawnObjectLocal(objectId, {posx, posy})` +
+  `obj:Upload()` per tile (tile-centre convention: Loc (x,y) is world (x,y)),
+  then with `deleteOthers` each zone record is rewritten to its drawn tiles
+  (`SetMarkupZone` with a fresh deep copy; a record left with none is
+  `RemoveMarkupZone`d). Everything runs under `ElevateToHostPermissions`
+  (the EotW host is a player; zone and object writes are Director
+  operations). A missing object or zone type is recorded as `entry.error`
+  and logged; the beat carries on without traps rather than stalling.
+- `EncounterZones.BankReveal(doc, zone, entryName)` -- called by
+  `EncounterMontage.ApplyEffects` for a `revealzones` clause inside the
+  change it already holds: `doc.data.revealZones[zone] = { entryName, at }`
+  (TOP level, like `initiative`, so it survives the per-beat rebuild).
+- `EncounterZones.ApplyPendingReveals()` -- host, called by the encounter
+  beat after the spawn and BEFORE `DismissStage`, so the zones are on the map
+  when the stage dissolves. For each banked type: every zone record of the
+  keyword gets `playerVisible = true` (fresh copy + `SetMarkupZone`), the
+  originals are kept, and the entry moves to
+  `doc.data.zonesRevealed[zone] = { keywordid, at, entryName, original }`.
+- `EncounterZones.ClientTick()` -- EVERY client, from the driver's 1 s poll
+  in `EncounterOfTheWeek.lua` next to the montage `ClientTick`: for each
+  `zonesRevealed` entry whose stamp this client has not applied, the keyword
+  id is added to the user's `mapoverlay:shownzones` preference (the
+  `;`-joined opt-in list the title bar's overlay menu manages; zone types
+  default hidden, and a player client renders a zone only when it is BOTH
+  `playerVisible` and opted in -- see `dmhub.GetMarkupZones` in
+  `MapMarkupZoneRuntime.lua`). Applied once per stamp, so a player who turns
+  the type off again afterwards is not fought.
+- **Reset**: `EncounterMontage.ResetTest` (`/eotwmontage reset`) calls
+  `EncounterZones.ResetMap(doc)` under its elevation -- deletes the placed
+  objects (`floor.objects[objid]:Destroy()`, a networked delete) and puts
+  every zone record the setup or a reveal touched back exactly as it was
+  (`zoneSetup.original` / `zonesRevealed[*].original`) -- then clears the
+  three document fields. Dev command `/eotwzones setup | reveal <zone> |
+  apply | state | reset` drives the pieces alone in the authoring game.
+
+**Verified 2026-09-19** in the authoring game over MCP (the new file
+`dofile`d into the running app, no reload): the live document's `Trap:`
+line parses; `FindObjectAsset("Snare Trap")` resolves (`0f85f34a`);
+`RunEncounterSetup` placed 4 Snare Traps on 4 of the 15 Trap tiles and left
+3 zone records covering exactly those 4 tiles, each object sitting on a
+surviving tile; a banked reveal turned all 3 player-visible and added the
+Trap keyword to the overlay preference (the stripes appeared on the map);
+`ResetMap` removed the 4 objects and restored all 6 records / 15 tiles /
+hidden. No console errors. NOT yet seen: the real encounter beat running it
+in an EotW game, and a joiner client's overlay flipping on.
+
+**Open ends**: the placed objects themselves are whatever the "Snare Trap"
+asset is -- nothing here hides them from players or gives them a trigger;
+that is the asset author's job. The publisher's validation (Phase 7 step
+35) should resolve the object name and the zone keyword too.
+
 ### Runtime state and authority
 
 A new shared document in the codemod, `eotwscript`, next to `eotwstate`:
@@ -4277,6 +4637,11 @@ A new shared document in the codemod, `eotwscript`, next to `eotwstate`:
   surprised = nil | { party = nil | { entryName, at },   -- sticky; survives a later
                       enemy = nil | { entryName, at } }, -- initiative clause
   noSurprise = nil | { entryName, at },
+  zoneSetup = nil | { at, entries = { {label, object, objectId, zone, keywordid, qty,
+                      placed = { {objid, floorid, x, y}, ... }, error} },
+                      original = { [zoneid] = {floorid, record} } },
+  revealZones = nil | { [zone] = { entryName, at } },        -- banked "Reveal Traps"
+  zonesRevealed = nil | { [zone] = { keywordid, at, entryName, original } },
 }
 ```
 
@@ -4735,6 +5100,31 @@ Start-zone confinement stays on underneath):
   everyone; on a core without the exports the rows stay static. Once the
   host resolves the turn the body rebuilds with `turn.tier` highlighted as
   before. BUILT 2026-09-18, luac-clean, UNTESTED live.
+- **The recognized rules are coloured inside the tier text** (user
+  direction 2026-09-19). A tier line is part prose and part rules --
+  "You make off with some potions! Each party member gains one Healing
+  Potion" -- and only the second half does anything. Every tier row that
+  is showing its FULL text draws the clauses the effect grammar
+  recognized in the applied-effect green (`#8ee08e`, or the muted
+  `#5d7a5d` on a dimmed row), the rest in the row's own colour, via
+  `TierText` -> `EncounterScript.MarkupRules` with rich-text `<color>`
+  tags. That covers the landed tier once a roll resolves, the live rows
+  while the dice tumble (`SetLandedTier` re-marks as the tier moves), and
+  any tier authored without a teaser -- so the option card shows it
+  before the roll too. A **teaser is never marked**: the grammar only
+  ever parses the full text, so colouring a teaser would be a guess.
+  Colour only, no tooltip and no inline effect text (user direction): the
+  parsed mechanics are already listed as green lines under the result, so
+  the colour is what ties phrase to effect, and the tier labels stay
+  `interactable = false` inside the pressable option card.
+  Deliberately NOT extended to the roll dialog's own power table: that
+  table is shared core code and fills the landed row gold with forced
+  black text, which a colour tag would clash with -- and the montage
+  dialog is handed teasers anyway (`TeaserTiers`).
+  A useful side effect for authoring: a clause the grammar missed stays
+  uncoloured, so "The threat is vanquished, and you gain 2 surges" shows
+  its first half green and the second half plain -- which is exactly what
+  will and will not happen.
 - **The rail behind the stage** (user direction 2026-09-18): the hud's
   right rail keeps rendering while a montage beat is presented, and its
   **pools strip is wanted there** -- hero tokens and malice read in the
@@ -5401,7 +5791,11 @@ beats -- narrative, montage, narrative, encounter -- with no warnings:
    carries rules text**: it is a flavour vote, so it changes no balance,
    but it is a real agreed-upon choice and a split gets the random flash.
    Attach clauses to it whenever the week wants them to matter.
-2. **`# Montage`** -- unchanged.
+2. **`# Montage`** -- unchanged, except that the Mysterious Cottage gained a
+   third option on 2026-09-19, `### Consult her on the arcane` (an Arcana
+   Test: Reason (Magic, Alchemy, Psionics) with an `|Allow:` rider for a
+   hero skilled in Magic, Alchemy or Psionics, or an Elementalist -- see
+   "Test riders" under Monster Info).
 3. **`# Narrative`** (the ambush). One section, `## Surrounded`: the forest
    goes silent, the bracken moves on every side, the ring closes before the
    first goblin screams. One option, `### Draw steel!`, which is the last
@@ -6009,12 +6403,37 @@ and 30 change nothing visible for a script with no montage.
     "Kira and Brann lose 1 Recovery" plus "Osk has no Recoveries left to
     lose".
 
+49. [x] **Traps: encounter setup instructions + zone reveals** (BUILT
+    2026-09-19, luac-clean, parser suite 233 checks, setup / reveal / reset
+    VERIFIED headlessly in the authoring game over MCP; **the live encounter
+    beat and a player client's overlay UNTESTED, UNCOMMITTED, NOT
+    DEPLOYED**): `Trap: Place 4 Snare Trap objects in Trap zones and delete
+    other Trap zones.` under `# Encounter`, and `Reveal Traps during the next
+    combat` as a montage clause. Design in "Encounter setup instructions and
+    zone reveals". Files: `EncounterOfTheWeek/EncounterZones.lua` (NEW,
+    registered after EncounterScript), `EncounterScript.lua`
+    (`ParseSetupInstruction`, `ParseRevealZonesClause`, `beat.setup`),
+    `EncounterMontage.lua` (the `revealzones` branch, reset),
+    `EncounterOfTheWeek.lua` (the encounter beat's two calls, the driver's
+    `EncounterZones.ClientTick`), `tests/encounter_script_test.lua`.
+
+    Test (needs a restart to load the new file): in a real EotW game with the
+    live script, let the montage run and take a test whose tier says
+    `Reveal Traps during the next combat` (none in the live script yet -- add
+    one), then Draw Steel: behind the dissolving stage there should be 4
+    Snare Trap objects on 4 former Trap tiles, only those 4 tiles should
+    still be Trap zones (`/eotwzones state`), and on EVERY client the Trap
+    stripes should be visible without touching the overlay menu. Without the
+    reveal, the traps go down and the zones stay hidden from players.
+    `/eotwmontage reset` must remove the traps and bring back all 15 tiles.
+
 Deliverable: the week's document is a script; a montage plays before the
 fight with every player dragging their heroes onto opportunities and
 threats, rolling in front of everyone, and its outcomes (items, stamina,
 healing, temporary stamina, Recovery Value, lost recoveries, surges, hero
-tokens, malice, allied monsters, unresolved-threat consequences) carrying
-into the combat.
+tokens, malice, allied monsters, revealed traps, unresolved-threat
+consequences) carrying into the combat, and the encounter's own setup
+(traps placed in their zones) running as the fight begins.
 
 ## Phase 8 -- Narrative beats (BUILT 2026-09-18; VERIFIED in the authoring game; real EotW game UNTESTED)
 
@@ -6230,6 +6649,62 @@ no core change.
 ---
 
 # Status
+
+- 2026-09-20 (party-size scaling, latest): **A montage round can now trim
+  itself for a small party, and an entry can opt out of being trimmed.
+  BUILT code-only; the parser is unit-tested with the bundled interpreter
+  (260 checks, up from 233); the runtime is UNTESTED live -- the running
+  game's Lua watcher was dead (EncounterScript.lua was last read at app
+  startup), so a restart is needed before any of it can be seen.** A line
+  directly under a round heading, `3-5 Players: -1 Opportunity, -1 Threat`,
+  drops that many of each kind at random from the entries THAT round
+  introduces, once, when the party has arrived; `## Opportunity: Hunter's
+  Camp (Required)` is never drawn and the tag never displays. A removed
+  entry is invisible rather than announced: no card, no approach, no
+  consequence, no message -- but every draw is logged in full to the
+  Director's console (directives, what fired, each entry removed by name)
+  and `/eotwmontage state` reprints it from the document. Design under "Scaling a montage to the party".
+  Files: `EncounterOfTheWeek/EncounterScript.lua` (`round.scaling`,
+  `entry.required`, `ParseScalingDirective`, `IsScalingDirectiveLine`,
+  `ScalingRemovals`, `HasScaling`, `RoundHasScaling`,
+  `ChooseRemovedEntries`, the overdraw warning, the `/eotwscript` dump),
+  `EncounterOfTheWeek/EncounterMontage.lua` (`RollRemovals` and its
+  logging, `m.removedForPartySize`, `EntryRemoved`, `EntryHidden`,
+  `DescribeRemovals` + the `/eotwmontage state` dump, the `EntryAvailable`
+  gate, the consequence-list filter), `EncounterOfTheWeek/EncounterMontageStage.lua`
+  (`AddEntriesForRound` / `SyncEntries` withhold a scaled round's cards
+  until the draw lands), `tests/encounter_script_test.lua` (27 new checks).
+
+- 2026-09-19 (traps): **Trap zones + Snare Trap placement + "Reveal
+  Traps" montage outcome. BUILT code-only; parser unit-tested (233 checks);
+  setup / reveal / reset VERIFIED headlessly in the authoring game over MCP
+  (the new file `dofile`d in, the map restored afterwards); the encounter
+  beat itself and a joiner's overlay UNTESTED (needs a restart to load the
+  NEW registered file `EncounterOfTheWeek/EncounterZones.lua`).** The
+  `# Encounter` section now takes `Label: Place <n> <Object> objects in
+  <Zone> zones [and delete other <Zone> zones]` lines (the live document
+  already has the Trap one), run by the host before the spawn; the montage
+  clause `Reveal Traps during the next combat` makes the surviving Trap
+  zones player-visible and switches every client's zone overlay on for that
+  type. Design under "Encounter setup instructions and zone reveals"; plan
+  step 49. Note for the parser: object assets are matched by their
+  `description` (their display name) -- `ObjectNodeLua` has no `name`.
+
+- 2026-09-19 (rules highlighting): **The montage tier text now
+  colours the clauses the effect grammar recognized, so a player can see
+  which words are rules and which are flavour. BUILT code-only; parser
+  unit-tested; UNTESTED live (the running game is serving the deployed
+  codemod, so it needs a deploy or a restart to see).** The clause
+  splitter now keeps byte offsets (`SplitClauseSpans`,
+  `EncounterScript.ParseEffectSpans`, `EffectIsMechanical`,
+  `EncounterScript.MarkupRules`) and the stage's `TierText` wraps the
+  recognized spans in `<color>` tags for every row showing full text.
+  Design under "Montage grammar" (the effect-clauses bullet) and "The
+  stage (UI)" (the recognized-rules bullet). Files:
+  `EncounterOfTheWeek/EncounterScript.lua`,
+  `EncounterOfTheWeek/EncounterMontageStage.lua` (`TierText`,
+  `RULES_COLOR`, `TierRows`, `SetLandedTier`),
+  `tests/encounter_script_test.lua` (8 new checks; 195 pass).
 
 - 2026-09-19 (the cut to combat, latest): **The stage now dissolves away to
   reveal the battlefield instead of hanging over it. BUILT code-only, NOT

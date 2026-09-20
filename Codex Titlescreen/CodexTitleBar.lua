@@ -2438,13 +2438,49 @@ local function CreateStatusBar()
     local m_mapNameLabel
     local m_mapCluster
 
+    --Encounter of the Week hides the cluster outright rather than merely
+    --dropping its plate: the map name and engine status are chrome the
+    --encounter's own presentation has no use for. Three signals, any of
+    --which suffices, because the EotW codemod is a separate mod that may not
+    --have loaded when the bar is first built: its own IsEotwGame, the
+    --account's dedicated EotW slot (set by the titlescreen's create/join
+    --flows), and the arrival args the titlescreen parks before entering.
+    --All pcall-guarded, exactly as DocumentNewUser does it.
+    --
+    --Latched once true, and deliberately one-way: a game never stops being
+    --an EotW game, which is what makes it safe to collapse the cluster --
+    --a collapsed panel's think does not run, so the collapse can never undo
+    --itself (the same trap the tile chip documents in g_tileIndicator).
+    local m_isEotwGame = false
+    local function IsEotwGame()
+        if m_isEotwGame then
+            return true
+        end
+
+        local eotw = false
+        pcall(function() eotw = EncounterOfTheWeekGame.IsEotwGame() end)
+        if not eotw then
+            pcall(function() eotw = (lobby.eotwGameid ~= nil and lobby.eotwGameid == dmhub.gameid) end)
+        end
+        if not eotw then
+            pcall(function()
+                local pending = rawget(_G, "EotwPendingArrival")
+                eotw = (type(pending) == "table" and pending.gameid ~= nil and pending.gameid == dmhub.gameid)
+            end)
+        end
+
+        m_isEotwGame = (eotw == true)
+        return m_isEotwGame
+    end
+
     local function MapClusterAvailable()
-        return dmhub.inGame and (not dmhub.isLobbyGame)
+        return dmhub.inGame and (not dmhub.isLobbyGame) and (not IsEotwGame())
     end
 
     local function RefreshMapClusterAffordance()
         if m_mapCluster ~= nil and m_mapCluster.valid then
             m_mapCluster:SetClass("menuItem", MapClusterAvailable())
+            m_mapCluster:SetClass("collapsed", IsEotwGame())
         end
     end
 
@@ -2494,8 +2530,20 @@ local function CreateStatusBar()
     --here rather than on a half. hpad is inline rather than left to the
     --menuItem style so the cluster does not shift sideways on the frames
     --where the class is dropped.
+    --Built with the classes the current game already implies, so an EotW
+    --game never shows the cluster for the frames before the first think.
+    --(A nil from cond() cannot simply be listed here -- it would truncate
+    --the class list -- so the list is assembled.)
+    local mapClusterClasses = {}
+    if MapClusterAvailable() then
+        mapClusterClasses[#mapClusterClasses+1] = "menuItem"
+    end
+    if IsEotwGame() then
+        mapClusterClasses[#mapClusterClasses+1] = "collapsed"
+    end
+
     m_mapCluster = gui.Panel{
-        classes = {cond(MapClusterAvailable(), "menuItem")},
+        classes = mapClusterClasses,
         flow = "horizontal",
         width = "auto",
         height = "100%",

@@ -1,6 +1,7 @@
 --Run from the codex root with ../dependencies/lua/bin/lua.exe tests/encounter_script_test.lua
 --Exercises the pure Encounter of the Week script parser against the sample
 --script from EncounterOfTheWeek.md and a few edge cases.
+dofile("DMHub Game Rules/TestRiders.lua")
 dofile("EncounterOfTheWeek/EncounterScript.lua")
 
 local passed = 0
@@ -539,8 +540,222 @@ check(EncounterScript.AttrWithoutSkills("Presence (Empathize, Lie, Flirt, Persua
 check(EncounterScript.AttrWithoutSkills("Might or Agility (Endurance, Track)") == "Might or Agility", "two characteristics kept")
 check(EncounterScript.AttrWithoutSkills("Reason") == "Reason", "no skills = unchanged")
 
+--- highlighting the recognized rules in a tier line -------------------------
+
+--the clause offsets point at the clause inside the untouched line
+local spans = EncounterScript.ParseEffectSpans("You slip past them! You gain 2 surges, and nothing else")
+check(#spans == 3, "three clauses")
+check(spans[1].effect.kind == "narrative" and spans[1].effect.unrecognized, "flavour is unrecognized")
+check(spans[2].effect.kind == "surges", "the mechanical clause parses")
+local line = "You slip past them! You gain 2 surges, and nothing else"
+check(string.sub(line, spans[2].from, spans[2].to) == "You gain 2 surges", "span offsets bracket the clause exactly")
+check(string.sub(line, spans[3].from, spans[3].to) == "and nothing else", "the trailing clause needs no terminator")
+
+--only the mechanical clauses are wrapped; punctuation and flavour are left alone
+local marked = EncounterScript.MarkupRules(line, "<b>", "</b>")
+check(marked == "You slip past them! <b>You gain 2 surges</b>, and nothing else", "markup wraps only the recognized clause")
+check(EncounterScript.MarkupRules("You fail at the test.", "<b>", "</b>") == "You fail at the test.", "recognized flavour is not marked")
+check(EncounterScript.MarkupRules("Nothing here matches", "<b>", "</b>") == "Nothing here matches", "unrecognized text is not marked")
+check(EncounterScript.MarkupRules("You gain 2 surges", nil, nil) == "You gain 2 surges", "no tags = text unchanged")
+check(EncounterScript.MarkupRules(nil, "<b>", "</b>") == "", "nil text is empty")
+local two = EncounterScript.MarkupRules("You lose 6 Stamina. Each party member gains one Healing Potion.", "[", "]")
+check(two == "[You lose 6 Stamina]. [Each party member gains one Healing Potion].", "every mechanical clause is marked")
+check(EncounterScript.EffectIsMechanical(spans[2].effect) and not EncounterScript.EffectIsMechanical(spans[1].effect), "EffectIsMechanical")
+
 --montage parsing is untouched by the narrative branch
 check(EncounterScript.SectionCount(nar.beats[1]) == 3, "SectionCount")
 check(EncounterScript.FindSection(nar.beats[1], "s2/the-shrine") == sec2, "FindSection")
+
+--- riders: requirements that gate or modify a test ------------------------
+
+local RIDERS = table.concat({
+    "# Montage", "## Round 1", "## Opportunity: Cottage", "Options: x", "### Consult her on the arcane",
+    "|Arcana Test: Reason (Magic, Alchemy)", "|You fail.", "|You gain one Healing Potion", "|Each party member gains one Healing Potion",
+    "|Allow: You are skilled in Magic, Alchemy or Psionics, or you are an Elementalist",
+    "|Edge: You speak Caelian", "|Double Bane: You are a Dwarf", "|Requires: frobnicate", "|Edge:",
+    "### Plain", "|Plain Test: Might", "|a", "|b", "|c", "|d", "|Edge: you are a Polder",
+    "# Encounter", "[[encounter]]" }, "\n")
+local rp = EncounterScript.Parse(RIDERS)
+local arcane = rp.beats[1].rounds[1].entries[1].options[1].roll
+check(#arcane.tiers == 3 and #arcane.riders == 4, "riders are not tiers: 3 tiers, 4 riders")
+check(arcane.riders[1].effect == "allow" and arcane.riders[2].effect == "edge" and arcane.riders[3].effect == "doublebane" and arcane.riders[4].effect == "allow", "rider effects, Requires = Allow")
+local alts = arcane.riders[1].requirement.alternatives
+check(#alts == 4 and alts[1].kind == "skill" and alts[1].name == "magic" and alts[2].name == "alchemy" and alts[3].name == "psionics", "comma list inherits the skill kind")
+check(alts[4].kind == "kindred" and alts[4].name == "elementalist", "', or you are an X' is a kindred clause")
+check(arcane.riders[2].requirement.alternatives[1].kind == "language" and arcane.riders[2].requirement.alternatives[1].name == "caelian", "you speak X")
+check(arcane.riders[4].requirement.unrecognized and arcane.riders[4].requirement.alternatives[1].kind == "unknown", "unknown clause flagged")
+local sawUnknown, sawEmpty = false, false
+for _, w in ipairs(rp.warnings) do
+    if string.find(w, "frobnicate", 1, true) then sawUnknown = true end
+    if string.find(w, "no requirement", 1, true) then sawEmpty = true end
+end
+check(sawUnknown and sawEmpty, "unknown and empty riders warn")
+local plain = rp.beats[1].rounds[1].entries[1].options[2].roll
+check(#plain.tiers == 4 and #plain.riders == 1, "a rider after a 4th tier still parses")
+
+check(EncounterScript.NormalizeName("Elf, High") == "high elf", "compendium 'Elf, High' normalizes to 'high elf'")
+check(EncounterScript.ParseRiderLine("You succeed: something") == nil, "a tier line with a colon is not a rider")
+
+local mage = { skill = { magic = true }, language = { caelian = true }, kindred = { ["high elf"] = true } }
+local v = EncounterScript.EvaluateRiders(arcane.riders, mage)
+check(v.gated and not v.allowed, "the unknown Requires line is never met, so the roll is locked")
+check(v.unlockedBy == "You are skilled in Magic" and v.boons == 1 and v.banes == 0 and #v.applied == 1, "edge applied with its reason")
+local v2 = EncounterScript.EvaluateRiders({ arcane.riders[1], arcane.riders[2], arcane.riders[3] }, mage)
+check(v2.allowed and v2.unlockedBy == "You are skilled in Magic" and #v2.unmet == 1, "allowed once the bad line is gone; the Dwarf bane is unmet")
+local dwarf = EncounterScript.EvaluateRiders({ arcane.riders[1], arcane.riders[3] }, { skill = {}, language = {}, kindred = { dwarf = true } })
+check(not dwarf.allowed and dwarf.banes == 2 and dwarf.boons == 0, "a Dwarf with no magic: locked, double bane")
+local elementalist = EncounterScript.EvaluateRiders({ arcane.riders[1] }, { kindred = { elementalist = true } })
+check(elementalist.allowed and elementalist.unlockedBy == "you are an Elementalist", "an Elementalist unlocks by class")
+local free = EncounterScript.EvaluateRiders({}, {})
+check(free.allowed and not free.gated and free.boons == 0, "no riders = allowed")
+check(EncounterScript.RequirementMet(EncounterScript.ParseRequirement("you are an Elf"), { kindred = { ["high elf"] = true } }), "a fact ending in the wanted name counts")
+check(not EncounterScript.RequirementMet(EncounterScript.ParseRequirement("you are skilled in Magic"), { skill = { magician = true } }), "no substring match")
+check(EncounterScript.RiderLabel("doubleedge") == "Double Edge" and EncounterScript.RiderBoons("doublebane") == -2, "labels and boons")
+
+--the sample script has no riders and parses exactly as before
+check(#negotiate.roll.riders == 0, "a roll without riders has an empty riders list")
+
+--- traps: encounter setup instructions + zone reveals ----------------------
+
+local TRAPS = table.concat({
+    "# Montage", "## Round 1", "## Opportunity: Watchtower", "Options: x", "### Scout ahead",
+    "|Scouting Test: Intuition (Alertness)", "|You fail.", "|You spot some tracks.", "|Reveal Traps during the next combat.",
+    "# Encounter", "Some notes for the author.",
+    "Trap: Place 4 Snare Trap objects in Trap zones and delete other Trap zones.",
+    "Pit: Place one Pit object in the Pit zones",
+    "Rubble: Place two Rubble Pile objects in Rubble zones and remove the remaining Rubble zones.",
+    "Bogus: Do something else entirely.",
+    "[[encounter]]" }, "\n")
+local tp = EncounterScript.Parse(TRAPS)
+local enc = tp.beats[2]
+check(enc.kind == "encounter" and #enc.setup == 4, "four setup instructions under # Encounter")
+local trap = enc.setup[1]
+check(trap.kind == "placeobjects" and trap.label == "Trap" and trap.qty == 4 and trap.object == "Snare Trap" and trap.zone == "trap" and trap.deleteOthers, "Trap: place 4 Snare Trap objects ... and delete other Trap zones")
+check(enc.setup[2].kind == "placeobjects" and enc.setup[2].qty == 1 and enc.setup[2].object == "Pit" and enc.setup[2].zone == "pit" and not enc.setup[2].deleteOthers, "Place one Pit object in the Pit zones (no delete)")
+check(enc.setup[3].kind == "placeobjects" and enc.setup[3].qty == 2 and enc.setup[3].object == "Rubble Pile" and enc.setup[3].zone == "rubble" and enc.setup[3].deleteOthers, "remove the remaining X zones = delete")
+check(enc.setup[4].kind == "unknown" and enc.setup[4].label == "Bogus", "an unknown instruction is kept as unknown")
+local sawBogus = false
+for _, w in ipairs(tp.warnings) do
+    if string.find(w, "Bogus", 1, true) then sawBogus = true end
+end
+check(sawBogus, "an unknown setup instruction warns")
+check(EncounterScript.ParseSetupInstruction("Place 4 Snare Trap objects in Trap zones and delete other Pit zones") == nil, "delete clause naming a different zone is rejected")
+check(EncounterScript.ParseSetupInstruction("Place lots of things") == nil, "no quantity = not an instruction")
+local reveal = tp.beats[1].rounds[1].entries[1].options[1].roll.effects[3]
+check(reveal[1].kind == "revealzones" and reveal[1].zone == "trap", "Reveal Traps during the next combat -> trap")
+check(EncounterScript.ParseEffects("Reveal the trap zones")[1].zone == "trap", "reveal the trap zones")
+check(EncounterScript.ParseEffects("Reveal traps")[1].zone == "trap", "reveal traps")
+check(EncounterScript.ParseEffects("The traps are revealed during the next encounter")[1].zone == "trap", "the traps are revealed ...")
+check(EncounterScript.ParseEffects("Reveal all Pits in the next combat")[1].zone == "pit", "reveal all pits in the next combat")
+check(EncounterScript.ParseEffects("Reveal the secret passage")[1].kind == "narrative", "a multi-word reveal is narrative")
+check(EncounterScript.DescribeEffect(reveal[1]) == "The Traps will be revealed during the next combat", "describe reveal")
+check(EncounterScript.EffectIsMechanical(reveal[1]), "reveal is mechanical")
+check(string.find(EncounterScript.Describe(tp), "setup Trap: place 4 x 'Snare Trap' in trap zones, delete the other trap zones", 1, true) ~= nil, "dump lists setup")
+check(#EncounterScript.Parse("[[encounter]]").beats[1].setup == 0, "implicit encounter has an empty setup list")
+
+--- party-size scaling and "(Required)" ------------------------------------
+
+local SCALING = [==[
+# Montage
+
+The party crosses the moor.
+
+## Round 1
+3-5 Players: -1 Opportunity, -1 Threat
+3 Players: -1 Threat
+
+## Opportunity: Hunter's Camp (Required)
+
+### Search it
+|Search: Might
+|You lose 1 stamina
+|You gain a Rope
+|You gain two Ropes
+
+## Opportunity: Standing Stones
+
+### Read them
+|Read: Reason
+|You fail the test
+|You gain 1 hero token
+|You gain 2 hero tokens
+
+## Threat: Mire
+
+Consequence: You lose 2 stamina
+
+### Wade
+|Wade: Might
+|You lose 1 stamina
+|You gain a Rope
+|You gain two Ropes
+
+## Threat: Fog
+
+Consequence: You lose the initiative
+
+### Wait
+|Wait: Reason
+|You fail the test
+|You gain 1 hero token
+|You gain 2 hero tokens
+
+## Round 2
+6+ Heroes: -1 Opportunity
+
+## Opportunity: Ford
+
+### Cross
+|Cross: Agility
+|You fail the test
+|You gain 1 hero token
+|You gain 2 hero tokens
+]==]
+
+local sp = EncounterScript.Parse(SCALING)
+local sb = sp.beats[1]
+check(#sb.rounds[1].scaling == 2, "two party-size directives on round 1")
+check(sb.intro == "The party crosses the moor.", "a directive is not montage intro prose")
+check(sb.rounds[1].entries[1].required and sb.rounds[1].entries[1].name == "Hunter's Camp", "(Required) sets the flag and leaves the name")
+check(sb.rounds[1].entries[2].required == false, "an untagged entry is not required")
+
+local rem = EncounterScript.ScalingRemovals(sb.rounds[1], 3)
+check(rem.opportunity == 1 and rem.threat == 2, "matching directives stack for a party of 3")
+check(EncounterScript.ScalingRemovals(sb.rounds[1], 5).threat == 1, "only the range directive covers a party of 5")
+check(next(EncounterScript.ScalingRemovals(sb.rounds[1], 6)) == nil, "a party of 6 is outside 3-5")
+check(EncounterScript.ScalingRemovals(sb.rounds[2], 99).opportunity == 1, "6+ is open-ended")
+
+--a deterministic draw: always the first of the pool
+local first = function(n) return 1 end
+local removed = EncounterScript.ChooseRemovedEntries(sb, 3, first)
+check(removed["r1/opportunity/hunter-s-camp"] == nil, "(Required) is never drawn")
+check(removed["r1/opportunity/standing-stones"] == true, "the removable opportunity is drawn instead")
+check(removed["r1/threat/mire"] and removed["r1/threat/fog"], "two threats asked for, two threats drawn")
+check(removed["r2/opportunity/ford"] == nil, "a round-1 directive does not reach round 2")
+check(EncounterScript.ChooseRemovedEntries(sb, 7, first)["r2/opportunity/ford"] == true, "a round-2 directive draws from round 2")
+check(next(EncounterScript.ChooseRemovedEntries(sb, 2, first)) == nil, "a party outside every range loses nothing")
+check(EncounterScript.HasScaling(sb) and EncounterScript.RoundHasScaling(sb, 2), "HasScaling / RoundHasScaling")
+check(not EncounterScript.HasScaling(EncounterScript.Parse(SAMPLE).beats[1]), "a montage with no directives has no scaling")
+
+check(EncounterScript.ParseScalingDirective("4+ Players: -1 Threat").max == nil, "N+ is open-ended")
+check(EncounterScript.ParseScalingDirective("3 Players: -2 Opportunities").removals.opportunity == 2, "plural kind")
+check(EncounterScript.ParseScalingDirective("3-5 players: -one opportunity").removals.opportunity == 1, "a spelled-out quantity")
+check(EncounterScript.ParseScalingDirective("3-5 Players: +1 Opportunity") == nil, "a directive never ADDS")
+check(EncounterScript.ParseScalingDirective("5-3 Players: -1 Threat") == nil, "a backwards range is rejected")
+check(EncounterScript.ParseScalingDirective("Options: approach the fire") == nil, "an Options: paragraph is not a directive")
+check(EncounterScript.IsScalingDirectiveLine("3-5 Players: nonsense") and EncounterScript.ParseScalingDirective("3-5 Players: nonsense") == nil, "a malformed directive is recognized and rejected")
+
+local overdraw = EncounterScript.Parse(table.concat({
+    "# Montage", "", "## Round 1", "3 Players: -2 Threats", "",
+    "## Threat: Mire", "", "Consequence: You lose 2 stamina", "",
+    "### Wade", "|Wade: Might", "|You lose 1 stamina", "|You gain a Rope", "|You gain two Ropes" }, "\n"))
+local sawOverdraw = false
+for _, w in ipairs(overdraw.warnings) do
+    if string.find(w, "introduces only 1", 1, true) then sawOverdraw = true end
+end
+check(sawOverdraw, "asking for more than the round has warns")
+check(EncounterScript.ChooseRemovedEntries(overdraw.beats[1], 3, first)["r1/threat/mire"] == true, "and drops everything it can")
+check(string.find(EncounterScript.Describe(sp), "scaling: 3-5 players -> -1 opportunity, -1 threat", 1, true) ~= nil, "dump lists the directives")
+check(string.find(EncounterScript.Describe(sp), "Hunter's Camp (required)", 1, true) ~= nil, "dump marks required entries")
 
 print(string.format("encounter_script_test: %d checks passed", passed))
