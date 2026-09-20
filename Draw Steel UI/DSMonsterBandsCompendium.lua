@@ -145,71 +145,6 @@ local function LanguageOptions()
 end
 
 
--- Open a monster's character sheet, in its own OS window.
---
--- The sheet opens into the hud, which the compendium's toplevel frame sits
--- above -- so from here it always lands underneath. Popping it into a native
--- window is the sheet's own mechanism (the corner button fires this same
--- event) and puts it somewhere the compendium cannot cover at all. It keeps
--- the sheet's pop-in button, so the reader can put it back in-app.
---
--- Getting the token mirrors EditBestiaryMonster in Core Panels/CharacterPanel:
--- the sheet works on the monster's local-game bestiary token, which may not
--- exist yet and has to be uploaded and waited for.
-local function ShowMonsterSheet(monsterid)
-    local monsterAsset = (assets.monsters or {})[monsterid]
-    if monsterAsset == nil or not dmhub.inGame then
-        return
-    end
-
-    local PopOut = function()
-        local sheet = CharacterSheet.instance
-        --already out: ShowSheet's own handler raises the window for us.
-        if sheet and sheet.valid and not sheet.data.poppedOut then
-            sheet:FireEvent("popoutSheet")
-        end
-    end
-
-    local Show = function(token)
-        token:ShowSheet()
-
-        --the engine builds the sheet in response to ShowSheet, so the
-        --instance is not necessarily up in this frame.
-        dmhub.Coroutine(function()
-            for _ = 1, 20 do
-                if mod.unloaded then
-                    return
-                end
-                local sheet = CharacterSheet.instance
-                if sheet and sheet.valid then
-                    PopOut()
-                    return
-                end
-                coroutine.yield(0.05)
-            end
-        end)
-    end
-
-    local token = monsterAsset:GetLocalGameBestiaryToken()
-    if token ~= nil then
-        Show(token)
-        return
-    end
-
-    monsterAsset:Upload()
-    dmhub.Coroutine(function()
-        while token == nil do
-            coroutine.yield(0.1)
-            if mod.unloaded then
-                return
-            end
-            token = monsterAsset:GetLocalGameBestiaryToken()
-        end
-        Show(token)
-    end)
-end
-
-
 local function Count(n, singular, plural)
     if n == 0 then return "empty" end
     return string.format("%d %s", n, cond(n == 1, singular, plural))
@@ -771,45 +706,7 @@ local function BandEditor(bandid)
     local function BuildRoster()
         local out = {}
 
-        -- Assign an existing monster to this band. Creating one from scratch is
-        -- the bestiary's job; this is for pointing a monster that already
-        -- exists at the right band.
-        out[#out + 1] = gui.Panel{
-            width = CONTENT_W - 30, height = "auto", flow = "horizontal",
-            lmargin = 18, vmargin = 2,
-            gui.Dropdown{
-                classes = {"dropdown", "form"},
-                sort = true, hasSearch = true,
-                textDefault = "+ Add a monster to this band...",
-                idChosen = "none",
-                create = function(element)
-                    local opts = {}
-                    for id, mon in pairs(assets.monsters or {}) do
-                        local p = mon.properties
-                        if p ~= nil and p:try_get("groupid") ~= bandid then
-                            opts[#opts + 1] = { id = id, text = mon.description or "(unnamed)" }
-                        end
-                    end
-                    table.sort(opts, function(a, b) return a.text < b.text end)
-                    element.options = opts
-                end,
-                change = function(element)
-                    local chosen = element.idChosen
-                    if chosen == nil or chosen == "none" then return end
-                    local mon = (assets.monsters or {})[chosen]
-                    if mon ~= nil and mon.properties ~= nil then
-                        mon.properties.groupid = bandid
-                        mon:Upload()
-                    end
-                    element.idChosen = "none"
-                    members = RosterFor(bandid)
-                    rosterBody:FireEvent("refreshSection")
-                end,
-            },
-        }
-
         for _, m in ipairs(members) do
-            local thisId = m.id
             out[#out + 1] = gui.Panel{
                 width = CONTENT_W - 30, height = 24, flow = "horizontal", lmargin = 18,
                 gui.Label{
@@ -825,13 +722,6 @@ local function BandEditor(bandid)
                     classes = {"label", "fgMuted", "sizeXs"},
                     text = string.format("EV %s", tostring(m.ev)),
                     width = 60, height = 22, valign = "center",
-                },
-                gui.Button{
-                    classes = { "settingsButton", "sizeXs" },
-                    halign = "right", valign = "center",
-                    press = function(element)
-                        ShowMonsterSheet(thisId)
-                    end,
                 },
             }
         end
