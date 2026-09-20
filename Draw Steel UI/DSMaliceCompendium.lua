@@ -3,14 +3,25 @@ local mod = dmhub.GetModLoading()
 local ShowMalice
 local CreateEditorPanel
 
-Compendium.Register{
-    section = "Rules",
-    text = "Malice",
-    contentType = "MonsterGroup",
-    click = function(contentPanel)
-        ShowMalice(contentPanel)
-    end,
-}
+--RETIRED. Rules -> Monster Bands replaces this page: same MonsterGroup table,
+--but the whole band entry rather than malice alone. It reached parity first --
+--ability descriptions, copy/paste, a live list via monitorAssets, and
+--Compendium.CreateListItem's duplicate/delete/search -- and it surfaces the
+--default malice group, which this page was the only way to edit.
+--
+--Left in the tree for one release, following the retired Montage Tests panel
+--above: unregistering is enough to remove the tab, and keeping the file makes
+--it cheap to put back if something turns out to be missing. Delete the file a
+--release later.
+--
+--Compendium.Register{
+--    section = "Rules",
+--    text = "Malice",
+--    contentType = "MonsterGroup",
+--    click = function(contentPanel)
+--        ShowMalice(contentPanel)
+--    end,
+--}
 
 --- @param contentPanel Panel
 ShowMalice = function(contentPanel)
