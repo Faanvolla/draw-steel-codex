@@ -371,6 +371,12 @@ local function BandEditor(bandid)
     local m_dirty = false
     local function Invalidate() m_dirty = true end
 
+    -- The engine's default characterLimit is 256. Imported lore sections run
+    -- to 4212 characters, so an unset limit silently truncates a section the
+    -- moment it is edited. Single-line fields get a generous cap too.
+    local LIMIT_BODY = 16000
+    local LIMIT_LINE = 1000
+
     local function Text(get, set, w, minH, placeholder)
         local multiline = (minH ~= nil and minH > 30)
         return gui.Input{
@@ -378,16 +384,21 @@ local function BandEditor(bandid)
             text = get() or "", placeholderText = placeholder or "",
             width = w, height = "auto", minHeight = minH or 24,
             multiline = multiline, vmargin = 2,
+            characterLimit = cond(multiline, LIMIT_BODY, LIMIT_LINE),
+            lineType = cond(multiline, "MultiLineNewLine", "SingleLine"),
             change = function(element) set(element.text) Invalidate() end,
         }
     end
 
-    -- Lists live on the record so a mutation plus Upload persists. try_get with
-    -- a default would hand back a throwaway table.
+    -- Lists are NOT attached to the record on open -- browsing a band should
+    -- not dirty it. The list is attached by Commit, on the first actual edit.
     local function List(field)
-        local v = g:try_get(field, nil)
-        if v == nil then v = {} g[field] = v end
-        return v
+        return g:try_get(field, nil) or {}
+    end
+
+    local function Commit(field, list)
+        g[field] = list
+        Upload(g)
     end
 
     local loreList  = List("loreSections")
@@ -401,8 +412,7 @@ local function BandEditor(bandid)
     local langBody, encBody, maliceBody, loreBody, assocBody
 
     -- ------------------------------------------------------------- identity
-    local inheritSet = g:try_get("inherits", nil)
-    if inheritSet == nil then inheritSet = {} g.inherits = inheritSet end
+    local inheritSet = g:try_get("inherits", nil) or {}
     local inheritOptions = {}
     for k, v in unhidden_pairs(dmhub.GetTable(MonsterGroup.tableName) or {}) do
         if k ~= bandid and type(v.name) == "string" and v.name ~= "" then
@@ -411,8 +421,7 @@ local function BandEditor(bandid)
     end
     table.sort(inheritOptions, function(a, b) return a.text < b.text end)
 
-    local kwSet = g:try_get("keywords", nil)
-    if kwSet == nil then kwSet = {} g.keywords = kwSet end
+    local kwSet = g:try_get("keywords", nil) or {}
     local kwOptions, kwSeen = {}, {}
     for _, v in unhidden_pairs(dmhub.GetTable(MonsterGroup.tableName) or {}) do
         local n = v.name
@@ -434,7 +443,7 @@ local function BandEditor(bandid)
             FormRow("Name", Text(function() return g.name end,
                 function(v) g.name = v end, FIELD_W)),
             FormRow("Keywords", ChipPicker(kwSet, kwOptions,
-                "Add Keyword...", function() Upload(g) end)),
+                "Add Keyword...", function() Commit("keywords", kwSet) end)),
         }
     end
 
@@ -468,7 +477,7 @@ local function BandEditor(bandid)
                 },
                 DeleteGlyph(function()
                     table.remove(langList, idx)
-                    Upload(g) langBody:FireEvent("refreshSection")
+                    Commit("languages", langList) langBody:FireEvent("refreshSection")
                 end),
             }
         end
@@ -476,7 +485,7 @@ local function BandEditor(bandid)
         out[#out + 1] = AddLink("+ Add Language", function()
             local opts = LanguageOptions()
             langList[#langList + 1] = { id = opts[1] and opts[1].id or "", qualifier = "most" }
-            Upload(g) langBody:FireEvent("refreshSection")
+            Commit("languages", langList) langBody:FireEvent("refreshSection")
         end)
         return out
     end
@@ -511,7 +520,7 @@ local function BandEditor(bandid)
                     function(v) encList[idx].composition = v end, 300, nil, "Composition"),
                 DeleteGlyph(function()
                     table.remove(encList, idx)
-                    Upload(g) encBody:FireEvent("refreshSection")
+                    Commit("sampleEncounters", encList) encBody:FireEvent("refreshSection")
                 end),
             }
         end
@@ -520,7 +529,7 @@ local function BandEditor(bandid)
         end
         out[#out + 1] = AddLink("+ Add Encounter", function()
             encList[#encList + 1] = { name = "New Encounter", ev = 0, composition = "" }
-            Upload(g) encBody:FireEvent("refreshSection")
+            Commit("sampleEncounters", encList) encBody:FireEvent("refreshSection")
         end)
         return out
     end
@@ -616,11 +625,11 @@ local function BandEditor(bandid)
         -- rather than at its head: it is something you set while building a
         -- band's malice, not the first thing to read about it.
         out[#out + 1] = FormRow("Inherits", ChipPicker(inheritSet, inheritOptions,
-            "Inherits from Band...", function() Upload(g) end))
+            "Inherits from Band...", function() Commit("inherits", inheritSet) end))
         out[#out + 1] = AddLink("+ Add Malice Ability", function()
             maliceList[#maliceList + 1] = MaliceAbility.Create{ name = "New Malice Ability" }
-            g.maliceAbilities = maliceList
-            Upload(g) maliceBody:FireEvent("refreshSection")
+            Commit("maliceAbilities", maliceList)
+            maliceBody:FireEvent("refreshSection")
         end)
         out[#out + 1] = gui.Button{
             classes = {"sizeM"},
@@ -639,8 +648,8 @@ local function BandEditor(bandid)
                 local pasted = MaliceAbility.Create(DeepCopy(dmhub.GetInternalClipboard()))
                 pasted.guid = dmhub.GenerateGuid()
                 maliceList[#maliceList + 1] = pasted
-                g.maliceAbilities = maliceList
-                Upload(g) maliceBody:FireEvent("refreshSection")
+                Commit("maliceAbilities", maliceList)
+                maliceBody:FireEvent("refreshSection")
             end,
         }
         return out
@@ -663,18 +672,18 @@ local function BandEditor(bandid)
                     MoveGlyph("^", function()
                         if idx > 1 then
                             loreList[idx], loreList[idx-1] = loreList[idx-1], loreList[idx]
-                            Upload(g) loreBody:FireEvent("refreshSection")
+                            Commit("loreSections", loreList) loreBody:FireEvent("refreshSection")
                         end
                     end),
                     MoveGlyph("v", function()
                         if idx < #loreList then
                             loreList[idx], loreList[idx+1] = loreList[idx+1], loreList[idx]
-                            Upload(g) loreBody:FireEvent("refreshSection")
+                            Commit("loreSections", loreList) loreBody:FireEvent("refreshSection")
                         end
                     end),
                     DeleteGlyph(function()
                         table.remove(loreList, idx)
-                        Upload(g) loreBody:FireEvent("refreshSection")
+                        Commit("loreSections", loreList) loreBody:FireEvent("refreshSection")
                     end),
                 },
                 Text(function() return s.text end,
@@ -684,7 +693,7 @@ local function BandEditor(bandid)
         if #loreList == 0 then out[#out + 1] = Empty("No lore sections yet.") end
         out[#out + 1] = AddLink("+ Add Section", function()
             loreList[#loreList + 1] = { heading = "New Section", text = "" }
-            Upload(g) loreBody:FireEvent("refreshSection")
+            Commit("loreSections", loreList) loreBody:FireEvent("refreshSection")
         end)
         return out
     end
@@ -731,7 +740,7 @@ local function BandEditor(bandid)
                         function(v) assocList[idx].heading = v end, 260, nil, "Creature"),
                     DeleteGlyph(function()
                         table.remove(assocList, idx)
-                        Upload(g) assocBody:FireEvent("refreshSection")
+                        Commit("associatedCreatures", assocList) assocBody:FireEvent("refreshSection")
                     end),
                 },
                 Text(function() return s.text end,
@@ -741,7 +750,7 @@ local function BandEditor(bandid)
         if #assocList == 0 then out[#out + 1] = Empty("No associated creatures.") end
         out[#out + 1] = AddLink("+ Add Creature", function()
             assocList[#assocList + 1] = { heading = "New Creature", text = "" }
-            Upload(g) assocBody:FireEvent("refreshSection")
+            Commit("associatedCreatures", assocList) assocBody:FireEvent("refreshSection")
         end)
         return out
     end
