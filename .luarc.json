@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "runtime.version": "Lua 5.4",
+  "workspace.ignoreDir": [".claude", ".agents", ".git", "compendium"],
+  "workspace.checkThirdParty": false,
+  "workspace.maxPreload": 5000,
+  "workspace.preloadFileSize": 2000,
+  "type.checkTableShape": false,
+  "diagnostics.disable": ["duplicate-set-field"]
+}
