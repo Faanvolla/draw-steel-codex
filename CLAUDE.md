@@ -202,6 +202,22 @@ reference; that is expected. No codex file uses the engine's `@if`/`@else`/`@end
 preprocessor directives any more, so a raw `luac -p` sweep is clean with no special
 handling; see "Checking Lua Yourself" in the root [`CLAUDE.md`](../CLAUDE.md).
 
+**Do not leave a file worse typed than you found it.** `luac -p` only catches syntax.
+The type checker is `../tools/lua-typing/check.ps1` (run it from the repo root), and
+`tools/lua-typing/baseline.json` holds a per-file ceiling; the run exits 1 when a file goes
+over it, naming the file and the delta. Run it before you call Lua work finished. It takes
+~3.5 minutes and needs the whole codex in one pass -- a subdirectory run reports globals
+defined elsewhere as undefined, so it cannot answer this.
+
+The ceiling has slack in it because LuaLS is not deterministic here (the same code checks
+to a number ~12 wide), so do not read small count changes as signal in either direction.
+
+Adding to a file that is already over its ceiling is fine as long as you do not push it
+further. If your change genuinely improves a file, re-record with `-UpdateBaseline` and
+say so in the commit message. See [`LUA_TYPING_REFERENCE.md`](../LUA_TYPING_REFERENCE.md)
+for the annotation conventions that keep new code clean -- `@cast` in event handlers,
+typed locals for `panel.data`, `core.Vector2` on property writes.
+
 **ASCII only.** The DMHub Lua runtime does not handle non-ASCII characters in source files. All Lua files — including comments and EmmyLua annotations — must contain only ASCII characters (bytes 0-127). Never use em dashes, curly quotes, ellipses, or any other Unicode punctuation. Use plain ASCII equivalents instead: `-` or `:` instead of em dashes, `"` instead of curly quotes, `...` instead of ellipses.
 
 **Forward-declare self-referencing locals.** In Lua, `local x = expr` does not bring `x` into scope until `expr` finishes evaluating. If a closure inside the initializer needs to reference the variable (common with gui panel event handlers like `click`, `change`, `think`), you must split declaration and assignment:
