@@ -3200,11 +3200,7 @@ mod.shared.ImportMapToFloorCo = function(info)
         end
     end
 
-@if MCDM
     local lightnode = lightnodeChoice or "2339211c-c35a-4e0a-a5fa-79d2e446bd3b"
-@else
-    local lightnode = lightnodeChoice or "-MGBXtOnKAXNhhLK89_9"
-@end
     if lightMode == "asset" and type(data.lights) == "table" and ObjectNodeHasComponent(lightnode, "Light") then
         local foundryGrid = gridSize(data)
         for _, light in ipairs(data.lights) do

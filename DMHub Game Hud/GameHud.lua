@@ -2252,17 +2252,10 @@ function GameHud:CreateFrozenLabel()
 			width = "auto",
 			height = "auto",
 			halign = "center",
-@if MCDM
 			fontFace = "Colvillain",
 			fontSize = 48,
 			fontWeight = "black",
 			color = "white",
-@else
-			fontFace = "sellyoursoul",
-			fontSize = 48,
-			color = "#bbbbff",
-			bold = true,
-@end
 
 		},
 		gui.Label{
@@ -2270,16 +2263,10 @@ function GameHud:CreateFrozenLabel()
 			width = "auto",
 			height = "auto",
 			halign = "center",
-@if MCDM
 			uppercase = true,
 			fontFace = "Colvillain",
 			fontSize = 18,
 			bold = false,
-@else
-			color = "#bbbbff",
-			fontSize = 12,
-			bold = true,
-@end
 		},
 	}
 
