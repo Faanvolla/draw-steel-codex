@@ -458,6 +458,12 @@ local function BandEditor(bandid)
             "The book's languages sentence, as printed")) }
         for i, l in ipairs(langList) do
             local idx = i
+            --The stored qualifier, defaulted the same way the dropdown below
+            --defaults it. Entries imported before qualifiers existed have none,
+            --so the dropdown opens on "most" and fires change at construction;
+            --without this guard that wrote "most" back and uploaded the band,
+            --i.e. merely LOOKING at a band edited the library.
+            local qualifier = l.qualifier or "most"
             out[#out + 1] = gui.Panel{
                 width = CONTENT_W - 30, height = "auto", flow = "horizontal",
                 lmargin = 18, vmargin = 2,
@@ -470,11 +476,16 @@ local function BandEditor(bandid)
                     end,
                 },
                 gui.Dropdown{
-                    classes = {"dropdown"},
-                    width = 150, height = 30, lmargin = 8,
+                    -- "form" as well as "dropdown": that pairing carries the
+                    -- vmargin and valign the language dropdown beside it gets,
+                    -- and without them this one rides 4px higher than its row.
+                    -- Width is the only thing worth overriding.
+                    classes = {"dropdown", "form"},
+                    width = 150, lmargin = 8,
                     options = MonsterGroup.languageQualifiers,
-                    idChosen = l.qualifier or "most",
+                    idChosen = qualifier,
                     change = function(element)
+                        if element.idChosen == qualifier then return end
                         langList[idx].qualifier = element.idChosen Upload(g)
                     end,
                 },
