@@ -40,10 +40,6 @@ local SEARCH_W = 184        -- gui.Input renders ~20 units WIDER than requested
 local ROW_W = 190           -- inner minus the scroll handle, so a highlighted
                             -- row stops just short of the scrollbar
 
-local BLOCK_W = 800         -- monster stat block inside the dialog
-local DIALOG_W = 850        -- the dialog frame around it
-local DIALOG_H = 1000       -- capped against the real screen height at open time
-local BUTTON_ROW_H = 70     -- the dialog's Close row, excluded from the scroll area
 
 local g_styles = nil
 local function Styles()
@@ -149,87 +145,68 @@ local function LanguageOptions()
 end
 
 
--- Open a monster's stat block as a dialog of its own.
+-- Open a monster's character sheet, in its own OS window.
 --
--- element.root:AddChild is the part that matters, and it is what the malice
--- cog does to open the ability editor: the root sits above the compendium's
--- frame, so a child of it draws over the compendium. A popup or a
--- TooltipFrame hangs off this button instead, which leaves it inside the
--- compendium's own stacking context -- i.e. behind it.
+-- The sheet opens into the hud, which the compendium's toplevel frame sits
+-- above -- so from here it always lands underneath. Popping it into a native
+-- window is the sheet's own mechanism (the corner button fires this same
+-- event) and puts it somewhere the compendium cannot cover at all. It keeps
+-- the sheet's pop-in button, so the reader can put it back in-app.
 --
--- Two sizing rules the hard way: dialog geometry has to go in `style` (as
--- top-level params on a floating root child it is ignored, and the panel
--- renders full-screen and unframed), and heights have to be `maxHeight`
--- (every panel here hugs its content and discards an explicit `height`).
-local function ShowMonsterDialog(element, monsterid)
+-- Getting the token mirrors EditBestiaryMonster in Core Panels/CharacterPanel:
+-- the sheet works on the monster's local-game bestiary token, which may not
+-- exist yet and has to be uploaded and waited for.
+local function ShowMonsterSheet(monsterid)
     local monsterAsset = (assets.monsters or {})[monsterid]
-    if monsterAsset == nil then
+    if monsterAsset == nil or not dmhub.inGame then
         return
     end
 
-    -- Render merges these over its defaults. Width is a number, not "100%":
-    -- the block has a wide natural minimum and a percentage lets it push the
-    -- frame out to it. Without valign it centres in the scroll panel and
-    -- leaves a dead band above the header.
-    local body = monsterAsset:Render{
-        width = BLOCK_W,
-        height = "auto",
-        valign = "top",
-    }
-    if body == nil then
+    local PopOut = function()
+        local sheet = CharacterSheet.instance
+        --already out: ShowSheet's own handler raises the window for us.
+        if sheet and sheet.valid and not sheet.data.poppedOut then
+            sheet:FireEvent("popoutSheet")
+        end
+    end
+
+    local Show = function(token)
+        token:ShowSheet()
+
+        --the engine builds the sheet in response to ShowSheet, so the
+        --instance is not necessarily up in this frame.
+        dmhub.Coroutine(function()
+            for _ = 1, 20 do
+                if mod.unloaded then
+                    return
+                end
+                local sheet = CharacterSheet.instance
+                if sheet and sheet.valid then
+                    PopOut()
+                    return
+                end
+                coroutine.yield(0.05)
+            end
+        end)
+    end
+
+    local token = monsterAsset:GetLocalGameBestiaryToken()
+    if token ~= nil then
+        Show(token)
         return
     end
 
-    local dialog
-    local Close = function()
-        dialog:DestroySelf()
-    end
-
-    local dialogHeight = math.min(DIALOG_H, math.floor(dmhub.screenDimensionsBelowTitlebar.y * 0.8))
-    local viewportHeight = dialogHeight - BUTTON_ROW_H
-
-    dialog = gui.Panel{
-        classes = {"framedPanel"},
-        styles = ThemeEngine.GetStyles(),
-        floating = true,
-
-        style = {
-            width = DIALOG_W,
-            height = "auto",
-            maxHeight = dialogHeight,
-            halign = "center",
-            valign = "center",
-            flow = "vertical",
-            pad = 16,
-        },
-
-        captureEscape = true,
-        escapePriority = EscapePriority.EXIT_MODAL_DIALOG,
-        escape = Close,
-
-        -- Short stat blocks size to themselves; long ones stop here and
-        -- scroll rather than pushing Close off the bottom of the screen.
-        gui.Panel{
-            width = "100%",
-            height = "auto",
-            maxHeight = viewportHeight,
-            valign = "top",
-            flow = "vertical",
-            vscroll = true,
-
-            body,
-        },
-
-        gui.Button{
-            classes = {"sizeL"},
-            text = "Close",
-            halign = "center",
-            valign = "bottom",
-            click = Close,
-        },
-    }
-
-    element.root:AddChild(dialog)
+    monsterAsset:Upload()
+    dmhub.Coroutine(function()
+        while token == nil do
+            coroutine.yield(0.1)
+            if mod.unloaded then
+                return
+            end
+            token = monsterAsset:GetLocalGameBestiaryToken()
+        end
+        Show(token)
+    end)
 end
 
 
@@ -853,7 +830,7 @@ local function BandEditor(bandid)
                     classes = { "settingsButton", "sizeXs" },
                     halign = "right", valign = "center",
                     press = function(element)
-                        ShowMonsterDialog(element, thisId)
+                        ShowMonsterSheet(thisId)
                     end,
                 },
             }
