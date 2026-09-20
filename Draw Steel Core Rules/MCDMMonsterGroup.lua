@@ -14,8 +14,7 @@ local mod = dmhub.GetModLoading()
 --- @field maliceAbilities MaliceAbility[] Malice-cost special abilities for this group.
 --- @field inherits table<string,boolean> Set of band ids whose malice abilities this band also gets.
 --- @field bandScope string "band" (a real monster band) or "monster" (a creature-type keyword row). Bands-only surfaces filter on this.
---- @field flavorText string Lead prose that opens the band's entry.
---- @field loreSections MonsterGroupProse[] Ordered sub-headed lore passages.
+--- @field loreSections MonsterGroupProse[] Ordered sub-headed lore passages. A band that opens with untitled prose carries it as a section with a blank heading.
 --- @field associatedCreatures MonsterGroupProse[] The book's sidebar creatures, as prose.
 --- @field tactics string How the band fights. Only a few bands have this.
 --- @field sampleEncounters MonsterGroupEncounter[] Named, costed encounter rosters. Only a few bands have these.
@@ -85,7 +84,6 @@ MonsterGroup.maliceAbilities = {}
 --filter them out. See MONSTER_BANDS_PRD.md section 6.4.
 MonsterGroup.bandScope = "band"
 
-MonsterGroup.flavorText = ""
 MonsterGroup.loreSections = {}
 MonsterGroup.associatedCreatures = {}
 MonsterGroup.tactics = ""
