@@ -114,7 +114,10 @@ local function fixture(count)
     for _,member in ipairs(members) do squadTokens[#squadTokens+1] = member.token end
     for _,t in ipairs(squadTokens) do t.properties._tmp_minionSquad = {tokens = squadTokens} end
     local ai = setmetatable({squadMembers = members, squadCaptain = false, casts = casts,
-        pathBudgets = {}, moveCounts = {}, _tmp_failedMoves = {}}, {__index = MonsterAI})
+        pathBudgets = {}, moveCounts = {}, decisions = {}, _tmp_failedMoves = {}}, {__index = MonsterAI})
+    function ai:LogDecision(event, fields)
+        self.decisions[#self.decisions+1] = {event = event, fields = fields}
+    end
     function ai:SetupCombatants(t) self.token = t; self.abilities = t.properties:GetActivatedAbilities() end
     function ai:GetMovementToken(t) return t end
     function ai:ExecuteAdvanceFallback(t)
@@ -162,6 +165,23 @@ local ai, tokens, run = fixture(1)
 tokens.enemy.altitude = 5
 run()
 check(#ai.casts == 0, "minions reject an elevated target even if a custom planner supplied it")
+local function cancellation(ai)
+    for _,entry in ipairs(ai.decisions) do
+        if entry.event == "MINION ASSIGNMENT CANCELLED" then return entry.fields end
+    end
+    error("expected cancelled assignment")
+end
+check(cancellation(ai).reason == "target is out of range after movement" and cancellation(ai).distance == 5,
+    "range cancellation records the actual distance, not a false death report")
+ai, tokens, run = fixture(1)
+tokens["1"].GetLineOfSight = function() return 0 end
+run()
+check(#ai.casts == 0 and cancellation(ai).reason == "target has no line of sight after movement"
+    and cancellation(ai).lineOfSight == 0, "blocked sight is rejected and diagnosed explicitly")
+ai, tokens, run = fixture(4)
+ai.otherEnemy = {id = "other", charid = "other", name = "other", valid = true, altitude = 0, tileSize = 1}
+run()
+check(#ai.casts == 1 and #ai.casts[1].ids == 4, "four eligible snipers join one volley across legal targets")
 ai, tokens, run = fixture(1)
 ai.afterMove = function() tokens.enemy.altitude = 5 end
 run()

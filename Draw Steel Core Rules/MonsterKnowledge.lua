@@ -19,6 +19,17 @@ local mod = dmhub.GetModLoading()
 --       revealed = { ["attr:mgt"] = true, ["ability:Spear Charge"] = false, ... },
 --   }
 --
+-- and, for knowledge granted to a whole family of monsters at once (an
+-- Encounter of the Week montage outcome such as "You know the Stamina of
+-- Goblins"), one record per lower-cased stat-block keyword:
+--
+--   doc.data.keywords["goblin"] = { stamina = true, source = "Montage: ..." }
+--
+-- A keyword record applies to every monster whose keywords table carries the
+-- keyword (case-insensitive), including monsters that arrive later. It
+-- reveals the exact stamina; a Director's explicit hide on one monster type
+-- (revealed.stamina == false on its record) still wins.
+--
 -- revealed[entry] == true means players see it, false means the Director
 -- explicitly hid it (automatic learning never overrides a false), nil means
 -- nothing recorded (hidden). Entry keys are built by MonsterKnowledge.EntryKey.
@@ -233,18 +244,117 @@ function MonsterKnowledge.IsResistanceRevealed(key, damageType)
     return MonsterKnowledge.PlayersCanSeeResistance(key, damageType)
 end
 
---- What players know about a monster's stamina.
+--- The keyword records (doc.data.keywords), or an empty table.
+function MonsterKnowledge.KeywordRecords()
+    local doc = mod:GetDocumentSnapshot(MonsterKnowledge.documentId)
+    local data = doc.data
+    if data == nil or type(data.keywords) ~= "table" then
+        return {}
+    end
+    return data.keywords
+end
+
+--- Whether a keyword-level reveal covers this creature's stamina: true when
+--- any of its stat-block keywords has a record with stamina = true.
+--- @param props nil|table the creature (token properties)
+function MonsterKnowledge.StaminaKnownByKeyword(props)
+    if props == nil then
+        return false
+    end
+    local keywords = nil
+    pcall(function() keywords = props:try_get("keywords") end)
+    if type(keywords) ~= "table" then
+        return false
+    end
+    local records = MonsterKnowledge.KeywordRecords()
+    if next(records) == nil then
+        return false
+    end
+    for keyword, present in pairs(keywords) do
+        if present and type(keyword) == "string" then
+            local record = records[string.lower(keyword)]
+            if record ~= nil and record.stamina == true then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+--- What players know about a monster's stamina. Pass the creature as well
+--- so keyword-level reveals ("You know the Stamina of Goblins") count.
+--- @param key nil|string
+--- @param props nil|table the creature (token properties)
 --- @return { tier: number, estimate: nil|number, visible: boolean }
-function MonsterKnowledge.StaminaKnowledge(key)
+function MonsterKnowledge.StaminaKnowledge(key, props)
     local record = MonsterKnowledge.GetRecord(key)
     local stamina = (record ~= nil and record.stamina) or { tier = 0 }
     local tier = stamina.tier or 0
+    local estimate = stamina.estimate
     local hidden = record ~= nil and record.revealed ~= nil and record.revealed["stamina"] == false
+    if not hidden and tier < 3 and MonsterKnowledge.StaminaKnownByKeyword(props) then
+        tier = 3
+        estimate = nil
+    end
     return {
         tier = tier,
-        estimate = stamina.estimate,
+        estimate = estimate,
         visible = tier > 0 and not hidden,
     }
+end
+
+--- Whether the PLAYERS know this creature's stamina exactly (the third kill,
+--- a Director reveal, or a keyword reveal). The token stamina bars use this
+--- to show the number where the game setting would only show a bar. The
+--- Director's all-seeing view is not consulted: this is the recorded state.
+--- @param props nil|table the creature (token properties)
+--- @param token nil|CharacterToken the creature's token when the caller has
+--- it; keys by it directly instead of resolving the token from the creature.
+function MonsterKnowledge.PlayersKnowStaminaExactly(props, token)
+    if not MonsterKnowledge.Enabled() or props == nil then
+        return false
+    end
+    local key
+    if token ~= nil then
+        key = MonsterKnowledge.KeyForToken(token)
+    else
+        key = MonsterKnowledge.KeyForCreature(props)
+    end
+    if key == nil then
+        return false
+    end
+    local knowledge = MonsterKnowledge.StaminaKnowledge(key, props)
+    return knowledge.visible and knowledge.tier >= 3
+end
+
+--- Reveal the exact stamina of every monster carrying a stat-block keyword,
+--- now and in future (an Encounter of the Week montage outcome). source is
+--- a short note of where it came from, kept for the record.
+function MonsterKnowledge.RevealStaminaForKeyword(keyword, source)
+    keyword = string.lower(tostring(keyword or ""))
+    if keyword == "" then
+        return
+    end
+    local doc = mod:GetDocumentSnapshot(MonsterKnowledge.documentId)
+    doc:BeginChange()
+    local keywords = doc.data.keywords or {}
+    local record = keywords[keyword] or {}
+    record.stamina = true
+    record.source = source
+    keywords[keyword] = record
+    doc.data.keywords = keywords
+    doc:CompleteChange("Monster knowledge: stamina of " .. keyword, {undoable = false})
+end
+
+--- Forget every keyword-level reveal (the montage test reset).
+function MonsterKnowledge.ClearKeywordReveals()
+    local doc = mod:GetDocumentSnapshot(MonsterKnowledge.documentId)
+    if doc.data == nil or doc.data.keywords == nil then
+        return
+    end
+    doc:BeginChange()
+    doc.data.keywords = nil
+    doc:CompleteChange("Monster knowledge: clear keyword reveals", {undoable = false})
 end
 
 --- Director control: reveal (exactly) or hide the stamina line. A reveal on

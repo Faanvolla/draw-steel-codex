@@ -28,17 +28,22 @@
 --            description = "", approach = "", consequence = nil | { text, effects },
 --            options = { option, ... } }
 --  option = { name, line, text = "", roll = nil | { name, attr, tiers = {...},
+--             teasers = { [tierIndex] = "..." | nil },
 --             effects = { [tierIndex] = { effect, ... } } } }
+--  A tier line may read "teaser => full text": tiers[t] is the full text
+--  (the only part the effect grammar sees) and teasers[t] is what players
+--  see before the roll lands. Lines without "=>" have no teaser.
 --  section = { id, name, line, text = "", prompt = "", sceneTag = nil,
 --              mode = "together"|"individual", modeExplicit = bool,
 --              implicitOption = bool, options = { narrativeOption, ... } }
 --  narrativeOption = { name, line, text = "", implicit = bool,
 --                      effects = { effect, ... } }
 --  effect = { kind = "item"|"stamina"|"heal"|"temphp"|"surges"|"recovery"|
---                    "herotoken"|"malice"|"ally"|"vanquish"|"initiative"|
---                    "nosurprise"|"narrative",
+--                    "loserecovery"|"herotoken"|"malice"|"ally"|"vanquish"|
+--                    "initiative"|"nosurprise"|"knowstamina"|"narrative",
 --             target = "self"|"party", qty = n, name = "...", text = clause,
 --             outcome = "win"|"lose"|"surprise"|"surprised" (initiative only),
+--             keyword = "goblin" (knowstamina only: lower-cased, singular),
 --             unrecognized = true (narrative clauses the grammar did not match) }
 
 EncounterScript = rawget(_G, "EncounterScript") or {}
@@ -194,6 +199,16 @@ local function ParseClause(clause)
         return { kind = "recovery", target = "party", qty = EncounterScript.ParseQuantity(n), text = clause }
     end
 
+    --"you lose a recovery" / "each party member loses two recoveries": the
+    --recovery is gone off the hero's pool, with no Stamina back for it (a
+    --montage cost, not Draw Steel's recovery SPEND).
+    for _, noun in ipairs({ "recovery", "recoveries" }) do
+        word, target = MatchSelfOrParty(lc, "lose", "(%S+) " .. noun)
+        if word ~= nil and EncounterScript.ParseQuantity(word) ~= nil then
+            return { kind = "loserecovery", target = target, qty = EncounterScript.ParseQuantity(word), text = clause }
+        end
+    end
+
     --"+<n> hero token[s]" / "you gain <n> hero token[s]". Hero tokens are one
     --pool the whole party draws on, so there is no self/party distinction.
     n = string.match(lc, "^%+?%s*(%S+) hero tokens?$")
@@ -253,6 +268,13 @@ local function ParseClause(clause)
         return { kind = "vanquish", text = clause }
     end
 
+    --"you know the stamina of goblins": monster intelligence, party-wide and
+    --for the whole campaign (it lands in the shared monsterKnowledge document).
+    local keyword = EncounterScript.ParseKnowStaminaClause(lc)
+    if keyword ~= nil then
+        return { kind = "knowstamina", keyword = keyword, text = clause }
+    end
+
     --"you cannot be surprised": party-wide immunity for the next encounter.
     --Checked BEFORE the initiative clauses, whose "^you .*surprised$" rule
     --would otherwise read this as its own opposite (the heroes begin the
@@ -279,6 +301,42 @@ local function ParseClause(clause)
     end
 
     return { kind = "narrative", text = clause, unrecognized = true }
+end
+
+--"You know the Stamina of Goblins" and its spellings. Returns the monster
+--keyword, lower-cased and singular ("goblins" -> "goblin"), or nil. The
+--keyword is matched at run time against each monster's stat-block keywords
+--(MonsterKnowledge), so "Goblin" covers everything the rules tag Goblin:
+--goblins, bugbears, hobgoblins, worgs and so on.
+--  "you know the stamina of goblins" / "you learn the stamina of goblins"
+--  "the party knows the stamina of goblins"
+--  "each party member knows the stamina of goblins"
+--  "you know the stamina of the goblins" / "... of every goblin" / "... of all goblins"
+function EncounterScript.ParseKnowStaminaClause(lc)
+    lc = trim(lc)
+    local rest = string.match(lc, "^you (.+)$")
+        or string.match(lc, "^the party (.+)$")
+        or string.match(lc, "^each party members? (.+)$")
+    if rest == nil then
+        return nil
+    end
+    local keyword = string.match(rest, "^knows? the stamina of (.+)$")
+        or string.match(rest, "^learns? the stamina of (.+)$")
+    if keyword == nil then
+        return nil
+    end
+    keyword = trim(keyword)
+    keyword = string.match(keyword, "^the (.+)$") or string.match(keyword, "^every (.+)$")
+        or string.match(keyword, "^all (.+)$") or string.match(keyword, "^any (.+)$") or keyword
+    keyword = trim(keyword)
+    if keyword == "" or string.find(keyword, " ", 1, true) ~= nil then
+        --stat-block keywords are single words; a phrase is not one.
+        return nil
+    end
+    if #keyword > 3 and string.sub(keyword, -1) == "s" and string.sub(keyword, -2) ~= "ss" then
+        keyword = string.sub(keyword, 1, -2)
+    end
+    return keyword
 end
 
 --"You cannot be surprised" and its spellings. The heroes still LOSE the
@@ -330,6 +388,35 @@ function EncounterScript.ParseInitiativeClause(lc)
         return "surprised"
     end
     return nil
+end
+
+--The roll header shown on an option card before anyone takes the roll:
+--"Presence (Empathize, Lie, Flirt)" -> "Presence". The skills are only
+--discovered in the roll dialog (user direction 2026-09-19).
+function EncounterScript.AttrWithoutSkills(attr)
+    local stripped = string.gsub(attr or "", "%s*%b()", "")
+    return trim(stripped)
+end
+
+--Split a tier line on its first "=>" into (teaser, fullText). A line with
+--no "=>" returns (nil, line). Both halves are trimmed; an empty teaser is
+--returned as "" so the caller can warn.
+function EncounterScript.SplitTeaser(tierText)
+    local teaser, fullText = string.match(tierText or "", "^(.-)=>(.*)$")
+    if teaser == nil then
+        return nil, trim(tierText or "")
+    end
+    return trim(teaser), trim(fullText)
+end
+
+--What a tier row should read for a viewer: the full text when the tier has
+--landed (or has no teaser), the teaser otherwise.
+function EncounterScript.TierDisplayText(roll, t, landed)
+    local teaser = roll.teasers ~= nil and roll.teasers[t] or nil
+    if landed or teaser == nil then
+        return roll.tiers[t]
+    end
+    return teaser
 end
 
 --Parse a tier line (or a Consequence: line) into its effects.
@@ -630,9 +717,16 @@ function EncounterScript.Parse(text)
                 elseif option.roll ~= nil then
                     Warn(i, "option '%s' already has a power roll; '%s' ignored", option.name, trim(name))
                 else
-                    local roll = { name = trim(name), attr = trim(attr), tiers = tiers, effects = {} }
+                    local roll = { name = trim(name), attr = trim(attr), tiers = tiers, teasers = {}, effects = {} }
                     for t, tierText in ipairs(tiers) do
-                        roll.effects[t] = EncounterScript.ParseEffects(tierText)
+                        local teaser, fullText = EncounterScript.SplitTeaser(tierText)
+                        if teaser == "" then
+                            Warn(i + t, "tier %d of '%s' has an empty teaser before '=>'; shown in full", t, trim(name))
+                            teaser = nil
+                        end
+                        tiers[t] = fullText
+                        roll.teasers[t] = teaser
+                        roll.effects[t] = EncounterScript.ParseEffects(fullText)
                         for _, effect in ipairs(roll.effects[t]) do
                             if effect.unrecognized then
                                 Warn(i + t, "unrecognized effect '%s' (shown as text only)", effect.text)
@@ -857,7 +951,11 @@ function EncounterScript.Describe(parse)
                         if o.roll ~= nil then
                             line("        roll: %s: %s", o.roll.name, o.roll.attr)
                             for t, tierText in ipairs(o.roll.tiers) do
-                                line("        tier %d: %s", t, tierText)
+                                if o.roll.teasers[t] ~= nil then
+                                    line("        tier %d: [%s] => %s", t, o.roll.teasers[t], tierText)
+                                else
+                                    line("        tier %d: %s", t, tierText)
+                                end
                                 for _, effect in ipairs(o.roll.effects[t]) do
                                     line("          - %s", EncounterScript.DescribeEffect(effect))
                                 end
@@ -898,6 +996,8 @@ function EncounterScript.DescribeEffect(effect)
         return string.format("%s gains %s at the start of the next combat", cond(effect.target == "party", "every hero", "the hero"), EncounterScript.Plural(effect.qty, "surge"))
     elseif effect.kind == "recovery" then
         return string.format("%s recovery value is increased by %d until the next respite", cond(effect.target == "party", "every hero's", "the hero's"), effect.qty)
+    elseif effect.kind == "loserecovery" then
+        return string.format("%s loses %s", cond(effect.target == "party", "every hero", "the hero"), EncounterScript.Plural(effect.qty, "recovery", "recoveries"))
     elseif effect.kind == "herotoken" then
         return string.format("the party gains %s", EncounterScript.Plural(effect.qty, "hero token"))
     elseif effect.kind == "malice" then
@@ -910,8 +1010,18 @@ function EncounterScript.DescribeEffect(effect)
         return EncounterScript.DescribeInitiativeOutcome(effect.outcome)
     elseif effect.kind == "nosurprise" then
         return EncounterScript.DescribeSurpriseImmunity()
+    elseif effect.kind == "knowstamina" then
+        return EncounterScript.DescribeKnowStamina(effect.keyword)
     end
     return string.format("narrative%s: %s", cond(effect.unrecognized, " (unrecognized)", ""), effect.text)
+end
+
+--The player-facing line for a stamina reveal: "The party knows the Stamina
+--of Goblins".
+function EncounterScript.DescribeKnowStamina(keyword)
+    keyword = tostring(keyword or "")
+    local shown = string.upper(string.sub(keyword, 1, 1)) .. string.sub(keyword, 2) .. "s"
+    return string.format("The party knows the Stamina of %s", shown)
 end
 
 --The player-facing line for an initiative outcome (also what the stage

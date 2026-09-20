@@ -1937,6 +1937,17 @@ TokenUI.RegisterStatusBar{
     width = 1,
     seek = 10, --bar goes up or down 10 hp /second
 
+    --refresh when the players' monster knowledge changes, so a stamina
+    --reveal (Monster Info: third kill, Director reveal, or an Encounter of
+    --the Week montage outcome) puts the number on the bar at once.
+    monitorGame = function()
+        local knowledge = rawget(_G, "MonsterKnowledge")
+        if knowledge ~= nil and knowledge.DocumentPath ~= nil then
+            return knowledge.DocumentPath()
+        end
+        return nil
+    end,
+
     tempColor = {
         {
             color = "white",
@@ -1956,7 +1967,7 @@ TokenUI.RegisterStatusBar{
             gradient = Styles.damagedGradient,
         },
     },
-    Calculate = function(creature)
+    Calculate = function(creature, token)
         if dmhub.GetSettingValue("hpbarsonlyincombat") then
             local q = dmhub.initiativeQueue
             if q == nil or q.hidden then
@@ -1972,6 +1983,15 @@ TokenUI.RegisterStatusBar{
         if dmhub.isDM == false then
             local settingVal = dmhub.GetSettingValue("enemystambardisplay")
             if settingVal and #settingVal then showAs = settingVal end
+            --Monster Info: once the players know this monster's stamina
+            --exactly (third kill, a Director reveal, or a montage outcome
+            --such as "You know the Stamina of Goblins"), the bar shows the
+            --number whatever the game setting says. rawget: the Draw Steel
+            --Core Rules mod may not be loaded.
+            local knowledge = rawget(_G, "MonsterKnowledge")
+            if showAs ~= "val" and knowledge ~= nil and knowledge.PlayersKnowStaminaExactly(creature, token) then
+                showAs = "val"
+            end
         end
 
         return {

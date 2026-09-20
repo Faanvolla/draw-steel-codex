@@ -234,7 +234,7 @@ local function CalculateStatusBars(token)
 	for k,v in pairs(g_statusBarRegistry) do
 
 		if ShouldShowElement(token, v) and (v.Filter == nil or v.Filter(token.properties)) then
-			local bar = v.Calculate(token.properties)
+			local bar = v.Calculate(token.properties, token)
 			if bar ~= nil then
 				bar.base = v
 				bars[#bars+1] = bar
@@ -671,11 +671,33 @@ TokenHud.RegisterPanel{
 
 		local statusBarPanels = {}
 
+		--status bars may name game-data paths they depend on (a string, a
+		--list, or a function returning either); the status panel monitors
+		--them all and refreshes when any changes, so a bar can react to
+		--shared documents and not only to the token itself.
+		local monitorPaths = {}
+		for _,v in pairs(g_statusBarRegistry) do
+			local paths = v.monitorGame
+			if type(paths) == "function" then
+				paths = paths()
+			end
+			if type(paths) == "string" then
+				monitorPaths[#monitorPaths+1] = paths
+			elseif type(paths) == "table" then
+				for _,path in ipairs(paths) do
+					monitorPaths[#monitorPaths+1] = path
+				end
+			end
+		end
+
 		local statusPanel = gui.Panel{
 			id = 'StatusPanel',
 			classes = {"statusPanel"},
 			styles = g_statusPanelStyles,
 			blocksGameInteraction = false,
+
+			monitorGame = cond(#monitorPaths > 0, monitorPaths, nil),
+			monitorGameEvent = "refresh",
 
 			events = {
 				think = function(element)

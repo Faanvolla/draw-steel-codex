@@ -1430,9 +1430,26 @@ function TriggeredAbility:Trigger(characterModifier, creature, symbols, auraCont
 		}
 	end
 
+	local isMandatory = self:IsMandatory(cond(symbols.remote, nil, casterToken))
+
+	--The AI reaction marker exists to hold a monster's activity open while a
+	--HERO MAKES A CHOICE: the prompt card that appears on the player's client,
+	--and the cast their acceptance starts (which may run on another machine).
+	--A mandatory trigger asks the player nothing -- it fires by itself, inline
+	--with the event that provoked it -- so there is no choice to wait for, and
+	--marking it is a liability rather than a safeguard: nothing but its own
+	--cast can ever complete the marker, so if that completion is lost the AI
+	--hangs on it until the 600s expiry with no prompt card to explain it and
+	--no orphan check to catch it (GetAIActivityReactionStatus skips the
+	--"no matching player prompt" test once an entry is resolving). Report
+	--WTUDE5S5 hung exactly that way: a mandatory Pain for pain applied an
+	--ongoing effect, the behavior's closing game.Refresh rebuilt the caster's
+	--properties from the synced record before the frame's combined write had
+	--flushed, and the completion at FinishCast then found no marker to
+	--complete while the server echo restored the one it could not see.
 	local aiActivityId = symbols ~= nil and symbols.aiActivityId or nil
 	local aiReactionId = nil
-	if casterToken.playerControlled and type(aiActivityId) == "string" and aiActivityId ~= "" then
+	if (not isMandatory) and casterToken.playerControlled and type(aiActivityId) == "string" and aiActivityId ~= "" then
 		aiReactionId = dmhub.GenerateGuid()
 		argOptions.aiActivityId = aiActivityId
 		argOptions.aiReactionId = aiReactionId
@@ -1441,8 +1458,8 @@ function TriggeredAbility:Trigger(characterModifier, creature, symbols, auraCont
 		aiActivityId = nil
 	end
 
-	print("MANDATORY::", json(symbols.remote), "mandatory =", self:IsMandatory(cond(symbols.remote, nil, casterToken)))
-	if self:IsMandatory(cond(symbols.remote, nil, casterToken)) then
+	print("MANDATORY::", json(symbols.remote), "mandatory =", isMandatory)
+	if isMandatory then
 		-- For mandatory triggers with a usage limit, pay the full cost upfront
 		-- before entering the coroutine. This prevents the same trigger from
 		-- firing multiple times in a single movement loop.

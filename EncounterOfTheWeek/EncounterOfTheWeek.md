@@ -1300,6 +1300,64 @@ keeps `victories`, which feeds the `victories` GoblinScript symbol and the
 encounter-strength maths. Zeroing them would be the same "start clean" spirit as
 the level clamp, but it was not asked for and is not done.
 
+## An unnamed hero vanished from the montage (ROOT-CAUSED + FIXED 2026-09-19, report QKG5YTWG; Lua UNTESTED live)
+
+Report `QKG5YTWG` (reporter haezan, v0.0.835 devbeta, staging game
+`RepulsivePhantomHeartLegate`): "My Null didn't load into the montage. It does
+load into the game when we join combat but isn't in this montage screen."
+
+The hero was placed correctly. Its row in that game's `characterIndex` (the
+player's own log carries the whole index) reads:
+
+    e6ba4f90-340e-4b77-8ae3-091c617c6bcb | name="" | owner=<reporter userid>
+                                         | party=<default Players party>
+                                         | "Level 1 Dwarf Disciple of the Metakinetic Null"
+
+**Its name is the empty string** -- the player never typed one in the lobby.
+
+`Party.GetPlayerCharacters()` (`DMHub Game Rules/Party.lua`) filters blank names
+out TWICE: once in its `playerControlled` scan, and again in the final pass that
+materializes the tokens, which is the pass the party-membership path also goes
+through. So a nameless hero is invisible to every caller of it -- which was the
+montage roster (`EncounterMontage.Heroes`) and the HUD hero strip
+(`CollectHeroes`). Combat is unaffected because `GatherCombatSides` walks
+`dmhub.allTokens` + `IsHero()` with no name test. Hence the exact symptom: in
+the fight, absent from the montage. Corroborated in the log by
+`EotW: seeded 5 Hero Tokens for the session` against four rendered hero cards,
+and only four heroes ever taking a montage turn.
+
+How a nameless hero gets claimed at all: the EotW picker card does
+`name = token.name or "Unnamed Hero"`, and `""` is truthy in Lua, so the
+fallback never fires -- the player sees a blank card carrying only
+class/ancestry/level, and picks it. `HeroIsUnstarted` does not treat it as a
+ghost either, because it has a portrait and a class.
+
+**Fix (2026-09-19, Lua only, luac-clean, UNTESTED live):** both EotW hero
+gathers now enumerate the way combat entry does -- `dmhub.allTokens` filtered by
+`IsHero()` -- instead of going through `Party.GetPlayerCharacters()`:
+
+- `EncounterMontage.Heroes()` (`EncounterMontage.lua`)
+- `CollectHeroes()` (`EncounterOfTheWeekHud.lua`)
+
+Both label a blank name "Unnamed Hero" (`EncounterMontage.HeroDisplayName`, and
+a local twin in the HUD because that file only reaches the montage module
+defensively), so a claimed hero can no longer render as an empty card. The
+HUD's hero-card name label and its trigger tooltip use the same fallback; the
+ALLY card deliberately does not, because an ally is a monster that joined a
+hero. Everything downstream inherits it: `EncounterNarrative.Voters` builds its
+labels from `hero.name`.
+
+Consequence of the switch worth knowing: `dmhub.allTokens` is "tokens deployed
+on the CURRENT map", where `Party.GetPlayerCharacters()` also returned off-map
+party members. In an EotW game that is not a loss -- `EnsureOnEncounterMap` puts
+every client on the one encounter map before any hero placement, and the montage
+waits on arrivals -- and it matches what combat already counts.
+
+Not fixed here: `Party.GetPlayerCharacters()` itself still drops blank-named
+tokens, so `Equipment.lua`'s party inventory has the same blind spot. Whether
+that filter is deliberate (keeping placeholder tokens out of party lists) or
+legacy was not established, so it was left alone.
+
 ## Hero combat state leaks back into the lobby (ROOT-CAUSED + FIXED 2026-09-16, ticket 3GJJQYJV; Lua UNTESTED live, not deployed)
 
 Ticket `3GJJQYJV` (reporter thc1967, v0.0.831, filed from the lobby): "Heroes
@@ -2905,6 +2963,198 @@ a joiner; the dialog opens with an unknown stat block; killing a monster type
 reveals its rough stamina; the Settings > Game tab is unreachable to everyone
 (player-host game) so nobody can turn it off, and the host tick re-asserts it.
 
+#### Montage outcome: "You know the Stamina of Goblins" (DECIDED + BUILT 2026-09-19; Lua only; logic VERIFIED in the authoring game via MCP, player-view bars UNTESTED; UNCOMMITTED)
+
+User direction (2026-09-19): a montage tier/consequence line such as "You
+know the Stamina of Goblins" reveals the stamina of every Goblin monster
+through the monster intelligence system: Monster Info shows the exact
+number, and the token stamina bar of every goblin enemy shows the number
+too (the EotW default is bar-only, see "Players always see monster stamina
+bars, not amounts"). Decided the same day: the bar shows the number for
+ANY exact stamina knowledge, including the third-kill reveal from
+automatic learning and a Director reveal, so "the party knows this
+monster's stamina" means one thing however it was learned. The seven
+keyword-less Goblin X bestiary entries (Archer, Bodyguard, Deadshot,
+Honcho, Lackey, Skullcrusher, Spidersmith) are out-of-date monsters and
+are deliberately not covered; no name matching.
+
+How it works:
+
+- **Grammar** (`EncounterScript.ParseKnowStaminaClause`, called from
+  `ParseClause` before the surprise-immunity rule): `you know the stamina
+  of <keyword>` (also `learn`; `the party knows ...`; `each party member
+  knows ...`; an optional `the`/`every`/`all`/`any` before the keyword) ->
+  `{ kind = "knowstamina", keyword = "goblin" }`. The keyword is
+  lower-cased and singularised (a trailing `s` is dropped unless the word
+  ends in `ss`); a multi-word keyword is not a keyword and falls through to
+  narrative. `DescribeEffect` / `DescribeKnowStamina`: "The party knows the
+  Stamina of Goblins". Covered in `tests/encounter_script_test.lua`.
+- **Matching rule**: a monster counts when its stat-block `keywords` table
+  (`props.keywords`, `{ Goblin = true, Humanoid = true }`) has the keyword,
+  case-insensitively. This is the Draw Steel meaning of "Goblin": in the
+  shipped data it covers goblins, bugbears, hobgoblins, worgs, war spiders,
+  Skitterlings and the named goblin bosses (43 visible entries).
+- **Storage**: `MonsterKnowledge.RevealStaminaForKeyword(keyword, source)`
+  (`Draw Steel Core Rules/MonsterKnowledge.lua`) writes
+  `doc.data.keywords[keyword] = { stamina = true, source = "Montage: <entry>" }`
+  into the shared `monsterKnowledge` document, NOT into `eotwscript`, so it
+  is campaign knowledge like every other reveal and covers goblins that
+  arrive later (reinforcements, other modules) with no enumeration of
+  `assets.monsters`. `MonsterKnowledge.StaminaKnowledge(key, props)` now
+  takes the creature too and answers tier 3 / exact when
+  `StaminaKnownByKeyword(props)` is true, unless the Director explicitly
+  hid that monster type's stamina (`revealed.stamina == false` still wins,
+  matching "Director hides win"). `ClearKeywordReveals()` forgets them;
+  the `/eotwmontage reset` test reset calls it.
+- **Applying it**: `EncounterMontage.ApplyEffects` has a `knowstamina`
+  branch that calls `RevealStaminaForKeyword` under the host elevation it
+  already holds (via `rawget(_G, "MonsterKnowledge")`, so the codemod still
+  loads against a core without it and logs instead of failing) and adds
+  the describe line to the applied list shown on the stage.
+- **Monster Info dialog**: `StaminaText` and the Director eye pass
+  `ctx.props` into `StaminaKnowledge`; the line reads `Stamina 15`.
+- **Token stamina bar** (`Draw Steel UI/DrawSteelTokenHud.lua` lifebar
+  `Calculate`, now `Calculate(creature, token)`): for a non-Director viewer
+  whose setting would give `"bar"`/`"pct"`, `MonsterKnowledge.PlayersKnowStaminaExactly(creature, token)`
+  true flips `showAs` to `"val"`. Same gate in the minion squad bar
+  (`MCDMMinion.lua`, the `display == "val"` branch, keyed by the squad's
+  first token). `PlayersKnowStaminaExactly` takes the token when the
+  caller has one because `dmhub.LookupToken(creature)` is nil for a
+  locally spawned, not-yet-deployed token (seen live during this build).
+- **Refresh**: `DMHub Token UI/TokenUI.lua` gained a small generic
+  extension: a status bar registered with `TokenUI.RegisterStatusBar` may
+  declare `monitorGame` (a path, a list, or a function returning either);
+  the per-token `StatusPanel` monitors the union of them with
+  `monitorGameEvent = "refresh"`, so its bars recalculate when any such
+  path changes. The lifebar declares the knowledge document path (through
+  `rawget`, so the generic Token UI mod still works without the Draw Steel
+  mods). `TokenUI` passes the token as `Calculate`'s second argument for
+  every bar (backwards compatible). A first attempt used a parentless
+  file-scope `gui.Panel{ monitorGame = ... }` in `MonsterKnowledge.lua`;
+  the engine's leak sweep (`SheetManager.cs`, "was created but not
+  attached to a parent") DESTROYS such panels at the end of the frame, so
+  that never works -- do not reintroduce it.
+
+Verified 2026-09-19 in the authoring game over MCP (Director client):
+parse -> `ApplyEffects` -> keyword record with source "Montage: Goblin
+Lore"; a spawned Goblin Warrior (bestiary-keyed) reports tier 3 / visible
+with `monsterinfo` on and false with it off; a Director hide on that
+monster wins; `Reset` and `ClearKeywordReveals` clear it; clean load after
+restart with no errors. NOT yet seen: the bar showing `15/15` on a joiner's
+client (needs two clients and an EotW game), the minion squad bar, and the
+Monster Info dialog line (needs the dialog opened by a player). Note the
+Lua reload gotcha struck again on this build: `reload_lua` recompiled
+stale content for `Draw Steel Core Rules`; `restart_dmhub` picked the
+edits up.
+
+#### Hidden tier outcomes: a teaser before the roll, the real text after (DECIDED + BUILT 2026-09-19; Lua only; parser unit-tested; live UNTESTED; UNCOMMITTED)
+
+User direction (2026-09-19): a montage power roll should be able to show a
+player some "narrative text" for a tier BEFORE they roll, while the actual
+mechanical effect stays hidden unless they land that tier. The motivating
+example is the tracking test: tier 2 reads "A little wisdom" and tier 3 "A
+wealth of wisdom" until the roll lands, at which point the landed tier
+reveals "You learn some of the hunter's wisdom; +1 hero token." or "You
+discover the writings of a fellow named Grenolf ... +1 hero token. You know
+the Stamina of Goblins."
+
+**Syntax**: an optional `=>` on a tier line splits it into
+`teaser => full text`. The teaser is what players see before the roll (in
+the option's tier rows on the stage and in the roll dialog's power table);
+the full text is what the landed tier reveals, and it is the ONLY part the
+effect grammar parses. A line without `=>` behaves exactly as today, and
+lines can mix within one roll.
+
+```
+### Track the Goblins
+
+|Tracking Test: Intuition (Track, Nature, Alertness)
+|You fail at the test.
+|A little wisdom => You learn some of the hunter's wisdom; +1 hero token.
+|A wealth of wisdom => You discover the writings of a fellow named Grenolf who seemed rather obsessed with goblins and their anatomy. +1 hero token. You know the Stamina of Goblins.
+```
+
+Why `=>` and not the alternatives considered:
+
+- A `|` separator (Discord-style `||spoiler||`, or a fourth cell) breaks the
+  journal: `MarkdownDocument`'s tier regex is `^\|(?<text>[^|]*)$`, so any
+  `|` inside a tier line stops the block being recognised as a power roll
+  in the Director's journal view. Same regex in `EncounterScript`.
+- A `:` separator (`Teaser: full text`) collides with Draw Steel's own tier
+  prose ("Tier 1: ...", "Consequence: ...") and with the `|Name: Attr`
+  header regex, which also keys on `: `. Too easy to trip by accident.
+- Brackets (`|[A little wisdom] ...`) read as markdown links / islands
+  next to `[[scene]]`.
+- `=>` never occurs in tier prose today, reads as "leads to", is one
+  greppable token for a future Python port, and renders harmlessly as
+  literal text in the journal.
+
+Split rule: the FIRST `=>` (spaces optional) splits; anything after it,
+including another `=>`, is the full text. Both halves trimmed. An empty
+teaser (`|=> text`) is a parse warning and treated as no teaser.
+
+**Reveal rules** (user approved 2026-09-19, "build it with those rules"):
+
+- Before the roll, every tier row shows its teaser (or its full text when
+  it has none).
+- After the roll, only the landed tier reveals its full text; the tiers
+  not achieved keep showing their teaser, forever. The assist flow reveals
+  the tier the assist finally shifted the test to, not the base tier.
+- The critical (4th) line follows the same rule.
+- The montage log / turn summary (`t.tierText`) records the full text of
+  the landed tier.
+- The roll dialog's power table shows teasers, so it never leaks the
+  hidden text either.
+- The Director's stage view shows the same thing as everyone else; the
+  journal (raw `teaser => full` line) is the Director's spoiler view.
+
+**As built** (2026-09-19, Lua only, no engine work):
+
+- `EncounterScript.lua`: `EncounterScript.SplitTeaser(line)` splits on the
+  first `=>`; the power-roll parse stores `roll.teasers[t]` (nil when the
+  line has none) and rewrites `roll.tiers[t]` to the full text, so
+  `ParseEffects` and everything downstream (`t.tierText`, the log) see only
+  the full text. An empty teaser warns and is dropped.
+  `EncounterScript.TierDisplayText(roll, t, landed)` is the one rule for
+  what a viewer reads: full text when landed or when there is no teaser,
+  the teaser otherwise. `/eotwscript` prints `tier N: [teaser] => full`.
+- `EncounterMontageStage.lua`: `TierRows` builds each row from
+  `TierDisplayText` and stamps `row.data = {roll, tier}`; `SetLandedTier`
+  rewrites the text label alongside the landed/dim classes. Consequence:
+  the LIVE rows during a roll reveal a teaser while the tumbling dice's
+  running tier sits on it and hide it again when they move on -- the dice
+  are visible to everyone anyway, so this leaks nothing the settled result
+  would not. The resolved card (`TierRows(option.roll, landed, true)`)
+  reveals only the final tier. The assist roll's fixed table has no
+  teasers and is unaffected.
+- `EncounterMontage.lua`: `EncounterMontage.TeaserTiers(roll)` feeds the
+  roll dialog's `RollPropertiesPowerTable` (via `ShowMontageRoll`). No
+  state change: `t.tierText` already stores the landed line.
+- Tests: `tests/encounter_script_test.lua` covers the split (spaces
+  optional, first `=>` wins, empty teaser warned, effects from the full
+  text only, `TierDisplayText`, `AttrWithoutSkills`); 183 checks pass.
+- The publisher does not port the grammar today, so nothing to mirror
+  there yet; when it does, it must learn the same split.
+- Flavour prose in front of a mechanical clause ("The witch is
+  unimpressed. You gain one Healing Potion") still trips the
+  "unrecognized effect (shown as text only)" warning in `/eotwscript` for
+  the prose sentence. Harmless, but noisy now that prose is the norm;
+  candidate: suppress it on lines that also carry a recognised effect.
+- **The option card hides the skill list** (user direction 2026-09-19,
+  built the same day, live UNTESTED): the card's roll header reads
+  `Negotiation Test: Presence`, not `... Presence (Empathize, Lie, Flirt)`.
+  `EncounterScript.AttrWithoutSkills` strips every parenthesised group
+  from `attr`; the roll dialog's title and its Skilled chip still show the
+  skills, which is where players discover them. The assist prompt is
+  unchanged (assisting is about the skill).
+
+Verify live: put a `teaser => full` line in the authoring game's script,
+approach the option -- the card shows `Name: Characteristic` with no
+skills, and the card and the roll dialog show the teasers; roll -- the
+landed tier reveals its full text and the others keep their teaser; the
+montage log line shows the full text; the effects land. Then
+`/eotwmontage reset` and confirm the rows go back to teasers.
+
 #### "Strictly Enforce Rolls" (strict:rolls) -- NEW 2026-08-29
 
 User direction: the roll prompt was still a free editing surface. A new
@@ -3420,7 +3670,9 @@ registered in the EotW codemod at position 2 after EncounterOfTheWeek.lua):
   cards `halign = "right"` so the column packs against that edge. The
   kept rail buttons stay in the bottom-LEFT corner, where the real
   rail's live): one card per party hero
-  (`Party.GetPlayerCharacters()` + `IsHero()`, so off-map heroes count) --
+  (`dmhub.allTokens` + `IsHero()` -- the same enumeration combat entry
+  uses; NOT `Party.GetPlayerCharacters()`, which drops blank-named
+  tokens, see "An unnamed hero vanished from the montage") --
   132x176 (3:4), the portrait full-bleed as the card's own bgimage
   (bgcolor white so art is untinted; `GetPortraitRectForAspect(0.75)`
   crop; dark plate fallback while art is missing), cornerRadius 8. The
@@ -3896,7 +4148,10 @@ the bundled `lua.exe`:
   `|Name: Attr` header line plus three (optionally four, the critical
   tier) `|text` lines -- the journal's own block syntax, matched with the
   same two regexes `MarkdownDocument` uses (`^\|(?<name>[^|]+): (?<attr>[^|]+)$`
-  and `^\|(?<text>[^|]*)$`). `Attr` is turned into characteristics + skills
+  and `^\|(?<text>[^|]*)$`). A tier line may read `teaser => full text`:
+  players see the teaser until that tier lands, and only the full text is
+  parsed for effects (see "Hidden tier outcomes" under Monster Info).
+  `Attr` is turned into characteristics + skills
   the way `PowerRollDisplay`'s press handler already does it: every
   `creature.attributesInfo` description that appears in the text
   (`Might or Agility` -> both), every `Skill.skillsDropdownOptions` name
@@ -3917,6 +4172,7 @@ the bundled `lua.exe`:
   | `you gain <n> temporary stamina` (also `each party member gains ...`) | temporary Stamina, taking the higher of old and new (Draw Steel: it does not stack) |
   | `[at the start of the next combat[,]] you gain <n> surge[s]` (also `each party member gains ...`) | banked on the script document and paid out when the encounter's combat starts |
   | `your recovery value is increased by <n>` (also `+<n> recovery value`, `each party member's recovery value ...`) | an ongoing effect ("Montage Boon: Recovery Value +N") with an `attribute`/`recoveryvalue` modifier, until the next respite |
+  | `you lose <n> recovery`/`recoveries` (also `each party member loses ...`) | n recoveries off the hero's pool, with no Stamina back for them. A hero with none left loses nothing |
   | `[+]<n> hero token[s]` (also `you gain <n> hero tokens`) | the party's hero-token pool += n |
   | `[+]<n> malice` | malice pool += n |
   | `a`/`an <monster> joins you` | spawn `<monster>` as the acting player's ally |
@@ -3926,14 +4182,54 @@ the bundled `lua.exe`:
   | `you cannot be surprised` (also `can't`, `you are immune to surprise`, `the party ...`, `each party member ...`) | party-wide: a `surprised` outcome still loses the initiative, but NO hero or ally takes the Surprised condition |
   | `you win [the] initiative` | next encounter: heroes go first, no die |
   | `you lose [the] initiative` | next encounter: monsters go first, no die |
+  | `you know the stamina of <keyword>` (also `learn`, `the party knows ...`, `each party member knows ...`; `goblins` -> `goblin`) | monster intelligence: the exact stamina of every monster carrying that stat-block keyword, in Monster Info and on its token bar, for the rest of the campaign (see "Montage outcome: You know the Stamina of Goblins") |
   | `you fail (at )?the test`, anything unmatched | narrative only (shown, no effect) |
 
   The four **initiative** clauses (user direction 2026-09-18) work on power
   roll tiers and on `Consequence:` lines alike, and are the same effect kind
   (`initiative`, `outcome = "win"|"lose"|"surprise"|"surprised"`). The last
-  one applied during the montage wins -- a later tier or consequence
-  overrides an earlier one. "Surprise" means losing initiative PLUS the
-  Surprised condition on every creature of the losing side.
+  one applied during the montage wins **for who goes first** -- a later tier
+  or consequence overrides an earlier one. "Surprise" means losing
+  initiative PLUS the Surprised condition on every creature of the losing
+  side.
+
+  **Surprise itself is sticky, and lands immediately** (bug found live
+  2026-09-19, fixed the same day). The two halves are tracked separately:
+
+  - `doc.data.initiative` -- who goes first. Last one wins, as above.
+  - `doc.data.surprised = { party = {entryName, at}, enemy = {entryName, at} }`
+    -- who is Surprised. Set by any `surprise`/`surprised` clause and never
+    cleared by a later initiative clause; only surprise immunity takes it
+    back.
+
+  **Being surprised implies losing the initiative, and it outranks a plain
+  `win`/`lose` clause however late that clause landed** -- a montage that
+  says "the heroes begin the encounter surprised" and later "the heroes win
+  initiative" must not put a surprised party first. So `immediateResult` is
+  decided from the outcome and then overridden: party surprised ->
+  `"monsters"`, enemy surprised -> `"heroes"`. A montage that surprised BOTH
+  sides has no side to favour and falls back to the last outcome. The
+  override applies even under surprise immunity: the heroes still lose the
+  die, they just do not take the condition.
+
+  Deriving the condition from the outcome alone was wrong: a montage that
+  handed out `Goblin Scouts -> the heroes begin the encounter surprised` and
+  then `Gathering Darkness -> the heroes lose initiative` kept only the
+  second, and because both mean "the monsters go first" nothing looked
+  wrong -- the party watched the montage announce surprise and then entered
+  combat with no condition on anyone. Both consequences now land.
+
+  And a `surprised` clause puts the condition on every hero **the moment it
+  is announced** (user direction 2026-09-19), rather than at combat start
+  minutes later: `EncounterMontage.ApplyEffects` calls the file-local
+  `SetHeroesSurprised(true, ...)` (Surprised, `force`, duration `eoe`, via
+  `token:ModifyProperties` under the host elevation `ApplyEffects` already
+  holds). `eoe` survives the rest of the montage and the narrative beat, and
+  `creature:EndCombat` clears it when the encounter ends. The enemy half of
+  `surprise` still waits for combat start -- the encounter's monsters are
+  not spawned yet. Surprise immunity earned LATER in the same montage lifts
+  the condition again (`SetHeroesSurprised(false, ...)` in the `nosurprise`
+  branch), and the montage test reset does the same.
 
   Item names resolve against `tbl_Gear` by name (case-insensitive; a
   trailing `s` is tried without). Monster names resolve against
@@ -3978,6 +4274,9 @@ A new shared document in the codemod, `eotwscript`, next to `eotwstate`:
   allies = { [heroCharid] = { charid, ... } },
   items = { [heroCharid] = { { itemid, name, qty }, ... } },
   initiative = nil | { outcome = "win"|"lose"|"surprise"|"surprised", entryName, at },
+  surprised = nil | { party = nil | { entryName, at },   -- sticky; survives a later
+                      enemy = nil | { entryName, at } }, -- initiative clause
+  noSurprise = nil | { entryName, at },
 }
 ```
 
@@ -3990,6 +4289,24 @@ same item bumps `qty` in place rather than appending a second entry, so the
 stage shows one icon per distinct item. Like `allies` it lives at the TOP
 level -- the haul spans the whole montage, not one beat -- and
 `/eotwmontage reset` clears it.
+
+**Haul icons are live (BUILT 2026-09-19; UNTESTED live).** Hovering an icon
+shows the item's full `CreateItemTooltip`. Until this change no tooltip
+ever appeared on the stage: `UpdateStartZoneConfinement` suppresses every
+tooltip on the client until combat starts, which covers the whole montage.
+It now leaves them alone while `MontageStageExpected()` (a live montage or
+narrative stage) is true; the start-zone shuffle after the stage still gets
+the quiet. The hero's own player (`canControlAsUser`, so the Director too)
+can drag an icon onto another hero's card to hand over ONE unit of the item
+-- a stack takes one drag per unit -- via the `giveItem` request
+`{ heroid, targetId, itemid }`. The host (`HandleRequest`) re-checks
+ownership, that the item is in the hero's recorded haul AND still in their
+real inventory (a used-up potion just drops off the haul), then moves it
+between the two inventories with `GrantItem` +1/-1 and updates both haul
+records (`RecordItem` / `UnrecordItem`). Any phase is fine; sharing loot is
+never "not the moment". `CreateHeroCard` gained `dragTarget` /
+`dragTargetPriority` / `dragTargets` pass-through opts for this; the card
+lights up (`droppable`) only for an "item" drag from a DIFFERENT hero.
 
 `initiative` lives at the TOP level (like `allies`), not under `montage`,
 because `montage.*` is rebuilt for every montage beat while the outcome
@@ -4074,7 +4391,13 @@ Turn lifecycle:
    opportunity, `vanquished[entryId]` when a clause says so, append to
    `log`, set `status="resolved"` with what was applied (the stage shows
    "+1 Healing Potion", "-6 Stamina", "+2 Malice", "Wode Elf Sentry joins
-   Kira"). After a ~4 s linger the host clears `turn`.
+   Kira"). A resolved turn never blocks the next one (user direction
+   2026-09-19: no waiting out a timer on a result already read):
+   `EncounterMontage.TurnOver` treats `status="resolved"` as a free floor,
+   so the next hero may approach at once -- the resolved view carries the
+   same "Your move" hint as the idle view and its entry card reopens
+   immediately. The next `approach` replaces `turn`; the round rollover
+   clears it. There is no linger timer any more.
 6. **round end**: when every hero has acted -- or nothing is left to
    approach -- `round += 1` and `acted` resets. Past the last round,
    `phase = "consequences"`; with no unvanquished threat, straight to
@@ -4106,16 +4429,24 @@ Effect application (host, elevated):
   so the Monster AI leaves it alone and its owner drives it in combat like
   a second hero.
 - initiative: `ApplyEffects` (which now receives the open script `doc` in
-  its ctx) writes `doc.data.initiative = {outcome, entryName, at}` and the
-  stage's applied list shows "The heroes will begin the encounter
+  its ctx) writes `doc.data.initiative = {outcome, entryName, at}`, and for
+  a surprise outcome also the sticky `doc.data.surprised.party`/`.enemy`,
+  and the stage's applied list shows "The heroes will begin the encounter
   surprised" / "... surprise the enemy" / "... win initiative" / "... lose
-  initiative" (`EncounterScript.DescribeInitiativeOutcome`). Nothing
-  touches a token yet. When the encounter beat starts combat,
-  `StartEncounterCombat` reads `EncounterMontage.GetInitiativeOutcome()`
-  and maps it: win/surprise -> `immediateResult = "heroes"`, lose/surprised
-  -> `"monsters"`; surprise -> `surprisedTokens = sides.monsterTokens`,
-  surprised -> `sides.playerTokens` (heroes AND montage allies, per
-  `GatherCombatSides`). Both go to the **core hook** `Encounter.StartCombatWithTokens`
+  initiative" (`EncounterScript.DescribeInitiativeOutcome`). A `surprised`
+  outcome puts the condition on the heroes there and then
+  (`SetHeroesSurprised`); nothing else touches a token yet. When the
+  encounter beat starts combat, `StartEncounterCombat` reads
+  `EncounterMontage.GetInitiativeOutcome()` for the die -- win/surprise ->
+  `immediateResult = "heroes"`, lose/surprised -> `"monsters"`, then
+  overridden by the surprised side as above -- and
+  `EncounterMontage.GetSurprisedSides()`, **separately**, for the condition:
+  party -> `sides.playerTokens` (heroes AND montage allies, per
+  `GatherCombatSides`), enemy -> `sides.monsterTokens`, unioned when a
+  montage managed both. Re-applying to heroes who already took it in the
+  montage is idempotent; the pass at combat start is what catches the allies
+  and the monsters, who did not exist when the clause landed. Both go to the
+  **core hook** `Encounter.StartCombatWithTokens`
   (`Draw Steel UI/DSInitiativeRoll.lua`), which gained those two optional
   args: it runs the file-local `SetTokenSurprised` (now forward-declared;
   Surprised, duration `eoe`, exactly what the Prepare Combat dialog's "All
@@ -5560,6 +5891,9 @@ and 30 change nothing visible for a script with no montage.
     in `StartEncounterCombat`, which nils `surprisedTokens` while leaving
     `immediateResult = "monsters"` alone. Cleared by `/eotwmontage reset`.
     It does not touch the `surprise` outcome (that Surprises monsters).
+    Extended by item 47: it now also purges the Surprised condition the
+    montage already applied, since surprise lands the moment it is
+    announced and immunity can be earned after it.
 
 39. [x] **Assisting a test** (BUILT 2026-09-18, luac-clean, parser tests
     still 101/101 -- no parser change; **UNTESTED live**): design in
@@ -5599,11 +5933,88 @@ and 30 change nothing visible for a script with no montage.
     dealt with in round 1 must not come back, and what was dealt with in
     round 2 should still be there with its "Taken" / "Vanquished" line.
 
+47. [x] **Surprise is sticky, and lands during the montage** (ROOT-CAUSED +
+    FIXED 2026-09-19, luac-clean, parser suite still 150 checks, **UNTESTED
+    live, UNCOMMITTED, NOT DEPLOYED**). Found in a real game: the montage
+    announced "The heroes will begin the encounter surprised" (unvanquished
+    `Goblin Scouts`), combat started with the monsters first, and no hero
+    had the condition.
+
+    Cause: a SECOND initiative consequence in the same montage
+    (`Gathering Darkness -> The heroes will lose initiative`) overwrote
+    `doc.data.initiative`, which was the only record of the surprise. Both
+    outcomes mean "the monsters go first", so the visible result looked
+    right and only the condition was lost. The live document confirmed it:
+    `initiative = {outcome = "lose", entryName = "Gathering Darkness"}`, with
+    the surprise present only in `montage.log`.
+
+    Fix, in two parts:
+    - **Sticky flags.** `ApplyEffects` now also writes
+      `doc.data.surprised.party` / `.enemy`, which no later initiative
+      clause clears. `EncounterMontage.GetSurprisedSides()` reads them, and
+      `StartEncounterCombat` builds `surprisedTokens` from them instead of
+      from the (last-one-wins) outcome, unioning both sides if a montage
+      managed both. Cleared by the montage test reset.
+    - **Surprise forces the initiative.** `immediateResult` is decided from
+      the outcome and then overridden by the surprised side (party ->
+      monsters first, enemy -> heroes first; both sides surprised falls back
+      to the outcome), so a later `you win initiative` cannot put a
+      surprised party first. Holds under surprise immunity too.
+    - **Immediate application** (user direction): a `surprised` clause runs
+      the new file-local `SetHeroesSurprised(true, ...)` in
+      `EncounterMontage.lua` on the spot, so the condition appears on the
+      heroes as the montage announces it rather than when the Draw Steel
+      banner resolves. Duration `eoe`, so it survives the rest of the
+      montage and the narrative beat and `creature:EndCombat` clears it at
+      the end of the fight. `nosurprise` earned later lifts it again, and so
+      does the reset. The enemy half of `surprise` still waits for combat
+      start -- those monsters do not exist during the montage.
+
+    Test: a montage with an unvanquished threat whose consequence is
+    `You begin the encounter surprised` AND a second unvanquished threat
+    whose consequence is `You lose initiative`. As the first consequence is
+    announced, every hero token should visibly gain Surprised; the second
+    should not remove it; combat should start monsters-first with every hero
+    and ally still Surprised. Then re-run with `You cannot be surprised`
+    earned after the surprise -- the condition must come off again, but the
+    monsters must still go first. And a third run with the second
+    consequence changed to `You win initiative` -- the monsters must STILL
+    go first, because the party is surprised.
+
+48. [x] **Losing recoveries** (BUILT 2026-09-19, luac-clean, parser suite
+    159 checks, the pool mechanics VERIFIED against a live hero's creature
+    on a detached copy (8 -> 7 recoveries); **UNTESTED in a real montage,
+    UNCOMMITTED, NOT DEPLOYED**): `You lose a recovery`,
+    `You lose two recoveries`, `Each party member loses a recovery`,
+    `Each party member loses two recoveries` (user request; digits work
+    too, and any of `a`/`an`/`one`..`ten`).
+
+    Effect kind `loserecovery` (`target`, `qty`) -- distinct from the
+    `recovery` BOON, which raises the Recovery Value and costs nothing.
+    Parsed in `ParseClause` by the shared `MatchSelfOrParty` helper against
+    both the singular and plural noun, placed after the Recovery Value boon
+    rules and before the generic item rule; `you lose <n> stamina` is a
+    separate rule and is unaffected.
+
+    **This is a flat cost, NOT Draw Steel's recovery spend** (user
+    direction 2026-09-19, after a first pass built it as a spend): the
+    recovery is gone and no Stamina comes back for it. `LoseRecoveries` in
+    `EncounterMontage.lua` is therefore one
+    `ConsumeResource(CharacterResource.recoveryResourceId, "long", n)` --
+    which routes to a Bloodbound Band partner when the hero's own pool is
+    empty -- and no `Heal`. A hero with fewer recoveries than the clause
+    asks for loses what they have, and one with none left loses nothing and
+    carries no debt. The applied-effects list reports what each hero
+    actually lost, grouped by amount: "Every hero loses 1 Recovery", or
+    "Kira and Brann lose 1 Recovery" plus "Osk has no Recoveries left to
+    lose".
+
 Deliverable: the week's document is a script; a montage plays before the
 fight with every player dragging their heroes onto opportunities and
 threats, rolling in front of everyone, and its outcomes (items, stamina,
-healing, temporary stamina, Recovery Value, surges, hero tokens, malice,
-allied monsters, unresolved-threat consequences) carrying into the combat.
+healing, temporary stamina, Recovery Value, lost recoveries, surges, hero
+tokens, malice, allied monsters, unresolved-threat consequences) carrying
+into the combat.
 
 ## Phase 8 -- Narrative beats (BUILT 2026-09-18; VERIFIED in the authoring game; real EotW game UNTESTED)
 

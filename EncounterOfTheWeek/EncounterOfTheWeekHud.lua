@@ -7,8 +7,8 @@ local mod = dmhub.GetModLoading()
 --access (menus, toolbar, search), and mounts a hero roster on the right
 --edge of the screen (shrinking itself to fit when a full seven-hero
 --roster is taller than the window): one card per hero showing portrait,
---name, stamina,
---recoveries, heroic resource, surges, and condition icons. The local
+--name, stamina (with a recoveries circle beside it),
+--heroic resource, surges, and condition icons. The local
 --player's own heroes sit at the top, closer together, on a distinct
 --backing. Clicking a card pops out the full character panel, which the
 --characterPanelAccess override forces read-only for everyone.
@@ -27,18 +27,30 @@ setting{
 
 --- Hero collection ----------------------------------------------------------
 
---All heroes in the party (on the current map or not), the local player's
---own first. "Own" is strict ownership (ownerId == loginUserid), not
---canControl: the EotW host can control everything but only their claimed
---heroes are theirs.
+--A hero whose player never typed a name still has to label its card with
+--something. (EncounterMontage.HeroDisplayName says the same thing; kept
+--local here because this file only reaches that module defensively.)
+local function HeroDisplayName(tok)
+    local name = nil
+    pcall(function() name = tok.name end)
+    if name == nil or name == "" then
+        return "Unnamed Hero"
+    end
+    return name
+end
+
+--Every hero on the map, the local player's own first. "Own" is strict
+--ownership (ownerId == loginUserid), not canControl: the EotW host can
+--control everything but only their claimed heroes are theirs.
+--
+--Enumerated exactly the way combat entry does it (GatherCombatSides in
+--EncounterOfTheWeek.lua): every token on the map whose properties IsHero.
+--NOT Party.GetPlayerCharacters, which silently drops any token with a blank
+--name -- an unnamed hero fought in the encounter but was missing from this
+--strip and from the montage (report QKG5YTWG).
 local function CollectHeroes()
     local result = {}
-    local chars = nil
-    pcall(function() chars = Party.GetPlayerCharacters() end)
-    if chars == nil then
-        return result
-    end
-    for charid, tok in pairs(chars) do
+    for _, tok in ipairs(dmhub.allTokens) do
         if tok ~= nil and tok.valid then
             local isHero = false
             pcall(function() isHero = tok.properties ~= nil and tok.properties:IsHero() end)
@@ -46,9 +58,9 @@ local function CollectHeroes()
                 local mine = false
                 pcall(function() mine = tok.ownerId ~= nil and tok.ownerId == dmhub.loginUserid end)
                 result[#result+1] = {
-                    charid = charid,
+                    charid = tok.charid,
                     mine = mine,
-                    name = tok.name or "",
+                    name = HeroDisplayName(tok),
                 }
             end
         end
@@ -303,6 +315,37 @@ local g_heroCardRules = {
         textAlignment = "center",
         textWrap = false,
     },
+    --the recoveries circle to the left of the stamina bar: a dark disc
+    --with a light ring and the count in white.
+    {
+        selectors = {"eotwRecoveriesCircle"},
+        width = 16,
+        height = 16,
+        valign = "center",
+        halign = "left",
+        rmargin = 3,
+        cornerRadius = 8,
+        bgimage = "panels/square.png",
+        bgcolor = "#000000aa",
+        border = 1,
+        borderColor = "#ffffffaa",
+    },
+    {
+        selectors = {"eotwRecoveriesCircle", "empty"},
+        borderColor = "#ff5555aa",
+    },
+    {
+        selectors = {"eotwRecoveriesLabel"},
+        fontSize = 10,
+        bold = true,
+        color = "#ffffff",
+        width = "100%",
+        height = "100%",
+        halign = "center",
+        valign = "center",
+        textAlignment = "center",
+        textWrap = false,
+    },
     {
         selectors = {"eotwSurgeIcon"},
         width = 12,
@@ -367,7 +410,7 @@ local g_heroCardRules = {
 
 local CARD_WIDTH = 132
 local CARD_HEIGHT = 176
-local OVERLAY_HEIGHT = 58
+local OVERLAY_HEIGHT = 60
 --condition chips in the card's top-right corner: the outer dark/red-bordered
 --chip and the condition icon inside it.
 local CONDITION_CHIP_SIZE = 26
@@ -677,6 +720,60 @@ local function CreateResourceRow(charid)
     }
 end
 
+--The recoveries circle: the hero's remaining recoveries (max minus the
+--ones spent this long rest), in a small ringed disc. The ring turns red
+--when none are left.
+local function CreateRecoveriesCircle(charid)
+    local label = gui.Label{
+        classes = {"eotwRecoveriesLabel"},
+        text = "0",
+        interactable = false,
+    }
+    return gui.Panel{
+        classes = {"eotwRecoveriesCircle"},
+        interactable = false,
+        label,
+        refreshCard = function(element)
+            local tok = dmhub.GetCharacterById(charid)
+            if tok == nil or not tok.valid or tok.properties == nil then
+                return
+            end
+            local current = 0
+            pcall(function()
+                local c = tok.properties
+                local id = CharacterResource.recoveryResourceId
+                local max = c:GetResources()[id] or 0
+                local used = c:GetResourceUsage(id, "long") or 0
+                current = math.max(0, max - used)
+            end)
+            label.text = tostring(current)
+            element:SetClass("empty", current <= 0)
+        end,
+    }
+end
+
+--The hero card's stamina row: the recoveries circle on the left, the
+--stamina bar filling the rest. The bar keeps firing staminaLost /
+--staminaGained up through this row to the card.
+local function CreateStaminaRow(charid)
+    return gui.Panel{
+        width = "100%",
+        height = 16,
+        flow = "horizontal",
+        halign = "center",
+        valign = "center",
+        interactable = false,
+        CreateRecoveriesCircle(charid),
+        gui.Panel{
+            width = "100%-19",
+            height = "auto",
+            valign = "center",
+            interactable = false,
+            CreateStaminaBar(charid),
+        },
+    }
+end
+
 --One surge icon PER available surge, in the card's bottom-right corner --
 --and nothing at all when the hero has none. Rebuilt only when the count
 --changes; display capped at 9 icons (they would outgrow the card).
@@ -792,7 +889,7 @@ local function CreateTriggerCorner(charid)
                 return
             end
             table.sort(lines)
-            local name = tok.name or "This hero"
+            local name = HeroDisplayName(tok)
             local tip = string.format("%s has a trigger available.", name)
             if #lines > 0 then
                 tip = tip .. "\n\n" .. table.concat(lines, "\n")
@@ -1012,7 +1109,7 @@ local function CreateHeroCard(entry, opts)
     if opts.showStats then
         overlayChildren[#overlayChildren+1] = CreateSkillsLine(charid)
     end
-    overlayChildren[#overlayChildren+1] = CreateStaminaBar(charid)
+    overlayChildren[#overlayChildren+1] = CreateStaminaRow(charid)
     overlayChildren[#overlayChildren+1] = CreateResourceRow(charid)
 
     local overlayHeight = OVERLAY_HEIGHT
@@ -1076,7 +1173,7 @@ local function CreateHeroCard(entry, opts)
             if tok == nil or not tok.valid then
                 return
             end
-            nameLabel.text = tok.name or ""
+            nameLabel.text = HeroDisplayName(tok)
             local portrait = nil
             pcall(function() portrait = tok.offTokenPortrait end)
             if portrait ~= nil and portrait ~= "" then
@@ -1125,6 +1222,12 @@ local function CreateHeroCard(entry, opts)
         cardArgs.canDragOnto = opts.canDragOnto
         cardArgs.drag = opts.drag
         cardArgs.beginDrag = opts.beginDrag
+    end
+    --the card as a drop target (the montage drops item icons on it).
+    if opts.dragTarget then
+        cardArgs.dragTarget = true
+        cardArgs.dragTargetPriority = opts.dragTargetPriority
+        cardArgs.dragTargets = opts.dragTargets
     end
     return gui.Panel(cardArgs)
 end
@@ -1189,6 +1292,7 @@ local function CreateAllyCard(charid)
                 return
             end
             element:SetClass("collapsed", false)
+            --an ally is a MONSTER that joined a hero, so no "Unnamed Hero".
             nameLabel.text = tok.name or ""
             local portrait = nil
             pcall(function() portrait = tok.offTokenPortrait end)

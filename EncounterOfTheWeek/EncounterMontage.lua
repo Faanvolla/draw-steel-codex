@@ -58,8 +58,9 @@ EncounterMontage = rawget(_G, "EncounterMontage") or {}
 local DOC_ID = "eotwscript"
 local DIALOG_ID = "eotwmontage"
 
---how long a resolved turn stays on screen before the next hero may act.
-local RESOLVED_LINGER_SECONDS = 6
+--A resolved turn never blocks the next one: it stays on screen only until
+--another hero approaches an entry (or the round rolls over), so the party
+--is never made to wait out a timer on a result they have already read.
 --how long the finished montage (its last consequence) stays on screen
 --before the beat ends and the stage hides.
 local DONE_LINGER_SECONDS = 6
@@ -236,17 +237,37 @@ end
 
 --- heroes ------------------------------------------------------------------
 
+--A hero whose player never typed a name still has to label its card and its
+--"X approaches Y" lines with something.
+function EncounterMontage.HeroDisplayName(tok)
+    local name = nil
+    pcall(function() name = tok.name end)
+    if name == nil or name == "" then
+        return "Unnamed Hero"
+    end
+    return name
+end
+
 --Every hero in the party, sorted by name: { charid, token, name, ownerId }.
+--
+--Enumerated exactly the way combat entry does it (GatherCombatSides in
+--EncounterOfTheWeek.lua): every token on the map whose properties IsHero.
+--NOT Party.GetPlayerCharacters, which silently drops any token with a blank
+--name -- an unnamed hero fought in the encounter but was missing from the
+--montage and the HUD hero strip (report QKG5YTWG).
 function EncounterMontage.Heroes()
     local result = {}
-    local chars = nil
-    pcall(function() chars = Party.GetPlayerCharacters() end)
-    for charid, tok in pairs(chars or {}) do
+    for _, tok in ipairs(dmhub.allTokens) do
         if tok ~= nil and tok.valid and tok.properties ~= nil then
             local isHero = false
             pcall(function() isHero = tok.properties:IsHero() end)
             if isHero then
-                result[#result + 1] = { charid = charid, token = tok, name = tok.name or "", ownerId = tok.ownerId }
+                result[#result + 1] = {
+                    charid = tok.charid,
+                    token = tok,
+                    name = EncounterMontage.HeroDisplayName(tok),
+                    ownerId = tok.ownerId,
+                }
             end
         end
     end
@@ -287,10 +308,16 @@ function EncounterMontage.EntryAvailable(m, entry)
     return not ((m.vanquished or {})[entry.id] == true)
 end
 
+--Is the floor free for the next approach? No turn at all, or one whose
+--result is already in -- a resolved turn is shown, not waited on.
+function EncounterMontage.TurnOver(m)
+    return m ~= nil and (m.turn == nil or m.turn.status == "resolved")
+end
+
 --Can the local user drag this hero right now? (UI gate; the host re-checks.)
 function EncounterMontage.LocalUserCanAct(heroid)
     local m = EncounterMontage.GetState()
-    if m == nil or m.phase ~= "rounds" or m.turn ~= nil then
+    if m == nil or m.phase ~= "rounds" or not EncounterMontage.TurnOver(m) then
         return false
     end
     if (m.acted or {})[heroid] then
@@ -579,6 +606,53 @@ local function RecordItem(doc, heroid, itemid, itemName, qty)
     list[#list + 1] = { itemid = itemid, name = itemName, qty = qty }
 end
 
+--The recorded haul entry for one item, or nil.
+local function FindRecordedItem(doc, heroid, itemid)
+    local items = doc ~= nil and doc.data.items or nil
+    if type(items) ~= "table" or type(items[heroid]) ~= "table" then
+        return nil
+    end
+    for _, entry in ipairs(items[heroid]) do
+        if type(entry) == "table" and entry.itemid == itemid then
+            return entry
+        end
+    end
+    return nil
+end
+
+--Take `qty` of an item off a hero's recorded haul; the entry goes when it
+--hits zero. Same change-scope rule as RecordItem.
+local function UnrecordItem(doc, heroid, itemid, qty)
+    local items = doc ~= nil and doc.data.items or nil
+    if type(items) ~= "table" or type(items[heroid]) ~= "table" then
+        return
+    end
+    local list = items[heroid]
+    for i, entry in ipairs(list) do
+        if type(entry) == "table" and entry.itemid == itemid then
+            local left = (entry.qty or 1) - qty
+            if left > 0 then
+                list[i] = { itemid = itemid, name = entry.name, qty = left }
+            else
+                table.remove(list, i)
+            end
+            return
+        end
+    end
+end
+
+--How many of an item a token really carries right now.
+local function InventoryQuantity(token, itemid)
+    local qty = 0
+    pcall(function()
+        local inventory = token.properties:try_get("inventory", {})
+        if inventory[itemid] ~= nil and type(inventory[itemid].quantity) == "number" then
+            qty = inventory[itemid].quantity
+        end
+    end)
+    return qty
+end
+
 local function LoseStamina(token, amount, source)
     token:ModifyProperties{
         description = string.format("Montage: lose %d stamina", amount),
@@ -651,6 +725,33 @@ local function GrantSurges(token, amount, note)
         end,
     }
     return true
+end
+
+--"You lose a recovery": the recovery is taken off the hero's long-rest
+--pool and nothing is given back -- this is a cost, not Draw Steel's
+--recovery SPEND, so there is no healing. ConsumeResource routes to a
+--Bloodbound Band partner when the hero's own pool is empty. A hero with no
+--recoveries left loses nothing and carries no debt. Returns how many were
+--actually taken.
+local function LoseRecoveries(token, count, note)
+    count = math.floor(count or 0)
+    if count <= 0 then
+        return 0
+    end
+    local available = 0
+    pcall(function() available = token.properties:RecoveriesAvailableToSpend() or 0 end)
+    local losing = math.min(count, available)
+    if losing <= 0 then
+        return 0
+    end
+    token:ModifyProperties{
+        description = string.format("Montage: lose %s", EncounterScript.Plural(losing, "recovery", "recoveries")),
+        undoable = false,
+        execute = function()
+            token.properties:ConsumeResource(CharacterResource.recoveryResourceId, "long", losing, note)
+        end,
+    }
+    return losing
 end
 
 --The ongoing effect that carries a "your Recovery Value is increased by N"
@@ -777,6 +878,38 @@ local function SpawnAlly(monsterid, heroEntry, userid)
     return token
 end
 
+--Put the Surprised condition on (or take it off) every hero on the map,
+--right now. The montage announces surprise the moment the clause lands, so
+--the players SEE it arrive rather than discovering it -- or not -- when the
+--Draw Steel banner resolves minutes later. Duration "eoe": it survives the
+--rest of the montage and the narrative beat, and creature:EndCombat clears
+--it when the encounter ends, exactly like the Prepare Combat dialog's "All
+--Surprised" slider. Caller must already hold host permissions.
+--Allies spawned later, and the enemy side, are still handled at combat
+--start by StartEncounterCombat -- this is the hero half only.
+local function SetHeroesSurprised(on, description)
+    local surprisedCondition = CharacterCondition.conditionsByName["surprised"]
+    if surprisedCondition == nil then
+        return
+    end
+    for _, hero in ipairs(EncounterMontage.Heroes()) do
+        local token = hero.token
+        if token.valid then
+            token:ModifyProperties{
+                description = description,
+                undoable = false,
+                execute = function()
+                    token.properties:InflictCondition(surprisedCondition.id, {
+                        force = true,
+                        duration = "eoe",
+                        purge = not on,
+                    })
+                end,
+            }
+        end
+    end
+end
+
 --The source line an effect records on damage and resource changes:
 --"Montage: Dangerous Beasts", "Narrative: The Crossroads".
 local function SourceLabel(ctx)
@@ -891,6 +1024,38 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                 elseif #names > 0 then
                     applied[#applied + 1] = string.format("%s: Recovery Value +%d until the next respite", TargetNames(names), effect.qty)
                 end
+            elseif effect.kind == "loserecovery" then
+                --a hero with fewer recoveries than the clause asks for
+                --loses what they have, so report what each hero actually
+                --lost rather than what was asked of them.
+                local byAmount = {}
+                local amounts = {}
+                local nothing = {}
+                for _, target in ipairs(Targets(effect)) do
+                    local callOk, lost = pcall(LoseRecoveries, target.token, effect.qty, SourceLabel(ctx))
+                    lost = cond(callOk, lost or 0, 0)
+                    if lost > 0 then
+                        if byAmount[lost] == nil then
+                            byAmount[lost] = {}
+                            amounts[#amounts + 1] = lost
+                        end
+                        table.insert(byAmount[lost], target.name)
+                    else
+                        nothing[#nothing + 1] = target.name
+                    end
+                end
+                table.sort(amounts)
+                for _, amount in ipairs(amounts) do
+                    local lostText = EncounterScript.Plural(amount, "Recovery", "Recoveries")
+                    if effect.target == "party" and #amounts == 1 and #nothing == 0 then
+                        applied[#applied + 1] = string.format("Every hero loses %s", lostText)
+                    else
+                        applied[#applied + 1] = string.format("%s %s", Subject(byAmount[amount], "loses", "lose"), lostText)
+                    end
+                end
+                if #nothing > 0 then
+                    applied[#applied + 1] = string.format("%s no Recoveries left to lose", Subject(nothing, "has", "have"))
+                end
             elseif effect.kind == "surges" then
                 --banked on the document, not granted now: surges are a
                 --combat-scoped resource, and StartEncounterCombat pays them
@@ -954,13 +1119,39 @@ function EncounterMontage.ApplyEffects(effects, ctx)
             elseif effect.kind == "initiative" then
                 --remembered at the top level of the script document (not in
                 --montage.*, which is reset per beat) so the encounter beat
-                --can read it when it starts combat. Last one applied wins.
+                --can read it when it starts combat. Last one applied wins
+                --for WHO GOES FIRST -- but surprise is sticky (below): a
+                --later "you lose initiative" must not quietly cancel an
+                --earlier "you begin the encounter surprised", which is what
+                --a montage that hands out both consequences used to do.
                 if ctx.doc ~= nil then
                     ctx.doc.data.initiative = {
                         outcome = effect.outcome,
                         entryName = ctx.entryName,
                         at = dmhub.serverTime,
                     }
+                    local side = nil
+                    if effect.outcome == "surprised" then
+                        side = "party"
+                    elseif effect.outcome == "surprise" then
+                        side = "enemy"
+                    end
+                    if side ~= nil then
+                        ctx.doc.data.surprised = ctx.doc.data.surprised or {}
+                        ctx.doc.data.surprised[side] = {
+                            entryName = ctx.entryName,
+                            at = dmhub.serverTime,
+                        }
+                        --the heroes take it NOW, so the montage's "you begin
+                        --the encounter surprised" is something the party can
+                        --see on their tokens the moment it is announced.
+                        --(The enemy side does not exist yet -- its monsters
+                        --are spawned for the encounter -- so "surprise" is
+                        --still applied at combat start.)
+                        if side == "party" and ctx.doc.data.noSurprise == nil then
+                            SetHeroesSurprised(true, "Montage: surprised")
+                        end
+                    end
                 end
                 applied[#applied + 1] = EncounterScript.DescribeInitiativeOutcome(effect.outcome)
             elseif effect.kind == "nosurprise" then
@@ -975,7 +1166,23 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                         at = dmhub.serverTime,
                     }
                 end
+                --immunity can be earned AFTER the surprise landed, so lift
+                --the condition the earlier clause already applied.
+                SetHeroesSurprised(false, "Montage: cannot be surprised")
                 applied[#applied + 1] = EncounterScript.DescribeSurpriseImmunity()
+            elseif effect.kind == "knowstamina" then
+                --monster intelligence: the exact stamina of every monster
+                --carrying the keyword, now and later. Lives in the shared
+                --monsterKnowledge document (Draw Steel Core Rules), not in
+                --eotwscript, so the Monster Info dialog and the token stamina
+                --bars pick it up the same way as any other reveal.
+                local knowledge = rawget(_G, "MonsterKnowledge")
+                if knowledge ~= nil and knowledge.RevealStaminaForKeyword ~= nil then
+                    knowledge.RevealStaminaForKeyword(effect.keyword, SourceLabel(ctx))
+                    applied[#applied + 1] = EncounterScript.DescribeKnowStamina(effect.keyword)
+                else
+                    printf("EotW montage: MonsterKnowledge is unavailable; %s not applied", tostring(effect.text))
+                end
             elseif effect.kind == "narrative" then
                 applied[#applied + 1] = effect.text
             end
@@ -1064,6 +1271,33 @@ function EncounterMontage.HasSurpriseImmunity()
         return true, info.entryName
     end
     return false
+end
+
+--Which sides a montage clause marked Surprised for the coming encounter.
+--Returns two values: the party entry (or nil) and the enemy entry (or nil),
+--each { entryName, at }.
+--
+--Kept SEPARATE from data.initiative deliberately. The initiative outcome is
+--last-one-wins -- a later "you lose initiative" overrides an earlier
+--"surprised" -- and reading the surprise off that outcome meant a second
+--initiative consequence in the same montage silently threw the surprise
+--away (both mean "the monsters go first", so nothing looked wrong until the
+--fight started with no condition on anyone). These flags are sticky: once a
+--clause surprises a side, only surprise immunity takes it back.
+function EncounterMontage.GetSurprisedSides()
+    local info = EncounterMontage.GetDoc().data.surprised
+    if type(info) ~= "table" then
+        return nil, nil
+    end
+    local party = info.party
+    if type(party) ~= "table" then
+        party = nil
+    end
+    local enemy = info.enemy
+    if type(enemy) ~= "table" then
+        enemy = nil
+    end
+    return party, enemy
 end
 
 --- the stage (presentation) --------------------------------------------------
@@ -1186,6 +1420,16 @@ end
 
 --- host tick ----------------------------------------------------------------
 
+--The tier table to hand the roll dialog: each tier's teaser where it has
+--one, its full text otherwise (EncounterScript.TierDisplayText).
+function EncounterMontage.TeaserTiers(roll)
+    local tiers = {}
+    for t in ipairs(roll.tiers) do
+        tiers[t] = EncounterScript.TierDisplayText(roll, t, false)
+    end
+    return tiers
+end
+
 local function TierIndexForRoll(roll, tier, natural)
     tier = tonumber(tier) or 1
     if tier < 1 then tier = 1 end
@@ -1282,7 +1526,7 @@ end
 local function HandleRequest(m, doc, userid, req, beat, heroes)
     local kind = req.kind
     if kind == "approach" then
-        if m.phase ~= "rounds" or m.turn ~= nil then
+        if m.phase ~= "rounds" or not EncounterMontage.TurnOver(m) then
             return "ignored approach: not the moment"
         end
         local hero = HeroByCharid(heroes, req.heroid)
@@ -1405,6 +1649,40 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         }
         t.status = "assisting"
         return string.format("%s steps in to assist %s", hero.name, t.heroName or "the test")
+    elseif kind == "giveItem" then
+        --a hero's player drags an icon from their haul onto another hero's
+        --card (EncounterMontageStage.CreateItemIcon): one unit of the item
+        --moves between the two inventories, and the haul records follow.
+        --Allowed in any phase -- sharing the loot is never "not the moment".
+        local hero = HeroByCharid(heroes, req.heroid)
+        if hero == nil or not UserControlsHero(userid, hero) then
+            return "ignored give: not your hero"
+        end
+        local target = HeroByCharid(heroes, req.targetId)
+        if target == nil or target.charid == hero.charid then
+            return "ignored give: no such hero to give to"
+        end
+        local entry = FindRecordedItem(doc, hero.charid, req.itemid)
+        if entry == nil then
+            return "ignored give: hero did not gain that item here"
+        end
+        if InventoryQuantity(hero.token, req.itemid) < 1 then
+            --gained here, but already used up or dropped: the icon is stale.
+            UnrecordItem(doc, hero.charid, req.itemid, entry.qty or 1)
+            return "ignored give: item no longer in the hero's inventory"
+        end
+        ElevateToHostPermissions()
+        local ok, err = pcall(function()
+            GrantItem(target.token, req.itemid, entry.name, 1)
+            GrantItem(hero.token, req.itemid, entry.name, -1)
+        end)
+        DropHostPermissions()
+        if not ok then
+            error(err)
+        end
+        RecordItem(doc, target.charid, req.itemid, entry.name, 1)
+        UnrecordItem(doc, hero.charid, req.itemid, 1)
+        return string.format("%s hands %s to %s", hero.name, tostring(entry.name), target.name)
     elseif kind == "assistCancel" then
         local t = m.turn
         local a = t ~= nil and t.assist or nil
@@ -1632,16 +1910,10 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
         end
     end
 
-    --a resolved turn lingers so everyone sees the outcome, then clears.
-    if m.turn ~= nil and m.turn.status == "resolved" then
-        local age = dmhub.serverTime - (tonumber(m.turn.resolvedAt) or dmhub.serverTime)
-        if age >= RESOLVED_LINGER_SECONDS then
-            m.turn = nil
-        end
-    end
-
-    --round progression.
-    if m.phase == "rounds" and m.turn == nil and RoundComplete(m, beat, heroes) then
+    --round progression. A resolved turn is over as far as the round is
+    --concerned (its result is in the log); it leaves with the round.
+    if m.phase == "rounds" and EncounterMontage.TurnOver(m) and RoundComplete(m, beat, heroes) then
+        m.turn = nil
         local rounds = EncounterScript.RoundCount(beat)
         if (m.round or 1) < rounds then
             m.round = (m.round or 1) + 1
@@ -1929,7 +2201,8 @@ local function LaunchRoll(turn, entry, option, heroToken)
         rollType = rollType,
         roll = roll,
         modifiers = modifiers,
-        tiers = option.roll.tiers,
+        --the dialog's power table shows teasers, never the hidden text
+        tiers = EncounterMontage.TeaserTiers(option.roll),
         rollSeq = turn.rollSeq,
         expectedStatus = "rolling",
         CurrentRollSeq = function(t) return t.rollSeq end,
@@ -2155,6 +2428,15 @@ function EncounterMontage.ResetTest()
                 end,
             }
         end
+        --a montage that surprised the party put the condition on them for
+        --real; a reset has to take it off again.
+        SetHeroesSurprised(false, "Montage test reset")
+        --and a "you know the stamina of ..." outcome went into the shared
+        --monster knowledge document; forget it too.
+        local knowledge = rawget(_G, "MonsterKnowledge")
+        if knowledge ~= nil and knowledge.ClearKeywordReveals ~= nil then
+            knowledge.ClearKeywordReveals()
+        end
     end)
     DropHostPermissions()
     if not ok then
@@ -2171,6 +2453,7 @@ function EncounterMontage.ResetTest()
     doc.data.initiative = nil
     doc.data.surges = nil
     doc.data.noSurprise = nil
+    doc.data.surprised = nil
     doc:CompleteChange("Montage test reset", { undoable = false })
 
     --EotW game: the combat flags and the map script's run-once state.

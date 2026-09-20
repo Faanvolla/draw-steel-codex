@@ -306,6 +306,21 @@ check(blessing[2][1].kind == "narrative" and not blessing[2][1].unrecognized, "'
 check(blessing[2][2].kind == "surges" and blessing[2][2].qty == 2, "2 surges after the comma")
 check(blessing[3][1].kind == "surges" and blessing[3][1].qty == 3, "3 surges with the lead-in attached")
 check(blessing[3][2].kind == "herotoken" and blessing[3][2].qty == 1, "+1 hero token")
+--"you lose a recovery": the recovery is gone, with no healing for it
+local lost = EncounterScript.ParseEffects(
+    "You lose a recovery. You lose two recoveries. Each party member loses a recovery. Each party member loses two recoveries")
+check(lost[1].kind == "loserecovery" and lost[1].target == "self" and lost[1].qty == 1, "you lose a recovery")
+check(lost[2].kind == "loserecovery" and lost[2].target == "self" and lost[2].qty == 2, "you lose two recoveries")
+check(lost[3].kind == "loserecovery" and lost[3].target == "party" and lost[3].qty == 1, "each party member loses a recovery")
+check(lost[4].kind == "loserecovery" and lost[4].target == "party" and lost[4].qty == 2, "each party member loses two recoveries")
+check(EncounterScript.ParseEffects("You lose 3 recoveries")[1].qty == 3, "digits work for a recovery loss")
+check(EncounterScript.DescribeEffect(lost[2]) == "the hero loses 2 recoveries", "recovery loss is described with the irregular plural")
+check(EncounterScript.DescribeEffect(lost[3]) == "every hero loses 1 recovery", "party recovery loss description")
+--losing stamina and losing recoveries stay apart
+check(EncounterScript.ParseEffects("You lose 6 stamina")[1].kind == "stamina", "losing stamina is not a recovery loss")
+--the Recovery Value boon is still its own effect
+check(EncounterScript.ParseEffects("Your Recovery Value is increased by 2")[1].kind == "recovery", "recovery value boon is not a loss")
+
 --the generic item rule still wins for anything that is not a boon
 local item = EncounterScript.Parse("# Montage\n## Opportunity: X\n### y\n|T: Might\n|You gain one Healing Potion\n|You gain 2 Rations\n|You regain 3 stamina\n")
 local ie2 = item.beats[1].rounds[1].entries[1].options[1].roll.effects
@@ -324,6 +339,15 @@ check(EncounterScript.ParseEffects("You are immune to surprise")[1].kind == "nos
 local stillSurprised = EncounterScript.ParseEffects("You are surprised")
 check(stillSurprised[1].kind == "initiative" and stillSurprised[1].outcome == "surprised", "'you are surprised' still means surprised")
 check(string.find(EncounterScript.DescribeEffect(immune[2]), "cannot be surprised", 1, true) ~= nil, "describe surprise immunity")
+--"you know the stamina of goblins": monster intelligence reveal by keyword
+local know = EncounterScript.ParseEffects("You know the Stamina of Goblins.")
+check(know[1].kind == "knowstamina" and know[1].keyword == "goblin", "you know the stamina of goblins -> goblin")
+check(EncounterScript.ParseEffects("The party knows the stamina of the goblins")[1].keyword == "goblin", "the party knows ... the goblins")
+check(EncounterScript.ParseEffects("Each party member knows the Stamina of every Goblin")[1].keyword == "goblin", "each party member ... every goblin")
+check(EncounterScript.ParseEffects("You learn the stamina of all undead")[1].keyword == "undead", "learn ... all undead (no plural strip on -d)")
+check(EncounterScript.ParseEffects("You know the stamina of Boss")[1].keyword == "boss", "double-s keyword keeps its s (exact)")
+check(EncounterScript.ParseEffects("You know the stamina of the goblin warband")[1].kind == "narrative", "multi-word keyword is narrative")
+check(EncounterScript.DescribeEffect(know[1]) == "The party knows the Stamina of Goblins", "describe know stamina")
 --"you vanquish the threat" is the active spelling of "the threat is vanquished"
 check(EncounterScript.ParseEffects("You vanquish the threat.")[1].kind == "vanquish", "you vanquish the threat")
 check(EncounterScript.ParseEffects("You fail to vanquish the threat.")[1].kind == "narrative", "failing to vanquish is narrative")
@@ -471,6 +495,49 @@ check(next(monsters) == nil, "no monsters in the narrative sample")
 local described = EncounterScript.Describe(nar)
 check(string.find(described, "section: The Crossroads", 1, true) ~= nil, "describe lists sections")
 check(string.find(described, "the party gains 1 hero token", 1, true) ~= nil, "describe lists narrative effects")
+
+--"teaser => full text" tier lines: players see the teaser until the tier
+--lands; only the full text is parsed for effects.
+local teased = EncounterScript.Parse([[
+# Montage
+
+## Opportunity: Hunter's Camp
+
+An abandoned camp.
+
+### Track the Goblins
+
+|Tracking Test: Intuition (Track, Nature, Alertness)
+|You fail at the test.
+|A little wisdom => You learn some of the hunter's wisdom; +1 hero token.
+|A wealth of wisdom=>+1 hero token. You know the Stamina of Goblins => really.
+|=> A critical with an empty teaser, +2 hero tokens
+]])
+local track = teased.beats[1].rounds[1].entries[1].options[1].roll
+check(track.teasers[1] == nil and track.tiers[1] == "You fail at the test.", "tier 1: no teaser")
+check(track.teasers[2] == "A little wisdom", "tier 2 teaser")
+check(track.tiers[2] == "You learn some of the hunter's wisdom; +1 hero token.", "tier 2 full text")
+check(track.effects[2][2].kind == "herotoken" and track.effects[2][2].qty == 1, "tier 2 effects parsed from the full text only")
+check(track.teasers[3] == "A wealth of wisdom", "tier 3 teaser, no spaces around =>")
+check(track.tiers[3] == "+1 hero token. You know the Stamina of Goblins => really.", "first => splits; later ones are text")
+check(track.teasers[4] == nil and track.tiers[4] == "A critical with an empty teaser, +2 hero tokens", "empty teaser dropped")
+check(track.effects[4][2].kind == "herotoken" and track.effects[4][2].qty == 2, "tier 4 effects")
+local sawEmptyTeaser = false
+for _, w in ipairs(teased.warnings) do
+    if string.find(w, "empty teaser", 1, true) then sawEmptyTeaser = true end
+end
+check(sawEmptyTeaser, "empty teaser warned")
+check(EncounterScript.TierDisplayText(track, 2, false) == "A little wisdom", "display: teaser before landing")
+check(EncounterScript.TierDisplayText(track, 2, true) == track.tiers[2], "display: full text once landed")
+check(EncounterScript.TierDisplayText(track, 1, false) == track.tiers[1], "display: no teaser = full text")
+check(EncounterScript.TierDisplayText({ tiers = { "a", "b", "c" } }, 2, false) == "b", "display: roll with no teasers table")
+local t0, f0 = EncounterScript.SplitTeaser("plain line")
+check(t0 == nil and f0 == "plain line", "SplitTeaser: no =>")
+
+--the option card hides the skill list; only the characteristic(s) show
+check(EncounterScript.AttrWithoutSkills("Presence (Empathize, Lie, Flirt, Persuade)") == "Presence", "skills stripped")
+check(EncounterScript.AttrWithoutSkills("Might or Agility (Endurance, Track)") == "Might or Agility", "two characteristics kept")
+check(EncounterScript.AttrWithoutSkills("Reason") == "Reason", "no skills = unchanged")
 
 --montage parsing is untouched by the narrative branch
 check(EncounterScript.SectionCount(nar.beats[1]) == 3, "SectionCount")

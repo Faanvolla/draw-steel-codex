@@ -575,6 +575,8 @@ local EXIT_DELAY = 4
 
 local m_restrictionInstalled = false
 local m_zoneMarker = nil
+--defined with the beat machine below; see there.
+local MontageStageExpected
 --the map the restriction/outline were built for, and the markup-zone
 --revision they were read at. The game loads on whatever map the engine picks
 --first (lowest ord) and EnsureOnEncounterMap travels to the chosen map
@@ -620,7 +622,14 @@ local function UpdateStartZoneConfinement()
     --the phase has nothing a tooltip would explain. Silence them for exactly as
     --long as the confinement lasts. Done before the Start-zone lookup below so
     --a map with no Start zone (no confinement possible) still gets the quiet.
-    GameHud.SetTooltipsSuppressed("eotw", desired)
+    --NOT while a montage or narrative stage covers the map, though: the stage
+    --has tooltips of its own (the item haul, the stat chips) and no token
+    --shuffle to keep quiet for.
+    local stageUp = false
+    if MontageStageExpected ~= nil then
+        stageUp = MontageStageExpected()
+    end
+    GameHud.SetTooltipsSuppressed("eotw", desired and not stageUp)
 
     if not desired then
         ClearStartZoneConfinement()
@@ -1703,11 +1712,19 @@ local function StartEncounterCombat(sides)
         encounter = encounterEntry.encounter
     end
 
+    --Surprise is read from its OWN sticky flags, not from the initiative
+    --outcome: the outcome is last-one-wins, so a montage that handed out
+    --"you begin the encounter surprised" and then "you lose initiative"
+    --keeps only the second, and deriving surprise from it lost the
+    --condition entirely.
+    local partySurprised, enemySurprised = nil, nil
+    pcall(function()
+        partySurprised, enemySurprised = EncounterMontage.GetSurprisedSides()
+    end)
+
     --A montage clause may have decided initiative: "win"/"lose" skip the
-    --die; "surprise"/"surprised" also mark every creature on the losing
-    --side Surprised. Older cores ignore the extra args and just roll.
+    --die. Older cores ignore the extra args and just roll.
     local immediateResult = nil
-    local surprisedTokens = nil
     local outcome, outcomeEntry = nil, nil
     pcall(function()
         outcome, outcomeEntry = EncounterMontage.GetInitiativeOutcome()
@@ -1717,21 +1734,50 @@ local function StartEncounterCombat(sides)
     elseif outcome == "lose" or outcome == "surprised" then
         immediateResult = "monsters"
     end
-    if outcome == "surprise" then
-        surprisedTokens = sides.monsterTokens
-    elseif outcome == "surprised" then
-        surprisedTokens = sides.playerTokens
+    if outcome ~= nil then
+        printf("EotW: montage (%s) decided initiative: %s", tostring(outcomeEntry), tostring(outcome))
+    end
+
+    --Being surprised IMPLIES losing the initiative, and it outranks a plain
+    --win/lose clause however late that clause landed: "the heroes begin the
+    --encounter surprised" and then "the heroes win initiative" must not put
+    --a surprised party first. Only a montage that surprised BOTH sides
+    --falls back to the last outcome, there being no side to favour. This
+    --holds even under surprise immunity -- the heroes still lose the die,
+    --they just do not take the condition (see HasSurpriseImmunity).
+    if partySurprised ~= nil and enemySurprised == nil and immediateResult ~= "monsters" then
+        printf("EotW: montage (%s) surprised the heroes; they lose the initiative", tostring(partySurprised.entryName))
+        immediateResult = "monsters"
+    elseif enemySurprised ~= nil and partySurprised == nil and immediateResult ~= "heroes" then
+        printf("EotW: montage (%s) surprised the enemy; the heroes win the initiative", tostring(enemySurprised.entryName))
+        immediateResult = "heroes"
+    end
+
+    --The heroes already took the condition when the clause landed
+    --(EncounterMontage applies it on the spot); re-applying here is
+    --idempotent and catches montage allies, who did not exist yet.
+    local surprisedTokens = nil
+    if partySurprised ~= nil then
         --"You cannot be surprised" (a montage boon): the heroes still lose
         --the initiative, but nobody on their side takes the condition.
         local immune, immuneEntry = false, nil
         pcall(function() immune, immuneEntry = EncounterMontage.HasSurpriseImmunity() end)
         if immune then
-            surprisedTokens = nil
             printf("EotW: montage (%s) made the party immune to Surprised; they lose initiative only", tostring(immuneEntry))
+        else
+            surprisedTokens = surprisedTokens or {}
+            for _, token in ipairs(sides.playerTokens) do
+                surprisedTokens[#surprisedTokens + 1] = token
+            end
+            printf("EotW: montage (%s) surprised the heroes", tostring(partySurprised.entryName))
         end
     end
-    if outcome ~= nil then
-        printf("EotW: montage (%s) decided initiative: %s", tostring(outcomeEntry), tostring(outcome))
+    if enemySurprised ~= nil then
+        surprisedTokens = surprisedTokens or {}
+        for _, token in ipairs(sides.monsterTokens) do
+            surprisedTokens[#surprisedTokens + 1] = token
+        end
+        printf("EotW: montage (%s) surprised the enemy", tostring(enemySurprised.entryName))
     end
 
     --elevated: the surprised condition goes on monsters too, and the host
@@ -2254,7 +2300,8 @@ end
 
 --True when a script stage is (or is about to be) on screen for this client:
 --a live montage or narrative state whose beat belongs to this map's script.
-local function MontageStageExpected()
+--(Forward-declared above UpdateStartZoneConfinement, which also needs it.)
+MontageStageExpected = function()
     local expected = false
     pcall(function()
         local montage = rawget(_G, "EncounterMontage")

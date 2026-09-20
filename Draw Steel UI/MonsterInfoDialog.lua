@@ -127,7 +127,7 @@ local function ResistanceText(ctx)
 end
 
 local function StaminaText(ctx)
-    local knowledge = MonsterKnowledge.StaminaKnowledge(ctx.key)
+    local knowledge = MonsterKnowledge.StaminaKnowledge(ctx.key, ctx.props)
 
     if MonsterKnowledge.LocalUserSeesAll() then
         local text = string.format("<b>Stamina</b> %d", ctx.props:MaxHitpoints())
@@ -308,7 +308,7 @@ local function BuildVitals(ctx)
             text = StaminaText(ctx),
         }, {
             playersCanSee = function()
-                return MonsterKnowledge.StaminaKnowledge(ctx.key).visible
+                return MonsterKnowledge.StaminaKnowledge(ctx.key, ctx.props).visible
             end,
             setVisible = function(value)
                 MonsterKnowledge.SetStaminaVisibleToPlayers(ctx.key, value)

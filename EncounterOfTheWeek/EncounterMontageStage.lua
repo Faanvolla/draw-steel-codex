@@ -401,6 +401,18 @@ local function StageRules()
             borderColor = "#ffd66bff",
             brightness = 1.25,
         },
+        --an item being carried to another hero.
+        {
+            selectors = {"eotwItemIcon", "dragging"},
+            opacity = 0.4,
+        },
+        --a hero card that can take the item being dragged.
+        {
+            selectors = {"eotwHeroCard", "droppable"},
+            borderColor = "#ffd66bff",
+            border = 3,
+            brightness = 1.15,
+        },
         --the drop-in. An icon is BORN with "dropIn", and a rule that is
         --present at construction applies at full strength immediately, so
         --the icon simply starts raised and transparent; taking the class
@@ -756,9 +768,13 @@ local function MaliceIcon(size)
     }
 end
 
+--A tier with a "teaser => full text" line shows only its teaser until it
+--is the landed tier (EncounterScript.TierDisplayText); tiers not achieved
+--keep their teaser.
 local function TierRows(roll, landedTier, dimOthers)
     local rows = {}
-    for t, tierText in ipairs(roll.tiers) do
+    for t in ipairs(roll.tiers) do
+        local tierText = EncounterScript.TierDisplayText(roll, t, landedTier == t)
         local range = TIER_RANGES[t] or ""
         if #roll.tiers == 4 and t == 3 then
             range = "17-18"
@@ -774,11 +790,14 @@ local function TierRows(roll, landedTier, dimOthers)
             gui.Label{ classes = Classes("eotwTierRange", landed and "landed", dim and "dim"), text = range, interactable = false },
             gui.Label{ classes = Classes("eotwTierText", landed and "landed", dim and "dim"), text = tierText, interactable = false },
         }
+        rows[#rows].data = { roll = roll, tier = t }
     end
     return rows
 end
 
 --Re-mark a set of tier rows with the landed tier (nil = none landed yet).
+--Live rows follow the dice, so a teaser is revealed while the running tier
+--sits on it and hidden again when the dice move on.
 local function SetLandedTier(rows, landedTier)
     for t, row in ipairs(rows) do
         local landed = landedTier == t
@@ -786,6 +805,10 @@ local function SetLandedTier(rows, landedTier)
         for _, label in ipairs(row.children) do
             label:SetClass("landed", landed)
             label:SetClass("dim", dim)
+        end
+        local d = row.data
+        if d ~= nil and d.roll ~= nil then
+            row.children[2].text = EncounterScript.TierDisplayText(d.roll, t, landed)
         end
     end
 end
@@ -1041,7 +1064,9 @@ local function CreateEntryCard(entry, appearIn)
                     status = "Vanquished"
                 end
             end
-            local active = m.turn ~= nil and m.turn.entryId == entry.id
+            --a resolved turn is over: its entry is open again at once (an
+            --unvanquished threat may be tried by the next hero).
+            local active = m.turn ~= nil and m.turn.entryId == entry.id and m.turn.status ~= "resolved"
             if active then
                 status = string.format("%s is here", m.turn.heroName or "A hero")
             elseif status == "" and available then
@@ -1109,7 +1134,7 @@ local function OptionCard(entry, option, index, m)
         children[#children + 1] = gui.Label{ classes = {"eotwEntryDesc"}, text = option.text, interactable = false }
     end
     if option.roll ~= nil then
-        children[#children + 1] = gui.Label{ classes = {"eotwOptionRoll"}, text = string.format("%s: %s", option.roll.name, option.roll.attr), interactable = false }
+        children[#children + 1] = gui.Label{ classes = {"eotwOptionRoll"}, text = string.format("%s: %s", option.roll.name, EncounterScript.AttrWithoutSkills(option.roll.attr)), interactable = false }
         local rows
         if chosen and m.turn.status == "rolling" then
             rows = LiveTierRows(option.roll)
@@ -1289,9 +1314,9 @@ local function BuildTurnChildren(m, beat)
         return children
     end
 
-    local t = m.turn
-    if t == nil then
-        Add(gui.Label{ classes = {"eotwTurnTitle"}, text = string.format("Round %d", m.round or 1) })
+    --whose move it is now: shown whenever the floor is free, which includes
+    --over a resolved turn -- its result never holds the next hero up.
+    local function AddYourMove()
         local mine = {}
         for _, hero in ipairs(EncounterMontage.Heroes()) do
             if EncounterMontage.LocalUserCanAct(hero.charid) then
@@ -1303,6 +1328,12 @@ local function BuildTurnChildren(m, beat)
         else
             Add(gui.Label{ classes = {"eotwTurnHint"}, text = "Waiting for the other heroes to act." })
         end
+    end
+
+    local t = m.turn
+    if t == nil then
+        Add(gui.Label{ classes = {"eotwTurnTitle"}, text = string.format("Round %d", m.round or 1) })
+        AddYourMove()
         local last = (m.log or {})[#(m.log or {})]
         if last ~= nil and not last.consequence then
             Add(gui.Panel{ width = "60%", height = 1, bgimage = "panels/square.png", bgcolor = "#ffffff30", halign = "center", vmargin = 10 })
@@ -1434,6 +1465,8 @@ local function BuildTurnChildren(m, beat)
         for _, line in ipairs(t.applied or {}) do
             Add(gui.Label{ classes = {"eotwAppliedLine"}, text = line })
         end
+        Add(gui.Panel{ width = "60%", height = 1, bgimage = "panels/square.png", bgcolor = "#ffffff30", halign = "center", vmargin = 10 })
+        AddYourMove()
     end
     return children
 end
@@ -1494,11 +1527,31 @@ local function PlayItemPickupSound(itemid)
     audio.FireSoundEvent(eventName)
 end
 
---One item icon. `animate` plays the drop-in: the icon starts a slot-height
---above where it belongs, transparent, and falls into place while the pickup
---sound plays. `delay` staggers it behind other items landing in the same
---refresh. Returns { panel, Update(entry) }.
-local function CreateItemIcon(entry, animate, delay)
+--Does the local user drive this hero in their own right? (The Director
+--counts.) Gates the item drag: only the hero's own player may hand their
+--haul to someone else.
+local function LocalUserControlsHero(charid)
+    local tok = dmhub.GetCharacterById(charid)
+    if tok == nil or not tok.valid then
+        return false
+    end
+    local mine = false
+    pcall(function() mine = tok.canControlAsUser end)
+    if mine == nil then
+        pcall(function() mine = tok.canControl end)
+    end
+    return mine == true
+end
+
+--One item icon in `charid`'s haul. `animate` plays the drop-in: the icon
+--starts a slot-height above where it belongs, transparent, and falls into
+--place while the pickup sound plays. `delay` staggers it behind other items
+--landing in the same refresh. Returns { panel, Update(entry) }.
+--
+--Hovering shows the item's full tooltip. The hero's own player may drag the
+--icon onto another hero's card to hand over ONE of the item (a stack takes
+--one drag per unit); the host moves it between inventories ("giveItem").
+local function CreateItemIcon(entry, animate, delay, charid)
     local qtyLabel = gui.Label{
         classes = {"eotwItemQty"},
         text = "",
@@ -1513,7 +1566,30 @@ local function CreateItemIcon(entry, animate, delay)
     local icon = gui.Panel{
         classes = classes,
         bgimage = "panels/square.png",
-        data = { itemid = entry.itemid },
+        data = { itemid = entry.itemid, charid = charid },
+        draggable = charid ~= nil and LocalUserControlsHero(charid),
+        beginDrag = function(element)
+            element:SetClass("dragging", true)
+            element.tooltip = nil
+            SelectHero(nil)
+            Broadcast("dragTargets", true, "item", charid)
+        end,
+        canDragOnto = function(element, target)
+            if not target:HasClass("eotwHeroCard") or target:HasClass("eotwAllyCard") then
+                return false
+            end
+            local targetId = target.data ~= nil and target.data.charid or nil
+            return targetId ~= nil and targetId ~= charid and LocalUserControlsHero(charid)
+        end,
+        drag = function(element, target)
+            element:SetClass("dragging", false)
+            Broadcast("dragTargets", false)
+            if target == nil or target.data == nil or target.data.charid == nil or not LocalUserControlsHero(charid) then
+                return
+            end
+            audio.FireSoundEvent("Mouse.Click")
+            EncounterMontage.SendRequest("giveItem", { heroid = charid, targetId = target.data.charid, itemid = entry.itemid })
+        end,
         hover = function(element)
             local item = ItemGear(entry.itemid)
             local tooltipFn = rawget(_G, "CreateItemTooltip")
@@ -1597,10 +1673,23 @@ local function CreateItemStrip(charid)
             local added = false
             --items landing together drop one after another, not all at once.
             local newCount = 0
+            --an item that left this haul (given to another hero) had its
+            --icon destroyed when it dropped out of `children`; forget it so
+            --the item coming back gets a fresh icon rather than an Update
+            --on a dead panel.
+            local present = {}
+            for _, entry in ipairs(entries) do
+                present[entry.itemid] = true
+            end
+            for itemid, icon in pairs(m_icons) do
+                if not present[itemid] or not icon.panel.valid then
+                    m_icons[itemid] = nil
+                end
+            end
             for _, entry in ipairs(entries) do
                 local icon = m_icons[entry.itemid]
                 if icon == nil then
-                    icon = CreateItemIcon(entry, m_primed, newCount * ITEM_DROP_STAGGER)
+                    icon = CreateItemIcon(entry, m_primed, newCount * ITEM_DROP_STAGGER, charid)
                     m_icons[entry.itemid] = icon
                     newCount = newCount + 1
                     added = true
@@ -1666,6 +1755,14 @@ local function CreateHeroColumn(hero)
             --below reject it anyway, but a player dragging someone else's
             --hero around reads as allowed).
             draggable = DragMode(charid) ~= nil,
+            --another hero's item icon may be dropped here to hand it over
+            --(CreateItemIcon). Only an "item" drag lights the card up, and
+            --never the card of the hero the item is coming from.
+            dragTarget = true,
+            dragTargetPriority = 10,
+            dragTargets = function(element, on, mode, sourceCharid)
+                element:SetClass("droppable", on == true and mode == "item" and sourceCharid ~= charid)
+            end,
             --the montage is where the party weighs who should take a beat,
             --so these cards carry the characteristics and skills the roster's
             --do not.

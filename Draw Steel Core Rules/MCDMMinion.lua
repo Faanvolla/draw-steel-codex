@@ -1416,6 +1416,13 @@ DrawSteelMinion.SquadHud = function(floorid, squad)
                 m_label.text = "DEAD"
             else
                 local display = dmhub.GetSettingValue("enemystambardisplay") or "none"
+                --Monster Info: a squad whose stamina the players know exactly
+                --shows the number whatever the setting says (see the lifebar
+                --in DrawSteelTokenHud.lua).
+                if display ~= "val" and #squad.tokens > 0 and squad.tokens[1].valid
+                    and MonsterKnowledge.PlayersKnowStaminaExactly(squad.tokens[1].properties, squad.tokens[1]) then
+                    display = "val"
+                end
                 if dmhub.isDM or viewerControlsSquad() or display == "val" then
                     m_label.text = string.format("%d/%d", round(squad.maximum_health - squad.damage_taken), squad.maximum_health)
                 elseif display == "pct" then

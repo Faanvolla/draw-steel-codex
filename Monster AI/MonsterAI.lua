@@ -2841,11 +2841,23 @@ function MonsterAI:ExecuteSquadStrike(ability)
                 end
 
                 local targetToken = bestOption.token
-                if memberSurvived and self.TokenIsLiveCombatant(memberToken)
-                    and self.TokenIsLiveCombatant(targetToken)
-                    and (
-                        MonsterAI.TargetDistance(memberToken, targetToken) <= memberAbility:GetRange(memberToken.properties)
-                        and memberToken:GetLineOfSight(targetToken, memberToken.properties:GetPierceWalls()) > 0) then
+                local rejectionReason = nil
+                local distance, range, lineOfSight
+                if not memberSurvived or not self.TokenIsLiveCombatant(memberToken) then
+                    rejectionReason = "attacker died or charge failed while movement resolved"
+                elseif not self.TokenIsLiveCombatant(targetToken) then
+                    rejectionReason = "target is no longer a live combatant"
+                else
+                    distance = MonsterAI.TargetDistance(memberToken, targetToken)
+                    range = memberAbility:GetRange(memberToken.properties)
+                    lineOfSight = memberToken:GetLineOfSight(targetToken, memberToken.properties:GetPierceWalls())
+                    if distance > range then
+                        rejectionReason = "target is out of range after movement"
+                    elseif lineOfSight <= 0 then
+                        rejectionReason = "target has no line of sight after movement"
+                    end
+                end
+                if rejectionReason == nil then
                     assignedTargets[targetToken.charid] = (assignedTargets[targetToken.charid] or 0) + 1
                     targetPairs[#targetPairs+1] = {a = memberId, b = targetToken.charid}
                     dmhub.Schedule(0.8, function()
@@ -2863,8 +2875,12 @@ function MonsterAI:ExecuteSquadStrike(ability)
                         move = "Minion Signature Ability",
                         ability = abilityName,
                         targets = self.TargetsLogName({{token = targetToken}}),
-                        reason = memberSurvived and "target is no longer a live combatant"
-                            or "attacker died while player reactions resolved",
+                        reason = rejectionReason,
+                        from = self.LocLogName(memberToken.loc),
+                        to = self.LocLogName(bestOption.loc),
+                        distance = distance,
+                        range = range,
+                        lineOfSight = lineOfSight,
                         result = "continuing with surviving squad members",
                     })
                 end
