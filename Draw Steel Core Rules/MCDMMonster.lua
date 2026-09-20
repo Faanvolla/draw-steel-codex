@@ -54,8 +54,6 @@ end
 function creature:FillMonsterActivatedAbilities(options, result)
 end
 
-local g_defaultMonsterMaliceGroup = "69247753-5e1a-43b2-b48e-373c637939a0"
-
 function monster:FillMonsterActivatedAbilities(options, result)
     if options.excludeGlobal then
         return
@@ -74,6 +72,7 @@ function monster:FillMonsterActivatedAbilities(options, result)
     local group = self:MonsterGroup()
     local foundDefaultMalice = false
     local monsterLevel = self:Level()
+    local defaultMaliceGroup = MonsterGroup.DefaultMaliceGroupId()
     if group ~= nil then
         for _,ability in ipairs(group.maliceAbilities) do
             if monsterLevel >= ability:try_get("minLevel", 1) then
@@ -85,7 +84,7 @@ function monster:FillMonsterActivatedAbilities(options, result)
         local inherits = group:try_get("inherits")
         if inherits ~= nil then
             for key,_ in pairs(inherits) do
-                if key == g_defaultMonsterMaliceGroup then
+                if key == defaultMaliceGroup then
                     foundDefaultMalice = true
                 end
                 local parentGroup = MonsterGroup.Get(key)
@@ -101,7 +100,7 @@ function monster:FillMonsterActivatedAbilities(options, result)
     end
 
     if not foundDefaultMalice then
-        local parentGroup = MonsterGroup.Get(g_defaultMonsterMaliceGroup)
+        local parentGroup = MonsterGroup.Get(defaultMaliceGroup)
         if parentGroup ~= nil then
             for _,ability in ipairs(parentGroup.maliceAbilities) do
                 if monsterLevel >= ability:try_get("minLevel", 1) then
