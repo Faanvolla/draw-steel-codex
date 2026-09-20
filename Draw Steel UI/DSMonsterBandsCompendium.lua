@@ -87,8 +87,21 @@ local function IsBand(v)
     return #(v:try_get("maliceAbilities", {})) > 0
 end
 
-local function BandRows()
-    local t = dmhub.GetTable(MonsterGroup.tableName) or {}
+-- The default malice group is not a band -- it is the fallback whose abilities
+-- every monster gets when its own band does not inherit them. It is flagged
+-- bandScope="monster" so it would otherwise be filtered out, but the old Malice
+-- page was the only way to edit it, so it is listed here as an explicit
+-- exception and labelled rather than passed off as a band.
+local function IsDefaultMaliceGroup(id)
+    return id == MonsterGroup.DefaultMaliceGroupId()
+end
+
+local function ListedHere(id, v)
+    return IsBand(v) or IsDefaultMaliceGroup(id)
+end
+
+-- Monsters per band, by groupid.
+local function MemberCounts()
     local counts = {}
     for _, m in pairs(assets.monsters or {}) do
         local p = m.properties
@@ -97,14 +110,7 @@ local function BandRows()
             if gid ~= nil then counts[gid] = (counts[gid] or 0) + 1 end
         end
     end
-    local rows = {}
-    for k, v in pairs(t) do
-        if IsBand(v) then
-            rows[#rows + 1] = { id = k, name = v.name, count = counts[k] or 0, group = v }
-        end
-    end
-    table.sort(rows, function(a, b) return a.name < b.name end)
-    return rows
+    return counts
 end
 
 local function RosterFor(bandid)
@@ -358,8 +364,10 @@ end
 
 -- ---------------------------------------------------------------- right pane
 
-local function BandEditor(row)
-    local g = row.group
+local function BandEditor(bandid)
+    local t = dmhub.GetTable(MonsterGroup.tableName) or {}
+    local g = t[bandid]
+    if g == nil then return gui.Panel{ width = 10, height = 10 } end
     local m_dirty = false
     local function Invalidate() m_dirty = true end
 
@@ -397,7 +405,7 @@ local function BandEditor(row)
     if inheritSet == nil then inheritSet = {} g.inherits = inheritSet end
     local inheritOptions = {}
     for k, v in unhidden_pairs(dmhub.GetTable(MonsterGroup.tableName) or {}) do
-        if k ~= row.id and type(v.name) == "string" and v.name ~= "" then
+        if k ~= bandid and type(v.name) == "string" and v.name ~= "" then
             inheritOptions[#inheritOptions + 1] = { id = k, text = v.name }
         end
     end
@@ -425,8 +433,6 @@ local function BandEditor(row)
         return {
             FormRow("Name", Text(function() return g.name end,
                 function(v) g.name = v end, FIELD_W)),
-            FormRow("Inherits", ChipPicker(inheritSet, inheritOptions,
-                "Inherits from Band...", function() Upload(g) end)),
             FormRow("Keywords", ChipPicker(kwSet, kwOptions,
                 "Add Keyword...", function() Upload(g) end)),
         }
@@ -520,65 +526,123 @@ local function BandEditor(row)
     end
 
     -- --------------------------------------------------------------- malice
+    local function ClipboardHasMaliceAbility()
+        local c = dmhub.GetInternalClipboard()
+        return c ~= nil and (c.typeName == "MaliceAbility" or c.typeName == "ActivatedAbility")
+    end
+
     local function BuildMalice()
         local out = {}
         for i, a in ipairs(maliceList) do
             local idx = i
+            local ability = a
             out[#out + 1] = gui.Panel{
                 classes = { "panel", cond(i % 2 == 0, "bgAlt", "transparent") },
                 bgimage = true,
-                width = CONTENT_W - 30, height = "auto", flow = "horizontal",
+                width = CONTENT_W - 30, height = "auto", flow = "vertical",
                 lmargin = 18, vmargin = 2, pad = 5, borderBox = true,
-                gui.Label{
-                    classes = {"label", "bold", "sizeS"},
-                    text = a.name, width = 230, height = 24, valign = "center",
+
+                rightClick = function(element)
+                    element.popup = gui.ContextMenu{
+                        entries = {
+                            {
+                                text = "Copy",
+                                click = function()
+                                    element.popup = nil
+                                    dmhub.CopyToInternalClipboard(ability)
+                                end,
+                            },
+                        },
+                    }
+                end,
+
+                gui.Panel{
+                    width = "100%", height = "auto", flow = "horizontal",
+                    gui.Label{
+                        classes = {"label", "bold", "sizeS"},
+                        text = ability.name, width = 230, height = 24, valign = "center",
+                    },
+                    gui.Label{
+                        classes = {"label", "accent", "sizeS"},
+                        text = string.format("%s Malice",
+                            tostring(ability:try_get("resourceNumber", "?"))),
+                        width = 96, height = 24, valign = "center",
+                    },
+                    gui.Dropdown{
+                        classes = {"dropdown"},
+                        width = 70, height = 28, valign = "center",
+                        idChosen = tostring(ability:try_get("minLevel", 1)),
+                        options = (function()
+                            local o = {}
+                            for lvl = 1, 10 do o[#o + 1] = { id = tostring(lvl), text = tostring(lvl) } end
+                            return o
+                        end)(),
+                        change = function(element)
+                            ability.minLevel = tonumber(element.idChosen) Upload(g)
+                        end,
+                    },
+                    gui.Button{
+                        classes = { "settingsButton", "sizeXs" },
+                        halign = "right", valign = "center",
+                        press = function(element)
+                            element.root:AddChild(ability:ShowEditActivatedAbilityDialog{
+                                close = function()
+                                    Upload(g) maliceBody:FireEvent("refreshSection")
+                                end,
+                            })
+                        end,
+                    },
+                    gui.Button{
+                        classes = { "deleteButton", "sizeXs" },
+                        halign = "right", valign = "center", hpad = 5,
+                        requireConfirm = true,
+                        click = function(element)
+                            table.remove(maliceList, idx)
+                            Upload(g) maliceBody:FireEvent("refreshSection")
+                        end,
+                    },
                 },
-                gui.Label{
-                    classes = {"label", "accent", "sizeS"},
-                    text = string.format("%s Malice", tostring(a:try_get("resourceNumber", "?"))),
-                    width = 96, height = 24, valign = "center",
-                },
-                gui.Dropdown{
-                    classes = {"dropdown"},
-                    width = 70, height = 28, valign = "center",
-                    idChosen = tostring(a:try_get("minLevel", 1)),
-                    options = (function()
-                        local o = {}
-                        for lvl = 1, 10 do o[#o + 1] = { id = tostring(lvl), text = tostring(lvl) } end
-                        return o
-                    end)(),
-                    change = function(element)
-                        a.minLevel = tonumber(element.idChosen) Upload(g)
-                    end,
-                },
-                gui.Button{
-                    classes = { "settingsButton", "sizeXs" },
-                    halign = "right", valign = "center",
-                    press = function(element)
-                        element.root:AddChild(a:ShowEditActivatedAbilityDialog{
-                            close = function()
-                                Upload(g) maliceBody:FireEvent("refreshSection")
-                            end,
-                        })
-                    end,
-                },
-                gui.Button{
-                    classes = { "deleteButton", "sizeXs" },
-                    halign = "right", valign = "center", hpad = 5,
-                    requireConfirm = true,
-                    click = function(element)
-                        table.remove(maliceList, idx)
-                        Upload(g) maliceBody:FireEvent("refreshSection")
-                    end,
+
+                -- What the ability actually does. Without this the row is just
+                -- a name and a cost, and reading malice means opening a dialog.
+                gui.DocumentDisplay{
+                    width = "100%", height = "auto", fontSize = 16,
+                    text = ability.description,
                 },
             }
         end
         if #maliceList == 0 then out[#out + 1] = Empty("No malice abilities.") end
+        -- Inherits sits with the authoring controls at the foot of the section
+        -- rather than at its head: it is something you set while building a
+        -- band's malice, not the first thing to read about it.
+        out[#out + 1] = FormRow("Inherits", ChipPicker(inheritSet, inheritOptions,
+            "Inherits from Band...", function() Upload(g) end))
         out[#out + 1] = AddLink("+ Add Malice Ability", function()
             maliceList[#maliceList + 1] = MaliceAbility.Create{ name = "New Malice Ability" }
             g.maliceAbilities = maliceList
             Upload(g) maliceBody:FireEvent("refreshSection")
         end)
+        out[#out + 1] = gui.Button{
+            classes = {"sizeM"},
+            halign = "left", valign = "bottom",
+            width = "auto", minWidth = 120, height = 35,
+            lmargin = 18, hpad = 16, borderBox = true,
+            text = "Paste Ability",
+            create = function(element)
+                element:SetClass("collapsed", not ClipboardHasMaliceAbility())
+            end,
+            internalClipboardChanged = function(element)
+                element:SetClass("collapsed", not ClipboardHasMaliceAbility())
+            end,
+            click = function(element)
+                if not ClipboardHasMaliceAbility() then return end
+                local pasted = MaliceAbility.Create(DeepCopy(dmhub.GetInternalClipboard()))
+                pasted.guid = dmhub.GenerateGuid()
+                maliceList[#maliceList + 1] = pasted
+                g.maliceAbilities = maliceList
+                Upload(g) maliceBody:FireEvent("refreshSection")
+            end,
+        }
         return out
     end
 
@@ -626,7 +690,7 @@ local function BandEditor(row)
     end
 
     -- --------------------------------------------------------------- roster
-    local members = RosterFor(row.id)
+    local members = RosterFor(bandid)
     local function BuildRoster()
         local out = {}
         for _, m in ipairs(members) do
@@ -711,7 +775,13 @@ local function BandEditor(row)
 
         gui.Label{
             classes = {"label", "bold", "sizeXl"},
-            text = row.name, width = "auto", height = 36, vmargin = 6,
+            text = g.name, width = "auto", height = 36, vmargin = 6,
+        },
+        gui.Label{
+            classes = { "label", "fgMuted", "sizeS",
+                cond(MonsterGroup.DefaultMaliceGroupId() == bandid, nil, "collapsed") },
+            text = "Default malice group -- these abilities apply to every monster whose band does not inherit them.",
+            width = CONTENT_W, height = "auto", vmargin = 2, halign = "left",
         },
         gui.Panel{
             classes = {"bandDivider"},
@@ -720,9 +790,9 @@ local function BandEditor(row)
 
         identitySection,
         langSection,
+        maliceSection,
         tacticsSection,
         encSection,
-        maliceSection,
         loreSection,
         rosterSection,
         assocSection,
@@ -734,53 +804,59 @@ end
 ShowMonsterBands = function(contentPanel)
     -- ----------------------------------------------------------------- left pane
 
-    local rows = BandRows()
     local rightPane, listPanel
-    local m_selected = nil
+    local m_filter = ""
+    local m_dataItems = {}
 
-    local function ShowBand(row)
-        m_selected = row.id
-        rightPane.children = { BandEditor(row) }
-        listPanel:FireEventTree("selectionChanged", m_selected)
+    local function ShowBand(bandid)
+        rightPane.children = { BandEditor(bandid) }
     end
 
-    local function ListItem(row)
-        return gui.Panel{
-            classes = {"bandRow", "hoverable"},
-            width = ROW_W, height = "auto", minHeight = 28, flow = "horizontal",
-            halign = "left", hpad = 8, borderBox = true,
-            data = { bandid = row.id, lname = string.lower(row.name) },
-            click = function(element) ShowBand(row) end,
-            selectionChanged = function(element, sel)
-                element:SetClass("selected", sel == row.id)
-            end,
-            filterChanged = function(element, text)
-                element:SetClass("collapsed",
-                    text ~= "" and string.find(element.data.lname, text, 1, true) == nil)
-            end,
-            gui.Label{
-                classes = { "label", "bandRowLabel", "sizeS",
-                    cond(row.count > 0, nil, "fgMuted") },
-                text = row.name, width = 126, height = "auto", minHeight = 24,
-                valign = "center",
-            },
-            gui.Label{
-                classes = {"label", "bandRowLabel", "fgMuted", "sizeXs"},
-                text = string.format("(%d)", row.count), width = 44, height = "auto",
-                minHeight = 24, valign = "center", halign = "right",
-            },
-        }
-    end
-
-    local items = {}
-    for _, row in ipairs(rows) do items[#items + 1] = ListItem(row) end
-
+    -- Compendium.CreateListItem brings the house behaviour with it: right-click
+    -- Duplicate / Delete, soft-delete handling (hidden rows collapse unless the
+    -- showdeleted setting is on), the compendium's global search integration, and
+    -- the imported/modified badges. monitorAssets keeps the list live, so a band
+    -- added or deleted anywhere shows up here without reopening the page.
     listPanel = gui.Panel{
         id = "bandsListPanel",
+        classes = {"list-panel"},
         width = LIST_INNER, height = "100%-70", flow = "vertical", vscroll = true,
         halign = "left",
-        children = items,
+        monitorAssets = true,
+        refreshAssets = function(element)
+            local t = dmhub.GetTable(MonsterGroup.tableName) or {}
+            local counts = MemberCounts()
+            local newDataItems = {}
+            local children = {}
+
+            for k, item in unhidden_pairs(t) do
+                if ListedHere(k, item) then
+                    local name = item.name or ""
+                    if m_filter == "" or string.find(string.lower(name), m_filter, 1, true) ~= nil then
+                        local key = k
+                        newDataItems[k] = m_dataItems[k] or Compendium.CreateListItem{
+                            tableName = MonsterGroup.tableName,
+                            key = k,
+                            select = element.aliveTime > 0.2,
+                            click = function() ShowBand(key) end,
+                        }
+                        if IsDefaultMaliceGroup(k) then
+                            newDataItems[k].text = string.format("%s  (default malice)", name)
+                        else
+                            newDataItems[k].text = string.format("%s  (%d)", name, counts[k] or 0)
+                        end
+                        children[#children + 1] = newDataItems[k]
+                    end
+                end
+            end
+
+            table.sort(children, function(a, b) return a.text < b.text end)
+            m_dataItems = newDataItems
+            element.children = children
+        end,
     }
+
+    listPanel:FireEvent("refreshAssets")
 
     local leftPane = gui.Panel{
         id = "bandsLeftPane",
@@ -794,20 +870,18 @@ ShowMonsterBands = function(contentPanel)
             text = "", placeholderText = "Search bands...",
             width = SEARCH_W, height = 26, vmargin = 4, halign = "left",
             change = function(element)
-                listPanel:FireEventTree("filterChanged", string.lower(element.text))
+                m_filter = string.lower(element.text)
+                listPanel:FireEvent("refreshAssets")
             end,
         },
         listPanel,
-        AddLink("+ Add Band", function()
-            dmhub.SetAndUploadTableItem(MonsterGroup.tableName,
-                MonsterGroup.CreateNew{ name = "New Band" })
-        end),
+        Compendium.AddButton{
+            click = function(element)
+                dmhub.SetAndUploadTableItem(MonsterGroup.tableName,
+                    MonsterGroup.CreateNew{ name = "New Band" })
+            end,
+        },
     }
-
-    local defaultRow = rows[1]
-    for _, r in ipairs(rows) do
-        if r.name == "Goblin" then defaultRow = r break end
-    end
 
     -- 230 left pane + 16 root padding (borderBox percentages resolve against the
     -- outer box, not the content box) + 6 gutter.
@@ -822,7 +896,15 @@ ShowMonsterBands = function(contentPanel)
         width = "100%", height = "100%", flow = "horizontal",
         pad = 8, borderBox = true,
         create = function(element)
-            if defaultRow ~= nil then ShowBand(defaultRow) end
+            local t = dmhub.GetTable(MonsterGroup.tableName) or {}
+            local first = nil
+            for k, v in unhidden_pairs(t) do
+                if IsBand(v) then
+                    if v.name == "Goblin" then first = k break end
+                    if first == nil then first = k end
+                end
+            end
+            if first ~= nil then ShowBand(first) end
         end,
         leftPane,
         rightPane,

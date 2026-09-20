@@ -67,6 +67,31 @@ end
 
 MonsterGroup.tableName = "MonsterGroup"
 
+--The group whose malice abilities every monster falls back to when its own band
+--does not inherit them (see monster:FillMonsterActivatedAbilities). A setting
+--rather than a literal guid so a game can point at a different group, and so
+--that merging or deleting that row does not silently break default malice for
+--every monster with nothing naming the cause. No editor: this is infrastructure,
+--not something to change from the settings panel.
+MonsterGroup.defaultMaliceGroupSetting = setting{
+    id = "monstergroup:defaultmalicegroup",
+    description = "Default Malice Group",
+    help = "The monster group whose malice abilities apply to every monster that does not inherit them from its own band.",
+    storage = "game",
+    default = "69247753-5e1a-43b2-b48e-373c637939a0",
+}
+
+--- The id of the group holding the fallback malice abilities.
+--- @return string
+function MonsterGroup.DefaultMaliceGroupId()
+    return MonsterGroup.defaultMaliceGroupSetting:Get()
+end
+
+--- True if this row is the default malice group rather than a real band.
+function MonsterGroup:IsDefaultMaliceGroup()
+    return self.id == MonsterGroup.DefaultMaliceGroupId()
+end
+
 MonsterGroup.name = "Monster Group"
 MonsterGroup.reach = 5
 MonsterGroup.size = "1M"
