@@ -115,10 +115,11 @@ end
 
 local function RosterFor(bandid)
     local out = {}
-    for _, m in pairs(assets.monsters or {}) do
+    for id, m in pairs(assets.monsters or {}) do
         local p = m.properties
         if p ~= nil and p:try_get("groupid") == bandid then
             out[#out + 1] = {
+                id = id,
                 name = m.description or "(unnamed)",
                 level = p:try_get("level", 1),
                 role = p:try_get("role", ""),
@@ -140,6 +141,32 @@ local function LanguageOptions()
     end
     table.sort(opts, function(a, b) return a.text < b.text end)
     return opts
+end
+
+
+-- Open a bestiary monster's character sheet. Mirrors EditBestiaryMonster in
+-- DMHub Core Panels/CharacterPanel.lua: the sheet works on the monster's
+-- local-game bestiary token, which may not exist yet and has to be uploaded
+-- and waited for.
+local function ShowMonsterSheet(monsterid)
+    local monster = (assets.monsters or {})[monsterid]
+    if monster == nil or not dmhub.inGame then
+        return
+    end
+    local token = monster:GetLocalGameBestiaryToken()
+    if token ~= nil then
+        token:ShowSheet()
+        return
+    end
+    monster:Upload()
+    dmhub.Coroutine(function()
+        while token == nil do
+            coroutine.yield(0.1)
+            if mod.unloaded then return end
+            token = monster:GetLocalGameBestiaryToken()
+        end
+        token:ShowSheet()
+    end)
 end
 
 local function Count(n, singular, plural)
@@ -409,7 +436,7 @@ local function BandEditor(bandid)
 
     -- Section bodies, declared up front so each section's builders can fire a
     -- refresh at their own body without rebuilding the editor.
-    local langBody, encBody, maliceBody, loreBody, assocBody
+    local langBody, encBody, maliceBody, loreBody, assocBody, rosterBody
 
     -- ------------------------------------------------------------- identity
     local inheritSet = g:try_get("inherits", nil) or {}
@@ -702,26 +729,72 @@ local function BandEditor(bandid)
     local members = RosterFor(bandid)
     local function BuildRoster()
         local out = {}
+
+        -- Assign an existing monster to this band. Creating one from scratch is
+        -- the bestiary's job; this is for pointing a monster that already
+        -- exists at the right band.
+        out[#out + 1] = gui.Panel{
+            width = CONTENT_W - 30, height = "auto", flow = "horizontal",
+            lmargin = 18, vmargin = 2,
+            gui.Dropdown{
+                classes = {"dropdown", "form"},
+                sort = true, hasSearch = true,
+                textDefault = "+ Add a monster to this band...",
+                idChosen = "none",
+                create = function(element)
+                    local opts = {}
+                    for id, mon in pairs(assets.monsters or {}) do
+                        local p = mon.properties
+                        if p ~= nil and p:try_get("groupid") ~= bandid then
+                            opts[#opts + 1] = { id = id, text = mon.description or "(unnamed)" }
+                        end
+                    end
+                    table.sort(opts, function(a, b) return a.text < b.text end)
+                    element.options = opts
+                end,
+                change = function(element)
+                    local chosen = element.idChosen
+                    if chosen == nil or chosen == "none" then return end
+                    local mon = (assets.monsters or {})[chosen]
+                    if mon ~= nil and mon.properties ~= nil then
+                        mon.properties.groupid = bandid
+                        mon:Upload()
+                    end
+                    element.idChosen = "none"
+                    members = RosterFor(bandid)
+                    rosterBody:FireEvent("refreshSection")
+                end,
+            },
+        }
+
         for _, m in ipairs(members) do
+            local thisId = m.id
             out[#out + 1] = gui.Panel{
                 width = CONTENT_W - 30, height = 24, flow = "horizontal", lmargin = 18,
                 gui.Label{
                     classes = {"label", "sizeS"},
-                    text = m.name, width = 240, height = 22, valign = "center",
+                    text = m.name, width = 220, height = 22, valign = "center",
                 },
                 gui.Label{
                     classes = {"label", "fgMuted", "sizeXs"},
                     text = string.format("L%d %s", m.level, tostring(m.role)),
-                    width = 160, height = 22, valign = "center",
+                    width = 150, height = 22, valign = "center",
                 },
                 gui.Label{
                     classes = {"label", "fgMuted", "sizeXs"},
                     text = string.format("EV %s", tostring(m.ev)),
-                    width = 70, height = 22, valign = "center",
+                    width = 60, height = 22, valign = "center",
+                },
+                gui.Button{
+                    classes = { "settingsButton", "sizeXs" },
+                    halign = "right", valign = "center",
+                    press = function(element) ShowMonsterSheet(thisId) end,
                 },
             }
         end
-        if #out == 0 then out[1] = Empty("No monsters belong to this band.") end
+        if #members == 0 then
+            out[#out + 1] = Empty("No monsters belong to this band.")
+        end
         return out
     end
 
@@ -769,7 +842,8 @@ local function BandEditor(bandid)
         function() return Count(#maliceList, "ability", "abilities") end, BuildMalice, true)
     loreSection,   loreBody   = Section("Lore",
         function() return Count(#loreList, "section", "sections") end, BuildLore, true)
-    local rosterSection = Section("Roster",
+    local rosterSection
+    rosterSection, rosterBody = Section("Roster",
         function() return Count(#members, "monster", "monsters") end, BuildRoster, true)
     assocSection,  assocBody  = Section("Associated Creatures",
         function() return Count(#assocList, "creature", "creatures") end, BuildAssoc, false)
