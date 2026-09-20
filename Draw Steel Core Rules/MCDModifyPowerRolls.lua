@@ -708,12 +708,12 @@ CharacterModifier.TypeInfo.power = {
 
             --generate a good set of symbols to do any goblin scripts on.
             local token = nil
+            local lookupFunction = nil
             if rollInfo.tokenid ~= nil then
                 token = dmhub.GetTokenById(rollInfo.tokenid)
             end
 
             if token ~= nil and token.valid then
-                local lookupFunction
                 if triggerInfo ~= nil then
                     local triggerer = dmhub.GetTokenById(triggerInfo.charid)
                     local target = dmhub.GetTokenById(triggerInfo.targetid)
@@ -750,13 +750,16 @@ CharacterModifier.TypeInfo.power = {
                 targetPanel:SetClass("bad", buffOrDebuff < 0)
             end
 
+            --Descriptions may embed {formula} GoblinScript, e.g. a Level-scaled bonus.
+            local authoredDescription = StringInterpolateGoblinScript(self:try_get("description", ""), lookupFunction)
+
             targetPanel.data.init = true
             local panel = gui.Panel{
                 width = "100%",
                 height = "100%",
                 flow = "vertical",
                 linger = function(element)
-                    gui.Tooltip(string.format("<b>%s</b>\n%s\n%s", self.name, description, self:try_get("description", "")))(element)
+                    gui.Tooltip(string.format("<b>%s</b>\n%s\n%s", self.name, description, authoredDescription))(element)
                 end,
                 sometargets = function(element, value)
                     if not value then

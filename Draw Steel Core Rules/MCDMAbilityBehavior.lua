@@ -1065,6 +1065,11 @@ local g_rulePatterns = {
             AbilityUtils.DeepReplaceAbility(abilityClone, "<<distance>>", distance)
             abilityClone.invoker = casterToken.properties
 
+            --Name the source ability so back-to-back shifts can be told apart.
+            if (abilityClone:try_get("promptOverride") or "") == "" and ability.name ~= nil then
+                abilityClone.promptOverride = string.format("%s: you can shift up to %s square%s", ability.name, distance, cond(distance == "1", "", "s"))
+            end
+
             InvokeAbility(ability, abilityClone, casterToken, casterToken, options)
         end,
     },
