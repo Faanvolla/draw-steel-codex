@@ -30,6 +30,11 @@ local HEADER_HEIGHT_MAX = 260
 --The stage covers the rail, so it shows the same strip in the same spot.
 local POOLS_TOP = 64
 local POOLS_RIGHT = 12
+--The Tactical Preparation header carries the pool the party is about to
+--spend under the title and instructions, so it is taller than the narrative's
+--and the body below has to start further down -- at HEADER_HEIGHT the pool
+--sat behind the top edge of the panel (reported 2026-09-20).
+local PREP_HEADER_HEIGHT = 128
 --a montage hero card (176 + its 46-tall skills block) plus one row of
 --ally cards (80) and their gaps.
 local HERO_ROW_HEIGHT = 320
@@ -769,6 +774,103 @@ local function StageRules()
             borderColor = "#ffd66bff",
             border = 4,
             brightness = 1.35,
+        },
+
+        --the feature-unlock callout: what a currency the party has never seen
+        --before is FOR, said once, where they are already reading.
+        {
+            --borderless: it is a note, not a card the party can take.
+            selectors = {"eotwCallout"},
+            bgcolor = "#121a26f0",
+            border = 0,
+            cornerRadius = 8,
+        },
+        {
+            selectors = {"eotwCalloutIcon"},
+            width = 40,
+            height = 40,
+            halign = "center",
+            valign = "top",
+            bgcolor = "#9cc4ff",
+            bmargin = 4,
+        },
+        {
+            selectors = {"eotwCalloutTitle"},
+            fontSize = 20,
+            bold = true,
+            color = "#9cc4ff",
+            width = "100%",
+            height = "auto",
+            textAlignment = "center",
+            bmargin = 4,
+        },
+        {
+            selectors = {"eotwCalloutText"},
+            fontSize = 17,
+            color = "#e8e4dc",
+            width = "100%",
+            height = "auto",
+            textAlignment = "center",
+        },
+
+        --the Tactical Preparation screen: one card per bar, a notched track
+        --across it, and the level the party is on written underneath. The
+        --cards are option cards (the same frame every choice on this stage
+        --wears); only the track is new.
+        {
+            selectors = {"eotwPrepPool"},
+            fontSize = 30,
+            bold = true,
+            color = "#9cc4ff",
+            width = "auto",
+            height = "auto",
+            valign = "center",
+            lmargin = 8,
+        },
+        {
+            selectors = {"eotwPrepPoolIcon"},
+            width = 34,
+            height = 34,
+            valign = "center",
+            bgcolor = "#9cc4ff",
+        },
+        {
+            selectors = {"eotwPrepTrack"},
+            width = "100%",
+            height = 14,
+            flow = "horizontal",
+            halign = "center",
+            vmargin = 8,
+        },
+        {
+            selectors = {"eotwPrepPip"},
+            height = "100%",
+            bgimage = "panels/square.png",
+            bgcolor = "#ffffff18",
+            border = 1,
+            borderColor = "#ffffff30",
+            cornerRadius = 3,
+            hmargin = 3,
+            transitionTime = 0.2,
+        },
+        {
+            selectors = {"eotwPrepPip", "filled"},
+            bgcolor = "#9cc4ffff",
+            borderColor = "#dce9ffff",
+        },
+        {
+            selectors = {"eotwPrepLevel"},
+            fontSize = 18,
+            color = "#e8e4dc",
+            width = "100%",
+            height = "auto",
+            textAlignment = "center",
+            vmargin = 4,
+        },
+        {
+            selectors = {"eotwPrepLevel", "bought"},
+            color = "#b8e04a",
+            bold = true,
         },
     }
     for _, rule in ipairs(own) do
@@ -3014,6 +3116,34 @@ local function CreateNarrativeStage(args)
     }
 
     local textLabel = gui.Label{ classes = {"eotwNarrativeText"}, text = "", halign = "center" }
+
+    --A feature this section just unlocked, explained where the party is
+    --already reading. It sits still: the blinking is on the POOL the words
+    --point at, and a panel that blinks by itself just looks like a button
+    --nobody can press. It stands until the party presses on.
+    local calloutTitle = gui.Label{ classes = {"eotwCalloutTitle"}, text = "", interactable = false }
+    local calloutText = gui.Label{ classes = {"eotwCalloutText"}, text = "", interactable = false }
+    local calloutPanel = gui.Panel{
+        classes = {"eotwCallout", "collapsed"},
+        width = "92%",
+        height = "auto",
+        flow = "vertical",
+        halign = "center",
+        valign = "top",
+        pad = 12,
+        borderBox = true,
+        bmargin = 12,
+        bgimage = "panels/square.png",
+        interactable = false,
+        gui.Panel{
+            classes = {"eotwCalloutIcon"},
+            bgimage = "phosphor/brain.png",
+            interactable = false,
+        },
+        calloutTitle,
+        calloutText,
+    }
+
     local promptLabel = gui.Label{ classes = {"eotwNarrativePrompt"}, text = "", halign = "center" }
     local optionsRow = gui.Panel{
         width = "auto",
@@ -3058,6 +3188,7 @@ local function CreateNarrativeStage(args)
         halign = "center",
         valign = "top",
         textLabel,
+        calloutPanel,
         promptLabel,
         decidePanel,
         optionsRow,
@@ -3182,6 +3313,15 @@ local function CreateNarrativeStage(args)
             statusLabel.text = text
         end
 
+        --a feature this section unlocked, explained for as long as
+        --EncounterNarrative says the callout stands.
+        local announce = EncounterNarrative.ActiveAnnounce()
+        calloutPanel:SetClass("collapsed", announce == nil)
+        if announce ~= nil then
+            calloutTitle.text = string.format("%s unlocked", tostring(announce.name or ""))
+            calloutText.text = tostring(announce.text or "")
+        end
+
         decidePanel:SetClass("collapsed", m.phase ~= "deciding")
         resultPanel:SetClass("collapsed", m.phase ~= "resolved" and m.phase ~= "done")
         if m.phase == "resolved" then
@@ -3273,6 +3413,446 @@ end
 
 EncounterMontageStage.CreateNarrative = CreateNarrativeStage
 
+--- the Tactical Preparation stage ---------------------------------------------
+--
+--The last thing the party sees before the fight, when the week unlocked
+--Intelligence: one card per bar, and a point of Intelligence buys a notch.
+--Only the level they are ON is ever written down -- the rungs above it are
+--blank pips, because what you have not worked out yet is exactly the thing
+--the screen is selling.
+
+local function PrepBrainIcon(classes)
+    return gui.Panel{
+        classes = classes,
+        bgimage = "phosphor/brain.png",
+        interactable = false,
+    }
+end
+
+--One bar: its title, the notched track, the level the party is on, and
+--(while there is anything to spend) the button that buys the next notch.
+local function CreatePrepBar(beat, barId)
+    local info = EncounterPrep.BarInfo(beat, barId)
+    local max = #info.levels - 1
+
+    --One segment per notch the party can BUY, not one per level: knowing
+    --nothing is an empty track, so level 0 fills none of it.
+    local pips = {}
+    local fills = {}
+    for i = 1, max do
+        --the "if you spend" preview, pulsed over the empty segment while the
+        --button is hovered. It is a floating child rather than a colour
+        --written onto the segment, so nothing has to put the segment's own
+        --colour back afterwards.
+        local fill = gui.Panel{
+            floating = true,
+            interactable = false,
+            width = "100%",
+            height = "100%",
+            bgimage = "panels/square.png",
+            bgcolor = "#9cc4ff",
+            cornerRadius = 3,
+            opacity = 0,
+            data = { previewing = false, opacity = 0 },
+            thinkTime = 0.05,
+            think = function(element)
+                local opacity = 0
+                if element.data.previewing then
+                    local alpha = 0
+                    pcall(function() alpha = EncounterMontage.FeatureBlinkAlpha() end)
+                    --never all the way to solid: this is what the segment
+                    --WOULD look like, not what it looks like.
+                    opacity = 0.12 + 0.55 * alpha
+                end
+                if opacity ~= element.data.opacity then
+                    element.data.opacity = opacity
+                    element.selfStyle.opacity = opacity
+                end
+            end,
+        }
+        fills[i] = fill
+        pips[i] = gui.Panel{
+            classes = {"eotwPrepPip"},
+            width = string.format("%.4f%%-6", 100 / max),
+            interactable = false,
+            data = { level = i },
+            fill,
+        }
+    end
+    local track = gui.Panel{ classes = {"eotwPrepTrack"}, children = pips }
+    local levelLabel = gui.Label{ classes = {"eotwPrepLevel"}, text = info.levels[1], interactable = false }
+
+    --the level the bar is on, kept here so the hover preview knows which
+    --segment the next point would fill without re-reading the document.
+    local m_level = 0
+    local m_previewing = false
+
+    local function ShowPreview(on)
+        m_previewing = on
+        for i, fill in ipairs(fills) do
+            fill.data.previewing = on and (i == m_level + 1)
+        end
+    end
+
+    local button = gui.Button{
+        text = "Spend 1 Intelligence",
+        halign = "center",
+        tmargin = 6,
+        width = 220,
+        height = 38,
+        fontSize = 16,
+        click = function(element)
+            audio.FireSoundEvent("Mouse.Click")
+            EncounterPrep.Spend(barId)
+        end,
+        hover = function(element)
+            ShowPreview(true)
+        end,
+        dehover = function(element)
+            ShowPreview(false)
+        end,
+    }
+
+    return gui.Panel{
+        classes = {"eotwOptionCard"},
+        width = 520,
+        height = "auto",
+        flow = "vertical",
+        pad = 12,
+        borderBox = true,
+        margin = 6,
+        halign = "center",
+        valign = "top",
+        bgimage = "panels/square.png",
+        data = { barId = barId },
+
+        gui.Label{ classes = {"eotwOptionName"}, text = info.title, interactable = false },
+        track,
+        levelLabel,
+        button,
+
+        refreshPrep = function(element, m)
+            local level = EncounterPrep.Level(m, barId) or 0
+            local start = tonumber((m.start or {})[barId]) or level
+            m_level = level
+            for _, pip in ipairs(pips) do
+                pip:SetClass("filled", pip.data.level <= level)
+            end
+            --a spend that landed while the pointer is still on the button
+            --moves the preview along to the next segment.
+            if m_previewing then
+                ShowPreview(m.phase == "spending")
+            end
+            levelLabel.text = info.levels[level + 1] or ""
+            --what their Intelligence bought reads differently from what they
+            --already had.
+            levelLabel:SetClass("bought", level > start)
+
+            local canBuy = level < max and EncounterPrep.CanSpend(m, beat) and EncounterPrep.LocalUserIsVoter()
+            button:SetClass("collapsed", not canBuy)
+            element:SetClass("actionable", canBuy)
+        end,
+    }
+end
+
+local function CreatePrepHeroColumn(hero)
+    local hud = Hud()
+    local card = nil
+    if hud ~= nil and hud.CreateHeroCard ~= nil then
+        card = hud.CreateHeroCard({ charid = hero.charid, mine = false, name = hero.name }, {
+            halign = "center",
+            showStats = true,
+        })
+    else
+        card = gui.Label{ width = 132, height = 176, text = hero.name, bgimage = "panels/square.png", bgcolor = "#333333" }
+    end
+
+    local stateLabel = gui.Label{ classes = {"eotwHeroChoice", "waiting"}, text = "", halign = "center" }
+
+    return gui.Panel{
+        width = "auto",
+        height = "auto",
+        flow = "vertical",
+        halign = "center",
+        valign = "top",
+        hmargin = 6,
+        data = { charid = hero.charid },
+        card,
+        stateLabel,
+
+        refreshPrep = function(element, m)
+            --one voice per player, so a hero's card shows their PLAYER's
+            --state (all of one player's heroes say the same thing).
+            local key = hero.ownerId or "PARTY"
+            local ready = ((m or {}).ready or {})[key] ~= nil
+            stateLabel.text = cond(ready, "Ready", "Preparing...")
+            stateLabel:SetClass("waiting", not ready)
+            card:SetClass("acted", ready)
+        end,
+    }
+end
+
+local function CreatePrepStage(args)
+    local embedded = args ~= nil and args.embedded == true
+    local m_barSignature = nil
+    local m_heroSignature = nil
+
+    local backdrop, dim = nil, nil
+    if not embedded then
+        backdrop = CreateBackdrop()
+        dim = CreateDim()
+    end
+
+    local titleLabel = gui.Label{ classes = {"eotwStageTitle"}, text = EncounterPrep.TITLE, halign = "center" }
+    local introLabel = gui.Label{ classes = {"eotwStageSubtitle"}, text = EncounterPrep.INSTRUCTIONS, halign = "center" }
+    local poolValue = gui.Label{ classes = {"eotwPrepPool"}, text = "0", interactable = false }
+    local poolRow = gui.Panel{
+        width = "auto",
+        height = 38,
+        flow = "horizontal",
+        halign = "center",
+        valign = "top",
+        tmargin = 4,
+        PrepBrainIcon({"eotwPrepPoolIcon"}),
+        poolValue,
+    }
+    local header = gui.Panel{
+        width = "100%",
+        height = PREP_HEADER_HEIGHT,
+        flow = "vertical",
+        halign = "center",
+        valign = "top",
+        titleLabel,
+        introLabel,
+        poolRow,
+    }
+
+    local barsPanel = gui.Panel{
+        width = "auto",
+        height = "auto",
+        flow = "vertical",
+        halign = "center",
+        valign = "top",
+    }
+    local hintLabel = gui.Label{ classes = {"eotwTurnHint"}, text = "", halign = "center" }
+    local proceedButton = gui.Button{
+        classes = {"collapsed"},
+        text = "Proceed",
+        halign = "center",
+        tmargin = 10,
+        width = 200,
+        height = 44,
+        fontSize = 20,
+        click = function(element)
+            audio.FireSoundEvent("Mouse.Click")
+            EncounterPrep.Ready()
+        end,
+    }
+    local waitButton = gui.Button{
+        classes = {"collapsed"},
+        text = "Wait",
+        halign = "center",
+        tmargin = 10,
+        width = 140,
+        height = 34,
+        fontSize = 16,
+        click = function(element)
+            audio.FireSoundEvent("Mouse.Click")
+            EncounterPrep.Unready()
+        end,
+    }
+    local resultPanel = gui.Panel{
+        classes = {"collapsed"},
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        halign = "center",
+        valign = "top",
+        tmargin = 10,
+    }
+
+    local centerBody = gui.Panel{
+        width = "100%-40",
+        height = "auto",
+        flow = "vertical",
+        halign = "center",
+        valign = "top",
+        barsPanel,
+        resultPanel,
+        hintLabel,
+        proceedButton,
+        waitButton,
+    }
+    local center = gui.Panel{
+        classes = {"eotwTurnPanel"},
+        width = 600,
+        height = "auto",
+        maxHeight = "100%",
+        flow = "vertical",
+        halign = "center",
+        valign = "top",
+        bgimage = "panels/square.png",
+        pad = 20,
+        borderBox = true,
+        vscroll = true,
+        centerBody,
+    }
+    local body = gui.Panel{
+        width = "100%-40",
+        height = string.format("100%%-%d", PREP_HEADER_HEIGHT + HERO_ROW_HEIGHT),
+        flow = "horizontal",
+        halign = "center",
+        valign = "top",
+        center,
+    }
+
+    local heroRow = gui.Panel{
+        width = "auto",
+        height = HERO_ROW_HEIGHT,
+        flow = "horizontal",
+        halign = "center",
+        valign = "bottom",
+        tmargin = 10,
+    }
+
+    local pools = nil
+    if not embedded then
+        pools = CreatePoolsPanel()
+    end
+
+    local function RefreshHeroes()
+        local heroes = EncounterMontage.Heroes()
+        local sig = HeroSignature(heroes)
+        if sig ~= m_heroSignature then
+            m_heroSignature = sig
+            local columns = {}
+            for _, hero in ipairs(heroes) do
+                columns[#columns + 1] = CreatePrepHeroColumn(hero)
+            end
+            heroRow.children = columns
+        end
+    end
+
+    local function Refresh(element)
+        local m = EncounterPrep.GetState()
+        if m == nil then
+            return
+        end
+        local script = EncounterMontage.FindMapScript()
+        local beat = script.parse.beats[m.beatIndex or 0]
+
+        local ids = {}
+        for _, bar in ipairs(m.bars or {}) do
+            ids[#ids + 1] = bar.id
+        end
+        local sig = table.concat(ids, "|")
+        if sig ~= m_barSignature then
+            m_barSignature = sig
+            local cards = {}
+            for _, bar in ipairs(m.bars or {}) do
+                cards[#cards + 1] = CreatePrepBar(beat, bar.id)
+            end
+            barsPanel.children = cards
+        end
+
+        poolValue.text = string.format("%d", EncounterMontage.GetIntelligence())
+
+        local spending = m.phase == "spending"
+        local ready = EncounterPrep.LocalUserReady(m)
+        local canProceed = EncounterPrep.CanProceed(m, beat)
+        proceedButton:SetClass("collapsed", not (spending and canProceed and not ready and EncounterPrep.LocalUserIsVoter()))
+        waitButton:SetClass("collapsed", not (spending and ready))
+
+        local hint = ""
+        if spending then
+            --everyone BUT this client: their own Proceed button is the
+            --prompt, so naming them here would read as a fault.
+            local others = EncounterPrep.PendingVoters(m, nil, EncounterPrep.VoterKeyForUser(dmhub.loginUserid, nil))
+            if not canProceed then
+                hint = "Spend what you know before the first blow lands."
+            elseif #others > 0 then
+                hint = string.format("Waiting for %s.", table.concat(others, ", "))
+            elseif ready then
+                hint = "Everyone is ready."
+            end
+        else
+            hint = "Draw steel!"
+        end
+        hintLabel.text = hint
+        hintLabel:SetClass("collapsed", hint == "")
+
+        resultPanel:SetClass("collapsed", spending or #(m.applied or {}) == 0)
+        if not spending then
+            local children = { gui.Label{ classes = {"eotwTurnTitle"}, text = "You are as ready as you will be", interactable = false } }
+            for _, line in ipairs(m.applied or {}) do
+                children[#children + 1] = gui.Label{ classes = {"eotwAppliedLine"}, text = line, interactable = false }
+            end
+            resultPanel.children = children
+        end
+
+        RefreshHeroes()
+        element:FireEventTree("refreshPrep", m)
+    end
+
+    local stage
+    stage = gui.Panel{
+        styles = ThemeEngine.MergeStyles(StageRules()),
+        width = "100%",
+        height = "100%",
+        halign = "center",
+        valign = "center",
+        flow = "vertical",
+        bgimage = cond(embedded, nil, "panels/square.png"),
+        bgcolor = cond(embedded, "#00000000", "#05070a"),
+        swallowPress = true,
+
+        children = Classes(backdrop, dim, header, body, heroRow, pools),
+
+        monitorGame = EncounterMontage.DocPath(),
+        refreshGame = function(element)
+            Refresh(element)
+        end,
+
+        create = function(element)
+            Refresh(element)
+            if not embedded then
+                AcquireActionBarHide()
+                element:ScheduleEvent("releaseLoadingScreen", 0.1)
+            end
+        end,
+
+        destroy = function(element)
+            if not embedded then
+                ReleaseActionBarHide()
+            end
+        end,
+
+        releaseLoadingScreen = function(element)
+            pcall(function() dmhub.ReleaseLoadingScreen() end)
+        end,
+
+        thinkTime = 0.25,
+        think = function(element)
+            if mod.unloaded then
+                element:DestroySelf()
+                return
+            end
+            Refresh(element)
+            element:FireEventTree("refreshCard")
+        end,
+    }
+
+    ThemeEngine.OnThemeChanged(mod, function()
+        if stage ~= nil and stage.valid then
+            stage.styles = ThemeEngine.MergeStyles(StageRules())
+        end
+    end)
+
+    return stage
+end
+
+EncounterMontageStage.CreatePrep = CreatePrepStage
+
 --- the mounted script stage ---------------------------------------------------
 --
 --What is actually presented, ONCE, for the whole run of stage beats. It owns
@@ -3351,6 +3931,19 @@ local function CurrentSceneImage(beat, index, script)
         end
         return runtime.SceneImage(script, beat, section)
     end
+    if beat.kind == "encounter" and beat.sceneTag == nil then
+        --the encounter beat almost never names a [[scene]] of its own, and
+        --the only thing it puts on the stage is the Tactical Preparation
+        --screen. Borrow the last backdrop the script hung, so the party
+        --prepares in the place the story left them rather than in the dark.
+        for i = (tonumber(index) or 1), 1, -1 do
+            local earlier = script.parse.beats[i]
+            if earlier ~= nil and earlier.sceneTag ~= nil then
+                return EncounterMontage.SceneImage(script, earlier)
+            end
+        end
+        return nil
+    end
     return EncounterMontage.SceneImage(script, beat)
 end
 
@@ -3406,7 +3999,15 @@ local function CreateScriptStage(args)
 
         local beat, index, script = CurrentScriptBeat()
         local kind = beat ~= nil and beat.kind or nil
-        if kind ~= "montage" and kind ~= "narrative" then
+        --the encounter beat owns the stage only while the party is spending
+        --its Intelligence; everything else it does happens BEHIND the stage.
+        if kind == "encounter" then
+            local prep = rawget(_G, "EncounterPrep")
+            if prep ~= nil and prep.IsLive() then
+                kind = "prep"
+            end
+        end
+        if kind ~= "montage" and kind ~= "narrative" and kind ~= "prep" then
             --a beat that does not own the stage, or a script we cannot read:
             --hold what is up rather than tearing the surface down. The host
             --hides the stage when it really means to hand the map back.
@@ -3417,12 +4018,21 @@ local function CreateScriptStage(args)
             m_kind = kind
             if kind == "narrative" then
                 bodyHolder.children = { CreateNarrativeStage{ embedded = true } }
+            elseif kind == "prep" then
+                bodyHolder.children = { CreatePrepStage{ embedded = true } }
             else
                 bodyHolder.children = { CreateStage{ embedded = true } }
             end
         end
 
         local scene = CurrentSceneImage(beat, index, script)
+        if kind == "prep" and scene == nil then
+            --the preparation screen belongs to the encounter beat, which
+            --usually declares no [[scene]] of its own. Keep whatever the
+            --beat before it hung there rather than dropping to bare black
+            --for the last screen before the fight.
+            scene = m_scene
+        end
         if scene ~= m_scene then
             m_scene = scene
             if scene ~= nil then

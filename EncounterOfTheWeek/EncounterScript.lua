@@ -25,6 +25,7 @@
 --                        scaling = { scalingDirective, ... } }, ... },
 --           -- narrative only:
 --           intro = "", sceneTag = ..., sections = { section, ... },
+--           unlocks = { { feature = "intelligence", name, line }, ... },
 --           -- encounter only:
 --           setup = { setupInstruction, ... } }
 --  setupInstruction = { kind = "placeobjects"|"unknown", label = "Trap", line,
@@ -80,11 +81,18 @@
 --  see before the roll lands. Lines without "=>" have no teaser.
 --  section = { id, name, line, text = "", prompt = "", sceneTag = nil,
 --              mode = "together"|"individual", modeExplicit = bool,
---              implicitOption = bool, options = { narrativeOption, ... } }
+--              implicitOption = bool, options = { narrativeOption, ... },
+--              unlocks = { { feature = "intelligence", name, line }, ... } }
+--  An "Unlock: <Feature>" line in a narrative beat turns on an optional
+--  feature of the game mode (EncounterScript.FEATURES) when that section
+--  arrives -- or, written above the first "##", when the beat opens. It is
+--  a line of the SCENE, not of an option: a feature is not something the
+--  party can choose away. Today the one feature is Intelligence.
 --  narrativeOption = { name, line, text = "", implicit = bool,
 --                      effects = { effect, ... } }
 --  effect = { kind = "item"|"stamina"|"heal"|"temphp"|"surges"|"recovery"|
---                    "loserecovery"|"herotoken"|"malice"|"ally"|"vanquish"|
+--                    "loserecovery"|"herotoken"|"intelligence"|"malice"|
+--                    "ally"|"vanquish"|
 --                    "initiative"|"nosurprise"|"fairinitiative"|
 --                    "knowstamina"|"revealzones"|"unlock"|"testmod"|
 --                    "narrative",
@@ -177,6 +185,57 @@ local function NarrativeMode(label)
         return "prompt"
     end
     return nil
+end
+
+--- feature unlocks ---------------------------------------------------------
+
+--The optional features of Encounter of the Week a script turns on for itself,
+--by writing "Unlock: <Feature>" in a narrative beat. Keyed by MatchKey, so
+--"unlock: intelligence" and "Unlock: Intelligence" are the same line.
+--
+--A feature is off unless a script asks for it: a week that never mentions
+--Intelligence never shows the pool or the Tactical Preparation screen, and
+--plays exactly as it did before the feature existed.
+--`explanation` is what the party is told the moment the feature arrives: a
+--currency nobody has explained is a number in the corner of the screen.
+EncounterScript.FEATURES = {
+    intelligence = {
+        key = "intelligence",
+        name = "Intelligence",
+        summary = "the party's shared Intelligence pool and the Tactical Preparation screen",
+        explanation = "Intelligence is an important currency! When an encounter begins you will be able to spend your Intelligence gained to sway things in your favor. Try to acquire as much as you can.",
+    },
+}
+
+--"Unlock: Intelligence" -> the feature record, or nil when the name is not
+--one we know. The label is matched loosely ("Unlock", "Unlocks", "Unlock
+--feature"), the name through MatchKey.
+function EncounterScript.ParseFeatureUnlock(label, rest)
+    local lc = lower(trim(label or ""))
+    if lc ~= "unlock" and lc ~= "unlocks" and lc ~= "unlock feature" and lc ~= "unlocks feature" then
+        return nil, nil
+    end
+    local name = trim(rest or "")
+    if name == "" then
+        return nil, ""
+    end
+    return EncounterScript.FEATURES[EncounterScript.MatchKey(name)], name
+end
+
+--Every feature name a script unlocks, as a set keyed by feature key.
+function EncounterScript.UnlockedFeatures(parse)
+    local result = {}
+    for _, b in ipairs((parse and parse.beats) or {}) do
+        for _, u in ipairs(b.unlocks or {}) do
+            result[u.feature] = true
+        end
+        for _, sec in ipairs(b.sections or {}) do
+            for _, u in ipairs(sec.unlocks or {}) do
+                result[u.feature] = true
+            end
+        end
+    end
+    return result
 end
 
 --"{...}" marks a HIDDEN run of a tier (or Consequence:) line: everything
@@ -408,6 +467,21 @@ local function ParseClause(clause)
         or string.match(lc, "^each party members? gains? (%S+) hero tokens?$")
     if n ~= nil and EncounterScript.ParseQuantity(n) ~= nil then
         return { kind = "herotoken", qty = EncounterScript.ParseQuantity(n), text = clause }
+    end
+
+    --"+1 Intelligence" / "you gain 2 intelligence": the party's shared
+    --Intelligence pool -- what they understand about the ground and the
+    --enemy, spent on the Tactical Preparation screen when combat comes.
+    --One pool for the whole party, like hero tokens, so there is no
+    --self/party distinction. Only a script that unlocks the feature
+    --("Unlock: Intelligence" in a narrative beat) has a pool to fill.
+    n = string.match(lc, "^%+?%s*(%S+) intelligence$")
+        or string.match(lc, "^you gain (%S+) intelligence$")
+        or string.match(lc, "^gain %+?(%S+) intelligence$")
+        or string.match(lc, "^the party gains (%S+) intelligence$")
+        or string.match(lc, "^each party members? gains? (%S+) intelligence$")
+    if n ~= nil and EncounterScript.ParseQuantity(n) ~= nil then
+        return { kind = "intelligence", qty = EncounterScript.ParseQuantity(n), text = clause }
     end
 
     --"you gain <qty> <item>"
@@ -1228,6 +1302,26 @@ function EncounterScript.Parse(text)
             return
         end
         if beat.kind == "narrative" then
+            --"Unlock: Intelligence" turns on an optional feature of the game
+            --mode. It is a line of the beat, not of an option -- the feature
+            --arrives with the scene, whatever the party chooses -- so it is
+            --matched before the prose branches below and never reaches them.
+            local uLabel, uRest = string.match(text, "^([%a][%a \t'%-]*):%s*(.*)$")
+            if uLabel ~= nil then
+                local feature, wanted = EncounterScript.ParseFeatureUnlock(uLabel, uRest)
+                if wanted ~= nil then
+                    if feature == nil then
+                        Warn(paragraphLine, "'Unlock: %s' names no feature of Encounter of the Week; ignored", tostring(wanted))
+                    elseif option ~= nil then
+                        Warn(option.line or paragraphLine, "'Unlock: %s' is under the option '%s'; it belongs in the section's own text (a feature is unlocked by the scene, not by a choice); ignored", feature.name, option.name)
+                    else
+                        local holder = section or beat
+                        holder.unlocks = holder.unlocks or {}
+                        holder.unlocks[#holder.unlocks + 1] = { feature = feature.key, name = feature.name, line = paragraphLine }
+                    end
+                    return
+                end
+            end
             if option ~= nil then
                 option.text = cond(option.text == "", text, option.text .. "\n\n" .. text)
                 return
@@ -1284,6 +1378,13 @@ function EncounterScript.Parse(text)
         if entry ~= nil then
             local label, rest = string.match(text, "^(%a+):%s*(.*)$")
             local key = label ~= nil and lower(label) or nil
+            if label ~= nil then
+                local feature = EncounterScript.ParseFeatureUnlock(label, rest)
+                if feature ~= nil then
+                    Warn(paragraphLine, "'Unlock: %s' only works in a narrative beat; ignored", feature.name)
+                    return
+                end
+            end
             if key == "options" or key == "option" then
                 entry.approach = cond(entry.approach == "", rest, entry.approach .. "\n\n" .. rest)
                 return
@@ -1694,6 +1795,43 @@ function EncounterScript.Parse(text)
         end
     end
 
+    --A pool nothing unlocked is a clause that will silently do nothing: the
+    --Intelligence the party earned would have nowhere to go and no screen to
+    --spend it on. Warn once, naming the first clause that wants it.
+    local features = EncounterScript.UnlockedFeatures(result)
+    if not features.intelligence then
+        local found = nil
+        local function Scan(effects, line)
+            for _, effect in ipairs(effects or {}) do
+                if effect.kind == "intelligence" and found == nil then
+                    found = { text = effect.text, line = line }
+                end
+            end
+        end
+        for _, b in ipairs(result.beats) do
+            for _, sec in ipairs(b.sections or {}) do
+                for _, o in ipairs(sec.options or {}) do
+                    Scan(o.effects, o.line or sec.line)
+                end
+            end
+            for _, e in ipairs(EncounterScript.MontageEntries(b)) do
+                if e.consequence ~= nil then
+                    Scan(e.consequence.effects, e.line)
+                end
+                for _, o in ipairs(e.options or {}) do
+                    if o.roll ~= nil then
+                        for t in ipairs(o.roll.tiers) do
+                            Scan(o.roll.effects[t], o.line)
+                        end
+                    end
+                end
+            end
+        end
+        if found ~= nil then
+            Warn(found.line or 0, "'%s' but nothing unlocks Intelligence; write 'Unlock: Intelligence' in a narrative beat or the party can never spend it", found.text)
+        end
+    end
+
     --implicit encounter: no beats at all, but an [[encounter]] island
     if #result.beats == 0 and result.hasEncounterTag then
         result.beats[1] = { kind = "encounter", title = "Encounter", line = 0, tags = { "encounter" }, setup = {}, implicit = true }
@@ -1826,8 +1964,14 @@ function EncounterScript.Describe(parse)
             if b.sceneTag ~= nil then
                 line("  scene: [[%s]]", b.sceneTag)
             end
+            for _, u in ipairs(b.unlocks or {}) do
+                line("  unlocks feature: %s", u.name)
+            end
             for _, sec in ipairs(b.sections) do
                 line("  section: %s  [%s] (%s)", sec.name, sec.id, sec.mode)
+                for _, u in ipairs(sec.unlocks or {}) do
+                    line("    unlocks feature: %s", u.name)
+                end
                 if sec.sceneTag ~= nil then
                     line("    scene: [[%s]]", sec.sceneTag)
                 end
@@ -1927,6 +2071,8 @@ function EncounterScript.DescribeEffect(effect)
         return string.format("%s loses %s", cond(effect.target == "party", "every hero", "the hero"), EncounterScript.Plural(effect.qty, "recovery", "recoveries"))
     elseif effect.kind == "herotoken" then
         return string.format("the party gains %s", EncounterScript.Plural(effect.qty, "hero token"))
+    elseif effect.kind == "intelligence" then
+        return string.format("the party gains %s", EncounterScript.Plural(effect.qty, "Intelligence", "Intelligence"))
     elseif effect.kind == "malice" then
         return string.format("+%d malice", effect.qty)
     elseif effect.kind == "ally" then

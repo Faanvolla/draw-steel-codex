@@ -144,6 +144,88 @@ function EncounterMontage.GetItems(heroid)
     return result
 end
 
+--- optional features + the Intelligence pool ---------------------------------
+
+--A feature of the game mode a script turned on for itself with
+--"Unlock: <Feature>" in a narrative beat (EncounterScript.FEATURES). Off
+--unless the week asks for it, so a script that never mentions Intelligence
+--plays exactly as it did before the feature existed.
+function EncounterMontage.FeatureUnlocked(feature)
+    local on = false
+    pcall(function()
+        local unlocked = mod:GetDocumentSnapshot(DOC_ID).data.unlocked
+        on = type(unlocked) == "table" and unlocked[feature] ~= nil
+    end)
+    return on
+end
+
+--Host, inside an OPEN change on the script document: turn a feature on.
+--Returns true the first time, false when it was already on (so the caller
+--only announces it once).
+function EncounterMontage.UnlockFeature(doc, feature, sourceName)
+    if doc == nil or feature == nil then
+        return false
+    end
+    doc.data.unlocked = doc.data.unlocked or {}
+    if doc.data.unlocked[feature] ~= nil then
+        return false
+    end
+    local record = EncounterScript.FEATURES[feature]
+    doc.data.unlocked[feature] = {
+        name = (record ~= nil and record.name) or feature,
+        entryName = sourceName,
+        at = dmhub.serverTime,
+    }
+    return true
+end
+
+--How bright the feature-unlock blink is right now, 0..1. While the stage is
+--explaining a newly unlocked feature, the pool it is about blinks a white
+--rectangle in the strip (EncounterOfTheWeekHud) so the party can see which
+--number the words mean. Only the pool blinks -- the explanation itself sits
+--still, or it reads as something to press.
+function EncounterMontage.FeatureBlinkAlpha()
+    return 0.2 + 0.8 * ((math.sin(dmhub.Time() * 2 * math.pi / 0.9) + 1) / 2)
+end
+
+--The party's shared Intelligence pool: what they have worked out about the
+--ground and the enemy, spent on the Tactical Preparation screen when combat
+--comes. Lives at the TOP level of the script document (like initiative)
+--because it spans every beat.
+function EncounterMontage.GetIntelligence()
+    local n = 0
+    pcall(function() n = tonumber(mod:GetDocumentSnapshot(DOC_ID).data.intelligence) or 0 end)
+    return n
+end
+
+--The pool's change history, in the shape gui.StatsHistoryTooltip wants
+--(newest last), so the strip's cell reads like the malice and hero-token
+--cells beside it.
+function EncounterMontage.GetIntelligenceHistory()
+    local result = {}
+    pcall(function()
+        for _, entry in ipairs(mod:GetDocumentSnapshot(DOC_ID).data.intelligenceLog or {}) do
+            --the log stores a `dmhub.serverTime` (SECONDS) in `at`; the
+            --tooltip wants the human `when` string StatHistory hands it for
+            --malice and hero tokens, or the line reads "... by Someone nil".
+            --Not DescribeServerTimestamp: that one takes the milliseconds
+            --ServerTimestamp() returns and reads seconds as the 1970 epoch.
+            local when = "pending"
+            if type(entry.at) == "number" then
+                when = DescribeSecondsAgo(math.max(0, (dmhub.serverTime or entry.at) - entry.at))
+            end
+            result[#result + 1] = {
+                value = entry.value,
+                who = entry.who,
+                note = entry.note,
+                color = entry.color or "#ccccccff",
+                when = when,
+            }
+        end
+    end)
+    return result
+end
+
 function EncounterMontage.GetAllies(heroid)
     local result = {}
     pcall(function()
@@ -1295,6 +1377,26 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                         SourceLabel(ctx))
                 end)
                 applied[#applied + 1] = string.format("+%s", EncounterScript.Plural(effect.qty, "Hero Token"))
+            elseif effect.kind == "intelligence" then
+                --the party's shared Intelligence pool. It is ours, not a
+                --CharacterResource, so it is kept on the script document
+                --with a history of its own for the strip's tooltip.
+                if ctx.doc == nil then
+                    printf("EotW montage: no script document open; '%s' not applied", tostring(effect.text))
+                else
+                    local before = tonumber(ctx.doc.data.intelligence) or 0
+                    ctx.doc.data.intelligence = before + effect.qty
+                    local log = ctx.doc.data.intelligenceLog or {}
+                    log[#log + 1] = {
+                        value = before + effect.qty,
+                        amount = effect.qty,
+                        who = ctx.entryName or "Encounter of the Week",
+                        note = SourceLabel(ctx),
+                        at = dmhub.serverTime,
+                    }
+                    ctx.doc.data.intelligenceLog = log
+                    applied[#applied + 1] = string.format("+%s", EncounterScript.Plural(effect.qty, "Intelligence", "Intelligence"))
+                end
             elseif effect.kind == "malice" then
                 local before = CharacterResource.GetMalice() or 0
                 CharacterResource.SetMalice(before + effect.qty, SourceLabel(ctx))
@@ -3076,6 +3178,10 @@ function EncounterMontage.ResetTest()
     doc.data.zoneSetup = nil
     doc.data.revealZones = nil
     doc.data.zonesRevealed = nil
+    doc.data.unlocked = nil
+    doc.data.intelligence = nil
+    doc.data.intelligenceLog = nil
+    doc.data.prep = nil
     doc:CompleteChange("Montage test reset", { undoable = false })
 
     --EotW game: the combat flags and the map script's run-once state.

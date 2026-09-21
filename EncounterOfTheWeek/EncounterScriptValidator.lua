@@ -268,6 +268,9 @@ local function Report(parse)
         if beat.intro ~= nil and trim(beat.intro) ~= "" then
             Row(1, "note", "intro: %s", beat.intro)
         end
+        for _, u in ipairs(beat.unlocks or {}) do
+            Row(1, "rule", "unlocks the %s feature when this beat opens", u.name)
+        end
 
         for _, ins in ipairs(beat.setup or {}) do
             if ins.kind == "placeobjects" then
@@ -281,6 +284,9 @@ local function Report(parse)
 
         for _, section in ipairs(EncounterScript.NarrativeSections(beat)) do
             Row(1, "entry", "Section: %s  (%s)", section.name, section.mode)
+            for _, u in ipairs(section.unlocks or {}) do
+                Row(2, "rule", "unlocks the %s feature when this section arrives", u.name)
+            end
             for _, o in ipairs(section.options) do
                 counts.options = counts.options + 1
                 Row(2, "option", "%s%s", o.name, cond(o.implicit, "  (implicit)", ""))

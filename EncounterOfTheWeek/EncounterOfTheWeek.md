@@ -3970,6 +3970,46 @@ registered in the EotW codemod at position 2 after EncounterOfTheWeek.lua):
   2026-09-15 in a real EotW game (0.0.831): strip renders top-right above
   the cards showing Malice 4 / Hero Tokens 0, cells measure 66x40 each,
   the history tooltip appears, no console errors.
+  - **Each cell explains itself (user direction 2026-09-20)**. Hovering a
+    cell now shows one tooltip card: a markdown explanation of the pool,
+    with the change history under it when there is any. Malice -- "a power
+    used by Monsters to charge their most powerful abilities. Beware that
+    it will be used against you in battle!"; Hero Tokens -- the character
+    panel's own `HERO_TOKEN_TOOLTIP` copy word for word (`Draw Steel Core
+    Rules/MCDMCharacterPanel.lua`), so the two never drift; Intelligence --
+    "the amount of awareness you have of what you are up against ... used
+    at the start of a fight to control how much you know about the
+    encounter." Texts live in `POOL_EXPLANATION` beside `POOL_TITLE` in
+    `EncounterOfTheWeekHud.lua`. Three details the build turned up:
+    - **A cell with no `bgimage` is not hit-tested**, so the pointer sailed
+      past it to the strip behind and neither the `hover` tint nor the
+      tooltip ever fired -- the cells now carry a fully transparent
+      `panels/square.png` of their own. (The 2026-09-15 note above claiming
+      the history tooltip appeared was wrong; it never did.)
+    - `gui.StatsHistoryTooltip`'s own `text` argument is a bare auto-width
+      label, so a paragraph handed to it runs off the screen in one line,
+      and the panel it returns paints no background when it is nested.
+      `CreatePoolTooltip` therefore owns the card chrome (opaque
+      `#000000ff`, cornerRadius 10, `POOL_TOOLTIP_WIDTH` 420 on the
+      markdown label) and drops the history panel in below. An empty
+      history is omitted entirely rather than showing "No changes recorded
+      for Malice", which out of combat is malice's normal state.
+    - `EncounterMontage.GetIntelligenceHistory` handed the tooltip its raw
+      log rows, whose timestamp field is `at` (a `dmhub.serverTime`, in
+      SECONDS) -- so every Intelligence line read "... by Someone nil", and
+      passing it to `DescribeServerTimestamp` (which wants the MILLISECONDS
+      `ServerTimestamp()` returns) read "20715 days ago". It now maps each
+      row to the shape `StatHistory:GetHistory` returns, with
+      `DescribeSecondsAgo(dmhub.serverTime - entry.at)`.
+    Verified live 2026-09-20 in the montage (all three cells hovered).
+  - **Reload gotcha, still live**: `DMHub Core UI/Hud.lua` line ~879 does
+    `GameHud.customInterfaces = {}` unconditionally, so whenever that mod
+    reloads *after* `EncounterOfTheWeekHud.lua`, the registry is wiped and
+    the takeover silently disappears until a restart (`#providers: 0`,
+    `PanelDocument.RailCustomInterfaceId() == nil`). Iterating on the hud
+    means `restart_dmhub`, not `reload_lua`. A one-line `GameHud
+    .customInterfaces = GameHud.customInterfaces or {}` would fix it, at
+    the cost of stale providers surviving a reload -- not done.
   - **Core fix that came out of it**: `GameHud.RegisterCustomInterface`
     (`DMHub Core UI/Hud.lua`) appended on every call, so a Lua reload
     that re-ran the EotW mod left the stale generation's provider first
@@ -4778,6 +4818,7 @@ Implementation:
   | `your recovery value is increased by <n>` (also `+<n> recovery value`, `each party member's recovery value ...`) | an ongoing effect ("Montage Boon: Recovery Value +N") with an `attribute`/`recoveryvalue` modifier, until the next respite |
   | `you lose <n> recovery`/`recoveries` (also `each party member loses ...`) | n recoveries off the hero's pool, with no Stamina back for them. A hero with none left loses nothing |
   | `[+]<n> hero token[s]` (also `you gain <n> hero tokens`) | the party's hero-token pool += n |
+  | `[+]<n> intelligence` (also `you gain <n> intelligence`, `the party gains ...`, `each party member gains ...`) | the party's shared Intelligence pool += n, spent on the Tactical Preparation screen. Only a script that unlocked the feature has a pool; the parser warns about a clause with no `Unlock: Intelligence` behind it (see "Intelligence and Tactical Preparation") |
   | `[+]<n> malice` | malice pool += n |
   | `a`/`an <monster> joins you` | spawn `<monster>` as the acting player's ally |
   | `the threat is vanquished` (also `you vanquish the threat`) | the threat is resolved |
@@ -5033,6 +5074,10 @@ A new shared document in the codemod, `eotwscript`, next to `eotwstate`:
                       original = { [zoneid] = {floorid, record} } },
   revealZones = nil | { [zone] = { entryName, at } },        -- banked "Reveal Traps"
   zonesRevealed = nil | { [zone] = { keywordid, at, entryName, original } },
+  unlocked = nil | { [feature] = { name, entryName, at } },  -- "Unlock: Intelligence"
+  intelligence = n,                                          -- the party's pool
+  intelligenceLog = { { value, amount, who, note, at }, ... },-- the pool's history
+  prep = nil | { ... },                                      -- Tactical Preparation
 }
 ```
 
@@ -6208,6 +6253,253 @@ screen; a narrative beat between a montage and the encounter (beat
 advance, stage swap); an ally or item clause on a narrative option; and
 `/eotwnarrative force`.
 
+## Optional features: "Unlock: <Feature>" (DECIDED + BUILT 2026-09-20; Lua only; parser unit-tested; the unlock VERIFIED live end to end over a stubbed script)
+
+User direction (2026-09-20): a narrative section should be able to say
+
+```
+Unlock: Intelligence
+```
+
+and that turns on a feature of the game mode. Everything a week does not
+ask for stays off, so a script that never mentions Intelligence shows no
+pool and no preparation screen and plays exactly as it did before the
+feature existed.
+
+Grammar and decisions:
+
+- The line is a paragraph of a **narrative beat**: inside a `## section` it
+  belongs to that section and lands when the section arrives; above the
+  first `##` it is the beat's and lands when the beat opens. It is NOT an
+  option's line -- a feature is not something the party can choose away --
+  and one written under a `###` option warns and is ignored.
+- The feature name is matched with `EncounterScript.MatchKey` against
+  `EncounterScript.FEATURES`, a table of the features that exist (today:
+  `intelligence`). An unknown name warns rather than being swallowed as
+  prose, so a typo is visible in `/eotwvalidate`.
+- `Unlock:` in a montage entry or the encounter beat warns and is ignored.
+  (It is deliberately a different thing from the montage's `Unlock <name>`
+  effect clause, which lets a `(Locked)` ENTRY onto the board. The colon
+  and a registered feature name are what tell them apart.)
+- The unlock is written to the TOP level of the script document
+  (`doc.data.unlocked[feature]`), not into `montage.*` or `narrative.*`,
+  because a feature must outlive the beat that turned it on.
+  `/eotwmontage reset` clears it with everything else.
+
+### Announcing it (DECIDED + BUILT 2026-09-20; VERIFIED live)
+
+User direction (2026-09-20): the unlock should explain itself. A currency
+nobody has explained is a number in the corner of the screen, so the moment
+one arrives the stage says what it is for, and points at it.
+
+- The wording lives on the feature record
+  (`EncounterScript.FEATURES.intelligence.explanation`), not in the stage, so
+  a second feature brings its own.
+- The unlock stamps `narrative.announce = { feature, name, text, at }`, and
+  every client reads `EncounterNarrative.ActiveAnnounce()` off that shared
+  state -- so the explanation and the blink start and stop together on all of
+  them, and a client that joins late sees whatever is left of it.
+- The stage shows a plain callout under the section's text: the feature's
+  icon, "Intelligence unlocked", and the explanation. **It does not blink and
+  it has no border** (user direction 2026-09-20, having watched the first
+  cut): a panel that pulses reads as a button, and this one cannot be pressed.
+- **Only the pool blinks** -- a floating white rectangle over that cell of the
+  pools strip, fading in and out (`EncounterMontage.FeatureBlinkAlpha`), which
+  is what ties the words to the number they are about.
+- **It stands until the party presses on.** No timer (user direction: the
+  first cut timed out after 20s, which took the explanation away from whoever
+  was still reading it). `ActiveAnnounce` shows it while the section is
+  `arriving` or `choosing` and drops it the moment the section resolves, so
+  the press that moves the story on is also the press that dismisses it.
+- Two gotchas worth keeping: a panel's `selfStyle` is write-mostly -- reading
+  back a key the style never set raises "Error indexing userdata", so the
+  blink keeps its last opacity in `data` and only writes on a change; and the
+  pools strip monitors the global-RESOURCE document, so nothing on it fires
+  when the SCRIPT document changes. Its think went from 1s to 0.25s, which is
+  also what makes a spend on the preparation screen show up in the strip
+  promptly.
+
+## Intelligence and Tactical Preparation (DECIDED + BUILT 2026-09-20; Lua only; VERIFIED live in an EotW game -- see below)
+
+User direction (2026-09-20): the party has a shared currency, **Intelligence**,
+representing what they have worked out about the ground and the enemy. It
+starts at 0, a montage or narrative outcome can add to it, and at the outset
+of the encounter a **Tactical Preparation** screen lets them spend it on what
+they know going into the fight.
+
+### The pool
+
+- An outcome clause, exactly like hero tokens: `+1 Intelligence`,
+  `You gain 2 Intelligence`, `The party gains 2 Intelligence`. One pool for
+  the whole party, so there is no self/party distinction.
+- It lives on the script document at the top level (`data.intelligence`) with
+  a history of its own (`data.intelligenceLog`) -- it is ours, not a
+  `CharacterResource`, so the strip's tooltip is fed from that log.
+- The **pools strip** (`eotwEncounterPools`, above the hero roster and
+  floated over the stage) grows a third cell for it, `phosphor/brain.png`
+  plus the count, and the strip widens by half a hero card so three pools
+  are never squeezed into two pools' worth of strip. The cell is there only
+  while the feature is unlocked; the strip's 1s think is what notices.
+- The parser warns when a script earns Intelligence and nothing unlocks the
+  feature: the party would have no screen to spend it on.
+
+### The screen
+
+At the encounter beat, BEFORE the traps are placed and the monsters spawned
+(`RunScriptBeat` runs `EncounterPrep.HostTick` first and returns until it
+says "done"), the stage shows **Tactical Preparation** -- "Combat is upon
+you! Spend your Intelligence wisely." -- with one card per bar:
+
+| bar | levels |
+|---|---|
+| **Surprise** | You are surprised. / You lose the initiative. / You roll for initiative. / You win the initiative. / The enemy is surprised. |
+| **Traps** | You are unaware of traps. / "There are 4 Snare Traps hidden on the map." / All traps on the map are marked. |
+| **Enemy Stamina** | You have little awareness of the enemy's health. / You see enemy stamina bars. / You fully know the stamina of your enemies. |
+
+- **Players only ever read the rung they are on.** The track above it is
+  blank segments. What they have not worked out yet is the thing the screen
+  is selling.
+- **The track has one segment per notch they can BUY, not one per level**
+  (user direction 2026-09-20), so knowing nothing is an empty track: Traps
+  shows two segments with none filled, and a bought notch fills one. Nothing
+  is half-lit by default -- hovering the Spend button pulses the segment the
+  point would fill, and only while the pointer is on it.
+- A notch costs **1 Intelligence** and **any player may spend it** -- the
+  currency is the party's. A spend is a request the host validates and
+  applies, the montage's authority model exactly.
+- **Proceed is offered once the Intelligence is spent** (user direction),
+  and also when nothing is left to raise, so a point nobody can spend cannot
+  wedge the encounter. Every PLAYER presses it -- one voice each however many
+  heroes they run, the narrative's agreed-upon voter set -- and the
+  encounter begins when all have. A player can take it back ("Wait").
+- The bars show the final levels for a 4s beat with the applied lines under
+  them ("You are as ready as you will be"), and then the beat carries on:
+  traps are placed, monsters spawn behind the stage, and the stage dissolves
+  as it always did.
+
+### What a level does
+
+- **Surprise** opens on whatever the montage decided
+  (`EncounterPrep.StartingSurpriseLevel` reads `GetInitiativeOutcome`,
+  `GetSurprisedSides` and `HasSurpriseImmunity`, with the condition
+  outranking the outcome the way it does at combat start): surprised party
+  -> 0, lose -> 1, nothing decided -> 2, win -> 3, enemy surprised -> 4. A
+  bought level is carried out with the montage's OWN clauses -- a
+  `fairinitiative` first when the montage had decided against them (which
+  takes the Surprised condition off the heroes and clears the unfavourable
+  outcome), then `lose` / nothing / `win` / `surprise`. The party reads one
+  line for it, the rung they bought ("The enemy is surprised."); the two
+  clauses behind it go to the console.
+- **Traps** is offered only when the encounter beat carries a `Place N <object>
+  objects in <zone> zones` setup instruction, and it opens at 2 when the
+  montage already earned `Reveal Traps` for every zone the encounter uses.
+  Level 1 is a fact told to the party and nothing else (the count and the
+  object's name come from the instruction, so the sentence cannot drift from
+  what is really placed); level 2 banks the same `revealzones` effect the
+  montage clause does, which `EncounterZones.ApplyPendingReveals` carries out
+  behind the stage.
+- **Enemy Stamina** drives the game setting `enemystambardisplay`, which the
+  host re-asserts every tick: 0 -> `none`, 1 -> `bar` (a bar, no number),
+  2 -> `val` (bar and exact Stamina). **This changes the game mode's
+  default**: a week WITHOUT Intelligence still forces `bar`, as EotW always
+  has, but a week with it starts the party at `none` and sells them the
+  bars. `EncounterPrep.EnemyStaminaDisplay()` is the single authority and
+  `EnforceStrictRules` reads it.
+
+### Runtime state
+
+```
+data.prep = {
+  beatIndex, phase = "spending"|"resolved"|"done",
+  bars = { { id = "surprise"|"traps"|"stamina", level }, ... },  -- display order
+  start = { [barId] = level },      -- what it opened on, so "bought" reads green
+  spent = { { bar, userid, name, level, at }, ... },
+  ready = { [userid] = { name, at } },
+  applied = { "..." },              -- what the resolution really did
+  requests = { [userid] = { seq, kind, ... } }, handled = { [userid] = seq },
+  startedAt, resolvedAt, doneAt, seq,
+}
+```
+
+There is no `arriving` phase (unlike the montage and the narrative): the host
+tick only runs once the whole party is in, so the first thing anyone sees is
+a screen they can act on. The bar TEXTS are not in the document --
+`EncounterPrep.BarInfo(beat, barId)` derives them from the beat -- so a
+level's wording can change without a stale document contradicting it.
+
+### Implementation
+
+- `EncounterOfTheWeek/EncounterScript.lua`: `EncounterScript.FEATURES`,
+  `ParseFeatureUnlock`, `UnlockedFeatures`, `section.unlocks` / `beat.unlocks`
+  and the three warnings (unknown feature, an `Unlock:` under an option or in
+  a montage entry, Intelligence earned with nothing unlocking it); the
+  `intelligence` effect kind and its `DescribeEffect` line.
+- `EncounterOfTheWeek/EncounterMontage.lua`: `FeatureUnlocked`,
+  `UnlockFeature`, `GetIntelligence`, `GetIntelligenceHistory`, the
+  `intelligence` branch of `ApplyEffects`, and the four new fields in
+  `ResetTest`.
+- `EncounterOfTheWeek/EncounterNarrative.lua`: `ApplyUnlocks`, called from
+  `Begin` (the beat's lines) and when a section opens (its own), plus
+  `narrative.announce`, `ANNOUNCE_SECONDS` and `ActiveAnnounce`.
+- `EncounterOfTheWeek/EncounterPrep.lua` (NEW -- registered in the CodeMod
+  through the MCP workflow, before `EncounterMontageStage`; Firebase
+  persistence confirmed): the whole runtime -- the bar definitions,
+  `Required`, `IsLive`, `StartingSurpriseLevel`, `EnemyStaminaDisplay`, the
+  spend/ready requests, `HostTick`, `Resolve`, a dev driver and
+  `/eotwprep start|stop|state|force|reset|unlock|intelligence <n>`.
+- `EncounterOfTheWeek/EncounterMontageStage.lua`: the unlock callout on the
+  narrative stage (`eotwCallout*`), `CreatePrepStage` and its styles
+  (`eotwPrepTrack`, `eotwPrepPip`, `eotwPrepLevel`, `eotwPrepPool`), and
+  `PREP_HEADER_HEIGHT` -- the preparation header carries the pool under the
+  title, so at the narrative's `HEADER_HEIGHT` the body overlapped it,
+  the `"prep"` body kind in the mounted script stage, and the encounter
+  beat's backdrop falling back to the last scene the script hung.
+- `EncounterOfTheWeek/EncounterOfTheWeekHud.lua`: the Intelligence pool cell,
+  the strip's two-or-three-cell layout, and the blinking rectangle.
+- `EncounterOfTheWeek/EncounterScriptValidator.lua`: unlock lines in the
+  report.
+- `EncounterOfTheWeek/EncounterOfTheWeek.lua`: the preparation ahead of the
+  spawn in `RunScriptBeat`, and `enemystambardisplay` read from
+  `EncounterPrep` in `EnforceStrictRules`.
+- `tests/encounter_script_test.lua`: 370 checks, up from 346.
+
+### Verified 2026-09-20, live in an EotW game
+
+The pools strip growing its third cell with the brain icon; the preparation
+screen opening on the encounter beat with the three bars at their computed
+levels; **real clicks** on "Spend 1 Intelligence" going through the request
+path and the host applying them (traps 0->1, stamina 0->2, the pool counting
+down in the strip and the header); the Proceed button appearing only at 0
+Intelligence, and a Ready REFUSED while a point was still spendable; the
+resolution applying `fairinitiative` + `surprise` for a party that opened
+surprised (`data.initiative.outcome == "surprise"`, `surprised.party` cleared,
+`surprised.enemy` set), banking `revealZones.trap` at traps 2, and
+`enemystambardisplay` following the stamina level; and `Unlock: Intelligence`
+in a narrative beat turning the feature on and a `|+2 Intelligence` option
+filling the pool, end to end, through the real map-script host tick. The
+callout and the blink were then verified on both placements of the line (the
+beat's and a section's), including the rectangle really pulsing (sampled
+bright and dark in consecutive screenshots), with no console errors. The
+press-to-dismiss rule was verified against `ActiveAnnounce` for every phase
+rather than by pressing on in the author's own live game.
+
+**Still to verify**: two clients (a second player spending, and Proceed
+waiting on both); the traps bar at level 2 actually revealing the zones when
+the encounter beat runs the setup for real; the `val` stamina display on a
+live monster's bar; and the whole beat running through to the spawn and
+combat, which the live tests deliberately stopped short of.
+
+### Open ends
+
+- Intelligence does not persist past the week (the game is one encounter);
+  leftover Intelligence is simply unspent, and the Proceed gate means there
+  is normally none.
+- Nothing yet SPENDS Intelligence outside the preparation screen, and nothing
+  takes it away.
+- The bars are fixed: a week cannot author its own rung texts or add a fourth
+  bar. If that is wanted, `EncounterPrep.BarInfo` is the one place that knows
+  them, and the levels would come off the script the way the traps count does.
+
 ---
 
 # Development Plan
@@ -7051,7 +7343,39 @@ no core change.
 
 # Status
 
-- 2026-09-20 (script validator, latest): **A dev-only "Encounter Script"
+- 2026-09-20 (Intelligence + Tactical Preparation, latest): **A narrative
+  beat can write `Unlock: Intelligence` to turn the feature on; a montage or
+  narrative outcome can pay `+1 Intelligence` into a party-shared pool shown
+  beside Malice and Hero Tokens (`phosphor/brain.png`); and at the outset of
+  the encounter the party spends it on a Tactical Preparation screen -- three
+  bars (Surprise, Traps, Enemy Stamina), 1 Intelligence a notch, any player
+  may spend, Proceed offered once the pool is empty and taken when every
+  player has pressed it. The unlock explains itself on the spot: a callout
+  under the section's text ("Intelligence is an important currency! ...")
+  while a white rectangle blinks round the pool in the strip, until the
+  party presses on. BUILT; parser unit-tested (370 checks, up from 346);
+  VERIFIED live in an EotW game through the real host tick, short of the
+  spawn. UNCOMMITTED, and NOT deployed to the cloud mod.** Design under
+  "Optional features" and "Intelligence and Tactical Preparation", which also
+  lists what is still to verify (two clients; the trap reveal actually
+  landing; the `val` stamina bar; the beat running on into combat). Files:
+  `EncounterOfTheWeek/EncounterPrep.lua` (NEW -- registered in the CodeMod
+  via the MCP workflow, before `EncounterMontageStage`; Firebase persistence
+  confirmed), `EncounterScript.lua`, `EncounterMontage.lua`,
+  `EncounterNarrative.lua`, `EncounterMontageStage.lua`,
+  `EncounterOfTheWeekHud.lua`, `EncounterScriptValidator.lua`,
+  `EncounterOfTheWeek.lua`, `tests/encounter_script_test.lua`.
+  **Note for the next session: registering a new file in the CodeMod needs an
+  app RESTART -- `reload_lua` re-runs what the app already read and does not
+  re-read the mod from the git folder after the file list changes. And never
+  `dofile` these files into the running app: `dmhub.GetModLoading()` returns
+  nil outside a real mod load, so every `mod:GetDocumentSnapshot` in the
+  freshly loaded chunk dies and the EotW runtime is broken until a restart.**
+  **The week's own document does not use any of this yet** -- no
+  `Unlock: Intelligence` line and no `+N Intelligence` outcome has been
+  written into it, so the live week plays exactly as it did before.
+
+- 2026-09-20 (script validator): **A dev-only "Encounter Script"
   dockable panel (Panels > Development Tools, or `/eotwvalidate`) reads a
   week's journal document through the runtime parser and reports it:
   beats, rounds, entries with their tags, every tier line with the

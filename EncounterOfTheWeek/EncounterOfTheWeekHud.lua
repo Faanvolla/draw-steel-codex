@@ -1371,6 +1371,9 @@ local ROSTER_MIN_SCALE = 0.4
 --off the roster's budget (see CreateEncounterPoolsPanel).
 local POOLS_HEIGHT = 40
 local POOLS_GAP = 8
+--one pool's slot in the strip. Two pools make a strip exactly as wide as a
+--hero card; a third (Intelligence) makes it half a card wider.
+local POOL_CELL_WIDTH = CARD_WIDTH / 2
 
 local function RosterHeightBudget()
     local layerHeight = 1048
@@ -1564,6 +1567,8 @@ local function PoolValue(kind)
     pcall(function()
         if kind == "malice" then
             value = CharacterResource.GetMalice() or 0
+        elseif kind == "intelligence" then
+            value = EncounterMontage.GetIntelligence()
         else
             value = CharacterResource.GetGlobalResource(CharacterResource.heroTokenId) or 0
         end
@@ -1574,10 +1579,38 @@ end
 local function PoolHistory(kind)
     local history = {}
     pcall(function()
+        if kind == "intelligence" then
+            history = EncounterMontage.GetIntelligenceHistory()
+            return
+        end
         local id = cond(kind == "malice", CharacterResource.maliceResourceId, CharacterResource.heroTokenId)
         history = CharacterResource.GetGlobalResourceHistory(id) or {}
     end)
     return history
+end
+
+--Intelligence is an optional feature: only a week whose script asked for it
+--("Unlock: Intelligence") has a pool, and until it does the strip carries
+--the two pools it always has.
+local function IntelligenceUnlocked()
+    local on = false
+    pcall(function() on = EncounterMontage.FeatureUnlocked("intelligence") end)
+    return on
+end
+
+--Which pool (if any) the stage is explaining right now. While a narrative
+--section's "Unlock: <Feature>" callout is up, that pool's cell blinks a white
+--rectangle so the party can see WHICH number the explanation is about.
+local function AnnouncedFeature()
+    local feature = nil
+    pcall(function()
+        local narrative = rawget(_G, "EncounterNarrative")
+        if narrative ~= nil and narrative.ActiveAnnounce ~= nil then
+            local announce = narrative.ActiveAnnounce()
+            feature = announce ~= nil and announce.feature or nil
+        end
+    end)
+    return feature
 end
 
 --the malice cost diamond the action bar / initiative bar use, shrunk to
@@ -1605,10 +1638,91 @@ local function CreateMaliceDiamond()
     }
 end
 
+--What each pool IS, over and above the change history the cell already
+--shows on hover: a player meeting the strip for the first time gets told
+--what the number is for. The hero token copy is the character panel's own
+--tooltip (MCDMCharacterPanel HERO_TOKEN_TOOLTIP), kept word for word so the
+--two never drift apart.
+local POOL_TITLE = {
+    malice = "Malice",
+    herotokens = "Hero Tokens",
+    intelligence = "Intelligence",
+}
+
+local POOL_EXPLANATION = {
+    malice = [==[**Malice**
+
+This is a power used by Monsters to charge their most powerful abilities. Beware that it will be used against you in battle!]==],
+
+    herotokens = [==[**Hero Tokens**
+* You can spend a hero token to gain two surges.
+* You can spend a hero token when you fail a saving throw to succeed instead.
+* You can reroll the result of a test. You must use the new result.
+* You can spend 2 hero tokens to regain Stamina equal to your Recovery value without spending a Recovery.]==],
+
+    intelligence = [==[**Intelligence**
+
+The amount of awareness you have of what you are up against. It can be used at the start of a fight to control how much you know about the encounter.]==],
+}
+
+local POOL_TOOLTIP_WIDTH = 420
+
+--One tooltip card: the explanation, then the pool's change history under it
+--when there is any. The history cannot simply go in gui.StatsHistoryTooltip's
+--own `text` argument -- that is a bare auto-width label, so a paragraph handed
+--to it runs off the screen in a single line -- and the panel it returns paints
+--no background of its own here, so the card's chrome is this panel's.
+local function CreatePoolTooltip(kind, description)
+    --- @type Panel[]
+    local children = {
+        gui.Label{
+            markdown = true,
+            text = POOL_EXPLANATION[kind],
+            width = "auto",
+            height = "auto",
+            maxWidth = POOL_TOOLTIP_WIDTH,
+            fontSize = 20,
+            color = "#ffffff",
+        },
+    }
+
+    local entries = PoolHistory(kind)
+    if entries ~= nil and #entries > 0 then
+        children[#children+1] = gui.StatsHistoryTooltip{
+            description = description,
+            entries = entries,
+        }
+    end
+
+    --the standard tooltip chrome (CreateTooltipPanel's own styling), so a
+    --pool tooltip looks like every other tooltip in the game.
+    return gui.Panel{
+        bgimage = "panels/square.png",
+        bgcolor = "#000000ff",
+        border = 1,
+        borderColor = "#000000ff",
+        cornerRadius = 10,
+        hpad = 20,
+        vpad = 14,
+        width = "auto",
+        height = "auto",
+        flow = "vertical",
+        halign = "center",
+        valign = "bottom",
+        children = children,
+    }
+end
+
 local function CreatePoolCell(kind)
     local icon
     if kind == "malice" then
         icon = CreateMaliceDiamond()
+    elseif kind == "intelligence" then
+        icon = gui.Panel{
+            classes = {"eotwPoolIcon", "intelligence"},
+            bgimage = "phosphor/brain.png",
+            interactable = false,
+        }
     else
         icon = gui.Panel{
             classes = {"eotwPoolIcon"},
@@ -1631,10 +1745,53 @@ local function CreatePoolCell(kind)
         end,
     }
 
-    local description = cond(kind == "malice", "Malice", "Hero Tokens")
+    local description = POOL_TITLE[kind]
+
+    --The blink: a white rectangle over the cell, invisible until the stage is
+    --explaining this pool. It floats, so it frames the cell without taking
+    --part in its layout, and it fades in and out on the shared blink clock so
+    --it pulses in step with the callout that sent the party looking.
+    local highlight = gui.Panel{
+        floating = true,
+        interactable = false,
+        width = "100%",
+        height = "100%",
+        halign = "center",
+        valign = "center",
+        bgimage = "panels/square.png",
+        bgcolor = "#00000000",
+        border = 2,
+        borderColor = "#ffffffff",
+        cornerRadius = 6,
+        opacity = 0,
+        --selfStyle is write-mostly here: reading back a key the style never
+        --set raises ("Error indexing userdata"), so the last value we wrote
+        --is kept in data and the think only writes when it changes.
+        data = { blinking = false, opacity = 0 },
+        blinkPool = function(element, feature)
+            element.data.blinking = (feature == kind)
+        end,
+        thinkTime = 0.05,
+        think = function(element)
+            local alpha = 0
+            if element.data.blinking then
+                pcall(function() alpha = EncounterMontage.FeatureBlinkAlpha() end)
+            end
+            if alpha ~= element.data.opacity then
+                element.data.opacity = alpha
+                element.selfStyle.opacity = alpha
+            end
+        end,
+    }
 
     return gui.Panel{
         classes = {"eotwPoolCell"},
+        data = { kind = kind },
+        --a panel with no bgimage is not hit-tested, so the cell needs a
+        --(fully transparent) one of its own or the pointer sails past it to
+        --the strip behind and neither the hover tint nor the tooltip fires.
+        bgimage = "panels/square.png",
+        bgcolor = "#00000000",
         --the diamond is rotated, so give it a square slot of its own to
         --spin in rather than letting the flow measure its unrotated box.
         gui.Panel{
@@ -1646,18 +1803,48 @@ local function CreatePoolCell(kind)
             icon,
         },
         value,
+        highlight,
 
         hover = function(element)
-            element.tooltip = gui.StatsHistoryTooltip{
-                description = description,
-                entries = PoolHistory(kind),
-            }
+            element.tooltip = CreatePoolTooltip(kind, description)
         end,
     }
 end
 
 local function CreateEncounterPoolsPanel()
-    return gui.Panel{
+    local cells = {
+        CreatePoolCell("malice"),
+        CreatePoolCell("herotokens"),
+        CreatePoolCell("intelligence"),
+    }
+    --the strip grows a cell wide when the week has an Intelligence pool, so
+    --three pools are never squeezed into two pools' worth of strip.
+    local m_cellCount = nil
+    local strip
+
+    local m_announced = nil
+
+    local function RefreshLayout()
+        local intelligence = IntelligenceUnlocked()
+        cells[3]:SetClass("collapsed", not intelligence)
+        --the blink follows whatever the stage is explaining; nil turns every
+        --cell's rectangle off again.
+        local announced = AnnouncedFeature()
+        if announced ~= m_announced then
+            m_announced = announced
+            strip:FireEventTree("blinkPool", announced)
+        end
+        local count = cond(intelligence, 3, 2)
+        if count ~= m_cellCount then
+            m_cellCount = count
+            strip.selfStyle.width = POOL_CELL_WIDTH * count
+            for _, cell in ipairs(cells) do
+                cell.selfStyle.width = string.format("%.4f%%", 100 / count)
+            end
+        end
+    end
+
+    strip = gui.Panel{
         id = "eotwEncounterPools",
         classes = {"eotwPoolsStrip"},
         --a plain panel paints no background without a bgimage.
@@ -1715,27 +1902,35 @@ local function CreateEncounterPoolsPanel()
             },
         },
 
-        CreatePoolCell("malice"),
-        CreatePoolCell("herotokens"),
+        children = cells,
 
         create = function(element)
+            RefreshLayout()
             element:FireEventTree("refreshPools")
         end,
 
         monitorGame = CharacterResource.GlobalResourcePath(),
         refreshGame = function(element)
+            RefreshLayout()
             element:FireEventTree("refreshPools")
         end,
 
-        thinkTime = 1,
+        --Four times a second, not once: this panel monitors the global
+        --RESOURCE document, so nothing here fires when the script document
+        --changes -- and Intelligence, the feature gate and the unlock blink
+        --all live there. A tick is a handful of table reads.
+        thinkTime = 0.25,
         think = function(element)
             if mod.unloaded then
                 element:DestroySelf()
                 return
             end
+            RefreshLayout()
             element:FireEventTree("refreshPools")
         end,
     }
+
+    return strip
 end
 
 --The whole right-rail widget: the pools strip above the hero roster. Both

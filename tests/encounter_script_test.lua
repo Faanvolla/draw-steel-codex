@@ -1018,4 +1018,75 @@ local notATag = EncounterScript.Parse(table.concat({
 }, string.char(10)))
 check(notATag.beats[1].rounds[1].entries[1].name == "The Cottage (Abandoned)", "a parenthesis that is not a tag stays in the name")
 
+
+--- feature unlocks: "Unlock: Intelligence" in a narrative beat --------------
+
+local intel = EncounterScript.Parse(table.concat({
+    "# Narrative", "",
+    "Unlock: Intelligence", "",
+    "## The Briefing", "",
+    "You study the ground.", "",
+    "### Press on", "",
+    "|+1 Intelligence", "",
+    "## The Scouting", "",
+    "Unlock: intelligence", "",
+    "### Look closer", "",
+    "|You gain two intelligence",
+}, string.char(10)))
+local nbeat = intel.beats[1]
+check(#intel.warnings == 0, "a narrative beat with an Unlock: line parses clean: " .. table.concat(intel.warnings, "; "))
+check(#(nbeat.unlocks or {}) == 1, "an Unlock: line above the first section is the beat's")
+check(nbeat.unlocks[1].feature == "intelligence", "and names the feature by key")
+check(nbeat.unlocks[1].name == "Intelligence", "with the feature's own spelling, not the author's")
+check(#(nbeat.sections[1].unlocks or {}) == 0, "a beat-level unlock is not also the first section's")
+check(#(nbeat.sections[2].unlocks or {}) == 1, "an Unlock: line inside a section is that section's")
+check(nbeat.sections[1].text == "You study the ground.", "the Unlock: line is not left in the prose")
+check(EncounterScript.UnlockedFeatures(intel).intelligence == true, "UnlockedFeatures reports it")
+
+local effect1 = nbeat.sections[1].options[1].effects[1]
+check(effect1.kind == "intelligence" and effect1.qty == 1, "'+1 Intelligence' is an intelligence clause")
+local effect2 = nbeat.sections[2].options[1].effects[1]
+check(effect2.kind == "intelligence" and effect2.qty == 2, "'You gain two intelligence' is too")
+check(EncounterScript.EffectIsMechanical(effect1), "and it is mechanical, so a display lights it up")
+check(string.find(EncounterScript.DescribeEffect(effect2), "2 Intelligence", 1, true) ~= nil,
+    "described in plain English: " .. EncounterScript.DescribeEffect(effect2))
+check(string.find(EncounterScript.Describe(intel), "unlocks feature: Intelligence", 1, true) ~= nil,
+    "the dump names the feature")
+
+for _, spelling in ipairs({ "+3 intelligence", "3 Intelligence", "gain +3 intelligence",
+                            "The party gains 3 Intelligence", "Each party member gains 3 intelligence" }) do
+    local one = EncounterScript.ParseEffects(spelling)[1]
+    check(one.kind == "intelligence" and one.qty == 3, "spelling '" .. spelling .. "' is an intelligence clause")
+end
+
+--an unknown feature name, and an Unlock: written where it cannot work
+local badFeature = EncounterScript.Parse(table.concat({
+    "# Narrative", "", "Unlock: Telepathy", "", "## A Section", "", "Text.",
+}, string.char(10)))
+check(#badFeature.warnings == 1 and string.find(badFeature.warnings[1], "Telepathy", 1, true) ~= nil,
+    "an unknown feature name warns")
+check(#(badFeature.beats[1].unlocks or {}) == 0, "and unlocks nothing")
+
+local inOption = EncounterScript.Parse(table.concat({
+    "# Narrative", "", "## A Section", "", "### An Option", "", "Unlock: Intelligence", "",
+}, string.char(10)))
+check(#inOption.warnings == 1 and string.find(inOption.warnings[1], "under the option", 1, true) ~= nil,
+    "an Unlock: under an option warns")
+check(EncounterScript.UnlockedFeatures(inOption).intelligence == nil, "and does not unlock the feature")
+
+local inMontage = EncounterScript.Parse(table.concat({
+    "# Montage", "", "## Round 1", "", "## Opportunity: The Cottage", "", "Unlock: Intelligence", "",
+    "### Knock", "|Knock: Presence", "|You fail at the test", "|+1 malice", "|+2 malice",
+}, string.char(10)))
+check(#inMontage.warnings == 1 and string.find(inMontage.warnings[1], "narrative beat", 1, true) ~= nil,
+    "an Unlock: in a montage entry warns")
+
+--Intelligence earned in a script that never unlocks the feature
+local orphan = EncounterScript.Parse(table.concat({
+    "# Montage", "", "## Round 1", "", "## Opportunity: The Cottage", "",
+    "### Knock", "|Knock: Presence", "|You fail at the test", "|+1 Intelligence", "|+2 Intelligence",
+}, string.char(10)))
+check(#orphan.warnings == 1 and string.find(orphan.warnings[1], "nothing unlocks Intelligence", 1, true) ~= nil,
+    "an intelligence clause with no unlock warns: " .. table.concat(orphan.warnings, "; "))
+
 print(string.format("encounter_script_test: %d checks passed", passed))

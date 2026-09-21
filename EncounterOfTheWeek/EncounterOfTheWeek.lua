@@ -2021,10 +2021,23 @@ local g_forcedGameSettings = {
 
 --Force every forced game setting to its value, writing only the ones not
 --already there (these are game-scoped settings, so each write replicates).
+--
+--"enemystambardisplay" is the one that is not a constant: a week that
+--unlocked Intelligence sells the enemy's health on the Tactical Preparation
+--screen, so the level the party bought decides what the bars show (nothing
+--at all until they buy the first notch). Weeks without the feature keep the
+--game mode's own "bar only" (EncounterPrep.EnemyStaminaDisplay).
 local function EnforceStrictRules()
     for _,entry in ipairs(g_forcedGameSettings) do
-        if dmhub.GetSettingValue(entry.id) ~= entry.value then
-            dmhub.SetSettingValue(entry.id, entry.value)
+        local value = entry.value
+        if entry.id == "enemystambardisplay" then
+            local prep = rawget(_G, "EncounterPrep")
+            if prep ~= nil then
+                pcall(function() value = prep.EnemyStaminaDisplay() end)
+            end
+        end
+        if dmhub.GetSettingValue(entry.id) ~= value then
+            dmhub.SetSettingValue(entry.id, value)
         end
     end
 end
@@ -2161,10 +2174,22 @@ local function RunScriptBeat(ctx)
         return
     end
 
-    --the encounter beat: the script's setup instructions (traps placed in
-    --their zones, the spare zones trimmed away) and then the spawn
-    --(idempotent -- already-present monsters are left alone), then Draw
-    --Steel once both sides exist.
+    --the encounter beat. First, when the week unlocked Intelligence, the
+    --Tactical Preparation screen: the party spends what they learned on
+    --surprise, the traps and the enemy's health. It runs BEFORE the setup
+    --below because what they buy decides it -- a trap reveal is banked here
+    --and applied with the rest when the zones go down.
+    local prep = rawget(_G, "EncounterPrep")
+    if prep ~= nil and prep.Required() then
+        local status = prep.HostTick(script, beat, index)
+        if status ~= "done" then
+            return
+        end
+    end
+
+    --then the script's setup instructions (traps placed in their zones, the
+    --spare zones trimmed away) and the spawn (idempotent -- already-present
+    --monsters are left alone), then Draw Steel once both sides exist.
     local zones = rawget(_G, "EncounterZones")
     if zones ~= nil then
         local okSetup, errSetup = pcall(zones.RunEncounterSetup, beat)
