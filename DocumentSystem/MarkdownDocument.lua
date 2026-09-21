@@ -7064,6 +7064,72 @@ local function CreateMarkdownToolbar(opts)
         } end
     end
 
+    --A blank power roll in our block syntax: a "|Name: Characteristic" header
+    --followed by one "|outcome" line per tier. The header names a real
+    --characteristic so the rendered block's roll link resolves out of the box,
+    --and the tier wording matches the stylesheet showcase sample.
+    local POWER_ROLL_STARTER =
+        "\n|Might Test: Might\n|You fail.\n|You succeed at a cost.\n|You succeed.\n"
+
+    --The block header carries exactly one characteristic, but a test may suggest
+    --several, so take the first in the game's canonical order. Falls back to the
+    --starter's default for a group with no skill behind it (the legacy "Tests"
+    --group), which keeps the roll link resolvable either way.
+    local function PowerRollBlockCharacteristic(group, index)
+        local characteristics = PowerRollTableGroup.GetCharacteristics(group, index)
+        for _, attrid in ipairs(creature.attributeIds) do
+            if characteristics[attrid] then
+                return creature.attributesInfo[attrid].description
+            end
+        end
+
+        return "Might"
+    end
+
+    --Turn one authored power roll table into the block syntax. Tier text is
+    --emitted verbatim -- no tier string in the compendium contains a "|" or a
+    --newline, the two characters that would break the block apart.
+    local function PowerRollBlockText(id)
+        local group, index = PowerRollTableGroup.GetGroupAndIndex(id)
+        if group == nil then
+            return nil
+        end
+
+        local powerTable = group.tables[index]
+        if powerTable == nil then
+            return nil
+        end
+
+        local lines = {
+            string.format("|%s - %s: %s", group.name, powerTable.name,
+                PowerRollBlockCharacteristic(group, index)),
+        }
+
+        for _, tier in ipairs(powerTable.tiers) do
+            lines[#lines + 1] = string.format("|%s", tier)
+        end
+
+        --Leading and trailing newline so the block lands on its own lines, the
+        --same shape the blank starter inserts.
+        return string.format("\n%s\n", table.concat(lines, "\n"))
+    end
+
+    --Options for the Power Roll menu: the blank starter, then every authored
+    --test. CreateDropdownOptions is the same list the Request Rolls dialog
+    --offers, so the two stay in step as tests are added.
+    local function PowerRollMenuOptions()
+        local result = {
+            { id = "", text = "Power Roll" },
+            { id = "//blank", text = "Blank power roll" },
+        }
+
+        for _, option in ipairs(PowerRollTableGroup.CreateDropdownOptions()) do
+            result[#result + 1] = option
+        end
+
+        return result
+    end
+
     --Insert a rich tag from the Insert Media / Insert Widget menus.
     --Named tags ([[dice]], [[image]], ...) are inserted by name and get their
     --own line. Pattern tags (macro/bar/counter/checkbox/setting) are matched on
@@ -7381,14 +7447,41 @@ local function CreateMarkdownToolbar(opts)
         --separator row is optional in our dialect but emitting it keeps the
         --markdown portable (GitHub/Obsidian) and carries column alignment.
         ToolbarButton("Table",   14, 56, InsertHandler("\n|Header|Header|\n|---|---|\n|Cell|Cell|\n|Cell|Cell|\n", 2)),
-        --starter power roll in our block syntax: a "|Name: Attr" header line
-        --followed by one "|outcome" line per tier (an optional 4th line adds
-        --the critical tier). The header names a real characteristic so the
-        --rendered block's roll link resolves out of the box, and the tier
-        --wording matches the stylesheet showcase sample. Caret lands at the
-        --start of the name, the same place the Table button leaves it.
-        ToolbarButton("Power Roll", 14, 88, InsertHandler(
-            "\n|Might Test: Might\n|You fail.\n|You succeed at a cost.\n|You succeed.\n", 2)),
+        --Power rolls are usually a heroic test out of the compendium rather than
+        --something authored from scratch, so this is a menu over the authored
+        --tests with the blank starter kept as its first entry. Searchable
+        --because there are 200+ of them. Caret lands at the start of the name,
+        --the same place the Table button leaves it.
+        gui.Dropdown{
+            width = 116, height = 30, idChosen = "", hmargin = 3,
+            hasSearch = true,
+            --Test names are far longer than the toolbar can spare, so detach the
+            --open menu from the control's width rather than wrapping every entry
+            --over three lines. Left-aligned so it opens rightward from the button
+            --instead of straddling it, which also puts the search field on top of
+            --the control rather than off to its left.
+            menuWidth = 440,
+            menuAlign = "left",
+            options = PowerRollMenuOptions(),
+            change = function(element)
+                local chosen = element.idChosen
+                element.idChosen = ""
+
+                if chosen == "" then
+                    return
+                end
+
+                if chosen == "//blank" then
+                    ApplyAction{ mode = "insert", text = POWER_ROLL_STARTER, caretOffset = 2 }
+                    return
+                end
+
+                local text = PowerRollBlockText(chosen)
+                if text ~= nil then
+                    ApplyAction{ mode = "insert", text = text, caretOffset = 2 }
+                end
+            end,
+        },
 
         GroupDivider(),
 

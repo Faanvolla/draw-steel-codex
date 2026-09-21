@@ -33,6 +33,7 @@ end
 --- @field textDefault nil|string The text to display for the dropdown if there is no option currently chosen.
 --- @field options DropdownOption[] The possible options to choose from
 --- @field hasSearch nil|boolean If true, this dropdown will provide an input field to search it. Good to use on dropdowns with many options.
+--- @field menuAlign nil|"left"|"center"|"right" How the open menu sits against the control; defaults to "center". Only has an effect alongside menuWidth, since otherwise the menu matches the control's width exactly. "left" also brings the search field over the control.
 --- @field sort nil|boolean Sorts @see options before displaying.
 --- @field centerPopup nil|boolean If true, the menu that displays from this dropdown will appear parented to the root of the panel hierarchy and in the center -- i.e. it should pop up in the middle of the screen rather than attached to the dropdown.
 
@@ -87,7 +88,12 @@ function gui.Dropdown(args)
 
 	local menuWidth = args.menuWidth
 	args.menuWidth = nil
- 
+
+	--Only meaningful alongside menuWidth: without it the menu is exactly as wide
+	--as the control, so centering and left-aligning place it identically.
+	local menuAlign = args.menuAlign
+	args.menuAlign = nil
+
 	local npopup = 0
  
 	local m_idToIndex = {}
@@ -431,8 +437,17 @@ function gui.Dropdown(args)
 				element:SetClass("expandedBottom", true)
 			end
  
+			--The engine owns the popup's placement, so halign on it anchors the menu
+			--BESIDE the control and an x offset is ignored outright. To left-align,
+			--keep the popup itself the width of the control (so it sits centered over
+			--it) and let the wider menu overflow rightward from inside. That also
+			--lands the search field on the control, since the field is positioned
+			--from this panel's left edge.
+			local leftAligned = (menuAlign == "left" and menuWidth ~= nil)
+
 			local popup = gui.Panel{
-				width = "auto",
+				width = cond(leftAligned,
+					parentPanel.renderedWidth * parentPanel.renderedScale.x, "auto"),
 				height = menuHeight + cond(m_centerPopup, 16, 0),
 				scale = parentPanel.renderedScale.x,
 				valign = valign,
@@ -441,6 +456,9 @@ function gui.Dropdown(args)
                     classes = {"dropdownBorder", cond(menuWidth ~= nil, "detached")},
                     width = menuWidth or element.renderedWidth,
                     height = "auto",
+                    --nil, not "center", when not left-aligning: this panel carried no
+                    --halign before, and every other dropdown must keep its default.
+                    halign = cond(leftAligned, "left"),
                     valign = cond(m_centerPopup, "center", cond(showTop, "bottom", "top")),
                     maxHeight = cond(not hasSubmenus, menuHeight),
 				    menu,
