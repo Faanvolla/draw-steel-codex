@@ -340,6 +340,15 @@ check(EncounterScript.ParseEffects("You are immune to surprise")[1].kind == "nos
 local stillSurprised = EncounterScript.ParseEffects("You are surprised")
 check(stillSurprised[1].kind == "initiative" and stillSurprised[1].outcome == "surprised", "'you are surprised' still means surprised")
 check(string.find(EncounterScript.DescribeEffect(immune[2]), "cannot be surprised", 1, true) ~= nil, "describe surprise immunity")
+--a "surprised" outcome announced while the party is already warded
+--has to say both halves: the monsters go first, but nobody is
+--Surprised. Without the second half the line contradicted the
+--immunity the party had just been told it had.
+check(EncounterScript.DescribeInitiativeOutcome("surprised") == "The heroes will begin the encounter surprised", "surprised, unwarded")
+local warded = EncounterScript.DescribeInitiativeOutcome("surprised", true)
+check(string.find(warded, "lose initiative", 1, true) ~= nil, "surprised under immunity still loses initiative")
+check(string.find(warded, "cannot be surprised", 1, true) ~= nil, "surprised under immunity says so")
+check(EncounterScript.DescribeInitiativeOutcome("surprise", true) == "The heroes will surprise the enemy", "immunity does not touch surprising the enemy")
 --"you know the stamina of goblins": monster intelligence reveal by keyword
 local know = EncounterScript.ParseEffects("You know the Stamina of Goblins.")
 check(know[1].kind == "knowstamina" and know[1].keyword == "goblin", "you know the stamina of goblins -> goblin")
@@ -757,5 +766,256 @@ check(sawOverdraw, "asking for more than the round has warns")
 check(EncounterScript.ChooseRemovedEntries(overdraw.beats[1], 3, first)["r1/threat/mire"] == true, "and drops everything it can")
 check(string.find(EncounterScript.Describe(sp), "scaling: 3-5 players -> -1 opportunity, -1 threat", 1, true) ~= nil, "dump lists the directives")
 check(string.find(EncounterScript.Describe(sp), "Hunter's Camp (required)", 1, true) ~= nil, "dump marks required entries")
+
+--- locked entries and "Unlock <name>" -------------------------------------
+
+local LOCKED = table.concat({
+    "# Montage", "",
+    "## Round 1", "",
+    "## Opportunity: Capture the Goblin", "",
+    "A goblin scout blunders into you.", "",
+    "### Grab it", "",
+    "|Grab Test: Might (Grapple)",
+    "|You fail at the test",
+    "|You gain a Rope. {Unlock Interrogate the Goblin}",
+    "|You gain a Rope, {Unlock Interrogate the Goblin}, and it squeals!", "",
+    "## Opportunity: Interrogate the Goblin (Locked)", "",
+    "The goblin, trussed up, eyes you sullenly.", "",
+    "### Question it", "",
+    "|Interrogation Test: Presence (Interrogate)",
+    "|You fail at the test",
+    "|+1 malice",
+    "|You gain two Healing Potions. {Unlock the Pact}", "",
+    "## Round 2", "",
+    "## Threat: The Pact (Required, Locked)", "",
+    "Consequence: Each party member loses 3 stamina", "",
+    "### Break it", "",
+    "|Ritual Test: Reason (Magic)",
+    "|You fail at the test",
+    "|The threat is vanquished",
+    "|The threat is vanquished",
+}, string.char(10))
+
+local lk = EncounterScript.Parse(LOCKED)
+local lkb = lk.beats[1]
+local capture = lkb.rounds[1].entries[1]
+local interrogate = lkb.rounds[1].entries[2]
+local pact = lkb.rounds[2].entries[1]
+check(interrogate.name == "Interrogate the Goblin" and interrogate.locked == true, "(Locked) sets the flag and leaves the name")
+check(capture.locked == false, "an untagged entry is not locked")
+check(pact.name == "The Pact" and pact.locked == true and pact.required == true, "(Required, Locked) sets both and leaves the name")
+
+local unlockEffects = capture.options[1].roll.effects[2]
+check(#unlockEffects == 2, "'You gain a Rope. {Unlock ...}' is two clauses")
+check(unlockEffects[1].kind == "item" and unlockEffects[1].hidden == nil, "the visible clause is not hidden")
+check(unlockEffects[2].kind == "unlock" and unlockEffects[2].hidden == true, "the braced clause is an unlock, hidden")
+check(unlockEffects[2].name == "Interrogate the Goblin", "the unlock keeps the name as written")
+check(unlockEffects[2].key == EncounterScript.MatchKey(interrogate.name), "the unlock key matches the locked entry")
+check(EncounterScript.TierDisplayText(capture.options[1].roll, 2, true) == "You gain a Rope.", "a hidden clause is not shown")
+check(EncounterScript.TierDisplayText(capture.options[1].roll, 3, true) == "You gain a Rope, and it squeals!", "a hidden clause mid-line leaves no stranded comma")
+check(string.find(EncounterScript.MarkupRules(capture.options[1].roll.tiers[2], "<b>", "</b>"), "{", 1, true) == nil, "markup never shows a brace")
+for _, w in ipairs(lk.warnings) do
+    check(string.find(w, "Locked", 1, true) == nil and string.find(w, "unlock", 1, true) == nil,
+        "a well-formed locked montage raises no lock warnings (got: " .. w .. ")")
+end
+
+check(EncounterScript.MatchKey("  The   Old Mill.  ") == "old mill", "the entry key drops 'the', case, spacing and punctuation")
+check(EncounterScript.ParseUnlockClause("Unlocks the Old Mill") == "the Old Mill", "'Unlocks <name>' is an unlock")
+check(EncounterScript.ParseUnlockClause("you unlock The Old Mill") == "The Old Mill", "'you unlock <name>' is an unlock")
+check(EncounterScript.ParseUnlockClause("the party unlocks The Old Mill") == "The Old Mill", "'the party unlocks <name>' is an unlock")
+check(EncounterScript.ParseUnlockClause("You unlock") == nil, "'You unlock' with no name is not an unlock")
+check(EncounterScript.ParseUnlockClause("You gain a Rope") == nil, "an ordinary clause is not an unlock")
+
+check(EncounterScript.VisibleText("You gain a Rope") == "You gain a Rope", "an unbraced line is untouched")
+check(EncounterScript.VisibleText("{Unlock the Old Mill}") == "", "a wholly hidden line shows nothing")
+check(EncounterScript.VisibleText("{Unlock the Old Mill}. You gain a Rope") == "You gain a Rope", "a leading hidden clause leaves no stranded separator")
+check(EncounterScript.VisibleText("You gain a Rope. {Unlock the Old Mill") == "You gain a Rope.", "an unterminated brace hides the rest of the line")
+local unterminated = EncounterScript.ParseEffects("You gain a Rope. {Unlock the Old Mill")
+check(#unterminated == 2 and unterminated[2].kind == "unlock" and unterminated[2].hidden == true, "and still applies what is inside it")
+
+--the draw never touches a locked entry, so an "Unlock" outcome cannot
+--point at a card that was quietly removed.
+local lockScaled = EncounterScript.Parse(table.concat({
+    "# Montage", "", "## Round 1", "3 Players: -1 Opportunity", "",
+    "## Opportunity: Interrogate the Goblin (Locked)", "",
+    "### Question it", "|Ask: Presence", "|You fail at the test", "|+1 malice", "|+2 malice", "",
+    "## Opportunity: Mysterious Cottage", "",
+    "### Knock", "|Knock: Presence", "|You fail at the test", "|+1 malice", "|+2 malice",
+}, string.char(10)))
+local lockDrawn = EncounterScript.ChooseRemovedEntries(lockScaled.beats[1], 3, first)
+check(lockDrawn["r1/opportunity/interrogate-the-goblin"] == nil, "(Locked) is never drawn by a party-size directive")
+check(lockDrawn["r1/opportunity/mysterious-cottage"] == true, "the unlocked entry is the one that goes")
+check(string.find(EncounterScript.Describe(lk), "Interrogate the Goblin (locked)", 1, true) ~= nil, "dump marks locked entries")
+check(string.find(EncounterScript.Describe(lk), "The Pact (required) (locked)", 1, true) ~= nil, "dump marks both tags")
+
+local badUnlock = EncounterScript.Parse(table.concat({
+    "# Montage", "", "## Round 1", "",
+    "## Opportunity: Capture the Goblin", "",
+    "### Grab it", "|Grab: Might", "|You fail at the test", "|+1 malice", "|{Unlock Nobody At All}",
+}, string.char(10)))
+local sawBadUnlock, sawOrphanLock = false, false
+for _, w in ipairs(badUnlock.warnings) do
+    if string.find(w, "names no '(Locked)'", 1, true) then sawBadUnlock = true end
+end
+check(sawBadUnlock, "an unlock that names nothing warns")
+local orphanLock = EncounterScript.Parse(table.concat({
+    "# Montage", "", "## Round 1", "",
+    "## Opportunity: Interrogate the Goblin (Locked)", "",
+    "### Question it", "|Ask: Presence", "|You fail at the test", "|+1 malice", "|+2 malice",
+}, string.char(10)))
+for _, w in ipairs(orphanLock.warnings) do
+    if string.find(w, "is (Locked) but nothing unlocks it", 1, true) then sawOrphanLock = true end
+end
+check(sawOrphanLock, "a locked entry nothing unlocks warns")
+
+--- standing edges and banes: "Edge on <option>" -----------------------------
+
+local function ModOf(text)
+    return EncounterScript.ParseEffects(text)[1]
+end
+check(ModOf("Edge on Capture Them").kind == "testmod", "'Edge on X' is a test modifier")
+check(ModOf("Edge on Capture Them").effect == "edge", "and carries the rider effect")
+check(ModOf("Edge on Capture Them").name == "Capture Them", "and the option name as written")
+check(ModOf("Edge on Capture Them").key == EncounterScript.MatchKey("capture them"), "and its match key")
+check(ModOf("Double Edge on Capture Them").effect == "doubleedge", "'Double Edge on X'")
+check(ModOf("Bane on Capture Them").effect == "bane", "'Bane on X'")
+check(ModOf("Double Bane on Capture Them").effect == "doublebane", "'Double Bane on X'")
+check(ModOf("you gain an edge on Capture Them").effect == "edge", "'you gain an edge on X'")
+check(ModOf("The party has a bane on Capture Them").effect == "bane", "'the party has a bane on X'")
+check(ModOf("Each party member gains a double edge on Capture Them").effect == "doubleedge", "'each party member gains ...'")
+check(ModOf("you gain an edge on Capture Them").name == "Capture Them", "a lead-in does not eat the name")
+check(ModOf("You gain a Rope").kind == "item", "an ordinary grant is still an item")
+check(ModOf("Edge on").kind == "narrative", "'Edge on' with no name is not a modifier")
+check(ModOf("You have the edge").kind == "narrative", "flavour about an edge is not a modifier")
+check(EncounterScript.DescribeTestMod("edge", "Capture Them") == "The party has an edge on Capture Them", "the applied line reads naturally")
+check(EncounterScript.DescribeTestMod("bane", "Capture Them") == "The party has a bane on Capture Them", "and picks the right article")
+check(EncounterScript.DescribeTestMod("doubleedge", "Capture Them") == "The party has a double edge on Capture Them", "and for a double edge")
+
+local MODDED = table.concat({
+    "# Montage", "",
+    "## Round 1", "",
+    "## Opportunity: Goblin Scouts", "",
+    "### Spot Them", "",
+    "|Watch Test: Intuition (Alertness)",
+    "|You fail at the test",
+    "|+1 malice. {Edge on Capture Them}",
+    "|{Double Edge on Capture Them}", "",
+    "## Opportunity: Capture the Goblin", "",
+    "### Capture Them", "",
+    "|Hunting Test: Agility or Intuition (Track, Alertness)",
+    "|You scare them off",
+    "|You capture them with a consequence",
+    "|You capture them",
+}, string.char(10))
+
+local mod = EncounterScript.Parse(MODDED)
+local spot = mod.beats[1].rounds[1].entries[1].options[1]
+check(spot.roll.effects[2][2].kind == "testmod" and spot.roll.effects[2][2].hidden == true, "a braced modifier is hidden like any clause")
+check(EncounterScript.TierDisplayText(spot.roll, 2, true) == "+1 malice.", "and is not shown")
+check(EncounterScript.TierDisplayText(spot.roll, 3, true) == "", "a wholly hidden tier shows nothing")
+for _, w in ipairs(mod.warnings) do
+    check(string.find(w, "### option", 1, true) == nil, "a modifier naming a real option raises no warning (got: " .. w .. ")")
+end
+
+local badMod = EncounterScript.Parse(table.concat({
+    "# Montage", "", "## Round 1", "",
+    "## Opportunity: Goblin Scouts", "",
+    "### Spot Them", "|Watch: Intuition", "|You fail at the test", "|+1 malice", "|Edge on Nothing At All",
+}, string.char(10)))
+local sawBadMod = false
+for _, w in ipairs(badMod.warnings) do
+    if string.find(w, "names no '### option'", 1, true) then sawBadMod = true end
+end
+check(sawBadMod, "a modifier that names no option warns")
+
+--- "a fair roll": taking back an unfavourable initiative --------------------
+
+local function KindOf(text)
+    return EncounterScript.ParseEffects(text)[1].kind
+end
+for _, text in ipairs({
+    "The encounter begins with a fair roll",
+    "The encounter begins with a fair roll for initiative",
+    "Combat starts with a fair roll",
+    "A fair roll for initiative",
+    "Initiative is rolled normally",
+    "You roll for initiative normally",
+    "The party rolls for initiative",
+    "You are no longer surprised",
+    "The party is no longer surprised",
+    "You begin the encounter on even footing",
+    "You start the next encounter on even terms",
+}) do
+    check(KindOf(text) == "fairinitiative", "'" .. text .. "' is a fair roll")
+end
+--the clauses it must NOT swallow: they read as their own opposite under
+--the "^you .*surprised$" rules it is matched in front of.
+check(KindOf("You cannot be surprised") == "nosurprise", "surprise immunity is untouched")
+check(KindOf("You are not surprised") == "nosurprise", "and its 'are not' spelling")
+check(EncounterScript.ParseEffects("You begin the encounter surprised")[1].outcome == "surprised", "being surprised is untouched")
+check(EncounterScript.ParseEffects("You surprise the enemy")[1].outcome == "surprise", "surprising the enemy is untouched")
+check(EncounterScript.ParseEffects("You win initiative")[1].outcome == "win", "winning initiative is untouched")
+check(EncounterScript.ParseEffects("You lose the initiative")[1].outcome == "lose", "losing initiative is untouched")
+check(KindOf("A fair roll of the dice was all it took") == "narrative", "prose about a fair roll is not the clause")
+check(EncounterScript.DescribeEffect(EncounterScript.ParseEffects("The encounter begins with a fair roll")[1])
+    == "The encounter begins with a fair roll for initiative", "the dump describes it")
+
+--- "(Temporary)" entries ---------------------------------------------------
+
+local TEMPORARY = table.concat({
+    "# Montage", "",
+    "## Round 1", "",
+    "## Threat: Goblin Scouts (Temporary)", "",
+    "They will raise the alarm if you let them go.", "",
+    "Consequence: Each party member loses 3 stamina", "",
+    "### Run Them Down", "",
+    "|Chase Test: Might (Endurance)",
+    "|You fail at the test",
+    "|The threat is vanquished",
+    "|The threat is vanquished", "",
+    "## Opportunity: A Moment's Rest (Required, Temporary)", "",
+    "### Breathe", "",
+    "|Rest Test: Might (Endurance)",
+    "|You fail at the test",
+    "|You heal 3 stamina",
+    "|You heal 6 stamina", "",
+    "## Threat: The Long Road", "",
+    "Consequence: Each party member loses 1 stamina", "",
+    "### Walk It", "",
+    "|Travel Test: Might (Endurance)",
+    "|You fail at the test",
+    "|The threat is vanquished",
+    "|The threat is vanquished",
+}, string.char(10))
+
+local tmp = EncounterScript.Parse(TEMPORARY)
+local scouts = tmp.beats[1].rounds[1].entries[1]
+local rest = tmp.beats[1].rounds[1].entries[2]
+local road = tmp.beats[1].rounds[1].entries[3]
+check(scouts.temporary == true and scouts.name == "Goblin Scouts", "(Temporary) sets the flag and leaves the name")
+check(rest.temporary == true and rest.required == true and rest.name == "A Moment's Rest", "(Required, Temporary) sets both")
+check(rest.locked == false, "and leaves the tag it was not given alone")
+check(road.temporary == false, "an untagged entry is not temporary")
+check(#tmp.warnings == 0, "a well-formed temporary montage parses clean")
+check(string.find(EncounterScript.Describe(tmp), "Goblin Scouts (temporary)", 1, true) ~= nil, "dump marks temporary entries")
+check(string.find(EncounterScript.Describe(tmp), "A Moment's Rest (required) (temporary)", 1, true) ~= nil, "dump marks both tags")
+
+--every combination of the three tags, in any order, off one heading
+local combos = EncounterScript.Parse(table.concat({
+    "# Montage", "", "## Round 1", "",
+    "## Threat: The Pact (Temporary, Locked, Required)", "",
+    "Consequence: You lose 1 stamina", "",
+    "### Break It", "|Ritual: Reason", "|You fail at the test", "|The threat is vanquished", "|The threat is vanquished",
+}, string.char(10)))
+local pact = combos.beats[1].rounds[1].entries[1]
+check(pact.name == "The Pact", "three tags in one parenthesis all come off the name")
+check(pact.temporary and pact.locked and pact.required, "and all three are set")
+
+local notATag = EncounterScript.Parse(table.concat({
+    "# Montage", "", "## Round 1", "",
+    "## Opportunity: The Cottage (Abandoned)", "",
+    "### Knock", "|Knock: Presence", "|You fail at the test", "|+1 malice", "|+2 malice",
+}, string.char(10)))
+check(notATag.beats[1].rounds[1].entries[1].name == "The Cottage (Abandoned)", "a parenthesis that is not a tag stays in the name")
 
 print(string.format("encounter_script_test: %d checks passed", passed))

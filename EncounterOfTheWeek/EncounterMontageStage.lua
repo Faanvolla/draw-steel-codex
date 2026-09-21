@@ -382,6 +382,12 @@ local function StageRules()
             textAlignment = "left",
             tmargin = 6,
         },
+        --a "(Temporary)" entry's deadline: the same line, warmer, so it
+        --reads as a clock rather than as the card's state.
+        {
+            selectors = {"eotwEntryStatus", "deadline"},
+            color = "#d8a25a",
+        },
         --the strip of items a hero has picked up this montage, down the
         --left edge of their card.
         {
@@ -1074,6 +1080,26 @@ local function CreateEntryCard(entry, appearIn)
         interactable = false,
         children = nameChildren,
     }
+    local cardChildren = {
+        nameRow,
+        gui.Label{ classes = {"eotwEntryDesc"}, text = entry.description, interactable = false },
+    }
+    --a deadline the party cannot see is not a deadline, so a "(Temporary)"
+    --entry wears its own line. (The other two heading tags are bookkeeping
+    --and are never shown anywhere.)
+    if entry.temporary then
+        local deadline = "Gone at the end of this round"
+        if entry.kind == "threat" and entry.consequence ~= nil then
+            deadline = "Gone at the end of this round -- deal with it or face the consequence"
+        end
+        cardChildren[#cardChildren + 1] = gui.Label{
+            classes = {"eotwEntryStatus", "deadline"},
+            text = deadline,
+            interactable = false,
+        }
+    end
+    cardChildren[#cardChildren + 1] = statusLabel
+
     local card = gui.Panel{
         classes = {"eotwEntryCard", entry.kind},
         width = "100%",
@@ -1086,10 +1112,7 @@ local function CreateEntryCard(entry, appearIn)
         dragTarget = true,
         dragTargetPriority = 10,
         data = { entryId = entry.id, kind = entry.kind, available = false },
-
-        nameRow,
-        gui.Label{ classes = {"eotwEntryDesc"}, text = entry.description, interactable = false },
-        statusLabel,
+        children = cardChildren,
 
         --the click alternative to dragging: a hero picked by a click on
         --its card, then a click here, approaches.
@@ -1215,6 +1238,27 @@ local function RiderRows(roll, verdict)
     return rows
 end
 
+--Standing edges and banes an earlier outcome put on this test ("Edge on
+--Capture Them"). They are not riders -- nobody has to meet anything, they
+--apply to whoever takes the test -- so they get their own always-lit rows
+--under the option's own rider lines.
+local function GrantedRows(option)
+    local rows = {}
+    for _, g in ipairs(EncounterMontage.OptionTestMods(nil, option)) do
+        local label = EncounterScript.RiderLabel(g.effect)
+        local text = label
+        if g.entryName ~= nil and g.entryName ~= "" then
+            text = string.format("%s: earned at %s", label, g.entryName)
+        end
+        rows[#rows + 1] = gui.Label{
+            classes = Classes("eotwRider", cond(EncounterScript.RiderBoons(g.effect) > 0, "met", "hurt")),
+            text = text,
+            interactable = false,
+        }
+    end
+    return rows
+end
+
 --The last card on a turn: the hero stands there and does nothing. It reads
 --like an option and costs like one -- the turn ends, spent.
 local function PassCard()
@@ -1270,6 +1314,9 @@ local function OptionCard(entry, option, index, m)
     if option.roll ~= nil then
         children[#children + 1] = gui.Label{ classes = {"eotwOptionRoll"}, text = string.format("%s: %s", option.roll.name, EncounterScript.AttrWithoutSkills(option.roll.attr)), interactable = false }
         for _, row in ipairs(RiderRows(option.roll, verdict)) do
+            children[#children + 1] = row
+        end
+        for _, row in ipairs(GrantedRows(option)) do
             children[#children + 1] = row
         end
         local rows
@@ -1432,7 +1479,7 @@ local function BuildTurnChildren(m, beat)
             Add(gui.Label{ classes = {"eotwTurnText"}, text = entry.description })
         end
         if entry.consequence ~= nil then
-            Add(gui.Label{ classes = {"eotwTurnText"}, text = "Consequence: " .. entry.consequence.text, bold = true })
+            Add(gui.Label{ classes = {"eotwTurnText"}, text = "Consequence: " .. EncounterScript.VisibleText(entry.consequence.text), bold = true })
         else
             Add(gui.Label{ classes = {"eotwTurnHint"}, text = "No consequence is written for this threat." })
         end
@@ -1471,7 +1518,31 @@ local function BuildTurnChildren(m, beat)
     if t == nil then
         Add(gui.Label{ classes = {"eotwTurnTitle"}, text = string.format("Round %d", m.round or 1) })
         AddYourMove()
-        local last = (m.log or {})[#(m.log or {})]
+        --a "(Temporary)" threat that ran out pays its consequence at the
+        --round boundary, and the consequences phase -- the only other
+        --place one is ever read out -- does not run mid-montage. So the
+        --run of them that just landed is what the new round opens with,
+        --in place of the last hero's result.
+        local logs = m.log or {}
+        local expiredTail = {}
+        for i = #logs, 1, -1 do
+            if logs[i].consequence and logs[i].expired then
+                table.insert(expiredTail, 1, logs[i])
+            else
+                break
+            end
+        end
+        if #expiredTail > 0 then
+            Add(gui.Panel{ width = "60%", height = 1, bgimage = "panels/square.png", bgcolor = "#ffffff30", halign = "center", vmargin = 10 })
+            for _, entryLog in ipairs(expiredTail) do
+                Add(gui.Label{ classes = {"eotwTurnText"}, text = string.format("%s was left unresolved.", entryLog.entryName or "A threat") })
+                for _, line in ipairs(entryLog.applied or {}) do
+                    Add(gui.Label{ classes = {"eotwAppliedLine"}, text = line })
+                end
+            end
+            return children
+        end
+        local last = logs[#logs]
         if last ~= nil and not last.consequence then
             Add(gui.Panel{ width = "60%", height = 1, bgimage = "panels/square.png", bgcolor = "#ffffff30", halign = "center", vmargin = 10 })
             if last.passed then
@@ -2257,6 +2328,9 @@ local function CreateStage(args)
     --true while a round's party-size draw has not been made yet: its entries
     --are withheld entirely rather than shown and then taken away.
     local m_entryDrawPending = false
+    --how many "(Locked)" entries have been unlocked; a change brings the
+    --newly available cards in without waiting for the round to turn over.
+    local m_unlockCount = nil
 
     local function EntryDone(m, entry)
         if entry.kind == "opportunity" then
@@ -2304,15 +2378,18 @@ local function CreateStage(args)
     end
 
     --Everything the party dealt with, now that the round it happened in is
-    --over, leaves the columns.
+    --over, leaves the columns -- and so does every "(Temporary)" entry the
+    --round carried off, dealt with or not.
     local function RetireDoneEntries(m)
         local taken = m.taken or {}
         local vanquished = m.vanquished or {}
+        local expired = m.expired or {}
         local n = 0
         for id, card in pairs(m_cards) do
             if not card.valid then
                 m_cards[id] = nil
-            elseif cond(card.data.kind == "opportunity", taken[id], vanquished[id]) == true then
+            elseif expired[id] == true
+                or cond(card.data.kind == "opportunity", taken[id], vanquished[id]) == true then
                 m_cards[id] = nil
                 card:FireEvent("leave")
                 n = n + 1
@@ -2331,7 +2408,17 @@ local function CreateStage(args)
         local drawPending = m.removed == nil and EncounterScript.HasScaling(beat)
         local drawLanded = m_entryDrawPending and not drawPending
         m_entryDrawPending = drawPending
-        if rebuilt or m_entryRound == nil or round < m_entryRound or drawLanded then
+        --an "Unlock <name>" outcome can land at any moment; the count only
+        --ever rises, so a change means at least one more entry is now
+        --allowed on the board.
+        local unlockCount = 0
+        for _ in pairs(m.unlocked or {}) do
+            unlockCount = unlockCount + 1
+        end
+        local unlocksLanded = m_unlockCount ~= nil and unlockCount ~= m_unlockCount
+        m_unlockCount = unlockCount
+        local fullRebuild = rebuilt or m_entryRound == nil or round < m_entryRound or drawLanded
+        if fullRebuild then
             ClearEntries()
             for r = 1, round do
                 --what was dealt with in the round still running stays on
@@ -2354,6 +2441,17 @@ local function CreateStage(args)
             --the final round has ended; there is no round after it to
             --clear the board, so the phase change does it.
             RetireDoneEntries(m)
+        end
+        --an entry unlocked this tick joins the board straight away if its
+        --round has already come; one declared in a later round waits for
+        --it, because only rounds up to the current one are swept. The
+        --sweep is over every round, not just the new ones, since the
+        --unlock may free a card the party walked past two rounds ago; the
+        --m_cards check makes it a no-op for everything already up.
+        if unlocksLanded and not fullRebuild then
+            for r = 1, round do
+                AddEntriesForRound(beat, r, true, m, r == round and phase == "rounds")
+            end
         end
         m_entryRound = round
         m_entryPhase = phase

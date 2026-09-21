@@ -19,6 +19,21 @@
 --    acted = { [heroCharid] = true },       -- this round
 --    taken = { [entryId] = true },          -- opportunities consumed
 --    vanquished = { [entryId] = true },     -- threats resolved
+--    unlocked = { [entryKey] = round },     -- "(Locked)" entries an "Unlock
+--                                              <name>" outcome has let onto
+--                                              the board, and the round it
+--                                              happened in (keyed by
+--                                              EncounterScript.MatchKey, not
+--                                              by entry id)
+--    expired = { [entryId] = true },        -- "(Temporary)" entries the
+--                                              round they appeared in has
+--                                              carried off
+--    testmods = { [optionKey] = { { effect = "edge"|"doubleedge"|"bane"|
+--                                   "doublebane", entryName, at }, ... } },
+--                                           -- standing edges/banes an
+--                                              "Edge on <option>" outcome
+--                                              put on another test, for
+--                                              WHOEVER takes it
 --    turn = nil | { seq, userid, heroid, entryId,
 --                   status = "choosing"|"rolling"|"assist"|"assisting"|"resolved",
 --                   optionIndex, rollSeq, tier, total, natural, applied = {...}, resolvedAt,
@@ -41,7 +56,9 @@
 --                  -- gear the montage granted, in the order it was granted
 --                     (a repeat grant of the same item bumps qty in place).
 --                     Shown as the icon strip beside the hero's stage card.
---  data.initiative = nil | { outcome = "win"|"lose"|"surprise"|"surprised", entryName, at }
+--  data.initiative = nil | { outcome = "win"|"lose"|"surprise"|"surprised"|"even", entryName, at }
+--                  -- "even" is a fair roll that a clause explicitly asked
+--                     for; the encounter beat treats it like no decision
 --                  -- how the next encounter's initiative is decided (montage clause)
 --  data.noSurprise = nil | { entryName, at }
 --                  -- "You cannot be surprised": the party is immune to the
@@ -311,11 +328,63 @@ function EncounterMontage.EntryRemoved(m, entry)
     return (m.removed or {})[entry.id] == true
 end
 
---Is this entry hidden from the board right now? Removed, or introduced by
---a round whose directives have not been rolled yet -- until the draw is
---made a card that is about to be removed must not flash up first.
+--A "## Opportunity: Interrogate the Goblin (Locked)" entry is off the
+--board entirely -- never shown, never approachable, and a locked threat
+--delivers no consequence -- until another outcome's "Unlock <name>"
+--clause lets it on. The unlocks are keyed by name
+--(EncounterScript.MatchKey), not by entry id, so an author does not have
+--to copy the heading letter for letter; they live in the per-beat montage
+--state, so "/eotwmontage reset" locks everything again.
+function EncounterMontage.EntryUnlocked(m, entry)
+    if entry == nil or not entry.locked then
+        return true
+    end
+    if m == nil then
+        return false
+    end
+    return (m.unlocked or {})[EncounterScript.MatchKey(entry.name)] ~= nil
+end
+
+--The round this entry actually came onto the board in: the one that
+--declares it, or -- for a "(Locked)" entry unlocked later -- the round the
+--unlock landed in, whichever is later. This is the round a "(Temporary)"
+--entry expires at the end of.
+function EncounterMontage.EntryAppearRound(m, entry)
+    local round = entry ~= nil and entry.round or 1
+    if entry == nil or not entry.locked or m == nil then
+        return round
+    end
+    --older state wrote `true` here rather than the round; fall back to the
+    --declared round, which is right for everything but a late unlock.
+    local at = tonumber((m.unlocked or {})[EncounterScript.MatchKey(entry.name)])
+    if at ~= nil and at > round then
+        return at
+    end
+    return round
+end
+
+--A "(Temporary)" entry that the round it appeared in has now carried off.
+--It is gone for good: never shown, never approachable, and a threat has
+--already delivered its consequence (ExpireTemporaryEntries).
+function EncounterMontage.EntryExpired(m, entry)
+    if m == nil or entry == nil then
+        return false
+    end
+    return (m.expired or {})[entry.id] == true
+end
+
+--Is this entry hidden from the board right now? Removed, still locked, or
+--introduced by a round whose directives have not been rolled yet -- until
+--the draw is made a card that is about to be removed must not flash up
+--first.
 function EncounterMontage.EntryHidden(m, beat, entry)
     if EncounterMontage.EntryRemoved(m, entry) then
+        return true
+    end
+    if not EncounterMontage.EntryUnlocked(m, entry) then
+        return true
+    end
+    if EncounterMontage.EntryExpired(m, entry) then
         return true
     end
     if m ~= nil and m.removed == nil and EncounterScript.RoundHasScaling(beat, entry.round) then
@@ -333,6 +402,12 @@ function EncounterMontage.EntryAvailable(m, entry)
         return false
     end
     if EncounterMontage.EntryRemoved(m, entry) then
+        return false
+    end
+    if not EncounterMontage.EntryUnlocked(m, entry) then
+        return false
+    end
+    if EncounterMontage.EntryExpired(m, entry) then
         return false
     end
     if entry.kind == "opportunity" then
@@ -406,19 +481,67 @@ function EncounterMontage.HeroFacts(charid)
     return TestRiders.CreatureFacts(tok.properties)
 end
 
+--The standing edges and banes an earlier outcome put on this option's
+--test ("Edge on Capture Them"), in the order they were granted. Unlike a
+--rider they are not weighed against anybody: whoever takes the test gets
+--them. Matched by option NAME, so two entries that both call an option
+--"Ask for Aid" share the grant -- which is why names should be distinct
+--when that is not wanted.
+function EncounterMontage.OptionTestMods(m, option)
+    if option == nil or option.name == nil then
+        return {}
+    end
+    m = m or EncounterMontage.GetState()
+    if m == nil then
+        return {}
+    end
+    return (m.testmods or {})[EncounterScript.MatchKey(option.name)] or {}
+end
+
+--A granted edge/bane dressed up as an applied rider, so everything that
+--already reads a verdict -- the roll dialog's modifier chips, the boon
+--and bane counts -- picks it up with no special case.
+local function GrantedAsApplied(granted)
+    local why = "the party earned it"
+    if granted.entryName ~= nil and granted.entryName ~= "" then
+        why = string.format("the party earned it at %s", granted.entryName)
+    end
+    return {
+        rider = { effect = granted.effect, text = why, granted = true },
+        why = why,
+    }
+end
+
 --How an option's riders fall for a hero (EncounterScript.EvaluateRiders
---result), or nil when the option has no riders at all.
+--result), with any standing edges and banes from the montage folded in as
+--applied riders. Nil when the option has neither.
 function EncounterMontage.RiderVerdict(charid, option)
-    if option == nil or option.roll == nil or option.roll.riders == nil or #option.roll.riders == 0 then
+    local riders = (option ~= nil and option.roll ~= nil and option.roll.riders) or {}
+    local granted = EncounterMontage.OptionTestMods(nil, option)
+    if #riders == 0 and #granted == 0 then
         return nil
     end
-    local verdict = nil
+    --Declared with a type instead of initialized to nil: the checker would
+    --otherwise infer `nil` from the declaration and flag every field read
+    --below, since the pcall closure is what actually fills it in.
+    ---@type table
+    local verdict
     local ok, err = pcall(function()
-        verdict = EncounterScript.EvaluateRiders(option.roll.riders, EncounterMontage.HeroFacts(charid))
+        verdict = EncounterScript.EvaluateRiders(riders, EncounterMontage.HeroFacts(charid))
     end)
     if not ok then
         printf("EotW montage: rider verdict failed: %s", tostring(err))
         return nil
+    end
+    for _, g in ipairs(granted) do
+        local applied = GrantedAsApplied(g)
+        verdict.applied[#verdict.applied + 1] = applied
+        local boons = EncounterScript.RiderBoons(g.effect)
+        if boons > 0 then
+            verdict.boons = verdict.boons + boons
+        else
+            verdict.banes = verdict.banes - boons
+        end
     end
     return verdict
 end
@@ -1030,9 +1153,21 @@ function EncounterMontage.ApplyEffects(effects, ctx)
         return string.format("%s %s", TargetNames(names), cond(#names > 1, plural, singular))
     end
 
+    --The prose clauses of a line are joined back into one entry as they are
+    --applied (see the "narrative" branch below): runIndex is the entry the
+    --run is being built in, runText its text without the sentence-ending
+    --punctuation, runSep the punctuation the last clause added to it ended
+    --on.
+    local runIndex, runText, runSep = nil, nil, ""
+
     ElevateToHostPermissions()
     local ok, err = pcall(function()
         for _, effect in ipairs(effects or {}) do
+            --a clause the author wrapped in "{...}" is applied exactly as
+            --written, but the party is never told: whatever it appends to
+            --`applied` below is taken back off at the end of this pass, so
+            --no turn summary or montage log line carries it.
+            local appliedFrom = #applied + 1
             if effect.kind == "item" then
                 local itemid, item = EncounterMontage.FindGear(effect.name)
                 if itemid == nil then
@@ -1195,6 +1330,9 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                 end
                 applied[#applied + 1] = "The threat is vanquished"
             elseif effect.kind == "initiative" then
+                --read BEFORE anything is written: whether the party was
+                --already warded decides both the condition and the wording.
+                local surpriseImmune = ctx.doc ~= nil and ctx.doc.data.noSurprise ~= nil
                 --remembered at the top level of the script document (not in
                 --montage.*, which is reset per beat) so the encounter beat
                 --can read it when it starts combat. Last one applied wins
@@ -1226,12 +1364,17 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                         --(The enemy side does not exist yet -- its monsters
                         --are spawned for the encounter -- so "surprise" is
                         --still applied at combat start.)
-                        if side == "party" and ctx.doc.data.noSurprise == nil then
+                        if side == "party" and not surpriseImmune then
                             SetHeroesSurprised(true, "Montage: surprised")
                         end
                     end
                 end
-                applied[#applied + 1] = EncounterScript.DescribeInitiativeOutcome(effect.outcome)
+                --under "you cannot be surprised" the line has to say so: the
+                --party still loses the die, but announcing a bare "the
+                --heroes will begin the encounter surprised" over the top of
+                --their own immunity read as the immunity having been
+                --forgotten (reported live 2026-09-20).
+                applied[#applied + 1] = EncounterScript.DescribeInitiativeOutcome(effect.outcome, surpriseImmune and effect.outcome == "surprised")
             elseif effect.kind == "nosurprise" then
                 --party-wide and permanent for the run, whoever earned it.
                 --Like initiative it lives at the TOP level of the document
@@ -1248,6 +1391,41 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                 --the condition the earlier clause already applied.
                 SetHeroesSurprised(false, "Montage: cannot be surprised")
                 applied[#applied + 1] = EncounterScript.DescribeSurpriseImmunity()
+            elseif effect.kind == "fairinitiative" then
+                --"The encounter begins with a fair roll": take back what
+                --the montage decided AGAINST the party and nothing else.
+                --The party's Surprised flag goes (and the condition comes
+                --off the heroes who are already wearing it), and a "lose"
+                --or "surprised" outcome is replaced with "even", which the
+                --encounter beat reads as "no immediate result, roll for
+                --it". An enemy the montage surprised stays surprised -- so
+                --the heroes still go first if they had already earned that
+                ---- and a "win" outcome is left standing.
+                if ctx.doc ~= nil then
+                    local surprised = ctx.doc.data.surprised
+                    if type(surprised) == "table" and surprised.party ~= nil then
+                        if surprised.enemy ~= nil then
+                            ctx.doc.data.surprised = { enemy = surprised.enemy }
+                        else
+                            ctx.doc.data.surprised = nil
+                        end
+                    end
+                    local init = ctx.doc.data.initiative
+                    local outcome = type(init) == "table" and init.outcome or nil
+                    if outcome == nil or outcome == "lose" or outcome == "surprised" then
+                        ctx.doc.data.initiative = {
+                            outcome = "even",
+                            entryName = ctx.entryName,
+                            at = dmhub.serverTime,
+                        }
+                    else
+                        printf("EotW montage: a fair roll was called for, but '%s' already stands", tostring(outcome))
+                    end
+                end
+                --the heroes may already be wearing the condition from an
+                --earlier clause; it comes off now, not at combat start.
+                SetHeroesSurprised(false, "Montage: a fair roll")
+                applied[#applied + 1] = EncounterScript.DescribeFairInitiative()
             elseif effect.kind == "knowstamina" then
                 --monster intelligence: the exact stamina of every monster
                 --carrying the keyword, now and later. Lives in the shared
@@ -1273,8 +1451,90 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                 else
                     printf("EotW montage: EncounterZones is unavailable; %s not applied", tostring(effect.text))
                 end
+            elseif effect.kind == "unlock" then
+                --a "(Locked)" entry joins the board: at once if the round
+                --it is declared in has been reached, otherwise when that
+                --round comes. Recorded in the per-beat montage state, so
+                --it only means anything inside a montage (a narrative
+                --beat passes no `montage`, and the parser warns about an
+                --unlock written there).
+                if ctx.montage ~= nil then
+                    ctx.montage.unlocked = ctx.montage.unlocked or {}
+                    --the ROUND, not just a flag: a "(Locked, Temporary)"
+                    --entry expires at the end of the round it appeared in,
+                    --which is this one when the unlock comes late.
+                    ctx.montage.unlocked[effect.key or EncounterScript.MatchKey(effect.name)] = ctx.montage.round or 1
+                    --usually hidden from the party, so the console is the
+                    --only account of when a locked entry came out.
+                    printf("EotW montage: unlocked '%s'%s", tostring(effect.name),
+                        cond(effect.hidden, " (hidden clause)", ""))
+                else
+                    printf("EotW montage: '%s' has no montage to unlock in", tostring(effect.text))
+                end
+                applied[#applied + 1] = EncounterScript.DescribeUnlock(effect.name)
+            elseif effect.kind == "testmod" then
+                --"Edge on Capture Them": a standing edge or bane on
+                --another test of this montage, for whoever takes it. Held
+                --per option NAME in the per-beat state, so several
+                --outcomes can pile onto the same test and the roll nets
+                --them the way any other edge and bane net.
+                if ctx.montage ~= nil then
+                    local key = effect.key or EncounterScript.MatchKey(effect.name)
+                    ctx.montage.testmods = ctx.montage.testmods or {}
+                    ctx.montage.testmods[key] = ctx.montage.testmods[key] or {}
+                    local list = ctx.montage.testmods[key]
+                    list[#list + 1] = {
+                        effect = effect.effect,
+                        entryName = ctx.entryName,
+                        at = dmhub.serverTime,
+                    }
+                    printf("EotW montage: %s on '%s'%s", tostring(effect.effect), tostring(effect.name),
+                        cond(effect.hidden, " (hidden clause)", ""))
+                else
+                    printf("EotW montage: '%s' has no montage to apply to", tostring(effect.text))
+                end
+                applied[#applied + 1] = EncounterScript.DescribeTestMod(effect.effect, effect.name)
             elseif effect.kind == "narrative" then
-                applied[#applied + 1] = effect.text
+                --A line is cut into clauses so the grammar can find the
+                --mechanical half hiding behind flavour ("You make off with
+                --the potions! Each party member gains a Healing Potion") --
+                --but the party should read the flavour as the sentence the
+                --author wrote, not as one stub per clause with its
+                --punctuation stripped. So consecutive prose clauses go back
+                --into the SAME entry, rejoined on the punctuation that
+                --separated them; only a mechanical clause (which appends an
+                --entry of its own) breaks the run.
+                --
+                --A hidden clause is deliberately left out of the run: it has
+                --to stay its own entry for the removal below to take it back
+                --off. Because that removal restores #applied, the prose on
+                --either side of it still joins -- which is what
+                --EncounterScript.VisibleText shows.
+                if effect.hidden then
+                    applied[#applied + 1] = effect.text
+                else
+                    if runIndex ~= nil and runIndex == #applied then
+                        runText = string.format("%s%s %s", runText, runSep, effect.text)
+                    else
+                        runText = effect.text
+                        applied[#applied + 1] = runText
+                        runIndex = #applied
+                    end
+                    runSep = effect.sep or ""
+                    --a full stop, "!" or "?" is part of the prose; a comma
+                    --or semicolon only ever joined two clauses, so it is not
+                    --left dangling on the end of the entry.
+                    local tail = ""
+                    if runSep == "." or runSep == "!" or runSep == "?" then
+                        tail = runSep
+                    end
+                    applied[runIndex] = runText .. tail
+                end
+            end
+            if effect.hidden then
+                for i = #applied, appliedFrom, -1 do
+                    applied[i] = nil
+                end
             end
         end
     end)
@@ -1530,6 +1790,50 @@ local function TierIndexForRoll(roll, tier, natural)
     return tier
 end
 
+--The round is over: every "(Temporary)" entry that appeared in it leaves
+--the board for good, and an unvanquished temporary THREAT pays out its
+--consequence here rather than at the end of the montage. Each payout goes
+--in the montage log marked `expired`, which is what the stage shows the
+--party at the top of the next round -- the consequences phase, the only
+--other place a consequence is read out, never runs mid-montage.
+local function ExpireTemporaryEntries(m, doc, beat, userid)
+    local round = m.round or 1
+    for _, entry in ipairs(EncounterScript.MontageEntries(beat)) do
+        if entry.temporary and not EncounterMontage.EntryExpired(m, entry)
+            and not EncounterMontage.EntryRemoved(m, entry)
+            and EncounterMontage.EntryUnlocked(m, entry)
+            and EncounterMontage.EntryAppearRound(m, entry) <= round then
+            m.expired = m.expired or {}
+            m.expired[entry.id] = true
+            local unresolved = entry.kind == "threat" and not (m.vanquished or {})[entry.id]
+            if unresolved and entry.consequence ~= nil then
+                local applied = EncounterMontage.ApplyEffects(entry.consequence.effects, {
+                    heroEntry = nil,
+                    userid = userid,
+                    entryName = entry.name,
+                    entryId = entry.id,
+                    montage = m,
+                    doc = doc,
+                })
+                m.log = m.log or {}
+                m.log[#m.log + 1] = {
+                    round = round,
+                    consequence = true,
+                    expired = true,
+                    entryId = entry.id,
+                    entryName = entry.name,
+                    applied = applied,
+                }
+                printf("EotW montage: round %d ended with %s '%s' unresolved; its consequence lands now",
+                    round, entry.kind, entry.name)
+            else
+                printf("EotW montage: round %d carries off %s '%s'%s", round, entry.kind, entry.name,
+                    cond(unresolved, " (no consequence written)", ""))
+            end
+        end
+    end
+end
+
 --Every hero has acted, or nobody can act (nothing left to approach).
 local function RoundComplete(m, beat, heroes)
     if #heroes == 0 then
@@ -1585,7 +1889,7 @@ local function ResolveTurn(m, doc, t, entry, option, tierIndex, heroes, userid)
     end
     t.status = "resolved"
     t.tier = tierIndex
-    t.tierText = option.roll.tiers[tierIndex]
+    t.tierText = EncounterScript.VisibleText(option.roll.tiers[tierIndex])
     t.applied = applied
     t.resolvedAt = dmhub.serverTime
     m.acted = m.acted or {}
@@ -1921,15 +2225,110 @@ local function RollRemovals(m, beat)
                 n = n + 1
                 printf("EotW montage:   round %d REMOVED %s '%s' [%s]",
                     entry.round, entry.kind, entry.name, entry.id)
-            elseif entry.required and EncounterScript.RoundHasScaling(beat, entry.round) then
-                printf("EotW montage:   round %d kept %s '%s' (Required)",
-                    entry.round, entry.kind, entry.name)
+            elseif (entry.required or entry.locked) and EncounterScript.RoundHasScaling(beat, entry.round) then
+                printf("EotW montage:   round %d kept %s '%s' (%s)",
+                    entry.round, entry.kind, entry.name,
+                    cond(entry.required, cond(entry.locked, "Required, Locked", "Required"), "Locked"))
             end
         end
         printf("EotW montage: party-size scaling removed %d of %d entries",
             n, #EncounterScript.MontageEntries(beat))
     end
     return removed
+end
+
+--The "(Locked)" entries of a beat and whether anything has let them out
+--yet, for "/eotwmontage state": a hidden unlock leaves no trace a player
+--can see, so this is how a montage gets explained after the fact.
+function EncounterMontage.DescribeLocks(beat, m)
+    local out = {}
+    local any = false
+    for _, entry in ipairs(EncounterScript.MontageEntries(beat)) do
+        if entry.locked then
+            if not any then
+                out[#out + 1] = "locked entries:"
+                any = true
+            end
+            out[#out + 1] = string.format("  %s round %d %s '%s'%s [%s]",
+                cond(EncounterMontage.EntryUnlocked(m, entry), "UNLOCKED", "locked  "),
+                entry.round, entry.kind, entry.name,
+                cond(EncounterMontage.EntryUnlocked(m, entry),
+                    string.format(" (appeared in round %d)", EncounterMontage.EntryAppearRound(m, entry)), ""),
+                entry.id)
+        end
+    end
+    --an unlock whose name matched nothing is a typo the parse warned
+    --about; show it here too, since this is where it will be looked for.
+    for key in pairs((m or {}).unlocked or {}) do
+        local found = false
+        for _, entry in ipairs(EncounterScript.MontageEntries(beat)) do
+            if entry.locked and EncounterScript.MatchKey(entry.name) == key then
+                found = true
+                break
+            end
+        end
+        if not found then
+            out[#out + 1] = string.format("  UNLOCKED '%s' -- matches no (Locked) entry", key)
+        end
+    end
+    return out
+end
+
+--The "(Temporary)" entries of a beat and whether the round they appeared
+--in has carried them off yet, for "/eotwmontage state".
+function EncounterMontage.DescribeTemporary(beat, m)
+    local out = {}
+    for _, entry in ipairs(EncounterScript.MontageEntries(beat)) do
+        if entry.temporary then
+            if #out == 0 then
+                out[#out + 1] = "temporary entries:"
+            end
+            local state = "waiting"
+            if EncounterMontage.EntryExpired(m, entry) then
+                state = "EXPIRED"
+            elseif not EncounterMontage.EntryUnlocked(m, entry) then
+                state = "locked"
+            elseif EncounterMontage.EntryRemoved(m, entry) then
+                state = "removed"
+            end
+            out[#out + 1] = string.format("  %-8s %s '%s', appears round %d [%s]",
+                state, entry.kind, entry.name, EncounterMontage.EntryAppearRound(m, entry), entry.id)
+        end
+    end
+    return out
+end
+
+--The standing edges and banes in force, for "/eotwmontage state": like a
+--hidden unlock, an "Edge on <option>" outcome usually leaves no trace a
+--player can see.
+function EncounterMontage.DescribeTestMods(beat, m)
+    local out = {}
+    local mods = (m or {}).testmods or {}
+    local seen = {}
+    for _, entry in ipairs(EncounterScript.MontageEntries(beat)) do
+        for _, option in ipairs(entry.options) do
+            local key = EncounterScript.MatchKey(option.name)
+            local list = mods[key]
+            if list ~= nil and not seen[key] then
+                seen[key] = true
+                if #out == 0 then
+                    out[#out + 1] = "standing edges and banes:"
+                end
+                local parts = {}
+                for _, g in ipairs(list) do
+                    parts[#parts + 1] = string.format("%s (from %s)",
+                        EncounterScript.RiderLabel(g.effect), tostring(g.entryName))
+                end
+                out[#out + 1] = string.format("  '%s': %s", option.name, table.concat(parts, ", "))
+            end
+        end
+    end
+    for key, list in pairs(mods) do
+        if not seen[key] then
+            out[#out + 1] = string.format("  '%s' -- matches no option (%d grant(s) wasted)", key, #list)
+        end
+    end
+    return out
 end
 
 --A readable account of the party-size draw for "/eotwmontage state": what
@@ -2114,6 +2513,7 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
         m.turn = nil
         local rounds = EncounterScript.RoundCount(beat)
         if (m.round or 1) < rounds then
+            ExpireTemporaryEntries(m, doc, beat, nil)
             m.round = (m.round or 1) + 1
             m.acted = {}
             printf("EotW montage: round %d begins", m.round)
@@ -2123,7 +2523,9 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
             local list = {}
             for _, entry in ipairs(EncounterScript.MontageEntries(beat)) do
                 if entry.kind == "threat" and not (m.vanquished or {})[entry.id]
-                    and not EncounterMontage.EntryRemoved(m, entry) then
+                    and not EncounterMontage.EntryRemoved(m, entry)
+                    and not EncounterMontage.EntryExpired(m, entry)
+                    and EncounterMontage.EntryUnlocked(m, entry) then
                     list[#list + 1] = entry.id
                 end
             end
@@ -2372,8 +2774,11 @@ end
 
 --Show the roll dialog for the current turn's option: 2d10 + the best of
 --the listed characteristics, the Skilled chip for a listed skill, the tiers
---The rider effects the hero earned ("Edge: you speak Caelian") become
---pre-ticked chips in the roll dialog; core builds them (TestRiders).
+--The rider effects the hero earned ("Edge: you speak Caelian"), plus any
+--standing edge or bane the montage granted this test ("Edge on Capture
+--Them"), become pre-ticked chips in the roll dialog. RiderVerdict folds
+--the grants in as applied riders, so core builds them all the same way
+--(TestRiders).
 local function AppendRiderModifiers(modifiers, verdict, rollType)
     TestRiders.AppendModifiers(modifiers, verdict, rollType)
 end
@@ -2752,6 +3157,15 @@ pcall(function()
                     for _, b in ipairs(script.parse.beats) do
                         if b.kind == "montage" then
                             for _, l in ipairs(EncounterMontage.DescribeRemovals(b, doc.data.montage)) do
+                                print(l)
+                            end
+                            for _, l in ipairs(EncounterMontage.DescribeLocks(b, doc.data.montage)) do
+                                print(l)
+                            end
+                            for _, l in ipairs(EncounterMontage.DescribeTestMods(b, doc.data.montage)) do
+                                print(l)
+                            end
+                            for _, l in ipairs(EncounterMontage.DescribeTemporary(b, doc.data.montage)) do
                                 print(l)
                             end
                             break

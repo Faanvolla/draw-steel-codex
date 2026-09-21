@@ -1431,6 +1431,58 @@ hand in the builder. A future engine guard (skip `SaveLocally` when
 robust against any other codemod re-stamping the fields -- optional, NEEDS
 BUILD, not done.
 
+## Entry is slow because the host still pays for the Director's tooling (ROOT-CAUSED + FIXED 2026-09-20; engine, NEEDS BUILD, UNTESTED)
+
+An EotW host is a Director by *permission* -- `playerHostMode`, so `isDM` is
+false and every `dmonly` panel is hidden -- but three load-time code paths were
+still keyed on `isDMPossiblyImpersonating` or on plain DM status, which stay
+true for a player host. They did a Director's authoring work for a client that
+cannot reach any of it, all of it inside the loading screen.
+
+Measured on a real EotW entry (`SacredClockworkThornSpindlegoth`, 11.2s to
+Complete and another 5.5s before the screen cleared):
+
+1. **Shop-module auto-install, ~5.3s.** `UpdateGameDetails` auto-installs every
+   module the account owns from the shop into any game it DMs. A fresh EotW
+   game got `premium-tc_cemeteriescrypt` and `premium-tc_diggersdelvers` --
+   map-building asset packs -- and each install cost a module install, a
+   dependency re-trace and a full re-merge of every compendium table. Now
+   skipped for `directorlessGame`, joining the existing `isLibraryGame` /
+   Great Library exclusions, which exist for the same reason (a curated module
+   list that should not accumulate whatever the DM happens to own). This does
+   *not* affect dependencies: a premium pack the week's encounter actually uses
+   still arrives through `TraceDependencies`, which is the correct mechanism.
+2. **The object-palette thumbnail atlas, ~2.5s.** `ThumbnailManager.InitGame`
+   builds the 62px thumbnails behind `ObjectNodeLua.thumbnailId`, used only by
+   Objects, MapImport, CreateMapDialog and the Map Markup palette. The cached
+   path alone measured `GameInit:: Read 3 atlases in 2345ms` (11,201
+   `Sprite.Create` calls on the main thread); an object with no atlas entry is
+   *downloaded at full resolution* just to be scaled down, so the first entry
+   after a new module lands is far worse. Now gated on the new
+   `GameController.isDMExperience` (`isDMPossiblyImpersonating && !playerHostMode`)
+   -- the C# counterpart of `GameHud.DirectorUIVisible()`, and the third flag
+   `PERMISSIONS_MODEL_REFERENCE.md` finding 16 asked for by name.
+3. **Per-row load logging.** Not Director-specific, but it lands on the same
+   loading screen: the object-table merge logged one `NewTable::` line per row
+   of every compendium table per merged store (~2500 lines a pass, five or more
+   passes a load), and `RefreshMonsterTree` logged one line per monster (709
+   per rebuild). The merge trace is now behind `CloudAssetInfo.s_debugMergeLog`
+   (off by default -- it is still the diagnostic for the fork/merge bug family);
+   the bestiary one is a single summary line.
+
+The `--director` debug window and the `/toggle eotw:showdirectorui` hatch both
+clear `playerHostMode`, so a client that has asked for the Director experience
+still gets the thumbnails. Auto-install is deliberately gated on the *game*
+rather than on the client's experience, so a debug Director window cannot
+quietly install modules into a shared EotW game either.
+
+**To verify:** build, enter a fresh EotW game as host, and check the log for
+`Module:: trying auto install of` (should be absent), `GameInit:: Initialize
+texture thumbnails` (absent), and the `LoadingMilestone:: FinalImages` delta
+plus the `[LOADPROF]` timeline. Then confirm the encounter still plays: the
+week's maps, monsters and documents all arrive, since they come in as module
+dependencies rather than auto-installs.
+
 ## Joiner-side module install race + Firebase permission denials (FOUND 2026-08-27, engine fix pending)
 
 Diagnosed from the first live 2-client Begin (game `DeathlessChainedSuperiorOrc`):
@@ -4286,10 +4338,15 @@ the bundled `lua.exe`:
   both opportunities and threats persist; an entry is only ever removed by
   being taken or vanquished). No round heading at all = one implicit round.
 - `## Opportunity: <Name>` / `## Threat: <Name>`: an entry in the current
-  round. A trailing `(Required)` -- `## Opportunity: Hunter's Camp (Required)`
-  -- is stripped from the name (it is never shown anywhere) and marks the
-  entry as one a party-size directive may never remove. Its body, up to the
-  next `##`/`#`:
+  round. A trailing tag in parentheses -- `(Required)`, `(Locked)`,
+  `(Temporary)`, or any combination, `## Threat: The Pact (Required,
+  Locked)` -- is stripped from the name. `(Required)` marks an entry a
+  party-size directive may never remove; `(Locked)` keeps the entry off
+  the board until an `Unlock <name>` outcome lets it on (see "Locked
+  entries" below); `(Temporary)` makes it the one kind of entry that does
+  NOT persist -- it is gone at the end of the round it appeared in (see
+  "Temporary entries"). A parenthesis that is not a recognized tag stays
+  part of the name. Its body, up to the next `##`/`#`:
   - plain paragraphs = the description shown on the card;
   - a paragraph starting `Options:` = the approach text, shown when a hero
     approaches, above the option list;
@@ -4401,6 +4458,280 @@ Implementation:
   are unaffected and show during `arriving` as before.
 - Tests: `tests/encounter_script_test.lua` (260 checks, up from 233).
 
+### Locked entries and "Unlock <name>" (DECIDED + BUILT 2026-09-20; Lua only; parser unit-tested with the bundled interpreter; runtime UNTESTED live)
+
+User direction (2026-09-20): just as an opportunity or threat can be
+declared `(Required)`, it should be declarable `(Locked)`. A locked entry
+does not show up at all unless something unlocks it. "Interrogate the
+Goblin" is locked; the opportunity "Capture the Goblin" carries
+`Unlock Interrogate the Goblin` as an outcome, and once that lands the
+locked entry appears -- immediately if the round it is declared in has
+been reached, otherwise when that round comes.
+
+Grammar:
+
+- `## Opportunity: Interrogate the Goblin (Locked)`, and `(Required,
+  Locked)` for both tags. The tags are stripped from the name.
+- `Unlock <name>` is an effect clause like any other, so it can sit on a
+  power roll tier or on a `Consequence:` line. Spellings: `Unlock ...`,
+  `Unlocks ...`, `You unlock ...`, `The party unlocks ...`, `Each party
+  member unlocks ...`.
+- It is almost always written hidden -- `{Unlock Interrogate the Goblin}`
+  -- so the party is not told a card exists before it appears. Written
+  unbraced it reads "Interrogate the Goblin is now available" in the turn
+  summary and the log.
+
+Decisions (2026-09-20):
+
+- **Matching is by name, not by id.** Both sides go through
+  `EncounterScript.MatchKey`: lower-cased, whitespace collapsed, a leading
+  `the ` and trailing punctuation dropped. So `{Unlock the Pact}` finds
+  `## Threat: The Pact (Locked)`, and an author does not have to copy the
+  heading letter for letter.
+- **Scope is the montage beat.** The unlocks live in the per-beat montage
+  state (`montage.unlocked`), so `/eotwmontage reset` locks everything
+  again, and an `Unlock` clause written in a *narrative* beat does nothing
+  (the parser warns, and the runtime prints why).
+- **Locked entries are out of the party-size draw**, exactly like required
+  ones. Letting a directive quietly remove the entry an `Unlock` outcome
+  points at would make the unlock a silent no-op.
+- **A locked threat that is never unlocked delivers no consequence** --
+  the same rule a removed threat follows. It was never on the board.
+- **A round with nothing but locked entries completes at once** and the
+  montage moves on, because `RoundComplete` already ends a round with
+  nothing available. That is the intent: there is nothing there to do.
+- **The parser polices both directions.** An `Unlock` clause that names no
+  locked entry of the montage warns; a `(Locked)` entry that nothing
+  unlocks warns. Either one is a dead end the party would never see.
+- **The console is the record.** A hidden unlock leaves no player-visible
+  trace, so `ApplyEffects` `printf`s each one, the party-size draw log
+  names locked entries it kept, and `/eotwmontage state` prints
+  `EncounterMontage.DescribeLocks` -- every locked entry with `locked` or
+  `UNLOCKED`, plus any unlock key that matched nothing.
+
+Implementation:
+
+- `EncounterScript.lua`: `entry.locked` (heading tag parsing now loops over
+  a comma-separated tag list), `EncounterScript.MatchKey`,
+  `ParseUnlockClause`, `DescribeUnlock`, the `unlock` effect kind (with
+  `name` and `key`), the two post-parse warnings, `(locked)` in the
+  `/eotwscript` dump, and `ChooseRemovedEntries` skipping locked entries.
+- `EncounterMontage.lua`: `montage.unlocked = { [entryKey] = true }`,
+  `EncounterMontage.EntryUnlocked` (consulted by `EntryHidden` and
+  `EntryAvailable`), the `unlock` branch of `ApplyEffects`, the
+  end-of-montage consequence list skipping still-locked threats, and
+  `EncounterMontage.DescribeLocks` for `/eotwmontage state`.
+- `EncounterMontageStage.lua`: `SyncEntries` counts `m.unlocked` and, when
+  the count changes without a full rebuild, sweeps `AddEntriesForRound`
+  over **every** round up to the current one (not just new ones -- an
+  unlock may free a card the party walked past two rounds ago). The
+  `m_cards` check makes that a no-op for everything already up, and the
+  new card arrives with the usual materialize ramp.
+- Tests: `tests/encounter_script_test.lua` (289 checks, up from 260).
+
+### The script validator panel (DECIDED + BUILT 2026-09-20; Lua only; VERIFIED live in the authoring game against the real week document)
+
+User direction (2026-09-20): a simple developer tool that reads a week's
+document and validates it -- showing every beat, summarizing them, and
+showing which rules were matched -- written in Lua so it reuses the
+runtime's own validation and cannot drift from it.
+
+`EncounterOfTheWeek/EncounterScriptValidator.lua` registers a dev-only
+dockable panel, **Encounter Script** (Panels > Development Tools, or
+`/eotwvalidate`). It is `devonly = true`, so it follows the same
+`devmode()` gate as the Character Inspector rather than needing a flag of
+its own.
+
+It shows, for a document picked from a dropdown of every markdown journal
+document (the current map's script marked `[this map]` and selected):
+
+- a summary: beats, entries, options, **rules matched**, text-only
+  clauses, problems;
+- **Problems** -- what will not work;
+- **Text-only clauses** -- prose the grammar did not match, kept separate
+  because it is usually deliberate and would otherwise bury everything
+  else (the live week raised 50 warnings, 48 of them prose);
+- **Script** -- every beat, round, entry (with its `(Required)` /
+  `(Locked)` / `(Temporary)` tags), option, roll and tier. Each tier and
+  `Consequence:` line is shown as the players read it with the recognized
+  clauses lit green, and under it one line per effect saying in plain
+  English what the engine will do -- `(hidden)` prefixed when the clause
+  was braced;
+- **Names** -- every item, monster, object asset and zone keyword the
+  script names, with whether the engine can find it.
+
+Nothing in it re-implements a rule. The highlighting is
+`EncounterScript.MarkupRules`, the effect lines are
+`EncounterScript.DescribeEffect`, and the lookups are the runtime's own
+`EncounterMontage.FindGear` / `FindMonster` and
+`EncounterZones.FindObjectAsset` / `FindKeyword` -- so it is 1:1 with what
+a montage will actually do by construction.
+
+On top of the parser's warnings it adds the checks a pure module cannot
+make: the four name lookups above, and each power roll's `Attr (Skills)`
+through `EncounterScript.ParseAttr` -- catching a characteristic that
+matched nothing (the test has nothing to roll) and a name in the
+parentheses that is not a `Skill.skillsDropdownOptions` entry, which is
+the silent trap this document has warned about since the grammar landed.
+
+Two layout notes worth keeping: an indented row must take the indent out
+of its own width (`width = "100%-<indent>"`), or a `100%` label with a
+left margin overflows the panel and clips its own right-hand words; and
+`BuildReport` builds real `gui.Label`s, so calling it from the console
+without parenting the result floods the dev console with orphan-panel
+warnings.
+
+Found on its first real run, in the live week document: a `|` line at 117
+that is not a power roll header, and `## Befriend Them` at 125 written
+with two hashes instead of three -- so it parsed as a malformed entry
+heading and its option was dropped.
+
+### Temporary entries (DECIDED + BUILT 2026-09-20; Lua only; parser unit-tested with the bundled interpreter; runtime UNTESTED live)
+
+User direction (2026-09-20): an entry should be able to be marked
+`(Temporary)`, meaning it expires at the end of the round it appears on --
+and for a threat, that its consequence is carried out at the end of that
+round if it was not vanquished.
+
+```
+## Threat: Goblin Scouts (Temporary)
+
+They will raise the alarm if you let them go.
+
+Consequence: Each party member loses 3 stamina
+```
+
+This is the one exception to the rule that entries persist into every later
+round (user direction 2026-09-18).
+
+Decisions (2026-09-20):
+
+- **"The round it appeared in" is not always the round that declares it.**
+  A plain temporary entry expires at the end of `entry.round`. A
+  `(Locked, Temporary)` one expires at the end of the round its `Unlock`
+  landed in, when that is later -- it cannot be carried off before the
+  party has ever seen it. `montage.unlocked` therefore records the ROUND
+  of each unlock rather than a bare flag, and
+  `EncounterMontage.EntryAppearRound` is the one place the rule lives.
+- **Expiry happens at the round boundary**, in the host's
+  round -> round+1 transition, before the round number moves. An expired
+  entry is then hidden and unapproachable for good
+  (`EncounterMontage.EntryExpired`, consulted by `EntryHidden` and
+  `EntryAvailable`), and its card fades out with the round's dealt-with
+  ones (`RetireDoneEntries`).
+- **A temporary entry in the LAST round is left to the normal
+  end-of-montage consequences phase**, which is the same moment and
+  presents each threat properly, one at a time. So `ExpireTemporaryEntries`
+  only runs on a round-to-round transition, and the end-of-montage
+  consequence list skips anything already expired so nothing pays twice.
+- **The party is told.** Unlike `(Required)` and `(Locked)`, which are
+  bookkeeping and never shown, a temporary entry's card carries its own
+  line -- "Gone at the end of this round", or "... deal with it or face
+  the consequence" for a threat that has one. A deadline the party cannot
+  see is not a deadline.
+- **A mid-montage consequence needs somewhere to be read out.** The
+  consequences phase never runs mid-montage, and the between-turns panel
+  deliberately ignores consequence log lines. So an expiry's log line is
+  marked `expired = true`, and the stage opens the new round with the run
+  of them that just landed ("Goblin Scouts was left unresolved." plus the
+  applied lines) in place of the last hero's result.
+- **A temporary entry is removable by a party-size directive** like any
+  other, unless it is also `(Required)`. A removed one never appeared, so
+  it never expires and never pays a consequence.
+
+Implementation:
+
+- `EncounterScript.lua`: `entry.temporary`; the heading-tag parse is now a
+  set of recognized words rather than two booleans, so the three tags
+  combine in any order and an unrecognized parenthesis still stays in the
+  name. `(temporary)` in the `/eotwscript` dump.
+- `EncounterMontage.lua`: `montage.expired`, `montage.unlocked[key]` now
+  the round, `EntryAppearRound`, `EntryExpired`, `ExpireTemporaryEntries`
+  (called from the round transition), the `expired` skip in the
+  end-of-montage consequence list, and `DescribeTemporary` for
+  `/eotwmontage state`.
+- `EncounterMontageStage.lua`: the deadline line on the card (with its own
+  `eotwEntryStatus deadline` style), `RetireDoneEntries` retiring expired
+  cards, and the expired-consequence run at the top of the new round.
+  `CreateEntryCard` builds its children as a list now -- a conditional
+  child inline in the constructor would have put a nil in the middle of
+  the array and silently dropped the status label.
+- Tests: `tests/encounter_script_test.lua` (342 checks, up from 332).
+
+### Standing edges and banes: "Edge on <option>" (DECIDED + BUILT 2026-09-20; Lua only; parser unit-tested with the bundled interpreter; runtime UNTESTED live)
+
+User direction (2026-09-20): a power roll outcome should be able to put an
+edge on another test of the montage, by name, **for all players**:
+
+```
+## Opportunity: Goblin Scouts
+
+### Spot Them
+
+|Watch Test: Intuition (Alertness)
+|You fail at the test
+|+1 malice. {Edge on Capture Them}
+|You spot them first. {Double Edge on Capture Them}
+
+## Opportunity: Capture the Goblin
+
+### Capture Them
+
+|Hunting Test: Agility or Intuition (Track, Alertness)
+|You scare them off
+|You capture them with a consequence => A hapless goblin was trying to stalk you! You capture it! +1 malice {Unlock Interrogate the Goblin}
+|You capture them => A hapless goblin was trying to stalk you! You capture it! {Unlock Interrogate the Goblin}
+```
+
+`Edge`, `Double Edge`, `Bane` and `Double Bane` are all accepted, with or
+without a lead-in (`an edge on ...`, `you gain an edge on ...`, `the party
+has an edge on ...`, `each party member gains ...`).
+
+Decisions (2026-09-20):
+
+- **This is not a rider.** A `|Edge: you speak Caelian` rider is weighed
+  against the acting hero's own facts; a standing edge applies to whoever
+  takes the test, no questions asked. They stack: a hero who also meets an
+  Edge rider rolls with both, and the roll nets edges against banes the way
+  any other pair does.
+- **The target is an `### option` name**, not an entry name -- "that test"
+  in the user's wording. Matched with `EncounterScript.MatchKey` (case,
+  spacing, a leading "the" and trailing punctuation ignored), the same key
+  `Unlock <name>` uses. Two entries that both name an option `Ask for Aid`
+  therefore share a grant; distinct names are the author's job, and the
+  parser cannot tell the two cases apart.
+- **Grants accumulate rather than cap.** Each one becomes its own pre-ticked
+  chip in the roll dialog, exactly as an Edge rider does, and the engine's
+  power-roll maths nets and caps them. Nothing clamps at parse or apply
+  time.
+- **They last the beat.** The grants live in the per-beat montage state, so
+  `/eotwmontage reset` clears them and a later beat starts clean.
+- **The parser polices the name**: an `Edge on <name>` that matches no
+  option of the montage warns, and one written in a narrative beat warns.
+- Written braced (`{Edge on Capture Them}`) the grant is silent, which is
+  the usual shape; unbraced it reads "The party has an edge on Capture
+  Them" in the turn summary and the log. Either way it is `printf`d, and
+  `/eotwmontage state` prints `EncounterMontage.DescribeTestMods`.
+
+Implementation:
+
+- `EncounterScript.lua`: the `testmod` effect kind (`effect` = the rider
+  effect key, `name`, `key`), `ParseTestModClause` -- matched FIRST in
+  `ParseClause`, because the generic `you gain <qty> <item>` rule would
+  otherwise read "you gain an edge on Capture Them" as an item called
+  "edge on Capture Them" -- `DescribeTestMod`, and the option-name check in
+  the post-parse pass.
+- `EncounterMontage.lua`: `montage.testmods = { [optionKey] = { {effect,
+  entryName, at}, ... } }`, the `testmod` branch of `ApplyEffects`,
+  `EncounterMontage.OptionTestMods`, and `RiderVerdict` -- which now
+  returns a verdict when an option has grants even with no riders of its
+  own, and folds each grant in as an applied rider so the roll dialog's
+  chips (`TestRiders.AppendModifiers`) and the boon/bane counts pick it up
+  with no special case. `DescribeTestMods` for `/eotwmontage state`.
+- `EncounterMontageStage.lua`: `GrantedRows` puts an always-lit
+  "Edge: earned at Goblin Scouts" line under the option's own rider rows.
+- Tests: `tests/encounter_script_test.lua` (313 checks, up from 289).
+
 - **Effect clauses**: each tier line is split on `.`, `,` and `;` and each
   clause is matched case-insensitively against the grammar below. Quantities
   are digits or `one`..`ten`; `a`/`an` = 1.
@@ -4413,6 +4744,27 @@ Implementation:
   `narrative`) and leaves the flavour, the punctuation and anything
   unrecognized exactly as written. The tags are the caller's, so the parser
   stays engine-free and testable.
+
+  **Hidden clauses: `{...}`** (user direction 2026-09-20). Anything a tier
+  line (or a `Consequence:` line) wraps in braces is parsed and applied
+  exactly as if it were written plainly, but it is never shown to a player.
+  `|You gain a Rope. {Unlock the Old Mill}` reads "You gain a Rope." on the
+  stage, in the roll dialog's power table and in the montage log, and still
+  unlocks the Old Mill. The braces do not have to wrap a whole clause list
+  and may sit mid-line -- `|You gain a Rope, {Unlock the Old Mill}, and it
+  squeals!` shows "You gain a Rope, and it squeals!" -- because the removal
+  tidies up the separators it stranded. An unterminated `{` hides the rest
+  of the line. A wholly braced line shows nothing at all, which is the
+  author's choice to make.
+
+  Mechanically: `SplitClauseSpans` marks a braced span, so its effect comes
+  back with `effect.hidden = true` (and its braces trimmed off, so the
+  grammar sees the clause as written); `EncounterScript.VisibleText(text)`
+  is what a display shows, and `TierDisplayText` and `MarkupRules` already
+  route through it. `EncounterMontage.ApplyEffects` applies a hidden effect
+  like any other and then takes back whatever it appended to `applied`, so
+  no turn summary or montage log line carries it. The raw line, braces and
+  all, is what `/eotwscript` dumps and what the journal shows the author.
 
   | clause | effect |
   |---|---|
@@ -4431,11 +4783,14 @@ Implementation:
   | `the threat is vanquished` (also `you vanquish the threat`) | the threat is resolved |
   | `you begin the encounter surprised` (also `you start the next encounter surprised`, `you are surprised`, `the party begins ... surprised`) | next encounter: monsters go first, every creature on the heroes' side (heroes + allies) starts Surprised |
   | `you surprise the enemy`/`enemies` (also `the enemy is surprised`) | next encounter: heroes go first, every monster starts Surprised |
-  | `you cannot be surprised` (also `can't`, `you are immune to surprise`, `the party ...`, `each party member ...`) | party-wide: a `surprised` outcome still loses the initiative, but NO hero or ally takes the Surprised condition |
+  | `you cannot be surprised` (also `can't`, `you are immune to surprise`, `the party ...`, `each party member ...`) | party-wide: a `surprised` outcome still loses the initiative, but NO hero or ally takes the Surprised condition, and that outcome is ANNOUNCED as "The heroes will lose initiative, but they cannot be surprised" |
+  | `the encounter begins with a fair roll` (also `combat starts with ...`, `a fair roll for initiative`, `initiative is rolled normally`, `you roll for initiative [normally]`, `you begin the encounter on even footing`/`terms`, `you are no longer surprised`, `the party is ...`) | takes back what the montage decided AGAINST the party -- the Surprised condition and a `lose`/`surprised` outcome -- and nothing else; an enemy already surprised stays surprised and a `win` still stands (see "Taking an unfavourable initiative back") |
   | `you win [the] initiative` | next encounter: heroes go first, no die |
   | `you lose [the] initiative` | next encounter: monsters go first, no die |
   | `you know the stamina of <keyword>` (also `learn`, `the party knows ...`, `each party member knows ...`; `goblins` -> `goblin`) | monster intelligence: the exact stamina of every monster carrying that stat-block keyword, in Monster Info and on its token bar, for the rest of the campaign (see "Montage outcome: You know the Stamina of Goblins") |
   | `reveal <zone>s [during the next combat]` (also `reveal the <zone> zones`, `the <zone>s are revealed ...`; the timing suffix is optional flavour) | the `<zone>` markup zones (an environmental keyword by name, e.g. Trap) turn player-visible when the encounter beat comes, and every client's zone overlay switches that type on (see "Encounter setup instructions and zone reveals") |
+  | `unlock <name>` (also `unlocks`, `you unlock ...`, `the party unlocks ...`) | a `(Locked)` entry of this montage joins the board (see "Locked entries") |
+  | `edge on <name>` (also `double edge`, `bane`, `double bane`; `an edge on ...`, `you gain an edge on ...`, `the party has an edge on ...`, `each party member gains ...`) | a standing edge/bane on the `### <name>` test of this montage, for whoever takes it (see "Standing edges and banes") |
   | `you fail (at )?the test`, anything unmatched | narrative only (shown, no effect) |
 
   The four **initiative** clauses (user direction 2026-09-18) work on power
@@ -4464,6 +4819,42 @@ Implementation:
   sides has no side to favour and falls back to the last outcome. The
   override applies even under surprise immunity: the heroes still lose the
   die, they just do not take the condition.
+
+  **And the announcement has to say both halves** (reported live 2026-09-20).
+  A party that had already been told "the heroes cannot be surprised" and then
+  read "the heroes will begin the encounter surprised" on the next consequence
+  had every reason to believe the boon had been forgotten -- the condition was
+  correctly withheld, but nothing on the stage said so. When immunity is already
+  on the document, a `surprised` clause is now announced as **"The heroes will
+  lose initiative, but they cannot be surprised"**.
+  `EncounterScript.DescribeInitiativeOutcome(outcome, immune)` takes the second
+  argument; `ApplyEffects` reads `ctx.doc.data.noSurprise` ONCE at the top of the
+  `initiative` branch (into `surpriseImmune`, before the branch writes anything)
+  and uses it for both the condition guard and the wording, so the two can never
+  disagree. `surprise` (the enemy) is untouched by immunity and reads as before.
+
+  **Taking an unfavourable initiative back (user direction 2026-09-20).**
+  `The encounter begins with a fair roll` undoes what the montage decided
+  against the party, and only that:
+
+  - `doc.data.surprised.party` is dropped and the Surprised condition comes
+    off the heroes on the spot (not at combat start);
+  - a `lose` or `surprised` outcome is replaced with the new outcome
+    `"even"`, which the encounter beat reads exactly like no decision at
+    all -- `immediateResult` stays nil and initiative is rolled;
+  - `doc.data.surprised.enemy` and a `win`/`surprise` outcome are left
+    alone, so a party that had already earned the jump keeps it (user
+    direction: "it shouldn't stop them from surprising them if they already
+    would"). When the outcome it finds is already favourable it changes
+    nothing and says so in the console.
+
+  It is **not** `you cannot be surprised`, which withholds the condition but
+  still hands the initiative to the monsters, and it is **not** sticky: it
+  clears what is on the board when it lands, and a later
+  `you begin the encounter surprised` wins the way any later clause does.
+  Reach for the immunity clause when the party should be warded for the
+  rest of the montage, and this one when a single bad outcome should be
+  wiped off.
 
   Deriving the condition from the outcome alone was wrong: a montage that
   handed out `Goblin Scouts -> the heroes begin the encounter surprised` and
@@ -6289,6 +6680,16 @@ and 30 change nothing visible for a script with no montage.
     montage already applied, since surprise lands the moment it is
     announced and immunity can be earned after it.
 
+    **Wording fixed 2026-09-20** (reported live; parser tests now 346
+    checks, UNTESTED live): the condition was withheld correctly, but a
+    `surprised` consequence landing on top of the boon still announced
+    "The heroes will begin the encounter surprised", which read as the
+    immunity having been lost. `DescribeInitiativeOutcome` now takes an
+    `immune` flag and says "The heroes will lose initiative, but they
+    cannot be surprised"; `ApplyEffects` computes `surpriseImmune` once
+    at the top of the `initiative` branch and feeds both the condition
+    guard and the wording from it.
+
 39. [x] **Assisting a test** (BUILT 2026-09-18, luac-clean, parser tests
     still 101/101 -- no parser change; **UNTESTED live**): design in
     "Assisting a test" under Architecture Notes. A test that lands below
@@ -6650,7 +7051,130 @@ no core change.
 
 # Status
 
-- 2026-09-20 (party-size scaling, latest): **A montage round can now trim
+- 2026-09-20 (script validator, latest): **A dev-only "Encounter Script"
+  dockable panel (Panels > Development Tools, or `/eotwvalidate`) reads a
+  week's journal document through the runtime parser and reports it:
+  beats, rounds, entries with their tags, every tier line with the
+  recognized clauses lit green and the plain-English effect under it,
+  plus problems, text-only clauses and the item/monster/object/zone name
+  lookups. VERIFIED live in the authoring game against the real week
+  document. UNCOMMITTED.** It re-implements no rule -- highlighting is
+  `MarkupRules`, effect lines are `DescribeEffect`, lookups are the
+  runtime's own -- and adds the checks the pure parser cannot: the four
+  name lookups, and `ParseAttr` on each roll to catch a characteristic
+  that matched nothing or a non-skill in the parentheses. Design under
+  "The script validator panel". Files:
+  `EncounterOfTheWeek/EncounterScriptValidator.lua` (NEW -- registered in
+  the CodeMod via the MCP workflow, after `EncounterZones`; Firebase
+  persistence confirmed). **Its first run found two real bugs in the live
+  week document: line 117 is a `|` line that is not a power roll header,
+  and line 125 is `## Befriend Them` where it should be `### Befriend
+  Them`, so that option is being dropped.**
+
+- 2026-09-20 (temporary entries): **An opportunity or threat can
+  be marked `(Temporary)`: it is gone at the end of the round it appeared
+  in, and a temporary threat that was not vanquished pays its consequence
+  there and then rather than at the end of the montage. BUILT code-only;
+  parser unit-tested (342 checks, up from 332); runtime UNTESTED live.
+  UNCOMMITTED.** The card says so ("Gone at the end of this round -- deal
+  with it or face the consequence"), since a deadline the party cannot see
+  is not a deadline, and the stage opens the next round by reading out
+  whatever expired. A `(Locked, Temporary)` entry expires at the end of
+  the round its unlock landed in, not the round that declares it, so
+  `montage.unlocked` now records the round. Design under "Temporary
+  entries". Files: `EncounterOfTheWeek/EncounterScript.lua`
+  (`entry.temporary`, the heading tags reworked into a recognized-word
+  set), `EncounterOfTheWeek/EncounterMontage.lua` (`montage.expired`,
+  `EntryAppearRound`, `EntryExpired`, `ExpireTemporaryEntries`,
+  `DescribeTemporary`), `EncounterOfTheWeek/EncounterMontageStage.lua`
+  (the deadline line, `RetireDoneEntries`, the expired-consequence
+  read-out), `tests/encounter_script_test.lua` (10 new checks).
+
+- 2026-09-20 (a fair roll for initiative): **A montage outcome can
+  now take back an unfavourable initiative decision without handing the
+  party a favourable one: `The encounter begins with a fair roll` drops the
+  party's Surprised condition and a `lose`/`surprised` outcome, leaves an
+  already-surprised enemy and a `win` alone, and otherwise lets combat roll
+  for it. BUILT code-only; parser unit-tested (332 checks, up from 313);
+  runtime UNTESTED live. UNCOMMITTED.** It is distinct from
+  `you cannot be surprised`, which withholds the condition but still loses
+  the initiative, and it is not sticky. Design under "Taking an
+  unfavourable initiative back". Files:
+  `EncounterOfTheWeek/EncounterScript.lua` (the `fairinitiative` effect
+  kind, `ParseFairInitiativeClause` -- matched BEFORE the surprise-immunity
+  and initiative clauses, whose `^you .*surprised$` rules would otherwise
+  read "you are no longer surprised" as its own opposite --
+  `DescribeFairInitiative`), `EncounterOfTheWeek/EncounterMontage.lua` (the
+  `fairinitiative` branch of `ApplyEffects` and the new
+  `data.initiative.outcome == "even"`), `tests/encounter_script_test.lua`
+  (19 new checks). `EncounterOfTheWeek.lua` needed no change: an outcome it
+  does not recognize already leaves `immediateResult` nil.
+
+- 2026-09-20 (standing edges and banes): **A power roll outcome
+  can now put an edge or bane on another test of the montage by name --
+  `{Edge on Capture Them}` -- and it applies to whoever takes that test,
+  not just to the hero who earned it. `Double Edge`, `Bane` and `Double
+  Bane` too. BUILT code-only; the parser is unit-tested (313 checks, up
+  from 289); the runtime is UNTESTED live. UNCOMMITTED.** Unlike a
+  `|Edge:` rider it is weighed against nobody; the two stack, and the
+  grants become ordinary pre-ticked chips in the roll dialog via
+  `RiderVerdict`, which now folds them in as applied riders. Targets are
+  `### option` names matched with `EncounterScript.MatchKey`; the parser
+  warns when one matches nothing. Design under "Standing edges and banes".
+  Files: `EncounterOfTheWeek/EncounterScript.lua` (`testmod` effect kind,
+  `ParseTestModClause` matched first in `ParseClause`, `DescribeTestMod`,
+  the option-name check; `EntryKey` was renamed `MatchKey` now that both
+  entry and option names go through it),
+  `EncounterOfTheWeek/EncounterMontage.lua` (`montage.testmods`, the
+  `testmod` branch of `ApplyEffects`, `OptionTestMods`, `RiderVerdict`,
+  `DescribeTestMods`), `EncounterOfTheWeek/EncounterMontageStage.lua`
+  (`GrantedRows`), `tests/encounter_script_test.lua` (24 new checks).
+
+- 2026-09-20 (locked entries + hidden clauses): **An opportunity
+  or threat can be declared `(Locked)` and stays off the board until an
+  `Unlock <name>` outcome lets it on, and any part of a tier or
+  `Consequence:` line wrapped in `{...}` is applied but never shown.
+  BUILT code-only; the parser is unit-tested with the bundled interpreter
+  (289 checks, up from 260); the runtime is UNTESTED live -- the app was
+  only taken as far as the title screen this session, where the EotW
+  codemod is not loaded, so nothing of this has run in a game.
+  UNCOMMITTED.** `## Opportunity: Interrogate the Goblin (Locked)` is
+  never shown, never approachable, and (for a threat) delivers no
+  consequence; `{Unlock Interrogate the Goblin}` on some other entry's
+  tier applies silently and the card appears at once if its round has been
+  reached, or when that round comes. Names are matched loosely
+  (`EncounterScript.MatchKey`: case, spacing, a leading "the" and trailing
+  punctuation all ignored), the unlocks live in the per-beat montage state
+  so `/eotwmontage reset` re-locks everything, locked entries are out of
+  the party-size draw, and the parser warns both ways (an unlock that
+  names no locked entry; a locked entry nothing unlocks). Because a hidden
+  unlock leaves no player-visible trace, every unlock is `printf`d and
+  `/eotwmontage state` prints `EncounterMontage.DescribeLocks`. Design
+  under "Locked entries and Unlock <name>" and, for the braces, "Hidden
+  clauses" inside the effect-clause grammar.
+  Files: `EncounterOfTheWeek/EncounterScript.lua` (`entry.locked` and the
+  multi-tag heading parse, `MatchKey`, `ParseUnlockClause`,
+  `DescribeUnlock`, the `unlock` effect kind, `HiddenRanges` /
+  `VisibleText` / the hidden-aware `SplitClauseSpans` /
+  `effect.hidden`, `TierDisplayText` and `MarkupRules` routed through
+  `VisibleText`, the two post-parse warnings, `(locked)` in the
+  `/eotwscript` dump, `ChooseRemovedEntries` skipping locked entries),
+  `EncounterOfTheWeek/EncounterMontage.lua` (`montage.unlocked`,
+  `EntryUnlocked`, the `unlock` branch and the hidden-effect suppression
+  in `ApplyEffects`, the consequence-list filter, `DescribeLocks` +
+  `/eotwmontage state`, `t.tierText` recorded as visible text),
+  `EncounterOfTheWeek/EncounterMontageStage.lua` (`SyncEntries` brings
+  newly unlocked cards in without waiting for the round to turn; the
+  consequence card's text goes through `VisibleText`),
+  `tests/encounter_script_test.lua` (29 new checks).
+  **To test:** in the authoring game, add a `(Locked)` entry and a
+  `{Unlock <it>}` outcome to the week's document, `/eotwmontage reset`,
+  `/eotwscript` (the dump should mark it `(locked)` and raise no
+  warnings), then `/eotwmontage start` and take the unlocking option --
+  the card should appear mid-round with the usual materialize ramp, and
+  the tier row and log should never show the braces or the unlock line.
+
+- 2026-09-20 (party-size scaling): **A montage round can now trim
   itself for a small party, and an entry can opt out of being trimmed.
   BUILT code-only; the parser is unit-tested with the bundled interpreter
   (260 checks, up from 233); the runtime is UNTESTED live -- the running
