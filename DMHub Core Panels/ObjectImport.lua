@@ -678,15 +678,36 @@ local function SplitPlacedObject(original)
             return
         end
 
-        --touching sizeInfo forces the importer to generate the textures Upload needs.
-        local _ = importer.sizeInfo
-
         local baseName = "Object"
         pcall(function()
             if original.name ~= nil and original.name ~= "" then
                 baseName = original.name
             end
         end)
+
+        --last point where backing out is free: the piece count is known, but no
+        --textures have been generated and nothing has been uploaded yet. The
+        --original is replaced, so make the user agree to the real piece count.
+        local decision = nil
+        DTConfirmationDialog.ShowModal(
+            "Split Object",
+            string.format("Split \"%s\" into %d separate objects? The original object is replaced by the pieces.", baseName, #regions),
+            "Split",
+            "Cancel",
+            function() decision = "confirm" end,
+            function() decision = "cancel" end)
+
+        while decision == nil do
+            coroutine.yield(0.1)
+        end
+
+        if decision ~= "confirm" then
+            importer:Destroy()
+            return
+        end
+
+        --touching sizeInfo forces the importer to generate the textures Upload needs.
+        local _ = importer.sizeInfo
 
         --put the pieces in the same palette folder as the original's
         --blueprint. imageid is the blueprint asset guid when the object was
@@ -819,52 +840,16 @@ local function SplitPlacedObject(original)
     end)
 end
 
---The hovered placed object; right-clicking an object does not select it,
---so hover focus -- not the selection -- identifies the menu's subject.
-local function ObjectUnderCursor()
-    local floor = game.currentFloor
-    if floor == nil then
-        return nil
-    end
+--Splitting lives on the object properties panel rather than the map
+--right-click menu: it replaces the object, so reaching it should take a
+--deliberate step. ObjectPropertiesDialog.lua (same mod) calls this.
+mod.shared.SplitPlacedObject = SplitPlacedObject
 
-    for _, obj in pairs(floor.objects) do
-        local focused = false
-        pcall(function() focused = obj.editorFocus end)
-        if focused then
-            return obj
-        end
-    end
-
-    return nil
-end
-
---add "Split into Separate Objects" to the map right-click menu for objects.
---Assigned via the raw table since GameHud.lua (which defines the register
---function) loads after this file.
-g_gameContextMenuContributors = rawget(_G, "g_gameContextMenuContributors") or {}
-g_gameContextMenuContributors["splitobject"] = function(entries)
-    if not dmhub.isDM then
-        return
-    end
-
-    local obj = ObjectUnderCursor()
-    if obj == nil then
-        return
-    end
-
-    --map-image objects size themselves from grid control points rather
-    --than the standard pixels-per-tile rule; splitting those is not supported.
-    local isMap = false
-    pcall(function() isMap = obj:GetComponent("Map") ~= nil end)
-    if isMap then
-        return
-    end
-
-    entries[#entries + 1] = {
-        text = "Split into Separate Objects",
-        tooltip = "Break this object into separate objects wherever its image has pieces separated by transparency. Each piece stays in place on the map.",
-        click = function()
-            SplitPlacedObject(obj)
-        end,
-    }
+--Drop the old right-click entry. Contributors are keyed in a global table
+--that outlives a Lua reload, so removing the registration above is not
+--enough: a session that already registered it keeps it until restart.
+--Safe to delete once no running client can still hold the old key.
+local contributors = rawget(_G, "g_gameContextMenuContributors")
+if contributors ~= nil then
+    contributors["splitobject"] = nil
 end
