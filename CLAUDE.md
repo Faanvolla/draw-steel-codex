@@ -198,10 +198,25 @@ same source as the engine's `lua54.dll` — do not go looking for one elsewhere:
 
 `-p` parses without executing, so it works on files full of engine globals. Actually
 *running* a codex file with `lua.exe` will fail on the first `import`/`dmhub`/`gui`
-reference; that is expected. One false positive to know about: a raw `luac -p` reports
-`unexpected symbol near '@'` on the two files using the engine's `@if`/`@else`/`@end`
-preprocessor directives — that is not a real error. See "Checking Lua Yourself" in the
-root [`CLAUDE.md`](../CLAUDE.md) for the preprocessor-aware sweep command.
+reference; that is expected. No codex file uses the engine's `@if`/`@else`/`@end`
+preprocessor directives any more, so a raw `luac -p` sweep is clean with no special
+handling; see "Checking Lua Yourself" in the root [`CLAUDE.md`](../CLAUDE.md).
+
+**Do not leave a file worse typed than you found it.** `luac -p` only catches syntax.
+The type checker is `../tools/lua-typing/check.ps1` (run it from the repo root), and
+`tools/lua-typing/baseline.json` holds a per-file ceiling; the run exits 1 when a file goes
+over it, naming the file and the delta. Run it before you call Lua work finished. It takes
+~3.5 minutes and needs the whole codex in one pass -- a subdirectory run reports globals
+defined elsewhere as undefined, so it cannot answer this.
+
+The ceiling has slack in it because LuaLS is not deterministic here (the same code checks
+to a number ~12 wide), so do not read small count changes as signal in either direction.
+
+Adding to a file that is already over its ceiling is fine as long as you do not push it
+further. If your change genuinely improves a file, re-record with `-UpdateBaseline` and
+say so in the commit message. See [`LUA_TYPING_REFERENCE.md`](../LUA_TYPING_REFERENCE.md)
+for the annotation conventions that keep new code clean -- `@cast` in event handlers,
+typed locals for `panel.data`, `core.Vector2` on property writes.
 
 **ASCII only.** The DMHub Lua runtime does not handle non-ASCII characters in source files. All Lua files — including comments and EmmyLua annotations — must contain only ASCII characters (bytes 0-127). Never use em dashes, curly quotes, ellipses, or any other Unicode punctuation. Use plain ASCII equivalents instead: `-` or `:` instead of em dashes, `"` instead of curly quotes, `...` instead of ellipses.
 

@@ -32,6 +32,10 @@
 --                     the host resolves on the winner's option.
 --    result = nil | { mode, optionIndex, optionName, decidedBy, applied = {...},
 --                     groups = { { optionIndex, optionName, heroNames, applied }, ... } },
+--    announce = nil | { feature, name, text, at },
+--                  -- a feature this section just unlocked: the stage shows
+--                     the explanation and blinks the pool it names, until the
+--                     party presses on (see ActiveAnnounce).
 --    resolvedAt, doneAt, startedAt (of the current section),
 --    requests = { [userid] = { seq, kind, ... } }, handled = { [userid] = seq },
 --    log = { { sectionId, sectionName, mode, optionName, applied }, ... },
@@ -349,6 +353,50 @@ local function SectionsOf(beat)
     return EncounterScript.NarrativeSections(beat)
 end
 
+--"Unlock: Intelligence" turns on an optional feature of the game mode when
+--its scene arrives: the beat's lines when the beat opens, a section's when
+--that section does. Host, inside an OPEN change on the script document.
+--
+--A feature that just arrived is also ANNOUNCED: `narrative.announce` carries
+--the explanation the stage shows and the pool the strip blinks, until the
+--party presses on (EncounterNarrative.ActiveAnnounce).
+local function ApplyUnlocks(doc, holder, sourceName)
+    for _, u in ipairs((holder or {}).unlocks or {}) do
+        if EncounterMontage.UnlockFeature(doc, u.feature, sourceName) then
+            printf("EotW narrative: %s is unlocked (%s)", tostring(u.name), tostring(sourceName))
+            local record = EncounterScript.FEATURES[u.feature]
+            if doc.data.narrative ~= nil and record ~= nil and record.explanation ~= nil then
+                doc.data.narrative.announce = {
+                    feature = u.feature,
+                    name = record.name,
+                    text = record.explanation,
+                    at = dmhub.serverTime,
+                }
+            end
+        end
+    end
+end
+
+--The feature-unlock callout that should be on screen right now, or nil.
+--Every client reads it off the shared state, so the explanation and the blink
+--round the pool it names start and stop together on all of them -- and a
+--client that joins mid-section still gets the explanation.
+--
+--It stands for as long as the section it arrived on is still asking: the
+--party reads it and presses on, and pressing on is what dismisses it. No
+--timer -- a callout that timed out would go while somebody was still reading.
+function EncounterNarrative.ActiveAnnounce()
+    local m = EncounterNarrative.GetState()
+    local announce = m ~= nil and m.announce or nil
+    if type(announce) ~= "table" or announce.text == nil then
+        return nil
+    end
+    if m.phase ~= "arriving" and m.phase ~= "choosing" then
+        return nil
+    end
+    return announce
+end
+
 local function OptionName(section, index)
     local option = (section ~= nil and section.options[index]) or nil
     return (option ~= nil and option.name) or "?"
@@ -585,6 +633,7 @@ function EncounterNarrative.Begin(script, beat, beatIndex)
         seq = 0,
     }
     doc.data.stageDismissAt = nil
+    ApplyUnlocks(doc, beat, beat.title or "Narrative")
     doc:CompleteChange("Narrative started", { undoable = false })
     printf("EotW narrative: beat %d started (%d sections)", beatIndex, EncounterScript.SectionCount(beat))
     EncounterNarrative.Present(beatIndex)
@@ -604,6 +653,12 @@ function EncounterNarrative.HostTick(script, beat, beatIndex)
         doc:BeginChange()
         doc.data.narrative.phase = "choosing"
         doc.data.narrative.startedAt = dmhub.serverTime
+        --the first section is now on screen: whatever it unlocks arrives
+        --with it. (The beat's own unlocks landed in Begin.)
+        local first = SectionsOf(beat)[tonumber(doc.data.narrative.sectionIndex) or 1]
+        if first ~= nil then
+            ApplyUnlocks(doc, first, first.name)
+        end
         doc:CompleteChange("Narrative: the party has arrived", { undoable = false })
         m = doc.data.narrative
         printf("EotW narrative: beat %d -- the party has arrived", beatIndex)
@@ -709,10 +764,14 @@ function EncounterNarrative.HostTick(script, beat, beatIndex)
                 m.choices = {}
                 m.decision = nil
                 m.result = nil
+                --the previous section's callout goes with it (the next
+                --section may hang one of its own, below).
+                m.announce = nil
                 m.resolvedAt = nil
                 m.resolvedLinger = nil
                 m.startedAt = dmhub.serverTime
                 m.seq = (tonumber(m.seq) or 0) + 1
+                ApplyUnlocks(doc, sections[nextIndex], sections[nextIndex].name)
                 printf("EotW narrative: section %d -- %s", nextIndex, tostring(sections[nextIndex].name))
             end
         end

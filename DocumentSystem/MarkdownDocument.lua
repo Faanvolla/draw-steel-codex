@@ -1859,15 +1859,37 @@ BreakdownRichTags = function(content, result, options, extraOutput)
                 tiers[#tiers + 1] = match.text
             end
 
-            --Optional 4th |-line is the "Critical" outcome (natural 19-20). Its mere presence
-            --upgrades this power roll to four tiers; existing 3-line rolls are unaffected.
-            local hasCritical = false
+            --After the three tiers, further |-lines belong to the roll while they
+            --are RIDERS ("|Edge: you speak Caelian", "|Allow: ..." -- see
+            --TestRiders) or the one optional "Critical" outcome (natural 19-20).
+            --A rider is told from a tier by its leading effect word, so a
+            --critical line may sit before or after the riders. The critical's
+            --mere presence upgrades this power roll to four tiers; existing
+            --3-line rolls are unaffected.
+            local riders = {}
+            local consumed = 3
             if hasMatch then
-                local critMatch = lines[i + 4] and
-                regex.MatchGroups(lines[i + 4], "^" .. currentIndent .. "\\|(?<text>[^|]*)$")
-                if critMatch ~= nil then
-                    tiers[#tiers + 1] = critMatch.text
-                    hasCritical = true
+                local hasCritical = false
+                local j = 4
+                while lines[i + j] ~= nil do
+                    local extra = regex.MatchGroups(lines[i + j], "^" .. currentIndent .. "\\|(?<text>[^|]*)$")
+                    if extra == nil then
+                        break
+                    end
+                    local rider = nil
+                    if rawget(_G, "TestRiders") ~= nil then
+                        rider = TestRiders.ParseRider(extra.text)
+                    end
+                    if rider ~= nil then
+                        riders[#riders + 1] = rider
+                    elseif hasCritical then
+                        break
+                    else
+                        tiers[#tiers + 1] = extra.text
+                        hasCritical = true
+                    end
+                    consumed = j
+                    j = j + 1
                 end
             end
 
@@ -1879,10 +1901,11 @@ BreakdownRichTags = function(content, result, options, extraOutput)
                     name = powerRollMatch.name,
                     attr = powerRollMatch.attr,
                     tiers = tiers,
+                    riders = riders,
                     player = isPlayer,
                 }
-                StampLine(result[#result], i, i + cond(hasCritical, 4, 3))
-                skipLines = cond(hasCritical, 4, 3)
+                StampLine(result[#result], i, i + consumed)
+                skipLines = consumed
                 str = ""
             elseif g_hardwiredPowerTables[nextLine] then
                 EmitText()
@@ -2552,11 +2575,67 @@ local function TierRoll(n)
     }
 end
 
+--The rider rows under a power roll's tiers ("Edge: You speak Caelian"),
+--one label per rider, coloured by how the rider fell for the viewing
+--player's hero (TestRiders.DescribeRows): an Allow rider reads "Requires"
+--in red while unmet and "Unlocked: <the clause that met it>" in violet
+--once met; an edge/bane rider lights green/red when it applies and dims
+--when it does not. In the Director's view (no hero) the lines are plain.
+local g_riderColors = {
+    unlocked = "#d9b3ff", locked = "#e08c8c", met = "#9be29b", hurt = "#e08c8c", unmet = "#8a8a8a",
+}
+local function RiderRows(doc)
+    return gui.Panel{
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        halign = "left",
+        valign = "top",
+        refreshPowerRoll = function(element, info)
+            local riders = info.riders or {}
+            element:SetClass("collapsed", #riders == 0)
+            if #riders == 0 then
+                element.children = {}
+                return
+            end
+            local verdict = nil
+            if doc:IsPlayerView(element) then
+                local token = dmhub.currentToken
+                if token ~= nil and token.properties ~= nil then
+                    verdict = TestRiders.VerdictFor(token.properties, riders)
+                end
+            end
+            local children = {}
+            for _, row in ipairs(TestRiders.DescribeRows(riders, verdict)) do
+                children[#children + 1] = gui.Label{
+                    width = "100%",
+                    height = "auto",
+                    textAlignment = "topleft",
+                    fontSize = CustomDocument.ScaleFontSize(14),
+                    bold = row.state == "unlocked" or row.state == "met" or row.state == "hurt",
+                    color = g_riderColors[row.state] or "#b8b8b8",
+                    lmargin = CustomDocument.ScaleFontSize(6),
+                    text = string.format("%s: %s", row.label, row.text),
+                }
+            end
+            element.children = children
+            element.data.verdict = verdict
+        end,
+    }
+end
+
 local function PowerRollDisplay(doc)
     local resultPanel
 
     local m_token = nil
     local m_info = nil
+    local riderRows = RiderRows(doc)
+
+    --how the roll's riders fell for the viewing player's hero (nil when the
+    --roll has none, or in the Director's view)
+    local function PlayerVerdict(element)
+        return riderRows.data.verdict
+    end
 
     resultPanel = gui.Panel {
         width = "auto",
@@ -2606,12 +2685,25 @@ local function PowerRollDisplay(doc)
                     else
                         local token = dmhub.currentToken
                         if token ~= nil then
+                            --the roll's riders, weighed against this hero: a
+                            --locked test does not roll; earned edges/banes
+                            --ride into the dialog as pre-ticked chips.
+                            local verdict = PlayerVerdict(element)
+                            if verdict ~= nil and not verdict.allowed then
+                                return
+                            end
                             token.properties:RollCustomPowerTableTest(string.format("%s: %s", m_info.name, m_info.attr),
-                                characteristics, skills, m_info.tiers)
+                                characteristics, skills, m_info.tiers,
+                                { modifiers = TestRiders.AppendModifiers({}, verdict, "test_power_roll") })
                         end
                     end
                 end,
                 fontSize = CustomDocument.ScaleFontSize(18),
+                refreshRiderVerdict = function(element, verdict)
+                    --a player who cannot take the test sees the link dead
+                    element:SetClass("link", verdict == nil or verdict.allowed)
+                    element:SetClass("riderLocked", verdict ~= nil and not verdict.allowed)
+                end,
             },
 
             gui.Label{
@@ -2663,6 +2755,16 @@ local function PowerRollDisplay(doc)
         TierRoll(2),
         TierRoll(3),
         TierRoll(4),
+        riderRows,
+
+        --the rider rows refresh after the header (child order), so the
+        --link's locked state is settled once the whole refresh has run.
+        refreshPowerRoll = function(element, info)
+            element:ScheduleEvent("settleRiders", 0)
+        end,
+        settleRiders = function(element)
+            element:FireEventTree("refreshRiderVerdict", riderRows.data.verdict)
+        end,
     }
 
     return resultPanel
@@ -7842,7 +7944,7 @@ function Seamless.CompileDecorations(doc, text)
             islandLines[li] = true
         end
         local tierCount = 3
-        pcall(function() tierCount = math.max(1, #(token.tiers or {})) end)
+        pcall(function() tierCount = math.max(1, #(token.tiers or {})) + #(token.riders or {}) end)
         decs[#decs + 1] = {
             kind = "island",
             from = from,

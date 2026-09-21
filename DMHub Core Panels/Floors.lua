@@ -1278,6 +1278,23 @@ local function ShowFloorSettings(floor, onHeightChanged)
 end
 
 
+--Keep the 'selected' highlight on the floor/layer rows in step with the
+--engine's current floor. The rows only restyle when they receive
+--refreshFloorSelection, and broadcasting it from the click handler does not
+--work: game.ChangeMap does not move game.currentFloor synchronously, so the
+--rows repainted the PREVIOUS selection and stayed one click behind until the
+--panel was rebuilt (close and reopen). The engine fires ChangeCurrentFloor
+--when the floor actually changes, which also catches floor changes made from
+--anywhere else (the map, a hotkey, another panel). The caller must
+--deregister the returned handler when its panel is destroyed.
+local RegisterFloorSelectionRefresh = function(element)
+	return dmhub.RegisterEventHandler("ChangeCurrentFloor", function()
+		if element.valid then
+			element:FireEventTree("refreshFloorSelection")
+		end
+	end)
+end
+
 local CreateDragTarget = function(index, belowGround, layerType)
 	layerType = layerType or "floor"
 	return gui.Panel{
@@ -1496,6 +1513,7 @@ CreateLayersPanel = function()
 
 
 	local floorsList
+	local floorSelectionHandler
 
 	--Rows span this list edge to edge (width 100%, no row margin), and the
 	--list itself sits flush in the dock: no inset anywhere in the chain.
@@ -1522,6 +1540,14 @@ CreateLayersPanel = function()
 
 		create = function(element)
 			element:ScheduleEvent("tick", 0.5)
+			floorSelectionHandler = RegisterFloorSelectionRefresh(element)
+		end,
+
+		destroy = function(element)
+			if floorSelectionHandler ~= nil then
+				dmhub.DeregisterEventHandler(floorSelectionHandler)
+				floorSelectionHandler = nil
+			end
 		end,
 
 		tick = function(element)
@@ -2240,12 +2266,6 @@ CreateLayersPanel = function()
 										FloorNavigation.ApplyVisibility(game.currentMap, floor)
 										floorsList:FireEventTree("refreshGame")
 									end
-									--the dockablePanel ancestor can be nil: panel content can be
-									--hosted outside the dock (e.g. a free-floating panel window).
-									local dockPanel = element:FindParentWithClass("dockablePanel")
-									if dockPanel ~= nil then
-										dockPanel:FireEventTree("refreshFloorSelection")
-									end
 								end
 							end,
 
@@ -2685,6 +2705,7 @@ end
 CreateLayersList = function(parentFloor)
 
 	local floorItems = {}
+	local floorSelectionHandler
 
 	--Layers indent from the LEFT only (hierarchy) and stay flush with the
 	--floor rows on the right, so every row in the panel shares one right
@@ -2698,6 +2719,14 @@ CreateLayersList = function(parentFloor)
 
 		create = function(element)
 			element:FireEvent("refreshGame")
+			floorSelectionHandler = RegisterFloorSelectionRefresh(element)
+		end,
+
+		destroy = function(element)
+			if floorSelectionHandler ~= nil then
+				dmhub.DeregisterEventHandler(floorSelectionHandler)
+				floorSelectionHandler = nil
+			end
 		end,
 
 		refreshGame = function(element)
@@ -3095,12 +3124,6 @@ CreateLayersList = function(parentFloor)
 							click = function(element)
 								element.popup = nil
 								game.ChangeMap(game.currentMap, floor)
-								--the dockablePanel ancestor can be nil: panel content can be
-								--hosted outside the dock (e.g. a free-floating panel window).
-								local dockPanel = element:FindParentWithClass("dockablePanel")
-								if dockPanel ~= nil then
-									dockPanel:FireEventTree("refreshFloorSelection")
-								end
 							end,
 
 						}

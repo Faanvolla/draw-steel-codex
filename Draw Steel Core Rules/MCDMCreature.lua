@@ -4675,7 +4675,11 @@ end
 --_tmp_ field on the creature, which survives reloads and would pin future clicks.
 local g_pendingQueuedRoll = {}
 
-function creature:RollCustomPowerTableTest(title, characteristics, skills, tiers)
+--options (optional): { modifiers = { modifierEntry, ... } } -- extra
+--entries for the roll dialog's modifier list, in the same shape
+--GetModifiersForPowerRoll returns ({ modifier, hint, context }). The
+--journal uses it for a power roll's rider chips (TestRiders).
+function creature:RollCustomPowerTableTest(title, characteristics, skills, tiers, options)
     local attrid = nil
     local bestModifier = nil
     for id, _ in pairs(characteristics) do
@@ -4728,6 +4732,9 @@ function creature:RollCustomPowerTableTest(title, characteristics, skills, tiers
                 mod.modifier.description = string.format(tr("Not skilled in %s"), table.concat(skillNames, " or "))
             end
         end
+    end
+    for _, extra in ipairs((options or {}).modifiers or {}) do
+        modifiers[#modifiers + 1] = extra
     end
 
     --Respect the global roll gate. This drives the singleton rollDialog

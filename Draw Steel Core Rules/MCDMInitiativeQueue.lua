@@ -175,16 +175,25 @@ function InitiativeQueue.GetTokensForInitiativeId(initiativeid, allTokens)
     --action-log start-of-turn card) uses result[1] as the group's face, but
     --the list is built in pairs() order, so a group entry could wear any
     --member's portrait - a Goblin Monarch grouped with its Runners showed a
-    --Runner as "whose turn it is". Order the group so its natural leader
-    --comes first: non-minions before minions, then by organization weight
-    --(solo/leader above elite/platoon/horde), then by name/id so the pick is
-    --at least deterministic. Callers that iterate the whole list are
-    --unaffected; no caller could rely on the old order, since pairs() never
-    --guaranteed one.
+    --Runner as "whose turn it is", a hero showed its retainer. Order the
+    --group so its leader comes first: heroes, then the entry's own token,
+    --then non-minions, then organization weight (solo/leader above
+    --elite/platoon/horde), then name/id so the pick is at least
+    --deterministic. Callers that iterate the whole list are unaffected; no
+    --caller could rely on the old order, since pairs() never guaranteed one.
     if #result > 1 then
         local orgWeight = { solo = 6, leader = 5, elite = 4, platoon = 3, horde = 2, minion = 1 }
         local function DisplayRank(tok)
             local rank = 0
+            --a hero's retainers and summons copy the hero's initiative id into
+            --initiativeGrouping, so without these two the monster ranking below
+            --ties at 10 and an alphabetical name compare hands over the card.
+            if tok.properties.IsHero ~= nil and tok.properties:IsHero() then
+                rank = rank + 100
+            end
+            if tok.charid == initiativeid then
+                rank = rank + 50
+            end
             pcall(function()
                 if not tok.properties.minion then
                     rank = rank + 10

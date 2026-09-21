@@ -13,6 +13,8 @@
 --- @field hasAnimatedTokens boolean True if this is an AnimatedTokens item that grants one or more animated tokens.
 --- @field animatedTokens table<string, boolean> A table of animated-token spine registry names (e.g. 'lightbender') mapped to true, granted by this item. Read/write. Only meaningful for AnimatedTokens-type items.
 --- @field images string[] List of image asset identifiers for this shop item's gallery.
+--- @field tileImage string The image asset identifier used for this item's shop tile (grid cards and cart rows), or an empty string when the tile just uses the first gallery image. Normally one of the entries in images. Ignored for Dice items, whose tiles come from dicePreview/diceBanner.
+--- @field heroImage string The image asset identifier shown as the main image on this item's details page, or an empty string when the details page just uses the first gallery image. Normally one of the entries in images -- typically the wide/banner-shaped shot, where the tile uses a squarer one. Ignored for Dice items, whose details art comes from dicePreview/diceBanner.
 --- @field itemType string The type of this shop item as a string ('Dice', 'Module', 'Bundle', 'Bandwidth', 'AnimatedTokens', 'None').
 --- @field assetid string The underlying asset identifier this item grants access to.
 --- @field units number The number of units for quantity-based items (e.g. bandwidth).

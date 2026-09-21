@@ -417,6 +417,9 @@ function RollCheck.LoadSkills()
 			name = 'Test',
 			checks = attributeRollChecks,
             skills = true,
+            --Picked from a characteristic multiselect instead of the check list, so a
+            --chosen power roll table can fill it in. See SyncCheckIndexesFromCharacteristics.
+            characteristics = true,
 		},
 		{
 			name = 'Table',
@@ -1181,10 +1184,16 @@ local g_selectedPowerRoll = setting{
     classes = {"dmonly"},
 }
 
+--Layout constants for the dialog's three columns. The side columns are equal so the
+--middle one -- which takes the remaining width -- ends up centered on its own.
+local SIDE_COLUMN_WIDTH = 220
+local PICKER_WIDTH = 206
+local TOKEN_POOL_WIDTH = 206
+
 function ShowRequireRollDialog(args)
 
 	args = args or {}
-	
+
 	local tokenIdsSelected = {}
 
 	local checkSelectedIndex = -1
@@ -1192,11 +1201,102 @@ function ShowRequireRollDialog(args)
 	local checkTypeName = ''
 	local checkTypeIndexes = {checkTypeIndex} --the actual multi-selection of which items we have selected.
 
-    local m_skills = args.skills
+    local m_skills = args.skills or {}
     local m_dicetower = false
+
+    --The Test tab's selection lives here rather than in the check list.
+    --SyncCheckIndexesFromCharacteristics maps it onto checkTypeIndexes, which Submit reads.
+    local m_characteristics = DeepCopy(args.characteristics or {})
 
     local m_tierInputs = nil
 	local specializationChecks = {}
+
+	--gui.Multiselect raises `change` when an item is added but NOT when a chip's X is
+	--clicked, so the last change we were told about can be stale. Keep the widgets
+	--themselves and read their live selection whenever it actually matters.
+	local m_characteristicsPanel = nil
+	local m_skillsPanel = nil
+
+	local function LiveSet(panel, fallback)
+		if panel ~= nil and panel.valid then
+			return panel.data.selected
+		end
+
+		return fallback
+	end
+
+	--Push a set into a gui.Multiselect from outside. Does what the widget's own
+	--SetValue does -- replace data.selected, then repaint chips and dropdown.
+	local function SetMultiselectValue(element, valueSet)
+		local selected = element.data.selected
+		for k in pairs(selected) do
+			selected[k] = nil
+		end
+
+		for k,v in pairs(valueSet or {}) do
+			if v then
+				selected[k] = true
+			end
+		end
+
+		element:FireEventTree("repaint", selected)
+	end
+
+	local function SyncCheckIndexesFromCharacteristics()
+		local checkInfo = RollCheck.Checks[checkSelectedIndex]
+		if checkInfo == nil or not checkInfo.characteristics then
+			return
+		end
+
+		local selected = LiveSet(m_characteristicsPanel, m_characteristics)
+
+		checkTypeIndexes = {}
+		for i,check in ipairs(checkInfo.checks) do
+			if selected[check.id] then
+				checkTypeIndexes[#checkTypeIndexes+1] = i
+				if #checkTypeIndexes == 1 then
+					checkTypeIndex = i
+					checkTypeName = check.text
+				end
+			end
+		end
+	end
+
+	--Choosing e.g. "Gymnastics - Medium: Cross a Crumbling Bridge" fills in the
+	--characteristic that test is rolled with and ticks its skill, so the Director
+	--doesn't have to restate what the test already knows. Both are still editable.
+	local function ApplyPowerTableSuggestions(id, refresh)
+		local characteristics, skills = PowerRollTableGroup.GetSuggestions(id)
+
+		if not table.empty(characteristics) then
+			m_characteristics = characteristics
+		end
+
+		if #skills > 0 then
+			m_skills = skills
+		end
+
+		if refresh and g_requireRollDialog ~= nil then
+			--Push straight into the two widgets. Doing it from their refreshDiceCheck
+			--instead would also fire on a tab switch, resurrecting whatever the Director
+			--had taken off since.
+			if m_characteristicsPanel ~= nil and m_characteristicsPanel.valid then
+				SetMultiselectValue(m_characteristicsPanel, m_characteristics)
+			end
+
+			if m_skillsPanel ~= nil and m_skillsPanel.valid then
+				SetMultiselectValue(m_skillsPanel, table.list_to_set(m_skills))
+			end
+
+			g_requireRollDialog:FireEventTree("refreshDiceCheck")
+		end
+	end
+
+	--A dialog opened without an explicit test (args.powerRollTable) restores the last
+	--table the Director chose, so honor that table's suggestions on open too.
+	if args.powerRollTable == nil and table.empty(m_characteristics) then
+		ApplyPowerTableSuggestions(g_selectedPowerRoll:Get(), false)
+	end
 
 	local CreateRollTypeOption = function(options)
 		return gui.Button{
@@ -1226,6 +1326,15 @@ function ShowRequireRollDialog(args)
 		end
 	end
 
+	--Nothing named a characteristic -- no explicit test, and no remembered table with a
+	--skill on it -- so fall back to the first one, the way the old list picker did.
+	if table.empty(m_characteristics) then
+		local checkInfo = RollCheck.Checks[checkSelectedIndex]
+		if checkInfo ~= nil and checkInfo.characteristics and checkInfo.checks[1] ~= nil then
+			m_characteristics = { [checkInfo.checks[1].id] = true }
+		end
+	end
+
 	dmhub.Debug(string.format("CREATE REQUIRE ROLLS: %s", json(g_requireRollDialog ~= nil)))
 
 	g_requireRollDialog = gui.Panel{
@@ -1243,8 +1352,12 @@ function ShowRequireRollDialog(args)
 		halign = "center",
 		valign = "center",
 
-		width = 900,
-		height = 600,
+		--Sized to the TYPICAL test, not the longest one: across the 804 imported tier
+		--strings the median is ~124 characters, which is two lines at this width. The
+		--handful of 300+ character outcomes scroll the middle column instead of forcing
+		--a window this big to sit half empty the rest of the time.
+		width = 1300,
+		height = 680,
 
 		flow = "vertical",
 
@@ -1276,12 +1389,19 @@ function ShowRequireRollDialog(args)
 			children = rollTypes,
 		},
 
+		--Three columns: the two side columns are fixed and equal, the middle takes
+		--whatever is left. Equal sides is what centers the middle -- nothing here
+		--positions it explicitly, so widening the dialog keeps it centered.
 		gui.Panel{
 			id = 'main-check-panel',
 			flow = 'horizontal',
 			vmargin = 10,
-			width = '90%',
-			height = '80%',
+			width = '94%',
+			--A share of the dialog rather than "100% available": the latter makes the
+			--tier rows' percentage widths resolve against an unknown base and collapse.
+			--Leave slack for the tabs above and the button row below -- at 80% the
+			--buttons were pushed through the bottom of the frame.
+			height = '75%',
 			halign = 'center',
 			valign = 'top',
 
@@ -1299,10 +1419,13 @@ function ShowRequireRollDialog(args)
                 end,
             },
 
+			--Left column. SIDE_COLUMN_WIDTH wide, matching the party column on the
+			--right; its pickers are PICKER_WIDTH so their dropdown triangles clear the
+			--edge. Keep these three in step if you resize any of them.
 			gui.Panel{
                 classes = {cond(args.check ~= nil, "collapsed")},
 				height = "100%",
-				width = 200,
+				width = SIDE_COLUMN_WIDTH,
 				pad = 4,
 				halign = "left",
 				flow = "vertical",
@@ -1336,10 +1459,100 @@ function ShowRequireRollDialog(args)
 					end,
 				},
 
+				--The Test tab's characteristic picker. It stands in for check-type-list
+				--(which stays for the Table tab) so a chosen power roll table can fill
+				--the characteristic in. Multiselect, because a test may be rollable with
+				--either of two characteristics.
+				gui.Panel{
+					flow = "vertical",
+					width = PICKER_WIDTH,
+					height = "auto",
+					halign = "left",
+					valign = "top",
+					bmargin = 12,
+
+					refreshDiceCheck = function(element)
+						local checkInfo = RollCheck.Checks[checkSelectedIndex]
+						element:SetClass("collapsed", not checkInfo.characteristics)
+					end,
+
+					gui.Label{
+						classes = {"fgMuted"},
+						width = "auto",
+						height = "auto",
+						halign = "left",
+						fontSize = 14,
+						text = "Characteristic",
+					},
+
+					gui.Multiselect{
+						halign = "left",
+						width = PICKER_WIDTH,
+						vmargin = 4,
+						value = m_characteristics,
+						--Short on purpose: the caption above already names the field, and a
+						--longer string crowds out the dropdown's own triangle at this width.
+						addItemText = "Choose...",
+						options = creature.attributeDropdownOptions,
+
+						create = function(element)
+							m_characteristicsPanel = element
+						end,
+
+						change = function(element, val)
+							m_characteristics = val
+							SyncCheckIndexesFromCharacteristics()
+							g_requireRollDialog:FireEventTree("refreshSkill")
+						end,
+					},
+				},
+
+				--Sits directly under the characteristic picker: the two answer the same
+				--question about the roll, and a chosen test fills both in together.
+				gui.Panel{
+					flow = "vertical",
+					width = PICKER_WIDTH,
+					height = "auto",
+					halign = "left",
+					valign = "top",
+					bmargin = 12,
+
+					refreshDiceCheck = function(element)
+						local checkInfo = RollCheck.Checks[checkSelectedIndex]
+						element:SetClass("collapsed", not checkInfo.skills)
+					end,
+
+					gui.Label{
+						classes = {"fgMuted"},
+						width = "auto",
+						height = "auto",
+						halign = "left",
+						fontSize = 14,
+						text = "Skill",
+					},
+
+					gui.Multiselect{
+						halign = "left",
+						width = PICKER_WIDTH,
+						vmargin = 4,
+						options = Skill.skillsDropdownOptions,
+						value = table.list_to_set(m_skills),
+						addItemText = "Choose...",
+
+						create = function(element)
+							m_skillsPanel = element
+						end,
+
+						change = function(element, val)
+							m_skills = table.set_to_list(val)
+						end,
+					},
+				},
+
 				gui.Panel{
 					id = "check-type-list",
 					height = "100% available",
-					width = 210,
+					width = PICKER_WIDTH,
 					flow = "vertical",
 					vscroll = true,
 
@@ -1375,26 +1588,26 @@ function ShowRequireRollDialog(args)
 
 						local checkInfo = RollCheck.Checks[checkSelectedIndex]
 
+						--The Test tab drives its selection from the characteristic
+						--multiselect above instead of this list.
+						if checkInfo.characteristics then
+							element:SetClass("collapsed", true)
+							element.children = {}
+							SyncCheckIndexesFromCharacteristics()
+							g_requireRollDialog:FireEventTree("refreshSkill")
+							return
+						end
+
+						element:SetClass("collapsed", false)
+
 						if #checkInfo.checks > 0 and (checkTypeIndex > #checkInfo.checks or checkInfo.checks[checkTypeIndex].text ~= checkTypeName) then
 							checkTypeIndex = 1
 							checkTypeName = checkInfo.checks[checkTypeIndex].text
 							checkTypeIndexes = {checkTypeIndex}
 						end
 
-                        if args.characteristics and not table.empty(args.characteristics) then
-                            checkTypeIndexes = {}
-                        end
-
 						for i,check in ipairs(checkInfo.checks) do
                             local selected = (i == checkTypeIndex)
-                            if args.characteristics then
-                                selected = args.characteristics[check.id]
-                                if selected then
-                                    checkTypeIndex = i
-                                    checkTypeName = check.text
-                                    checkTypeIndexes[#checkTypeIndexes+1] = i
-                                end
-                            end
 							children[#children+1] = gui.Label{
 								classes = {"checkTypeItem", cond(selected, "selected"), cond(checkInfo.group ~= nil and checkInfo.group:Get() ~= check.group, "collapsed")},
 								text = check.text,
@@ -1445,20 +1658,6 @@ function ShowRequireRollDialog(args)
 					end,
 				},
 
-                gui.Multiselect{
-					valign = "bottom",
-					bmargin = 24,
-                    options = Skill.skillsDropdownOptions,
-                    value = table.list_to_set(m_skills),
-                    addItemText = "Choose Skill...",
-                    change = function(element, val)
-                        m_skills = table.set_to_list(val)
-                    end,
-					refreshDiceCheck = function(element)
-						local checkInfo = RollCheck.Checks[checkSelectedIndex]
-                        element:SetClass("collapsed", not checkInfo.skills)
-                    end,
-                },
 			},
 
             --[[
@@ -1514,11 +1713,16 @@ function ShowRequireRollDialog(args)
 			},
             --]]
 
-            --power table selection.
+            --Middle column: power table selection. Takes whatever the two side columns
+            --leave, which is what keeps it centered.
             gui.Panel{
                 flow = 'vertical',
-                width = "auto",
-                height = "auto",
+                width = "100% available",
+                height = "100%",
+                vscroll = true,
+                --Gutters either side; also what keeps the middle from sprawling into
+                --over-long text lines once it takes the remaining width.
+                hmargin = 48,
                 refreshSkill = function(element)
                     local checkInfo = RollCheck.Checks[checkSelectedIndex]
                     local check = checkInfo.checks[checkTypeIndex]
@@ -1536,7 +1740,9 @@ function ShowRequireRollDialog(args)
 
                 gui.Dropdown{
                     textDefault = "Choose Table...",
-                    width = 320,
+                    width = "100%",
+                    --200+ heroic tests live in this list; typing beats scrolling it.
+                    hasSearch = true,
                     create = function(element)
                         element:SetClass("collapsed", args.powerRollTable ~= nil)
                     end,
@@ -1545,12 +1751,35 @@ function ShowRequireRollDialog(args)
                     change = function(element)
                         g_selectedPowerRoll:Set(element.idChosen)
                         element.parent:FireEventTree("update")
+                        ApplyPowerTableSuggestions(element.idChosen, true)
                     end,
                 },
                 gui.Table{
-                    width = 340,
+                    width = "100%",
                     height = "auto",
                     flow = "vertical",
+
+                    --The engine stripes each TableRow (oddRow/evenRow), but a gui.Input
+                    --paints its own opaque @bg over it, so the outcome cells stayed one
+                    --colour while the tier labels beside them alternated. Clear at rest
+                    --lets the stripe run the full row. hover/focus are restated here
+                    --rather than left to the theme's {input, hover} rule -- this local
+                    --rule out-ranks it, and without them the cell stops reading editable.
+                    styles = {
+                        {
+                            selectors = {"input"},
+                            bgcolor = "clear",
+                        },
+                        {
+                            selectors = {"input", "hover"},
+                            bgcolor = "@bgRaised",
+                        },
+                        {
+                            selectors = {"input", "focus"},
+                            bgcolor = "@bgRaised",
+                        },
+                    },
+
                     create = function(element)
 
                         local children = {}
@@ -1571,7 +1800,11 @@ function ShowRequireRollDialog(args)
                             local name = tierLabels[i]
                             local isCritical = (i > #GameSystem.TierNames)
                             local input = gui.Input{
-                                width = "70%",
+                                --The label cell takes 30%; trim a gutter off the rest so
+                                --wrapped outcome text does not run into the table's edge.
+                                --Keep these as percentages -- gui.TableRow resolves neither
+                                --"100% available" nor a fixed label width correctly here.
+                                width = "70%-16",
                                 height = "auto",
                                 minHeight = 22,
                                 wrap = true,
@@ -1625,14 +1858,17 @@ function ShowRequireRollDialog(args)
 
             },
 
+			--Right column. Same width as the left one; that symmetry is what centers
+			--the middle column between them.
 			gui.Panel{
 				flow = "vertical",
-				width = "auto",
+				width = SIDE_COLUMN_WIDTH,
 				height = "auto",
 				valign = "top",
-				lmargin = 20,
+				halign = "right",
 
 				gamehud:CreatePartyTokenPoolSelector{
+					poolWidth = TOKEN_POOL_WIDTH,
 					initiative = (args.checkType == "Initiative"),
 					changeSelection = function(element, tokenids)
 						tokenIdsSelected = tokenids
@@ -1648,7 +1884,8 @@ function ShowRequireRollDialog(args)
 			height = "auto",
 			halign = "center",
 			valign = "bottom",
-			tmargin = -90,
+			--Lift the row off the dialog's bottom edge so it isn't crowding the frame.
+			bmargin = 28,
 
 			gui.Panel{
 				width = "50%",
@@ -1693,9 +1930,15 @@ function ShowRequireRollDialog(args)
 					halign = "right",
 					valign = "center",
 					create = function(element)
-						element:SetClass("hidden", #tokenIdsSelected == 0)
+						--Clearing the characteristic multiselect leaves nothing to roll,
+						--so there is nothing to submit either.
+						local nothingChecked = (args.check == nil and #checkTypeIndexes == 0)
+						element:SetClass("hidden", #tokenIdsSelected == 0 or nothingChecked)
 					end,
 					changePartySelection = function(element)
+						element:FireEvent("create")
+					end,
+					refreshSkill = function(element)
 						element:FireEvent("create")
 					end,
 
@@ -1704,6 +1947,11 @@ function ShowRequireRollDialog(args)
 				local ensureInitiativeShown = false
 
 				local checks = {}
+
+                --A chip's X does not raise `change` (see LiveSet), so re-read both widgets
+                --here rather than rolling what the Director already took off.
+                SyncCheckIndexesFromCharacteristics()
+                local skillsChosen = table.set_to_list(LiveSet(m_skillsPanel, table.list_to_set(m_skills)))
 
                 if args.check ~= nil then
                     checks = {args.check}
@@ -1722,7 +1970,7 @@ function ShowRequireRollDialog(args)
                         check:get_or_add("options", {})
                         check.options.specializations = specializations
 
-                        check.options.skills = m_skills
+                        check.options.skills = skillsChosen
 
                         if m_tierInputs ~= nil then
                             local tiers = {}

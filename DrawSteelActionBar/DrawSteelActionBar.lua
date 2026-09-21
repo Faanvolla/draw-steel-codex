@@ -8642,18 +8642,23 @@ local function ReplaceTargetLineOfSightRays(rays, ability, range)
     local t = {}
     for i, ray in ipairs(rays) do
         local key = string.format("%s-%s", ray.a.id, ray.b.id)
-        if m_targetLineOfSightRays[key] ~= nil then
-            t[key] = m_targetLineOfSightRays[key]
-        else
-            t[key] = dmhub.MarkLineOfSight(ray.a, ray.b, ray.a.properties:GetPierceWalls(), GetArrowColor(ability, ray.a, ray.b), EffectiveArrowRange(ray.a, ray.b, range, ability))
-            AddModifierLabelsToMarker(t[key], ray.a, ray.b, ability, range)
-            --Mark player-locked attacker->target pairings so they stand out
-            --from the auto-assigned ones.
-            if ray.locked then
-                t[key]:AddLabel("Locked", "buff")
+        --One minion can hold two slots on the same creature (gang-up), so rays
+        --can repeat a pair. Without this guard the second pass overwrites t[key]
+        --and the first marker leaks -- nothing can ever destroy it again.
+        if t[key] == nil then
+            if m_targetLineOfSightRays[key] ~= nil then
+                t[key] = m_targetLineOfSightRays[key]
+            else
+                t[key] = dmhub.MarkLineOfSight(ray.a, ray.b, ray.a.properties:GetPierceWalls(), GetArrowColor(ability, ray.a, ray.b), EffectiveArrowRange(ray.a, ray.b, range, ability))
+                AddModifierLabelsToMarker(t[key], ray.a, ray.b, ability, range)
+                --Mark player-locked attacker->target pairings so they stand out
+                --from the auto-assigned ones.
+                if ray.locked then
+                    t[key]:AddLabel("Locked", "buff")
+                end
             end
+            m_targetLineOfSightRays[key] = nil
         end
-        m_targetLineOfSightRays[key] = nil
     end
 
     FreeTargetLineOfSightRays()

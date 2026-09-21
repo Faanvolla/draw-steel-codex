@@ -238,10 +238,6 @@ function gui.IconEditor(args)
 
 		local CreateImage = function()
 			local m_imageid = nil
-			local iconImage = gui.Panel{
-				classes = {"iconImage", "image"},
-				style = iconImageStyle,
-			}
 
 			local function SetCaption(label, node)
 				local text = node ~= nil and node.description or ""
@@ -254,6 +250,7 @@ function gui.IconEditor(args)
 			if captions then
 				captionInput = gui.Input{
 					classes = {"imageCaptionInput", "hidden"},
+					floating = true,
 					width = "100%",
 					height = 18,
 					fontSize = 12,
@@ -280,7 +277,7 @@ function gui.IconEditor(args)
 
 				caption = gui.Label{
 					classes = {"imageCaption"},
-					bgimage = true,
+					floating = true,
 					click = function(element)
 						local node = assets.imagesTable[m_imageid]
 						if node == nil then
@@ -293,6 +290,15 @@ function gui.IconEditor(args)
 					end,
 				}
 			end
+
+			local iconImage = gui.Panel{
+				classes = {"iconImage", "image"},
+				style = iconImageStyle,
+				children = {
+					caption,
+					captionInput,
+				},
+			}
 
 			local resultImage
 			resultImage = gui.Panel{
@@ -346,8 +352,6 @@ function gui.IconEditor(args)
 				},
 				children = {
 					iconImage,
-					caption,
-					captionInput,
 				},
 				events = {
 					click = function(element)
@@ -582,6 +586,28 @@ function gui.IconEditor(args)
 						table.sort(imageIds)
 					else
 						imageIds = dmhub.SearchImages((category or "") .. element.text, library)
+						if captions then
+							local order = {}
+							for i, id in ipairs(imageIds) do
+								local node = assets.imagesTable[id]
+								local name = node ~= nil and node.description or ""
+								order[id] = {
+									key = string.lower(name),
+									index = i,
+								}
+							end
+							--Named first, alphabetical; unnamed keep the engine's order at the end.
+							table.sort(imageIds, function(a, b)
+								local ka, kb = order[a], order[b]
+								if (ka.key == "") ~= (kb.key == "") then
+									return kb.key == ""
+								end
+								if ka.key ~= kb.key then
+									return ka.key < kb.key
+								end
+								return ka.index < kb.index
+							end)
+						end
 					end
 					if allowNone and element.text == "" then
 						table.insert(imageIds, 1, '')
@@ -971,14 +997,15 @@ function gui.IconEditor(args)
 				},
 				{
 					selectors = {"imageCaption"},
+					color = "white",
+					bgcolor = "#000000AA",
+					height = 12,
+					bgimage = true,
 					width = "100%",
-					height = "auto",
 					halign = "center",
 					valign = "bottom",
-					textAlignment = "center",
-					fontSize = 12,
-					color = "white",
-					bgcolor = "#000000c0",
+					textAlignment = "bottom",
+					fontSize = 8,
 				},
 				{
 					selectors = {"imageCaption", "placeholder"},

@@ -2752,17 +2752,26 @@ function RollPropertiesPowerTable:ResetMods()
     end
 end
 
-function RollPropertiesPowerTable:GetOutcome(rollInfo)
-    local tier = DiceResultToTier(rollInfo)
-
-    --When this power table defines a 4th "Critical" tier, a natural 19-20 reads as
-    --"Critical" instead of "Tier 3". Gated on tiers[4] so ordinary 3-tier rolls are
-    --unchanged.
-    local outcome = string.format("Tier %d", tier)
+--- Promote a tier to the optional 4th "Critical" row on a natural 19-20.
+--- DiceResultToTier is shared with every other game path and intentionally still
+--- caps at 3, so the promotion lives here, gated on this table actually defining a
+--- 4th tier. Apply it *after* any multitarget normalization -- per-target tiers are
+--- themselves capped at 3, so normalizing a 4 would drag it back down.
+--- @param tier number Tier as computed by the shared rules
+--- @param result table The roll, read for its naturalRoll
+--- @return number tier Unchanged, or 4 on a crit against a 4-tier table
+function RollPropertiesPowerTable:PromoteTierOnCrit(tier, result)
     local tiers = self:try_get("tiers")
-    if tiers ~= nil and tiers[4] ~= nil and (rollInfo.naturalRoll or 0) >= 19 then
-        outcome = "Critical"
+    if tiers ~= nil and tiers[4] ~= nil and (result.naturalRoll or 0) >= 19 then
+        return 4
     end
+
+    return tier
+end
+
+function RollPropertiesPowerTable:GetOutcome(rollInfo)
+    local tier = self:PromoteTierOnCrit(DiceResultToTier(rollInfo), rollInfo)
+    local outcome = cond(tier == 4, "Critical", string.format("Tier %d", tier))
 
     return {
         outcome = outcome,
@@ -3043,7 +3052,8 @@ function RollPropertiesPowerTable:CustomPanel(message)
 
                                 local total = m_lastKnownTotal + newMod - oldMod
 
-                                local index = self:try_get("overrideTier") or DiceResultToTier{ total = total, naturalRoll = m_naturalRoll, boons = m_boons, banes = m_banes, tiers = m_tiers, autofailure = m_autofailure, autosuccess = m_autosuccess, nottierone = m_nottierone, nottierthree = m_nottierthree }
+                                local amendedResult = { total = total, naturalRoll = m_naturalRoll, boons = m_boons, banes = m_banes, tiers = m_tiers, autofailure = m_autofailure, autosuccess = m_autosuccess, nottierone = m_nottierone, nottierthree = m_nottierthree }
+                                local index = self:try_get("overrideTier") or self:PromoteTierOnCrit(DiceResultToTier(amendedResult), amendedResult)
                                 if m_rows ~= nil then
                                     for i,row in ipairs(m_rows) do
                                         if row ~=nil and row.valid then
@@ -3152,13 +3162,22 @@ function RollPropertiesPowerTable:CustomPanel(message)
 
                 m_lastKnownTotal = info.total
                 m_naturalRoll = info.naturalRoll
-                local index = self:try_get("overrideTier") or DiceResultToTier(rollInfo)
+                local index = self:try_get("overrideTier") or self:PromoteTierOnCrit(DiceResultToTier(rollInfo), rollInfo)
 
                 for i, tier in ipairs(self.tiers) do
                     if index == i or (not complete) then
+                        --DrawSteelGlyphs only has !/@/# for tiers 1-3, so the optional
+                        --"Critical" row gets a plain text label in the card's own font.
+                        local tierLabel
+                        if i > #g_TierNames then
+                            tierLabel = gui.Label{ text = "Critical", fontSize = 14, valign = "center", width = 60, height = 20, }
+                        else
+                            tierLabel = gui.Label{ text = g_TierNames[i], fontSize = 30, fontFace = "DrawSteelGlyphs", valign = "center", width = 60, height = 20, }
+                        end
+
                         m_rows[#m_rows+1] = gui.TableRow{
                             height = "auto",
-                            gui.Label{ text = g_TierNames[i], fontSize = 30, fontFace = "DrawSteelGlyphs", valign = "center", width = 60, height = 20, },
+                            tierLabel,
                             gui.Label{
                                 --or-aware but display-only in chat: the chosen
                                 --alternative shows underlined, unchosen dimmed.
@@ -3237,9 +3256,12 @@ function RollPropertiesPowerTable:CustomPanel(message)
                 if self:has_key("overrideTier") == false then
                     local multitargets = CalculateMultitargetsFromRollProperties(rollInfo)
                     index = NormalizeTierBasedOnMultitargets(index, multitargets)
+                    index = self:PromoteTierOnCrit(index, rollInfo)
                 end
 
-                if #m_rows == 3 then
+                --Guards that the full set of rows was built -- when the roll arrives
+                --already complete, only the winning row is.
+                if #m_rows == #self.tiers then
                     for i,row in ipairs(m_rows) do
                         if row ~= nil and row.valid then
                             row:SetClassImmediate("highlighted", i == index)
@@ -3274,7 +3296,8 @@ function RollPropertiesPowerTable:CustomPanel(message)
 
                 if #info.rolls == 0 then
                     local total = m_mod
-                    local index = DiceResultToTier{ total = total, naturalRoll = total - m_mod, boons = m_boons, banes = m_banes, tiers = m_tiers, autofailure = m_autofailure, autosuccess = m_autosuccess, nottierone = m_nottierone, nottierthree = m_nottierthree }
+                    local nodiceResult = { total = total, naturalRoll = total - m_mod, boons = m_boons, banes = m_banes, tiers = m_tiers, autofailure = m_autofailure, autosuccess = m_autosuccess, nottierone = m_nottierone, nottierthree = m_nottierthree }
+                    local index = self:PromoteTierOnCrit(DiceResultToTier(nodiceResult), nodiceResult)
                     for i,row in ipairs(m_rows) do
                         if row ~=nil and row.valid then
                             row:SetClassImmediate("highlighted", i == index)
@@ -3342,7 +3365,8 @@ function RollPropertiesPowerTable:CustomPanel(message)
                 return
             end
 
-            local index = DiceResultToTier{ total = total, naturalRoll = total - m_mod, boons = m_boons, banes = m_banes, tiers = m_tiers, autofailure = m_autofailure, autosuccess = m_autosuccess, nottierone = m_nottierone, nottierthree = m_nottierthree }
+            local liveResult = { total = total, naturalRoll = total - m_mod, boons = m_boons, banes = m_banes, tiers = m_tiers, autofailure = m_autofailure, autosuccess = m_autosuccess, nottierone = m_nottierone, nottierthree = m_nottierthree }
+            local index = self:PromoteTierOnCrit(DiceResultToTier(liveResult), liveResult)
             for i,row in ipairs(m_rows) do
                 if row ~=nil and row.valid then
                     row:SetClassImmediate("highlighted", i == index)

@@ -557,6 +557,43 @@ local function ChooseClassAbility(behavior, casterToken, options)
 end
 
 
+--- An invoke handing a squad-coordinated ability to several minions of one
+--- squad would run a separate coordinated cast, and a separate targeting
+--- prompt, for each. Keep the first of each squad and fold the rest into it.
+--- @param targets table[] the invoke's targets
+--- @return table[] one entry per squad, plus every non-minion target
+--- @return table<string, table<string,boolean>> lead charid -> charids folded in
+local function CollapseTargetsBySquad(targets)
+    local result = {}
+    local participantsByLead = {}
+    local leadForSquad = {}
+
+    for _,target in ipairs(targets or {}) do
+        local token = target.token
+        local squad = nil
+        if token ~= nil and token.valid and token.properties ~= nil then
+            squad = token.properties:try_get("_tmp_minionSquad")
+        end
+
+        if squad == nil then
+            result[#result+1] = target
+        else
+            --Squad members share one _tmp_minionSquad table, so its identity
+            --is the squad key.
+            local lead = leadForSquad[squad]
+            if lead == nil then
+                lead = token
+                leadForSquad[squad] = token
+                participantsByLead[token.charid] = {}
+                result[#result+1] = target
+            end
+            participantsByLead[lead.charid][token.charid] = true
+        end
+    end
+
+    return result, participantsByLead
+end
+
 function ActivatedAbilityInvokeAbilityBehavior:Cast(ability, casterToken, targets, options)
 
     --Resolve a "choose an ability off your class list" pick up front, before any
@@ -654,6 +691,13 @@ function ActivatedAbilityInvokeAbilityBehavior:Cast(ability, casterToken, target
             end
         end
 
+
+        --One invoke per squad rather than one per minion, and each lead carries
+        --the members that were picked so the coordinated cast only involves them.
+        local squadParticipantsByLead = nil
+        if self:try_get("useSquadCoordination", false) then
+            targets, squadParticipantsByLead = CollapseTargetsBySquad(targets)
+        end
 
         print("INVOKE:: Casting on", #targets, ability.name, "coroutine:", coroutine.running())
         --TODO: maybe only commit to paying with more generous criteria -- only if an ability
@@ -1080,7 +1124,26 @@ function ActivatedAbilityInvokeAbilityBehavior:Cast(ability, casterToken, target
                         else
                             invokerToken = target.token
                         end
+                        local squadParticipants = nil
+                        if squadParticipantsByLead ~= nil and invokerToken ~= nil then
+                            squadParticipants = squadParticipantsByLead[invokerToken.charid]
+                        end
+
+                        --Read by ActivatedAbility.SquadMemberParticipates. Lives on the
+                        --caster because the ability gets cloned and synthesized on the
+                        --way to the roll, so a flag on the ability would not survive.
+                        if squadParticipants ~= nil and invokerToken.properties ~= nil then
+                            invokerToken.properties._tmp_squadParticipants = squadParticipants
+                            invokerToken.properties._tmp_squadParticipantsTurn =
+                                ActivatedAbilityInvokeAbilityBehavior.SquadSuppressionTurnKey()
+                        end
+
                         self.ExecuteInvoke(invokeSource, abilityClone, invokerToken, self.targeting, symbols, options)
+
+                        if squadParticipants ~= nil and invokerToken.valid and invokerToken.properties ~= nil then
+                            invokerToken.properties._tmp_squadParticipants = nil
+                            invokerToken.properties._tmp_squadParticipantsTurn = nil
+                        end
                     end
                 end
 
