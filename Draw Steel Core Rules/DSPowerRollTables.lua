@@ -106,7 +106,7 @@ function PowerRollTableGroup.CreateEditor()
             width = 200,
             height = 24,
             fontSize = 22,
-            characterLimit = 40,
+            characterLimit = 60,
             bold = true,
             placeholderText = "Enter Name...",
 
@@ -171,7 +171,7 @@ function PowerRollTableGroup.CreateEditor()
                             width = 200,
                             height = 24,
                             fontSize = 18,
-                            characterLimit = 40,
+                            characterLimit = 60,
                             bold = true,
                             placeholderText = "Enter Name...",
 
@@ -235,7 +235,7 @@ function PowerRollTableGroup.CreateEditor()
                                         minHeight = 22,
                                         wrap = true,
                                         lineType = "multilinenewline",
-                                        characterLimit = 200,
+                                        characterLimit = 600,
                                         fontSize = 18,
                                         placeholderText = isCritical and "Leave blank for no critical result (natural 19-20)" or nil,
                                         text = m_group.tables[index].tiers[tierNumber] or "",
