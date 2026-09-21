@@ -827,6 +827,10 @@ ShowShopPanel = function(parentPanel)
             },
         },
 
+        --Adventure store page editor (Module items only; see
+        --AdventurePageEditor.lua).
+        AdventurePageEditor.Create(),
+
         --Dice editor: choose the dice set, then customize the two dice
         --displays -- the featured shop banner and the small shop-tile
         --"preview display" -- each under its own collapsible node, with a

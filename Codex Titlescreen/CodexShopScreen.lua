@@ -4190,8 +4190,11 @@ local ShowItemDetailsInternal = function(args)
 			halign = cond(args.gift, "left", "center"),
 			m_heroBanner,
 
+			--Adventures with a page config get AdventurePage (below) instead.
+			--The gift view always keeps this compact layout.
 			showProductDetails = function(element, item)
-				element:SetClass("collapsed", item.itemType == "Dice")
+				local adventure = not args.gift and AdventurePage.Has(item)
+				element:SetClass("collapsed", item.itemType == "Dice" or adventure)
 			end,
 
 			gui.Panel{
@@ -4262,6 +4265,11 @@ local ShowItemDetailsInternal = function(args)
 				m_shopItemText,
 			}),
 		},
+
+		--The adventure store page (hero, media viewer, about/cast, buy box).
+		--Collapses itself for anything without a page config. Built with
+		--and/or rather than cond, which would construct it in the gift view too.
+		(not args.gift) and AdventurePage.Create{ width = g_bannerDisplayWidth } or nil,
 	}
 
 
