@@ -2,18 +2,23 @@ local mod = dmhub.GetModLoading()
 
 --- @class PowerRollTable: GameType
 --- @field name string Display name for this power roll tier table.
+--- @field description string Human-readable notes about this table. Not used by any rules.
 --- @field entries table[] List of tier entries with outcome descriptions and thresholds.
 --- A single power roll table (e.g. "Tier 1 / Tier 2 / Tier 3 results") within a PowerRollTableGroup.
 PowerRollTable = RegisterGameType("PowerRollTable")
 
+PowerRollTable.description = ""
+
 --- @class PowerRollTableGroup: GameType
 --- @field name string Display name for this group of power roll tables.
+--- @field description string Human-readable notes about this group. Not used by any rules.
 --- @field tableName string Data table name ("powerRolls").
 --- @field tables PowerRollTable[] Ordered list of PowerRollTable entries in this group.
 --- A named collection of PowerRollTable entries (e.g. "Easy", "Medium", "Hard" encounter tables).
 PowerRollTableGroup = RegisterGameType("PowerRollTableGroup")
 
 PowerRollTableGroup.name = "Power Rolls"
+PowerRollTableGroup.description = ""
 PowerRollTableGroup.tableName = "powerRolls"
 
 function PowerRollTableGroup.Create(args)
@@ -115,6 +120,30 @@ function PowerRollTableGroup.CreateEditor()
             end,
         },
 
+        gui.Input{
+            width = 500,
+            height = "auto",
+            minHeight = 40,
+            halign = "left",
+            tmargin = 4,
+            bmargin = 8,
+            multiline = true,
+            lineType = "multilinenewline",
+            wrap = true,
+            characterLimit = 512,
+            fontSize = 16,
+            placeholderText = "Enter description...",
+
+            change = function(element)
+                m_group.description = element.text
+                Upload()
+            end,
+
+            setdata = function(element)
+                element.text = m_group.description
+            end,
+        },
+
         gui.Panel{
             flow = "vertical",
             width = "100%-40",
@@ -156,6 +185,30 @@ function PowerRollTableGroup.CreateEditor()
                             end,
                         },
 
+                        gui.Input{
+                            width = 480,
+                            height = "auto",
+                            minHeight = 40,
+                            halign = "left",
+                            tmargin = 4,
+                            bmargin = 4,
+                            multiline = true,
+                            lineType = "multilinenewline",
+                            wrap = true,
+                            characterLimit = 512,
+                            fontSize = 16,
+                            placeholderText = "Enter description...",
+
+                            change = function(element)
+                                m_group.tables[index].description = element.text
+                                Upload()
+                            end,
+
+                            setdata = function(element)
+                                element.text = m_group.tables[index].description
+                            end,
+                        },
+
                         gui.Table{
                             flow = "vertical",
                             width = 800,
@@ -163,9 +216,19 @@ function PowerRollTableGroup.CreateEditor()
                             create = function(element)
                                 local children = {}
 
+                                --The three standard tiers, plus an optional 4th "Critical" row for a
+                                --natural 19-20. Leaving the Critical row blank stores no 4th tier, which
+                                --is how every consumer tells a 3-tier table from a 4-tier one.
+                                local tierLabels = {}
                                 for j=1,#GameSystem.TierNames do
+                                    tierLabels[j] = GameSystem.TierNames[j]
+                                end
+                                tierLabels[#tierLabels+1] = "Critical"
+
+                                for j=1,#tierLabels do
                                     local tierNumber = j
-                                    local name = GameSystem.TierNames[j]
+                                    local name = tierLabels[j]
+                                    local isCritical = (j > #GameSystem.TierNames)
                                     local input = gui.Input{
                                         width = "100%-140",
                                         height = "auto",
@@ -174,12 +237,18 @@ function PowerRollTableGroup.CreateEditor()
                                         lineType = "multilinenewline",
                                         characterLimit = 200,
                                         fontSize = 18,
-                                        text = m_group.tables[index].tiers[tierNumber],
+                                        placeholderText = isCritical and "Leave blank for no critical result (natural 19-20)" or nil,
+                                        text = m_group.tables[index].tiers[tierNumber] or "",
                                         setdata = function(element)
-                                            element.text = m_group.tables[index].tiers[tierNumber]
+                                            element.text = m_group.tables[index].tiers[tierNumber] or ""
                                         end,
                                         change = function(element)
-                                            m_group.tables[index].tiers[tierNumber] = element.text
+                                            local tiers = m_group.tables[index].tiers
+                                            if isCritical and string.match(element.text, "%S") == nil then
+                                                table.remove(tiers, tierNumber)
+                                            else
+                                                tiers[tierNumber] = element.text
+                                            end
                                             Upload()
                                         end,
                                     }
