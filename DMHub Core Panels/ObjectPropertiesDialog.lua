@@ -4148,6 +4148,8 @@ local function CreateObjectEditorPanel()
 		},
 		{
 			selectors = {"component-header", "selected"},
+			color = "@fgInverse",
+			bgcolor = "@bgInverse",
 			borderColor = "@accent",
 			borderWidth = 2,
 		},
@@ -4579,6 +4581,8 @@ mod.shared.EditObjectDialog = function(nodeids)
 		},
 		{
 			selectors = {"component-header", "selected"},
+			color = "@fgInverse",
+			bgcolor = "@bgInverse",
 			borderColor = "@accent",
 			borderWidth = 2,
 		},
