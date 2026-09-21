@@ -7100,10 +7100,23 @@ local function CreateMarkdownToolbar(opts)
             return nil
         end
 
-        local lines = {
-            string.format("|%s - %s: %s", group.name, powerTable.name,
-                PowerRollBlockCharacteristic(group, index)),
-        }
+        --PowerRollDisplay derives BOTH the characteristic and the skill by scanning
+        --this field for their names, so naming the skill here is what lets a roll
+        --launched from a journal carry the hero's skill bonus instead of being a
+        --bare characteristic test. No skill name contains a characteristic name (or
+        --another skill's), so the substring scan can't cross them over.
+        local skill = PowerRollTableGroup.GetSkill(group)
+        local attr = PowerRollBlockCharacteristic(group, index)
+        local name = string.format("%s - %s", group.name, powerTable.name)
+
+        if skill ~= nil then
+            attr = string.format("%s, %s", attr, skill.name)
+            --The group is named after the skill, which now appears in attr, so drop
+            --the prefix rather than render "Gymnastics" twice in one header.
+            name = powerTable.name
+        end
+
+        local lines = { string.format("|%s: %s", name, attr) }
 
         for _, tier in ipairs(powerTable.tiers) do
             lines[#lines + 1] = string.format("|%s", tier)

@@ -194,6 +194,12 @@ local function _multiselect(args)
                             gui.Label{
                                 classes = {"label", "multiselectChipRemove"},
                                 text = "X",
+                                -- {label, multiselectChipRemove} is 100% x 100% of
+                                -- the button, so this label was the hit target for
+                                -- EVERY click on the X and swallowed it -- the press
+                                -- above could never fire, and chip removals silently
+                                -- never reached the caller. Let clicks through to it.
+                                interactable = false,
                             },
                         },
                     },
@@ -323,6 +329,9 @@ local function _multiselect(args)
     return m_panel
 end
 
-if gui.Multiselect == nil then
-    gui.Multiselect = _multiselect
-end
+--Assigned unconditionally. The old "only if nil" guard meant a hot reload
+--re-ran this file but left the FIRST closure installed, so no edit to this
+--widget could ever be tested without restarting the app. Nothing else assigns
+--gui.Multiselect, and a cold boot installs this same closure either way, so
+--dropping the guard changes nothing at runtime -- only whether F4 works.
+gui.Multiselect = _multiselect
