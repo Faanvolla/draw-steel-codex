@@ -58,6 +58,32 @@ ShowShopPanel = function(parentPanel)
         pcall(function() item.preview = val end)
     end
 
+    --Same defensive guards for the per-surface art overrides. Each names the
+    --image (a guid from item.images) that one shop surface should use:
+    --tileImage for the grid cards and cart rows, heroImage for the details
+    --page's main image. An empty string means "no override" -- that surface
+    --falls back to the first gallery image, which is what every item did
+    --before these fields existed and what older clients still do.
+    local function ItemRoleImage(item, field)
+        local ok, val = pcall(function() return item[field] end)
+        if ok and val ~= nil then
+            return val
+        end
+        return ""
+    end
+
+    local function SetItemRoleImage(item, field, imageid)
+        pcall(function() item[field] = imageid end)
+    end
+
+    --The role fields only exist on a new enough engine. When they don't, the
+    --write above silently no-ops and the read always comes back "", so the
+    --checkboxes would sit dead under the thumbnails: hide them instead.
+    local function ItemRolesSupported(item)
+        local ok, val = pcall(function() return item.tileImage end)
+        return ok and val ~= nil
+    end
+
     --------------------------------------------------------------------------
     -- Featured-dice shop banner + shop-tile preview-display editor
     -- (Type == "Dice").
@@ -1308,16 +1334,32 @@ ShowShopPanel = function(parentPanel)
                     item = function(element, item)
                         local children = {}
 
+                        local rolesSupported = ItemRolesSupported(item)
+
                         for i,imageid in ipairs(item.images) do
                             children[#children+1] = gui.Panel{
                                 width = 280,
-                                height = 280,
+                                --Extra room under the 256px thumbnail for the
+                                --role toggles, but only when this engine has
+                                --the fields to toggle -- otherwise the cell
+                                --keeps its old size rather than growing a
+                                --band of dead space.
+                                height = cond(rolesSupported, 330, 280),
+                                --Every child here places itself by its own
+                                --halign/valign (thumbnail, toggles, delete
+                                --button), so say so rather than leaning on
+                                --the default flow.
+                                flow = "none",
                                 gui.Panel{
                                     classes = {"itemImage"},
                                     bgimage = imageid,
                                     bgcolor = "white",
                                     halign = "center",
-                                    valign = "center",
+                                    --Sits at the top of the cell when the
+                                    --role toggles need the band beneath it,
+                                    --centred as before when they don't.
+                                    valign = cond(rolesSupported, "top", "center"),
+                                    tmargin = cond(rolesSupported, 8, 0),
                                     autosizeimage = true,
                                     maxWidth = 256,
                                     maxHeight = 256,
@@ -1359,6 +1401,51 @@ ShowShopPanel = function(parentPanel)
                                     end,
                                 },
 
+                                --Which shop surfaces draw this particular
+                                --image. Each role is a single guid on the
+                                --item, so checking one here takes it off
+                                --whichever image held it before; the list
+                                --rebuild each change fires repaints every
+                                --cell's checkboxes from the item.
+                                gui.Panel{
+                                    --Stacked, not side by side: the checkbox
+                                    --style carries minWidth = 200, so a pair
+                                    --in a row is wider than the 280px cell
+                                    --and spills over the neighbouring
+                                    --thumbnail's toggles. One per line clears
+                                    --that with room to spare, and stays clear
+                                    --if the label or the font ever grows.
+                                    flow = "vertical",
+                                    width = "auto",
+                                    height = "auto",
+                                    halign = "center",
+                                    valign = "bottom",
+                                    floating = true,
+                                    collapsed = cond(rolesSupported, 0, 1),
+
+                                    gui.Check{
+                                        text = "Shop tile",
+                                        tooltip = "Use this image for the shop tile -- the product grid cards and the cart rows. Unchecked on every image means the tile falls back to the first image below. Dice items ignore this: their tiles come from the Preview Display settings.",
+                                        value = ItemRoleImage(item, "tileImage") == imageid,
+                                        change = function(element)
+                                            SetItemRoleImage(m_item, "tileImage", cond(element.value, imageid, ""))
+                                            m_item:Upload()
+                                            editingPanel:FireEventTree("item", m_item)
+                                        end,
+                                    },
+
+                                    gui.Check{
+                                        text = "Full view",
+                                        tooltip = "Use this image as the main image on the item's details page. Unchecked on every image means the details page falls back to the first image below. This is the place for a wide/banner-shaped shot -- the details image is sized to whatever aspect the art actually is.",
+                                        value = ItemRoleImage(item, "heroImage") == imageid,
+                                        change = function(element)
+                                            SetItemRoleImage(m_item, "heroImage", cond(element.value, imageid, ""))
+                                            m_item:Upload()
+                                            editingPanel:FireEventTree("item", m_item)
+                                        end,
+                                    },
+                                },
+
                                 gui.Button{
                                     classes = {"deleteButton", "sizeS"},
                                     halign = "right",
@@ -1370,6 +1457,18 @@ ShowShopPanel = function(parentPanel)
                                         for _,img in ipairs(images) do
                                             if img ~= imageid then
                                                 newImages[#newImages+1] = img
+                                            end
+                                        end
+
+                                        --Don't leave a role pointing at an
+                                        --image that is no longer in the
+                                        --gallery. The shop falls back to the
+                                        --first image for a dangling guid
+                                        --anyway, but clearing it keeps the
+                                        --checkboxes honest.
+                                        for _,field in ipairs({"tileImage", "heroImage"}) do
+                                            if ItemRoleImage(m_item, field) == imageid then
+                                                SetItemRoleImage(m_item, field, "")
                                             end
                                         end
 
