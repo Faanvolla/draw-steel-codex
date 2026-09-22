@@ -4163,22 +4163,27 @@ local function CreateObjectEditorPanel()
 			color = "@fgMuted",
 		},
 		{
+			--hover is a quiet lift only. The parchment fill belongs to the one
+			--selected property, so a hovered header never reads as selected.
 			selectors = {"component-header", "hover"},
-			color = "@fgInverse",
-			bgcolor = "@bgInverse",
-			borderColor = "@border",
-		},
-		{
-			selectors = {"component-header", "press"},
-			bgcolor = "@accentHover",
+			color = "@fgStrong",
+			bgcolor = "@bgRaised",
 			borderColor = "@border",
 		},
 		{
 			selectors = {"component-header", "selected"},
 			color = "@fgInverse",
 			bgcolor = "@bgInverse",
-			borderColor = "@accent",
+			borderColor = "@borderInverse",
 			borderWidth = 2,
+		},
+		{
+			--listed after "selected" so pressing the already-selected header
+			--still flashes: equally specific rules resolve to the later one.
+			selectors = {"component-header", "press"},
+			color = "@fgInverse",
+			bgcolor = "@accentHover",
+			borderColor = "@border",
 		},
 		{
 			selectors = {"component-header", "disabled"},
@@ -4596,22 +4601,27 @@ mod.shared.EditObjectDialog = function(nodeids)
 			color = "@fgMuted",
 		},
 		{
+			--hover is a quiet lift only. The parchment fill belongs to the one
+			--selected property, so a hovered header never reads as selected.
 			selectors = {"component-header", "hover"},
-			color = "@fgInverse",
-			bgcolor = "@bgInverse",
-			borderColor = "@border",
-		},
-		{
-			selectors = {"component-header", "press"},
-			bgcolor = "@accentHover",
+			color = "@fgStrong",
+			bgcolor = "@bgRaised",
 			borderColor = "@border",
 		},
 		{
 			selectors = {"component-header", "selected"},
 			color = "@fgInverse",
 			bgcolor = "@bgInverse",
-			borderColor = "@accent",
+			borderColor = "@borderInverse",
 			borderWidth = 2,
+		},
+		{
+			--listed after "selected" so pressing the already-selected header
+			--still flashes: equally specific rules resolve to the later one.
+			selectors = {"component-header", "press"},
+			color = "@fgInverse",
+			bgcolor = "@accentHover",
+			borderColor = "@border",
 		},
 		{
 			selectors = {"component-header", "disabled"},

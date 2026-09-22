@@ -73,6 +73,15 @@ root to check route selection, action economy, attack priority, and squad retrie
 
 ### Player reactions during AI movement
 
+Before selecting or playing a turn, the background process also waits for
+player combatants' end-of-turn saving throws. Save prompts carry the shared
+`end-turn-save` activity ID: the card blocks while unanswered, and its reaction
+marker blocks after acceptance until the invocation's cast finishes on the
+accepting client. Dismissal completes the marker. This wait has no timer and
+does not stop monster trigger polling or cooperative AI shutdown. Run
+`../dependencies/lua/bin/lua.exe tests/ai_end_turn_save_test.lua` from the codex
+root for prompt lifecycle and process wait/resume/stop coverage.
+
 `MonsterAI:MoveToken` does not return until the token's path animation finishes
 and every player-controlled trigger caused by that movement is resolved. A
 movement activity ID follows remote event delivery into each trigger. Remote

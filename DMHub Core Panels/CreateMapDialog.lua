@@ -3267,9 +3267,13 @@ mod.shared.FinishMapImport = function(mapName, info)
     end
 
 
+    --CreateMap takes the ENGINE ground level: the 0-based index of the first floor that is
+    --above ground (unlike map.groundLevel, which is 1-based). 0 = every imported floor is
+    --above ground. #floors here put the whole import underground, which made a canopy or
+    --roof added above it count as "above ground over underground players" and never render.
     local guid = game.CreateMap{
         description = mapName,
-        groundLevel = #floors,
+        groundLevel = 0,
         floors = floors,
     }
     dmhub.Coroutine(function()

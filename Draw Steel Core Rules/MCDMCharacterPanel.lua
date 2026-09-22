@@ -2953,41 +2953,7 @@ function TacPanel.Portrait()
         return gui.Panel(args)
     end
 
-    local m_companionAppButton = nil
-    
-    
-    if g_companionAppSetting:Get() then
-        m_companionAppButton = outlineButton(gui.Panel{
-            classes = {"toggle-btn", "light-btn", "editOnly"},
-            hoverCursor = "pressbutton",
-            bgimage = "ui-icons/codex-logo.png",
-            bgcolor = "white",
-            width = visionBtnSize,
-            height = visionBtnSize,
-            data = { token = nil },
-            refreshCharacter = function(element, token)
-                element.data.token = token
-            end,
-            refreshToken = function(element, token)
-                element:FireEvent("refreshCharacter", token)
-            end,
-            setToken = function(element, token)
-                element:FireEvent("refreshCharacter", token)
-            end,
-            press = function(element)
-                if TacPanel.IsReadOnly(element) then return end
-                local token = element.data.token
-                if token == nil then return end
-                dmhub.OpenCharacterPopout(token.charid, nil, function(msg)
-                    gui.Tooltip("Couldn't open companion: " .. msg)(element)
-                end)
-            end,
-            linger = function(element)
-                gui.Tooltip("Open in companion")(element)
-            end,
-        })
-    end
-
+   
     return gui.Panel{
         classes = {"portrait-frame"},
         refreshCharacter = function(element, token)
@@ -3187,8 +3153,6 @@ function TacPanel.Portrait()
                     gui.Tooltip(text)(element)
                 end,
             }),
-
-            m_companionAppButton,
 
             outlineButton(gui.Panel{
                 classes = {"toggle-btn", "light-btn", "collapsed"},

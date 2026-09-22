@@ -200,6 +200,7 @@ function ActivatedAbilitySaveBehavior:PromptSaveItems(targetToken, items)
             AbilityInvocation.PromptStandardAbility{
                 token = targetToken,
                 standardAbility = abilityName,
+                aiActivityId = "end-turn-save",
                 targeting = "self",
                 --Hostile so the card waits indefinitely instead of ageing out:
                 --the whole point is that the save is taken at the player's

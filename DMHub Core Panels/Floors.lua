@@ -516,6 +516,23 @@ local function ShowFloorSettings(floor, onHeightChanged)
 		},
 	}
 
+	--"Inside" means standing on any building-layer tile, so this gate is for building roofs
+	--only; the engine ignores it for canopies (their cutaway reveals what is beneath), so the
+	--check is hidden for the Canopy type.
+	local hideWhenInsideCheck = gui.Check{
+		classes = cond(floor.canopy, "collapsed"),
+		text = "Hide roof when players are inside",
+		value = not floor.roofShowWhenInside,
+		lmargin = 12,
+		vmargin = 4,
+		events = {
+			change = function(element)
+				floor.roofShowWhenInside = not element.value
+			end,
+			linger = gui.Tooltip("This layer will be hidden when players are inside a building."),
+		},
+	}
+
 	--Roof options. Shown for both "Roof" and "Canopy"; canopy stacks its extra controls on top.
 	local roofOptions = gui.Panel{
 		classes = cond(floor.roof, nil, "collapsed"),
@@ -523,18 +540,7 @@ local function ShowFloorSettings(floor, onHeightChanged)
 		height = "auto",
 		flow = "vertical",
 
-		gui.Check{
-			text = "Hide roof when players are inside",
-			value = not floor.roofShowWhenInside,
-			lmargin = 12,
-			vmargin = 4,
-			events = {
-				change = function(element)
-					floor.roofShowWhenInside = not element.value
-				end,
-				linger = gui.Tooltip("This layer will be hidden when players are inside."),
-			},
-		},
+		hideWhenInsideCheck,
 
 		canopyOptions,
 	}
@@ -585,6 +591,7 @@ local function ShowFloorSettings(floor, onHeightChanged)
 					end
 					roofOptions:SetClass("collapsed", not floor.roof)
 					canopyOptions:SetClass("collapsed", not floor.canopy)
+					hideWhenInsideCheck:SetClass("collapsed", floor.canopy)
 				end,
 			},
 		},

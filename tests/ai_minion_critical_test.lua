@@ -13,6 +13,10 @@ local rulesFile = assert(io.open("Draw Steel Core Rules/MCDMActivatedAbility.lua
 local rulesSource = rulesFile:read("*a")
 rulesFile:close()
 ActivatedAbility = {}
+--Newer rules helpers the loaded slices call. Squad narrowing (invokes) is off,
+--and the crit-widened action replenish is exercised through afterCast below.
+ActivatedAbility.SquadMemberParticipates = function() return true end
+ActivatedAbilityReplenishBehavior = {Cast = function() end}
 CharacterResource = {actionResourceId = "action"}
 --Simulate the base payment for participating attackers, then exercise the real
 --Draw Steel wrapper that also spends nonparticipants' shared action.
@@ -199,6 +203,22 @@ run()
 check(#ai.casts == 2 and ai.casts[2].caster == "2", "critical on another squad member selects that actor")
 check(#ai.casts[2].ids == 1 and ai.casts[2].ids[1] == "2", "spent squadmates cannot join the extra strike")
 check(ai.moveCounts["1"] == 1 and ai.moveCounts["3"] == 1, "spent squadmates cannot move again")
+
+--The book rule: a squad critical hit restores the main action of EVERY minion
+--that participated in the volley (the rules layer widens the Critical Hit
+--replenish to options.symbols.squadparticipantids). Nonparticipants stay spent.
+ai, tokens, run = fixture(3)
+ai.afterCast = function(n, toks)
+    if n == 1 then
+        for _,id in ipairs(ai.casts[1].ids) do toks[id].actions = 1 end
+    end
+end
+run()
+check(#ai.casts == 2 and #ai.casts[1].ids == 3 and #ai.casts[2].ids == 3,
+    "squad critical hit lets every participant strike again together")
+for _,id in ipairs(ai.casts[2].ids) do
+    check(tokens[id].actions == 0, "each participant's extra action is spent by the second volley")
+end
 
 ai, tokens, run = fixture(2)
 run()

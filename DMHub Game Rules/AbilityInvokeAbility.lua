@@ -2131,6 +2131,20 @@ function AbilityInvocation:Invoke()
 	end
 
 	local abilityClone = abilityTemplate:MakeTemporaryClone()
+
+    --A prompt can keep the AI waiting after its card has been consumed. Complete
+    --the shared marker from the cast callback, including remote players' rolls.
+    local aiActivityId = self:try_get("aiActivityId")
+    local aiReactionId = self:try_get("aiReactionId")
+    if aiActivityId ~= nil and aiReactionId ~= nil then
+        local previousFinish = abilityClone:try_get("OnFinishCast")
+        abilityClone.OnFinishCast = function(ability, finishOptions)
+            if previousFinish ~= nil then previousFinish(ability, finishOptions) end
+            if casterToken.valid and casterToken.properties ~= nil then
+                casterToken.properties:CompletePendingAIActivityReaction(aiActivityId, aiReactionId)
+            end
+        end
+    end
 	if self.abilityType == "standard" or self.abilityType == "custom" then
         local lookupSymbols = table.shallow_copy(self.symbols)
         if self:has_key("targetid") then
@@ -2271,6 +2285,8 @@ end
 --Returns the prompt's trigger id (its key in availableTriggers, usable to
 --watch for resolution), or nil if the ability doesn't exist or the token is
 --invalid.
+--args.aiActivityId optionally keeps a shared AI reaction pending through the
+--accepted cast, or completes it when the prompt is dismissed.
 function AbilityInvocation.PromptStandardAbility(args)
     local token = args.token
     if token == nil or (not token.valid) or token.properties == nil then
@@ -2345,6 +2361,13 @@ function AbilityInvocation.PromptStandardAbility(args)
 
     local triggerid = trigger.id
 
+    if args.aiActivityId ~= nil then
+        trigger.aiActivityId = args.aiActivityId
+        invocation.aiActivityId = args.aiActivityId
+        invocation.aiReactionId = triggerid
+        token.properties:BeginPendingAIActivityReaction(args.aiActivityId, triggerid, trigger.text)
+    end
+
     token:ModifyProperties{
         description = "Ability Prompt",
         undoable = false,
@@ -2391,6 +2414,9 @@ function AbilityInvocation.ActivateInvocationPrompt(casterToken, triggerid)
         description = "Clear Ability Prompt",
         undoable = false,
         execute = function()
+            if record.aiActivityId ~= false then
+                casterToken.properties:SetAIActivityReactionResolving(record.aiActivityId, triggerid)
+            end
             casterToken.properties:ClearAvailableTrigger({id = triggerid})
         end,
     }
@@ -2400,6 +2426,10 @@ function AbilityInvocation.ActivateInvocationPrompt(casterToken, triggerid)
     local invoke = DeserializeEventValue(DeepCopy(invocation))
 
     dmhub.Coroutine(function()
-        invoke:Invoke()
+        local invoked = invoke:Invoke()
+        if invoked == false and record.aiActivityId ~= false
+            and casterToken.valid and casterToken.properties ~= nil then
+            casterToken.properties:CompletePendingAIActivityReaction(record.aiActivityId, triggerid)
+        end
     end)
 end

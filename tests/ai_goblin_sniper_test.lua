@@ -13,6 +13,8 @@ local rulesFile = assert(io.open("Draw Steel Core Rules/MCDMActivatedAbility.lua
 local rulesSource = rulesFile:read("*a")
 rulesFile:close()
 ActivatedAbility = {}
+--The loaded rules slice wraps the crit action replenish; stub the base behavior.
+ActivatedAbilityReplenishBehavior = {Cast = function() end}
 local ruleStart = assert(rulesSource:find("function ActivatedAbility:CanTargetAdditionalTimes(", 1, true))
 local ruleEnd = assert(rulesSource:find("local function GetTargetsWithTokens", ruleStart, true))
 assert(load(rulesSource:sub(ruleStart, ruleEnd - 1)))()

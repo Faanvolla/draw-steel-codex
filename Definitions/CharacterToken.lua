@@ -107,8 +107,8 @@
 --- @field lookAtMouse boolean
 --- @field floorIndex number
 --- @field initiativeStatus InitiativeStatus (Read-only) the initiative status of the token.
---- @field countFloorsWithVisionAbove number The number of floors above this token that the token can 'look up' at. Generally this requires there being a hole directly above the token.
---- @field countFloorsAbove number The number of floors above this token, regardless of whether there are holes above them.
+--- @field countFloorsWithVisionAbove number The number of floors above this token that the token can 'look up' at. Generally this requires there being a hole directly above the token. A roof or canopy floor ends the count: roofs are shown from below by the roof/canopy cutaway and are never looked up at.
+--- @field countFloorsAbove number The number of floors above this token, regardless of whether there are holes above them. A roof or canopy floor ends the count.
 CharacterToken = {}
 
 --- Returns true if this token id is not a 'real' in game token but instead a preview token shown to an in app camera.

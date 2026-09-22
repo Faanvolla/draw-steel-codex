@@ -5636,6 +5636,95 @@ local function CreateBossTurnsPanel()
 end
 
 --Creates a single initiative entry. This consists of a panel with an image, a display of the initiative number, etc.
+--Count how many "creatures" an initiative entry stands for. A minion squad
+--counts as ONE creature however many minions it has; everything else counts
+--per token.
+local function CountInitiativeUnits(tokens)
+    local count = 0
+    local squadsSeen = {}
+    for _,tok in ipairs(tokens) do
+        local squad = nil
+        if tok.properties ~= nil and tok.properties.minion then
+            squad = tok.properties:MinionSquad()
+        end
+        if squad == nil then
+            count = count + 1
+        elseif not squadsSeen[squad] then
+            squadsSeen[squad] = true
+            count = count + 1
+        end
+    end
+    return count
+end
+
+--Split an initiative entry that stands for several creatures into one entry
+--per creature, carrying the old entry's side (player/monster), its
+--moved/unmoved state and any priority flag across to each new entry.
+--
+--Every token has its initiativeGrouping cleared rather than given a fresh
+--guid: a squad minion then falls back to the shared MONSTER-<squad> id (so a
+--squad stays one entry), and any other token falls back to its own token id,
+--which IsEntryPlayer/DescribeEntry can resolve without extra bookkeeping.
+local function UngroupInitiativeEntry(info, initiativeid)
+    local q = info.initiativeQueue
+    if q == nil or q.hidden then
+        return
+    end
+
+    local oldEntry = q.entries[initiativeid]
+    if oldEntry == nil then
+        return
+    end
+
+    local tokens = InitiativeQueue.GetTokensForInitiativeId(initiativeid, dmhub.allTokens)
+
+    --Capture the effective side before the entry goes away: the old entry may
+    --carry no explicit player flag (a hero grouped with its retainer resolves
+    --by token), and a retainer's own token is not player controlled, so a
+    --recreated entry would otherwise land on the monster side.
+    local player = q:IsEntryPlayer(initiativeid)
+    local priorityids = q:try_get("priorityids")
+    local hadPriority = priorityids ~= nil and priorityids[initiativeid] == true
+
+    local newIds = {}
+    local newIdSeen = {}
+    for _,tok in ipairs(tokens) do
+        if tok.properties ~= nil and tok.properties.initiativeGrouping then
+            tok:ModifyProperties{
+                description = "Ungroup Initiative",
+                execute = function()
+                    tok.properties.initiativeGrouping = false
+                end,
+            }
+        end
+
+        local newid = InitiativeQueue.GetInitiativeId(tok)
+        if newid ~= nil and not newIdSeen[newid] then
+            newIdSeen[newid] = true
+            newIds[#newIds+1] = newid
+        end
+    end
+
+    --Remove first, then recreate: one of the new ids may equal the old one
+    --(a hero grouped with its retainer keeps the hero's id) and we want that
+    --entry rebuilt with the same copied state as its siblings.
+    q:RemoveInitiative(initiativeid)
+    if hadPriority then
+        priorityids[initiativeid] = nil
+    end
+
+    for _,newid in ipairs(newIds) do
+        local entry = q:SetInitiative(newid, 0, 0)
+        entry.player = player
+        entry.round = oldEntry.round
+        if hadPriority then
+            priorityids[newid] = true
+        end
+    end
+
+    info.UploadInitiative()
+end
+
 function GameHud.CreateInitiativeEntry(self, info, initiativeid, options)
 
 	options = options or {}
@@ -5988,6 +6077,24 @@ function GameHud.CreateInitiativeEntry(self, info, initiativeid, options)
                             end
                         end,
                     }
+                end
+
+                --"Ungroup Initiative" splits a card that stands for several
+                --creatures into one card each. Only offered off-turn (splitting
+                --the acting entry would orphan currentTurn) and to whoever may
+                --reorganize the bar, the same gate as dragging cards between
+                --sides. A minion squad counts as a single creature.
+                if q.currentTurn ~= initiativeid and CanControlInitiative() then
+                    local groupTokens = self:GetTokensForInitiativeId(info, initiativeid)
+                    if CountInitiativeUnits(groupTokens) > 1 then
+                        entries[#entries+1] = {
+                            text = "Ungroup Initiative",
+                            click = function()
+                                element.popup = nil
+                                UngroupInitiativeEntry(info, initiativeid)
+                            end,
+                        }
+                    end
                 end
 
                 if q.currentTurn == initiativeid then

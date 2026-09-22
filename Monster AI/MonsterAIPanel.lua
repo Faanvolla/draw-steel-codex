@@ -31,6 +31,32 @@ local g_thread = nil
 local g_terminate = false
 local g_status = nil
 
+--Save cards disappear on acceptance, but their shared reaction markers remain
+--until the roll finishes on the accepting client. Neither state has a timer.
+local function FindPendingPlayerSave(queue)
+    for _,token in ipairs(dmhub.allTokens) do
+        if MonsterAI.TokenIsLiveCombatant(token) and token.playerControlled then
+            local initiativeid = InitiativeQueue.GetInitiativeId(token)
+            if initiativeid ~= nil and queue.entries[initiativeid] ~= nil then
+                for _,entry in pairs(token.properties:try_get("pendingAIActivityReactions", {})) do
+                    if type(entry) == "table" and entry.activityId == "end-turn-save" and entry.state ~= "completed" then
+                        return token
+                    end
+                end
+                --Also recognize cards posted before these clients were updated.
+                for _,trigger in pairs(token.properties:GetAvailableTriggers(true) or {}) do
+                    local invocation = trigger.invocation
+                    if not trigger.dismissed and invocation ~= nil and invocation ~= false
+                        and invocation:try_get("standardAbility") == "End Turn Saving Throw" then
+                        return token
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
 local g_playerTurnClaimAbilities = {
     ["hesitation is weakness"] = true,
 }
@@ -117,6 +143,7 @@ local function MonsterAIThread(process)
     --trigger; lets the loop clear the notice once without a document read
     --per iteration.
     local turnClaimWaiting = false
+    local saveWaiting = false
     MonsterAI.ClearWaiting()
     creature.SetAIActivityInProgress(nil)
     while true do
@@ -139,6 +166,15 @@ local function MonsterAIThread(process)
         local iterationOk, iterationErr = lifecycleAI:RunYieldingFunction(function()
 
         local queue = dmhub.initiativeQueue
+
+        local pendingSave = queue ~= nil and not queue.hidden and FindPendingPlayerSave(queue) or nil
+        if pendingSave ~= nil then
+            MonsterAI.SetWaiting("save", string.format("Waiting for %s's saving throw", pendingSave.name))
+            saveWaiting = true
+        elseif saveWaiting then
+            saveWaiting = false
+            MonsterAI.ClearWaiting()
+        end
 
         --Drop the turn-claim notice the moment the claim stops being pending:
         --the hero used the trigger (their turn is now live, so the selection
@@ -215,6 +251,8 @@ local function MonsterAIThread(process)
             end
         end
 
+
+        if pendingSave ~= nil then return end
 
         if (not handledTrigger) and queue ~= nil and (not queue.hidden)
             and not GameHud.BetweenTurnTransitionInProgress() and (not queue:IsPlayersTurn()) then
@@ -297,6 +335,7 @@ local function MonsterAIThread(process)
 
                 if initiativeid ~= nil and dmhub.initiativeQueue == queue
                     and queue:ChoosingTurn() and not queue:IsPlayersTurn()
+                    and FindPendingPlayerSave(queue) == nil
                     and FindPendingPlayerTurnClaimTrigger(queue) == nil
                     and queue:EntriesUnmoved()[initiativeid] ~= nil then
                     lifecycleAI:SetLogContext(nil, {

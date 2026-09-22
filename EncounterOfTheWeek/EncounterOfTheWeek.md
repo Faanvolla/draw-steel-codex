@@ -1928,6 +1928,38 @@ Two things to warn them about:
 - Start zone: an `EnvironmentalKeyword` named "Start" -- the keyword is defined in the mcdm-encounteroftheweek module -- (compendium: Rules > Environmental Keywords; `EnvironmentalKeyword.lua`), painted as a markup zone (`floor.markupZones` records, `floor:SetMarkupZone`; schema at `MapMarkupPanel.lua:944-998`). Query tiles by scanning `floor.markupZones` for records with `keyword == startKeywordId` (skip `category == "surface"/"hole"`); resolve the id via `EnvironmentalKeyword.keywordsByName["start"]`. Per-square test: `game.GetAurasAtLoc(loc)` + `aura.auraInstance.aura:try_get("environmentalKeywordId")`. GoblinScript: `target.Environment has "Start"` works as a targetFilter.
 - Monster AI: lives in `Monster AI/` as a `dmonly` DockablePanel background process (`MonsterAIPanel.lua`). BUILT (2026-08-28): `MonsterAI.StartAI()` / `MonsterAI.StopAI()` / `MonsterAI.IsAIRunning()` exported from `MonsterAIPanel.lua`, wrapping the same StartProcess/StopProcess calls the panel button makes (the button now routes through them). `DockablePanel.StartProcess` is independent of panel visibility (verified in source), so the AI runs headless on a host whose dmonly panels are hidden. `MonsterAI.active` is presentation/lifecycle state; `MonsterAI.IsAIRunning()` is the authoritative process-liveness read. As of 2026-08-31, `EnsureAIRunning` uses the latter so EotW restarts a process even if a catastrophic exit left the former stale. Normal turn, actor, move, trigger, and process-iteration failures are contained inside the Monster AI framework before that watchdog is needed.
 
+### End-of-turn saving throws before Monster AI turns
+
+Implemented in source 2026-09-21: Monster AI waits for player-controlled
+combatants' end-of-turn save prompts and their accepted rolls to finish before
+selecting or playing a monster turn. This applies to the shared Monster AI,
+including EotW. The waiting notice names the hero. There is no automatic timeout
+for this wait; dismissing a save card releases that card's wait, and dead or
+removed combatants do not block. Monster trigger dispatch and stopping the AI
+remain available while waiting.
+
+Save cards are hostile invocation prompts, so ordinary non-hostile-trigger
+checks miss them. Acceptance also clears the card before the roll completes.
+`MCDMAbilitySaveBehavior.lua` now tags these prompts with the `end-turn-save`
+activity ID. `DMHub Game Rules/AbilityInvokeAbility.lua` carries optional activity
+tracking from prompt creation through acceptance to the cast's finish callback,
+using the existing shared `pendingAIActivityReactions` records. The AI can
+therefore see a remote player's unfinished roll after its card disappears.
+`Monster AI/MonsterAIPanel.lua` checks both markers and outstanding save cards,
+and rechecks after initiative scoring, which can yield.
+
+Validation: `tests/ai_end_turn_save_test.lua` passes 18 checks covering multiple
+saves, remote cast completion, dismissal, missing abilities, dead/noncombatant
+heroes, legacy cards, and the real AI process's wait/resume/stop behavior. The
+existing AI reaction-delivery suite also passes all 35 checks. Runtime syntax,
+ASCII, and focused diff checks pass. The full Lua type check reports unchanged
+counts in all three changed runtime files (49/3/4 respectively for invocation,
+save behavior, and AI panel), but fails its total ceiling: 9721 diagnostics versus
+9717 allowed, with increases in other files. Changes are uncommitted and not deployed; no engine build
+is needed. Next test: with updated rules and AI on both clients, end a remote
+hero's turn with two save-ends effects, accept each save and linger before Accept
+Result; verify the monsters start only after both saves resolve or are dismissed.
+
 ### Automated combat entry + no Director (DECIDED + BUILT 2026-08-28; UNTESTED live)
 
 > **2026-08-29 update**: the Director-UI presentation filter described below is

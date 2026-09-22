@@ -2087,6 +2087,24 @@ function ActivatedAbilityPowerRollBehavior:Cast(ability, casterToken, targets, o
 
     if casterToken.properties == nil then return end
 
+    --A minion squad's signature ability is one power roll made by one caster,
+    --but the book says a critical hit lets every minion that participated take
+    --another main action. Record who participated so the Critical Hit rule's
+    --action replenish can reach them all (see the ActivatedAbilityReplenishBehavior
+    --wrapper in MCDMActivatedAbility.lua). Ids, not tokens: trigger info travels
+    --to other clients.
+    if options.symbols.targetPairs ~= nil and ability:UsesSquadStrike(casterToken) then
+        local participantIds = {}
+        local seenParticipants = {}
+        for _,pair in ipairs(options.symbols.targetPairs) do
+            if pair.a ~= nil and not seenParticipants[pair.a] then
+                seenParticipants[pair.a] = true
+                participantIds[#participantIds+1] = pair.a
+            end
+        end
+        triggerInfo.squadparticipantids = participantIds
+    end
+
     casterToken.properties:DispatchEvent("rollpower", triggerInfo)
 
     casterToken.properties:ClearMomentaryOngoingEffects()

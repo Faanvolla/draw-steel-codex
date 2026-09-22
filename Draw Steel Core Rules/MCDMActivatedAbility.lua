@@ -3476,6 +3476,41 @@ function ActivatedAbility:CanTargetAdditionalTimes(casterToken, symbols, targets
     return false
 end
 
+--A minion squad's critical hit gives every participating minion another main
+--action, not only the minion whose token made the power roll. The Critical Hit
+--global rule mod is a rollpower trigger whose action replenish applies to the
+--caster; when that roll came from a squad strike, MCDMAbilityRollBehavior stamps
+--the participants' ids on the trigger info, which becomes the triggered cast's
+--symbols. Widen the replenish to those minions. Spent nonparticipants stay spent.
+local g_replenishCast_base = ActivatedAbilityReplenishBehavior.Cast
+function ActivatedAbilityReplenishBehavior:Cast(ability, casterToken, targets, options)
+    local participantIds = options ~= nil and options.symbols ~= nil
+        and options.symbols.squadparticipantids or nil
+    if type(participantIds) == "table" and self.applyto == "caster"
+        and self:try_get("resourceid") == CharacterResource.actionResourceId
+        and casterToken ~= nil and casterToken.valid then
+        local present = {}
+        for _,target in ipairs(targets) do
+            if target.token ~= nil then
+                present[target.token.charid] = true
+            end
+        end
+        local widened = table.shallow_copy(targets)
+        for _,charid in ipairs(participantIds) do
+            if not present[charid] then
+                local tok = dmhub.GetCharacterById(charid)
+                if tok ~= nil and tok.valid and tok.properties ~= nil
+                    and tok.properties.minion and not tok.properties:IsDead() then
+                    present[charid] = true
+                    widened[#widened+1] = {token = tok}
+                end
+            end
+        end
+        targets = widened
+    end
+    return g_replenishCast_base(self, ability, casterToken, targets, options)
+end
+
 local function GetTargetsWithTokens(targets)
     local result = {}
     for _, target in ipairs(targets) do

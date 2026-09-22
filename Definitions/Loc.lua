@@ -16,6 +16,7 @@
 --- @field xyOnly Loc A new Loc with only x and y preserved, stripping floor, tiny size, and altitude.
 --- @field isOnMap boolean True if this location is a valid position on the current map.
 --- @field withGroundAltitude Loc A new Loc with altitude set to the ground level at this position.
+--- @field platformAltitude number|nil The deck altitude (in tiles) of a platform object -- a Floor object with the platform property, such as a bridge or walkway -- at this x,y position, or nil if there is no platform here. Independent of this Loc's own altitude; compare against it to tell whether a creature at this Loc is standing on the deck.
 --- @field valid boolean True if this Loc has valid coordinates.
 --- @field point2 Vector2 The x, y coordinates of this Loc as a Vector2.
 --- @field point3 Vector3 The x, y coordinates and altitude of this Loc as a Vector3.
