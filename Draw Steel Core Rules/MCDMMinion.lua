@@ -1101,11 +1101,34 @@ DrawSteelMinion.GroupInitiativeForTokens = function(tokens)
     end
 
     if info.initiativeQueue ~= nil and not info.initiativeQueue.hidden then
-        for initiativeid,_ in pairs(existingInitiative) do
-            info.initiativeQueue:RemoveInitiative(initiativeid)
+        --If whoever is currently taking their turn is being grouped, remember their
+        --turn state so the new group entry can inherit it. Otherwise currentTurn is
+        --left pointing at an entry that no longer exists and End Turn stops working.
+        local queue = info.initiativeQueue
+        local cur = queue.currentTurn
+        local inheritedTurn = nil
+        if type(cur) == "string" and existingInitiative[cur] then
+            local curEntry = queue.entries[cur]
+            if curEntry ~= nil then
+                inheritedTurn = {
+                    turn = curEntry.turn,
+                    startTurnTimestamp = curEntry:try_get("startTurnTimestamp"),
+                }
+            end
         end
 
-        info.initiativeQueue:SetInitiative(guid, 0, 0)
+        for initiativeid,_ in pairs(existingInitiative) do
+            queue:RemoveInitiative(initiativeid)
+        end
+
+        local groupEntry = queue:SetInitiative(guid, 0, 0)
+        if inheritedTurn ~= nil and groupEntry ~= nil then
+            groupEntry.turn = inheritedTurn.turn
+            if inheritedTurn.startTurnTimestamp ~= nil then
+                groupEntry.startTurnTimestamp = inheritedTurn.startTurnTimestamp
+            end
+            queue.currentTurn = guid
+        end
         if hasPlayers then
             local entry = info.initiativeQueue.entries[guid]
             if entry ~= nil and entry:try_get("player") ~= true then

@@ -135,8 +135,14 @@ function InitiativeQueue.Create()
 	}
 end
 
+--True when nobody holds the turn and the next one is up for grabs. A currentTurn
+--that names an entry no longer in the queue (e.g. left behind by an old Group
+--Initiative) counts as nobody, so a wedged queue recovers instead of locking up.
 function InitiativeQueue:ChoosingTurn()
-	return self.currentTurn == false
+	if self.currentTurn == false then
+		return true
+	end
+	return self.entries[self.currentTurn] == nil
 end
 
 function InitiativeQueue.GetTokensForInitiativeId(initiativeid, allTokens)
