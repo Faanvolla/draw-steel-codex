@@ -71,6 +71,8 @@ local g_defaultSkin = {
     bullet  = { glyph = false, glyphFont = nil, color = nil, indent = 0, hangingIndent = 0, spacing = 0 },
     ordered = { color = nil, indent = 0, hangingIndent = 0, spacing = 0 },
     quote   = { font = nil, color = nil, bgcolor = nil, bold = false, italic = false, justify = nil, barColor = nil, inset = 0 },
+    -- secret.color: DM-only `{...}` text. Unset leaves it to the engine's own pale default.
+    secret  = { color = nil },
     rule    = { image = nil, color = nil, thickness = 1, margin = 0 },
     link    = { color = nil, underline = true },
     -- page.margin (optional, px): symmetric inner padding insetting content from
@@ -128,7 +130,7 @@ local function MergeSkin(parent, child)
         out.headings[level] = MergeSection(ph[level], ch[level])
     end
     -- single-section keys
-    for _, key in ipairs({"body", "bullet", "ordered", "quote", "rule", "link", "page", "embed", "button"}) do
+    for _, key in ipairs({"body", "bullet", "ordered", "quote", "secret", "rule", "link", "page", "embed", "button"}) do
         out[key] = MergeSection(parent and parent[key], child[key])
     end
     -- blocks: per-block-type box merge (each block type has its own box override)
@@ -1226,10 +1228,84 @@ end
 -- Test hook.
 MarkdownDocument.__ColorizeLinks = ColorizeLinks
 
+local function SecretSkinColor(base)
+    base = base or {}
+    local explicit = SkinColor((base.secret or {}).color)
+    if explicit ~= nil then return explicit end
+    --Only sheets that repaint the page need this; the engine's pale default suits dark chrome.
+    if SkinColor((base.page or {}).bgcolor) == nil then return nil end
+    local ink = SkinColor((base.body or {}).color) or "#241f17"
+    --Dimmed, so it still reads as "players cannot see this".
+    if ink:match("^#%x%x%x%x%x%x$") then return ink .. "aa" end
+    return ink
+end
+
+--The engine's fixed pale `{...}` colour yields only to a colour tag INSIDE the braces.
+--Closed and reopened at each newline: the caller styles line by line, so an open tag leaks.
+local function ColorizeSecrets(text, color)
+    if color == nil or type(text) ~= "string" or text == "" then return text end
+    if string.find(text, "{", 1, true) == nil then return text end
+
+    local open = string.format("<color=%s>", color)
+    local out = {}
+    local depth = 0
+    local pos = 1
+    while true do
+        local idx = string.find(text, "[{}\n]", pos)
+        if idx == nil then
+            out[#out + 1] = string.sub(text, pos)
+            break
+        end
+        out[#out + 1] = string.sub(text, pos, idx - 1)
+
+        local c = string.sub(text, idx, idx)
+        if c == "{" then
+            local nextChar = string.sub(text, idx + 1, idx + 1)
+            --The marker must stay flush against the brace or the engine stops seeing the span.
+            local marker = nil
+            if nextChar == "#" then
+                marker = "#"
+            elseif nextChar == ":" then
+                --{:Language: ...} -- the marker runs to the closing colon.
+                local close = string.find(text, ":", idx + 2, true)
+                if close ~= nil then marker = string.sub(text, idx + 1, close) end
+            elseif nextChar ~= "!" and nextChar ~= "." then
+                marker = ""
+            end
+
+            if depth == 0 and marker ~= nil then
+                depth = 1
+                out[#out + 1] = "{" .. marker .. open
+                pos = idx + 1 + #marker
+                goto continue
+            end
+
+            if depth > 0 then depth = depth + 1 end
+            out[#out + 1] = c
+        elseif c == "}" and depth > 0 then
+            depth = depth - 1
+            out[#out + 1] = (depth == 0) and "</color>}" or c
+        elseif c == "\n" and depth > 0 then
+            out[#out + 1] = "</color>\n" .. open
+        else
+            out[#out + 1] = c
+        end
+
+        pos = idx + 1
+        ::continue::
+    end
+
+    if depth > 0 then out[#out + 1] = "</color>" end
+    return table.concat(out)
+end
+
+MarkdownDocument.__ColorizeSecrets = ColorizeSecrets
+
 local ApplySkinToText
 ApplySkinToText = function(text, base, opts)
     if type(text) ~= "string" or text == "" then return text end
     base = base or {}
+    text = ColorizeSecrets(text, SecretSkinColor(base))
     local out = {}
     -- Split on \n with a manual string.find loop: this preserves empty lines
     -- between consecutive newlines and a possible empty final segment.
@@ -1302,6 +1378,9 @@ MarkdownDocument.__ApplyInlineClasses = ApplyInlineClasses
 RichTag = RegisterGameType("RichTag")
 RichTag.pattern = false
 RichTag.hasEdit = true
+--Set by tags that stretch to fill their container (the fill bar).
+--A "100%" child cannot resolve against an auto-width table cell, so such a cell gets a definite width.
+RichTag.fillsCell = false
 
 function RichTag.Create()
     return RichTag.new {}
@@ -1460,7 +1539,14 @@ function MarkdownDocument.PageSkinPalette(doc)
     }
 end
 
-local function StripSpoilers(text)
+--Redaction hides text by drawing it in the same colour as its own highlight, so
+--`ink` must feed both; the app theme's pale @fg leaves a washed-out bar on a page.
+local function StripSpoilers(text, ink)
+    local redact = ThemeEngine.ResolveTokens("<alpha=#FF><mark=@fg><color=@fg>")
+    if ink ~= nil then
+        redact = string.format("<alpha=#FF><mark=%s><color=%s>", ink, ink)
+    end
+
     local result = ""
     local i, depth = 1, 0
     local markDepth = 0
@@ -1485,7 +1571,7 @@ local function StripSpoilers(text)
                 b = b + 1
             elseif text:sub(a + 1, a + 1) == "#" and depth == 0 then
                 if markDepth == 0 then
-                    result = result .. ThemeEngine.ResolveTokens("<alpha=#FF><mark=@fg><color=@fg>")
+                    result = result .. redact
                     markEnd = "</color></mark>"
                 end
                 markDepth = markDepth + 1
@@ -1539,11 +1625,14 @@ local function StripSpoilers(text)
 
 
                     if markDepth == 1 and not canSpeak then
-                        --TODO: get fonts working.
-                        result = result .. ThemeEngine.ResolveTokens("<alpha=#FF><mark=@fg><color=@fg>")
-                        markEnd = "</color></mark>"
-                        --result = result .. "<font=\"Tengwar\">"
-                        --markEnd = "</font>"
+                        --Guarded: an unavailable font id leaks the literal <font> tag into the text.
+                        if FontAvailable("tengwar") then
+                            result = result .. "<font=\"tengwar\">"
+                            markEnd = "</font>"
+                        else
+                            result = result .. redact
+                            markEnd = "</color></mark>"
+                        end
                     end
                 end
             elseif text:sub(a + 1, a + 1) == "." and depth == 0 then
@@ -1609,7 +1698,7 @@ BreakdownRichTags = function(content, result, options, extraOutput)
     end
 
     if isPlayer then
-        content = StripSpoilers(content)
+        content = StripSpoilers(content, options.inkColor)
     end
 
     local stylingInfo = options.stylingInfo or { colorStack = {} }
@@ -3737,11 +3826,23 @@ local function RenderMarkdownTokens(ctx, tokens)
                 valign = "top",
                 width = "100%",
             }
-            -- Plan 2: apply rule skin (only spike-confirmed props).
-            -- Spike result: bgcolor and tmargin/bmargin error on selfStyle set;
-            -- height works. Only thickness is applied here.
+            --The gradient must be cleared with the colour or it washes the colour back out.
+            --Pooled dividers are reused, so every branch assigns rather than falling through.
             local rule = resolvedSkin.rule or {}
             if rule.thickness then divider.selfStyle.height = rule.thickness end
+            local ruleColor = SkinColor(rule.color)
+            if ruleColor ~= nil then
+                divider.selfStyle.bgcolor = ruleColor
+                divider.selfStyle.gradient = nil
+            else
+                --Clearing to nil would leave an unskinned divider invisible.
+                divider.selfStyle.bgcolor = Styles.textColor
+                divider.selfStyle.gradient = Styles.horizontalGradient
+            end
+            if type(rule.margin) == "number" and rule.margin > 0 then
+                divider.selfStyle.tmargin = rule.margin
+                divider.selfStyle.bmargin = rule.margin
+            end
 
             newDividers[#newDividers + 1] = divider
             children[#children + 1] = divider
@@ -4090,6 +4191,10 @@ local function RenderMarkdownTokens(ctx, tokens)
             end
 
             currentRichRow.selfStyle.maxWidth = string.format("%d%%-%d", round(cellWidth), round(tableHeaderSpacing))
+
+            --Unused here; read further down the loop by the fillsCell branch.
+            currentRichRow.data.cellWidth = cellWidth
+            currentRichRow.data.cellSpacing = tableHeaderSpacing
 
             --column alignment from a GitHub-style separator row, if declared.
             --Tables render COMPACT by default (auto-width cells sized to
@@ -4653,6 +4758,13 @@ local function RenderMarkdownTokens(ctx, tokens)
                     end
 
                     currentRichRow.data.tagInRow = true
+
+                    if richTag.fillsCell and currentRichRow.data.cellWidth ~= nil then
+                        currentRichRow.selfStyle.width = string.format("%d%%-%d",
+                            round(currentRichRow.data.cellWidth),
+                            round(currentRichRow.data.cellSpacing or 0) + 10)
+                    end
+
                     --a rich tag with same-line text: an auto-width label's maxWidth
                     --of 100% is the full row width, but the label starts after the
                     --tag panel, so long text overflows the row by the tag's width
@@ -5399,7 +5511,15 @@ function MarkdownDocument.DisplayPanel(self, args)
             -- trackPositions stamps each token's source line (purely additive; rendering
             -- ignores srcLine) so the rendered blocks below can be tagged for the preview's
             -- content-aware scroll sync (SyncPreviewScroll).
-            local tokens = BreakdownRichTags(self:GetTextContent(), nil, { player = self:IsPlayerView(element), trackPositions = true }, ctx.tokenExtraInfo)
+            --GetResolvedStylesheet is memoized, so resolving again here is free.
+            local playerInk = nil
+            do
+                local sheet = self:GetResolvedStylesheet().base or {}
+                if SkinColor((sheet.page or {}).bgcolor) ~= nil then
+                    playerInk = SkinColor((sheet.body or {}).color)
+                end
+            end
+            local tokens = BreakdownRichTags(self:GetTextContent(), nil, { player = self:IsPlayerView(element), trackPositions = true, inkColor = playerInk }, ctx.tokenExtraInfo)
 
             if ctx.tokenExtraInfo.queries ~= nil then
                 element.thinkTime = 0.2

@@ -4,6 +4,27 @@ local mod = dmhub.GetModLoading()
 RichBar = RegisterGameType("RichBar", "RichTag")
 RichBar.tag = "bar"
 RichBar.pattern = "^(?<text>#+-*|#*-+)$"
+RichBar.fillsCell = true
+
+--Width the two DM buttons take off the track; they collapse in the player view.
+local BUTTON_RESERVE = 56
+
+local function BarStyles(pal)
+    local styles = {
+        { selectors = {"fillBar"}, bgcolor = "@bg" },
+        { selectors = {"fillBarSegment"}, borderColor = "@fgStrong" },
+        { selectors = {"fillBarFill"}, bgcolor = "@accent" },
+    }
+
+    if pal ~= nil then
+        styles[#styles + 1] = { selectors = {"fillBar"}, bgcolor = pal.wash }
+        styles[#styles + 1] = { selectors = {"fillBarSegment"}, borderColor = pal.border }
+        styles[#styles + 1] = { selectors = {"fillBarFill"}, bgcolor = pal.accent }
+        styles[#styles + 1] = { selectors = {"label", "~button"}, color = pal.ink }
+    end
+
+    return ThemeEngine.MergeTokens(styles)
+end
 
 function RichBar.CreateDisplay(self)
     local m_token
@@ -12,6 +33,10 @@ function RichBar.CreateDisplay(self)
     local m_segments = {}
     local m_fill
     local m_count = 0
+    local m_palSignature = nil
+    --Must stay above fillBar: its refreshTag closes over minusButton.
+    local plusButton
+    local minusButton
     m_fill = gui.Panel {
         classes = {"fillBarFill"},
         floating = true,
@@ -41,7 +66,7 @@ function RichBar.CreateDisplay(self)
     }
     local fillBar = gui.Panel {
         classes = {"fillBar"},
-        width = 100,
+        width = "100%",
         height = 20,
         valign = "center",
         halign = "left",
@@ -56,11 +81,14 @@ function RichBar.CreateDisplay(self)
                 m_value = m_count
             end
 
-            element.selfStyle.width = m_count * 100
+            local reserve = (minusButton ~= nil and not token.player) and BUTTON_RESERVE or 0
+            element.selfStyle.width = reserve > 0 and string.format("100%%-%d", reserve) or "100%"
+            --Capped at 100px per segment; only a cramped cell shrinks it below that.
+            element.selfStyle.maxWidth = m_count * 100
+
             while #m_segments < m_count do
                 m_segments[#m_segments + 1] = gui.Panel {
                     classes = { "fillBarSegment" },
-                    width = 100,
                     height = 20,
                 }
             end
@@ -71,6 +99,7 @@ function RichBar.CreateDisplay(self)
 
             local children = { m_fill }
             for _, seg in ipairs(m_segments) do
+                seg.selfStyle.width = string.format("%f%%", 100 / m_count)
                 children[#children + 1] = seg
             end
 
@@ -95,14 +124,15 @@ function RichBar.CreateDisplay(self)
             return
         end
 
+        --PatchToken does not re-fire refreshTag, so move the value here or the fill never updates.
+        m_value = newValue
+
         local doc = self:GetDocument()
         doc:PatchToken(m_token, "[[" .. string.rep("#", newValue) .. string.rep("-", m_count - newValue) .. "]]")
         doc:Upload()
         fillBar:SetClass("uploading", true)
     end
 
-    local plusButton
-    local minusButton
     if dmhub.isDM then
         minusButton = gui.Button {
             classes = { "sizeXxs" },
@@ -133,13 +163,24 @@ function RichBar.CreateDisplay(self)
 
     resultPanel = gui.Panel {
         flow = "horizontal",
-        width = "auto",
+        width = "100%",
         height = "auto",
         halign = "left",
+        styles = BarStyles(nil),
         refreshTag = function(element, tag, match, token)
             self = tag or self
             m_token = token
             fillBar:SetClass("uploading", false)
+
+            element.selfStyle.maxWidth = (#match.text * 100) + BUTTON_RESERVE
+
+            --Reassign only when the palette changes; refreshTag fires every render.
+            local pal = MarkdownDocument.PageSkinPalette(self:GetDocument())
+            local sig = pal ~= nil and (pal.page .. "/" .. pal.ink .. "/" .. pal.accent) or nil
+            if sig ~= m_palSignature then
+                m_palSignature = sig
+                element.styles = BarStyles(pal)
+            end
         end,
 
         minusButton,
