@@ -3178,7 +3178,7 @@ function GameHud.CreateRollDialog(self)
                         delayRoll = options.delayInstant
                     end
                     rollDiceButton:FireEventTree("press")
-                elseif options.autoroll == true or dmhub.GetSettingValue("autorollall") or (options.creature ~= nil and options.creature._tmp_aicontrol > 0) then
+                elseif options.autoroll == true or dmhub.GetSettingValue("autorollall") or options.aiRoll or (options.creature ~= nil and options.creature._tmp_aicontrol > 0) then
                     if options.delayInstant ~= nil then
                         delayRoll = options.delayInstant or 0
                     else

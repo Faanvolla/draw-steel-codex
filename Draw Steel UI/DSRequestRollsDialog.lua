@@ -734,7 +734,12 @@ function GameHud:RequireRollListenerPanel()
 					if #dmhub.users > 1 then
 						for _,userid in ipairs(dmhub.users) do
 							local session = dmhub.GetSessionInfo(userid)
-							if session ~= nil and session.dm == false and session.loggedOut == false then
+							--A ghost session (a player who dropped without logging out) reports
+							--loggedOut == false forever with a huge timeSinceLastContact. Counting
+							--it as online meant the Director was never prompted for a player-owned
+							--hero's roll while nobody was actually there, stalling the request.
+							--140s is the presence threshold used elsewhere (Audio.lua, Encounter).
+							if session ~= nil and session.dm == false and session.loggedOut == false and (session.timeSinceLastContact or 0) < 140 then
 								havePlayersOnline = true
 							end
 						end
@@ -821,6 +826,18 @@ function GameHud:RequireRollListenerPanel()
                                     end
 
 									local autoroll = nil
+									--While the Monster AI is running it plays the monsters, so a
+									--roll requested of a director-run token (e.g. the Hide test a
+									--hidden monster makes against Search for Hidden Creatures)
+									--should not stop on a prompt: roll it and proceed as the AI
+									--would. rawget: the Monster AI module may not be loaded.
+									local aiRoll = false
+									if IsDMOrPlayerHost() and tok.playerControlled == false then
+										local monsterAI = rawget(_G, "MonsterAI")
+										if monsterAI ~= nil and monsterAI.IsAIRunning ~= nil and monsterAI.IsAIRunning() then
+											aiRoll = true
+										end
+									end
 									if autoRollId == k then
 										autoroll = true
 										if autoCancelId == k then
@@ -894,6 +911,7 @@ function GameHud:RequireRollListenerPanel()
 											dmhub.Debug("ROLL:: ALL PROMPTS")
 										end,
 										autoroll = autoroll,
+										aiRoll = aiRoll,
 										beginRoll = function()
 											local req = dmhub.GetPlayerActionRequest(k)
 											if req ~= nil and req.info.tokens[tokid] ~= nil then
@@ -2086,7 +2104,12 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 	if #dmhub.users > 1 then
 		for _,userid in ipairs(dmhub.users) do
 			local session = dmhub.GetSessionInfo(userid)
-			if session ~= nil and session.dm == false and session.loggedOut == false then
+			--A ghost session (a player who dropped without logging out) reports
+			--loggedOut == false forever with a huge timeSinceLastContact. Counting
+			--it as online meant the Director was never prompted for a player-owned
+			--hero's roll while nobody was actually there, stalling the request.
+			--140s is the presence threshold used elsewhere (Audio.lua, Encounter).
+			if session ~= nil and session.dm == false and session.loggedOut == false and (session.timeSinceLastContact or 0) < 140 then
 				havePlayersOnline = true
 			end
 		end

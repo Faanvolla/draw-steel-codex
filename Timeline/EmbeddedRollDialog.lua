@@ -1683,10 +1683,17 @@ function GameHud.CreateEmbeddedRollDialog()
         --"ability_power_roll" left the remote card of a test roll with no
         --tiers at all (and no highlightedTier to follow).
         local isPowerRoll = (rollType ~= nil and string.find(rollType, "power_roll") ~= nil) or false
-        if isPowerRoll and rollProperties ~= nil and rollProperties.tiers ~= nil then
+        --try_get: an opposed test (Search for Hidden Creatures) rolls with a
+        --plain RollProperties that has no tier table, and a strict field read
+        --of .tiers on it throws.
+        local tiers = nil
+        if isPowerRoll and rollProperties ~= nil and rollProperties.try_get ~= nil then
+            tiers = rollProperties:try_get("tiers")
+        end
+        if tiers ~= nil then
             tierTexts = {}
-            for i = 1, #rollProperties.tiers do
-                tierTexts[i] = rollProperties.tiers[i]
+            for i = 1, #tiers do
+                tierTexts[i] = tiers[i]
             end
         end
 
@@ -6092,7 +6099,7 @@ function GameHud.CreateEmbeddedRollDialog()
                         delayRoll = options.delayInstant
                     end
                     rollDiceButton:FireEventTree("press")
-                elseif options.autoroll == true or dmhub.GetSettingValue("autorollall") or (options.creature ~= nil and options.creature._tmp_aicontrol > 0) then
+                elseif options.autoroll == true or dmhub.GetSettingValue("autorollall") or options.aiRoll or (options.creature ~= nil and options.creature._tmp_aicontrol > 0) then
                     if options.delayInstant ~= nil then
                         delayRoll = options.delayInstant or 0
                     else
@@ -6885,7 +6892,9 @@ function GameHud.CreateEmbeddedRollDialog()
                             end
 
                             print("AI:: ROLL COMPLETE...")
-                            if (creature ~= nil and creature._tmp_aicontrol > 0) or (dicetower and not dmhub.isDM) then
+                            --aiRoll: a monster's roll requested while the Monster AI is
+                            --running (see DSRequestRollsDialog) proceeds on its own too.
+                            if (creature ~= nil and creature._tmp_aicontrol > 0) or (m_options ~= nil and m_options.aiRoll) or (dicetower and not dmhub.isDM) then
                             print("AI:: ROLL PRESS PROCEED...")
                                 proceedAfterRollButton:FireEvent("press")
                             end
