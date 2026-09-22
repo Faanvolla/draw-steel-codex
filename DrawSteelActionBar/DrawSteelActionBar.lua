@@ -13552,7 +13552,10 @@ local function CalculateSpellTargetFocusing(symbols)
             if targeting == "all" or g_currentAbility.objectTarget == "conditional" then
                 allTokens = dmhub.allTokensIncludingObjects
             elseif targeting == false then
-                allTokens = dmhub.allTokens
+                --"Enemies"/"Creatures" still need objects in the list: one whose
+                --additionalTargetFilter grants targeting (e.g. the Gnoll Army)
+                --counts as a creature here. The loop below drops the rest.
+                allTokens = dmhub.allTokensIncludingObjects
             else
                 -- targeting == true (Objects): use allTokensIncludingObjects so that
                 -- creatures tagged treatAsObject appear as valid targets.
@@ -13577,6 +13580,10 @@ local function CalculateSpellTargetFocusing(symbols)
                                           targetToken.properties:try_get("treatAsObject", false)
                     if targeting == false and treatAsObject then
                         -- "Creatures" mode: exclude creature-objects.
+                        canTarget = false
+                    elseif targeting == false and targetToken.isObject
+                        and (not g_currentAbility:ObjectGrantsTargeting(g_token, targetToken, symbols)) then
+                        -- "Creatures" mode: exclude plain objects.
                         canTarget = false
                     elseif targeting == true and (not treatAsObject) and (not targetToken.isObject) then
                         -- "Objects" mode: exclude regular creatures.
