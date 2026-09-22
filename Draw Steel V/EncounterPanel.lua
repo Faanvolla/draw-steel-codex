@@ -269,23 +269,64 @@ local function ImplementationTooltip(info)
     return table.concat(lines, "\n")
 end
 
+--The stat block's natural width, and the padding gui.TooltipFrame puts on
+--each side of it, so the frame that has to fit on screen is width + pad.
+local FLYOUT_WIDTH = 800
+local FLYOUT_FRAME_PAD = 24 * 2
+--Never shrink past this -- a narrower stat block is unreadable, and by the
+--time there is this little room beside a row the builder dialog itself
+--(1240 wide) no longer fits on screen either.
+local FLYOUT_MIN_WIDTH = 420
+--Keep the frame off the screen edge.
+local FLYOUT_EDGE_MARGIN = 8
+
 --Fly out a monster's full stat block from the hovered element, mirroring the
 --bestiary panel's hover preview (CharacterPanel.lua). Call from a `linger`
---handler. `halign` picks the side of the anchor the flyout opens on -- the
---bestiary list sits on the left edge of the builder so its rows open "right",
---while the roster entries sit in the right-hand pane and open "left".
+--handler. `halign` is the PREFERRED side of the anchor to open on -- the
+--bestiary list sits on the left edge of the builder so its rows prefer
+--"right", while the roster entries sit in the right-hand pane and prefer
+--"left" -- but both the side and the width give way to what actually fits.
 local function ShowMonsterStatBlockFlyout(element, monsterAsset, halign)
     if monsterAsset == nil then
         return
     end
 
+    --Never let the flyout be clamped on top of the row it is anchored to.
+    --The engine lines the flyout's far edge up with the anchor's near edge
+    --and then clamps the result back onto the screen, so a flyout wider than
+    --the room on its side gets slid back over the anchor. It then takes the
+    --hover, the row dehovers, the tooltip is destroyed, the row is hovered
+    --again and re-lingers -- an on/off flicker (report F9JP54F6). Passing
+    --interactable = false does NOT avoid this: the frame's children still
+    --take the hover. So the flyout has to genuinely fit -- open it on the
+    --side that has room and shrink it to what is there.
+    local width = FLYOUT_WIDTH
+    local distances = element.distancesToScreenEdge
+    if distances ~= nil then
+        --x1/x2 = room to the left/right of the element, in SCREEN pixels,
+        --while every width here is in UI units. uiscale converts.
+        local preferLeft = (halign == "left")
+        local roomLeft = distances.x1 / dmhub.uiscale
+        local roomRight = distances.x2 / dmhub.uiscale
+        local room = cond(preferLeft, roomLeft, roomRight)
+        local roomOther = cond(preferLeft, roomRight, roomLeft)
+
+        if room < FLYOUT_WIDTH + FLYOUT_FRAME_PAD + FLYOUT_EDGE_MARGIN and roomOther > room then
+            halign = cond(preferLeft, "right", "left")
+            room = roomOther
+        end
+
+        width = math.floor(room - FLYOUT_FRAME_PAD - FLYOUT_EDGE_MARGIN)
+        width = math.max(FLYOUT_MIN_WIDTH, math.min(FLYOUT_WIDTH, width))
+    end
+
     local lockedHeight = math.floor(dmhub.screenDimensionsBelowTitlebar.y * 0.6)
     --Reserved gutter: once the stat block overflows, the scroll viewport
     --shrinks by the scrollbar's width while children are still laid out at
-    --the full 800, clipping the right-aligned header text. Mirrors the
+    --the full width, clipping the right-aligned header text. Mirrors the
     --Bestiary tooltip in CharacterPanel.
     local panel = monsterAsset:Render {
-        width = 800,
+        width = width,
         maxHeight = lockedHeight,
         vscroll = true,
         rpad = 12,
