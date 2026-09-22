@@ -4669,7 +4669,13 @@ function GameHud.CreateInitiativeBarChoicePanel(self, info)
 				return
 			end
 
-			self.currentInitiativeId = initiativeQueue.currentTurn or nil
+			--Ignore a currentTurn whose entry is gone: it is nobody's turn, and
+			--treating it as live would make End Turn act on a phantom entry.
+			local liveTurn = initiativeQueue.currentTurn or nil
+			if liveTurn ~= nil and initiativeQueue.entries[liveTurn] == nil then
+				liveTurn = nil
+			end
+			self.currentInitiativeId = liveTurn
 
 			local isPlayersTurn = initiativeQueue:IsPlayersTurn()
 
