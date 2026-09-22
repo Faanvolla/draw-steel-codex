@@ -944,7 +944,12 @@ Commands.RegisterMacro{
                         if name == componentid then
                             local newValue = cond(mode == "toggle", not component.disabled,
                                 cond(mode == "deactivate", true, false))
-                            component.disabled = newValue
+                            if newValue ~= component.disabled then
+                                component.disabled = newValue
+                                --setting the field only changes the local copy; upload so it
+                                --persists and syncs (scripts only stop/start on the echo).
+                                component:Upload()
+                            end
                         end
                     end
                 else
