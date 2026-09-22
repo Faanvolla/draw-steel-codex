@@ -2,6 +2,11 @@ local mod = dmhub.GetModLoading()
 
 creature.withCaptain = false
 
+--The band this monster belongs to. Never write it alone: monster:MonsterGroup
+--resolves monster_category by name first and only falls back to groupid when
+--the category is empty or "Monster", so a groupid set on its own is inert for
+--any monster that carries a named category. Set monster_category to the band's
+--name alongside it, as the sheet's Band dropdown does.
 monster.groupid = "none"
 monster.role = "soldier"
 
