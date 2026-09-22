@@ -143,8 +143,13 @@ end
 --the right edge and the skills line under the name. Declared up here rather
 --than beside the other card constants because the style rules need them.
 local SKILLS_HEIGHT = 46
-local STAT_ROW_HEIGHT = 12
-local STAT_CHIP_WIDTH = 30
+local STAT_ROW_HEIGHT = 15
+local STAT_CHIP_WIDTH = 36
+--the stats card (opts.showStats) is drawn a fifth larger than the roster's
+--(user direction 2026-09-21); uiscale scales its layout size too, so the
+--stage rows budget for the scaled card (EncounterMontageStage's
+--HERO_ROW_HEIGHT).
+local STATS_CARD_UISCALE = 1.2
 
 local g_heroCardRules = {
     {
@@ -167,6 +172,19 @@ local g_heroCardRules = {
     {
         selectors = {"eotwHeroCard", "mine", "hover"},
         borderColor = "#9cc4ffff",
+    },
+    {
+        selectors = {"eotwHeroCard", "stats"},
+        uiscale = STATS_CARD_UISCALE,
+    },
+    --the hero whose test is in flight (the stage sets "active"): a gold
+    --border and a small transform scale -- scale rather than uiscale so the
+    --neighbours do not shuffle when the turn passes.
+    {
+        selectors = {"eotwHeroCard", "active"},
+        border = 3,
+        borderColor = "#ffd66bff",
+        scale = 1.06,
     },
     {
         selectors = {"eotwCardOverlay"},
@@ -208,12 +226,28 @@ local g_heroCardRules = {
         borderBox = true,
         tmargin = 1,
     },
+    --the characteristic the test in flight is rolled with (the stage's
+    --highlightCharacteristic event): gold chip, dark text.
+    {
+        selectors = {"eotwStatChip", "active"},
+        bgcolor = "#ffd66bf0",
+        border = 1,
+        borderColor = "#fff2c0ff",
+    },
+    {
+        selectors = {"eotwStatKey", "parent:active"},
+        color = "#1a1200",
+    },
+    {
+        selectors = {"eotwStatValue", "parent:active"},
+        color = "#1a1200",
+    },
     {
         selectors = {"eotwStatKey"},
-        fontSize = 9,
+        fontSize = 11,
         bold = true,
         color = "#ffffff",
-        width = 10,
+        width = 12,
         height = "100%",
         halign = "left",
         valign = "center",
@@ -222,10 +256,10 @@ local g_heroCardRules = {
     },
     {
         selectors = {"eotwStatValue"},
-        fontSize = 9,
+        fontSize = 11,
         bold = true,
         color = "#ffffff",
-        width = 14,
+        width = 18,
         height = "100%",
         halign = "right",
         valign = "center",
@@ -942,6 +976,11 @@ local function CreateStatStrip(charid)
         rows[#rows+1] = gui.Panel{
             classes = {"eotwStatChip"},
             interactable = false,
+            --the stage fires this down the card with the attrid the test in
+            --flight is rolled with (nil = none): that chip turns gold.
+            highlightCharacteristic = function(element, activeAttrid)
+                element:SetClass("active", activeAttrid == attrid)
+            end,
             gui.Label{
                 classes = {"eotwStatKey"},
                 text = initial,
@@ -989,12 +1028,31 @@ end
 --than on every refreshCard tick.
 local SKILLS_RECHECK_SECONDS = 5
 
+--The skill the test in flight is using (the stage's highlightSkill event)
+--is set in gold within the line.
+local SKILL_HIGHLIGHT_COLOR = "#ffd66b"
+
 local function CreateSkillsLine(charid)
+    --skills = the proficient {id, name} pairs in display order; skillid =
+    --the one to highlight, nil for none. Rendered again whenever either
+    --changes.
+    local function Render(element)
+        local parts = {}
+        for _, skill in ipairs(element.data.skills) do
+            if skill.id == element.data.skillid then
+                parts[#parts+1] = string.format("<color=%s><b>%s</b></color>", SKILL_HIGHLIGHT_COLOR, skill.name)
+            else
+                parts[#parts+1] = skill.name
+            end
+        end
+        element.text = table.concat(parts, ", ")
+    end
+
     return gui.Label{
         classes = {"eotwSkillsLine"},
         text = "",
         interactable = false,
-        data = { nextCheck = 0, text = nil },
+        data = { nextCheck = 0, signature = nil, skills = {}, skillid = nil },
         refreshCard = function(element)
             local now = dmhub.Time()
             if now < element.data.nextCheck then
@@ -1005,21 +1063,31 @@ local function CreateSkillsLine(charid)
             if tok == nil or not tok.valid or tok.properties == nil then
                 return
             end
-            local names = {}
+            local skills = {}
+            local ids = {}
             pcall(function()
                 --Skill.SkillsInfo is already sorted by name.
                 for _, skill in ipairs(Skill.SkillsInfo) do
                     if tok.properties:ProficientInSkill(skill) then
-                        names[#names+1] = skill.name
+                        skills[#skills+1] = { id = skill.id, name = skill.name }
+                        ids[#ids+1] = skill.id
                     end
                 end
             end)
-            local text = table.concat(names, ", ")
-            if text == element.data.text then
+            local signature = table.concat(ids, ",")
+            if signature == element.data.signature then
                 return
             end
-            element.data.text = text
-            element.text = text
+            element.data.signature = signature
+            element.data.skills = skills
+            Render(element)
+        end,
+        highlightSkill = function(element, skillid)
+            if skillid == element.data.skillid then
+                return
+            end
+            element.data.skillid = skillid
+            Render(element)
         end,
     }
 end
@@ -1178,8 +1246,17 @@ local function CreateHeroCard(entry, opts)
         end
     end
 
+    --no holes in the class list: the engine stops at the first nil.
+    local cardClasses = {"eotwHeroCard"}
+    if mineClass ~= nil then
+        cardClasses[#cardClasses+1] = mineClass
+    end
+    if opts.showStats then
+        cardClasses[#cardClasses+1] = "stats"
+    end
+
     local cardArgs = {
-        classes = {"eotwHeroCard", mineClass},
+        classes = cardClasses,
         width = CARD_WIDTH,
         height = cardHeight,
         halign = opts.halign or "right",

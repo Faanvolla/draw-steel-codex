@@ -37,7 +37,9 @@ local POOLS_RIGHT = 12
 local PREP_HEADER_HEIGHT = 128
 --a montage hero card (176 + its 46-tall skills block) plus one row of
 --ally cards (80) and their gaps.
-local HERO_ROW_HEIGHT = 320
+--budgets for the stats card at its 1.2 uiscale (EncounterOfTheWeekHud's
+--STATS_CARD_UISCALE: 222 * 1.2 = 267) plus the ally row under it.
+local HERO_ROW_HEIGHT = 360
 local COLUMN_WIDTH = "25%"
 local CENTER_WIDTH = "46%"
 
@@ -2082,6 +2084,65 @@ local function DragMode(charid)
     return nil
 end
 
+--The characteristic and skill this hero is rolling the test in flight
+--with (attrid, skillid; either nil), or nothing when they are not rolling:
+--after the roll it is what the acting hero reported (turn.attrid, which the
+--assist also rolls with, and turn.skillid / turn.assist.skillid); while the
+--roll dialog is still up it is the best of the option's listed
+--characteristics for this hero and the first listed skill they are trained
+--in, the same picks LaunchRoll and ApplySkilledModifier make.
+local function ActiveCharacteristic(m, charid)
+    local t = m.turn
+    if t == nil or t.status == "resolved" then
+        return nil, nil
+    end
+    local acting = t.heroid == charid
+    local assisting = t.assist ~= nil and t.assist.heroid == charid
+    if not acting and not assisting then
+        return nil, nil
+    end
+    if assisting then
+        return t.attrid, t.assist.skillid
+    end
+    if t.attrid ~= nil then
+        return t.attrid, t.skillid
+    end
+    if t.optionIndex == nil then
+        return nil, nil
+    end
+    local beat = EncounterMontage.CurrentBeat()
+    local entry = beat ~= nil and EncounterScript.FindEntry(beat, t.entryId) or nil
+    local option = entry ~= nil and entry.options[t.optionIndex] or nil
+    if option == nil or option.roll == nil then
+        return nil, nil
+    end
+    local tok = dmhub.GetCharacterById(charid)
+    if tok == nil or not tok.valid or tok.properties == nil then
+        return nil, nil
+    end
+    local characteristics, skills = EncounterScript.ParseAttr(option.roll.attr, creature.attributesInfo, Skill.skillsDropdownOptions)
+    local best, bestModifier = nil, nil
+    for attrid, _ in pairs(characteristics) do
+        local modifier = nil
+        pcall(function() modifier = tok.properties:GetAttribute(attrid):Modifier() end)
+        if modifier ~= nil and (bestModifier == nil or modifier > bestModifier) then
+            best, bestModifier = attrid, modifier
+        end
+    end
+    local skillid = nil
+    pcall(function()
+        local skillTable = dmhub.GetTable(Skill.tableName)
+        for _, id in ipairs(skills) do
+            local skillInfo = skillTable[id]
+            if skillInfo ~= nil and tok.properties:ProficientInSkill(skillInfo) then
+                skillid = id
+                break
+            end
+        end
+    end)
+    return best, skillid
+end
+
 local function CreateHeroColumn(hero)
     local hud = Hud()
     local charid = hero.charid
@@ -2230,6 +2291,14 @@ local function CreateHeroColumn(hero)
                 SelectHero(nil)
             end
             card:SetClass("selected", m_selectedHero == charid)
+            --the hero taking (or assisting) the test in flight, and the
+            --characteristic they are rolling it with.
+            local activeAttr, activeSkill = ActiveCharacteristic(m, charid)
+            local active = m.turn ~= nil and m.turn.status ~= "resolved"
+                and (m.turn.heroid == charid or (m.turn.assist ~= nil and m.turn.assist.heroid == charid))
+            card:SetClass("active", active)
+            card:FireEventTree("highlightCharacteristic", activeAttr)
+            card:FireEventTree("highlightSkill", activeSkill)
         end,
         selectHero = function(element, heroid)
             card:SetClass("selected", heroid == charid)
