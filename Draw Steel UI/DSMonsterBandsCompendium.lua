@@ -79,15 +79,6 @@ local function Upload(g)
     dmhub.SetAndUploadTableItem(MonsterGroup.tableName, g)
 end
 
--- Bands = rows flagged bandScope="band". Until the flag is seeded, fall back to
--- "carries malice abilities", which separates the 61 bands from the 43
--- creature-type keyword rows almost perfectly (PRD 8.2).
-local function IsBand(v)
-    local scope = v:try_get("bandScope")
-    if scope ~= nil then return scope ~= "monster" end
-    return #(v:try_get("maliceAbilities", {})) > 0
-end
-
 -- The default malice group is not a band -- it is the fallback whose abilities
 -- every monster gets when its own band does not inherit them. It is flagged
 -- bandScope="monster" so it would otherwise be filtered out, but the old Malice
@@ -98,7 +89,7 @@ local function IsDefaultMaliceGroup(id)
 end
 
 local function ListedHere(id, v)
-    return IsBand(v) or IsDefaultMaliceGroup(id)
+    return v:IsBand() or IsDefaultMaliceGroup(id)
 end
 
 -- Monsters per band, by groupid.
@@ -926,7 +917,7 @@ ShowMonsterBands = function(contentPanel)
             local t = dmhub.GetTable(MonsterGroup.tableName) or {}
             local first = nil
             for k, v in unhidden_pairs(t) do
-                if IsBand(v) then
+                if v:IsBand() then
                     if v.name == "Goblin" then first = k break end
                     if first == nil then first = k end
                 end

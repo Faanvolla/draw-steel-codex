@@ -116,6 +116,9 @@ MonsterGroup.sampleEncounters = {}
 MonsterGroup.languageNote = ""
 
 --True if this row is a real band rather than a creature-type keyword row.
+--Absence means band: only the keyword rows are flagged, so a row written by
+--anything that does not know about bandScope reads as a band, which is the
+--right default for homebrew. Band surfaces filter on this and nothing else.
 function MonsterGroup:IsBand()
     return self:try_get("bandScope", "band") ~= "monster"
 end
