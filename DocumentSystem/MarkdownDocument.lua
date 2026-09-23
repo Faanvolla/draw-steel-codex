@@ -1571,6 +1571,54 @@ end
 
 --Redaction hides text by drawing it in the same colour as its own highlight, so
 --`ink` must feed both; the app theme's pale @fg leaves a washed-out bar on a page.
+--A deterministic letter permutation, one per language. NOT cryptography and not meant
+--to be -- the plaintext still reaches the client either way. It exists so that reading
+--the glyphs back returns nothing: a bare font swap is a one-to-one substitution, and the
+--face we use has a published key layout, so transliterating it returns the secret intact.
+--Keyed on the language id, so each language is consistently its own cipher.
+local g_cloakAlphabets = {}
+local function CloakAlphabet(key)
+    local cached = g_cloakAlphabets[key]
+    if cached ~= nil then return cached end
+
+    local letters = {}
+    for n = 1, 26 do letters[n] = string.char(96 + n) end
+
+    --A local LCG, seeded from the key: math.randomseed would perturb the global stream
+    --the rest of the client draws from, and this must be stable across clients anyway.
+    local seed = 5381
+    for n = 1, #key do
+        seed = (seed * 33 + string.byte(key, n)) % 4294967296
+    end
+    local function nextIndex(limit)
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        return seed % limit + 1
+    end
+
+    for n = 26, 2, -1 do
+        local j = nextIndex(n)
+        letters[n], letters[j] = letters[j], letters[n]
+    end
+
+    local map = {}
+    for n = 1, 26 do map[string.char(96 + n)] = letters[n] end
+    g_cloakAlphabets[key] = map
+    return map
+end
+
+--Substitute letters, leaving spacing, digits and punctuation alone so the line keeps the
+--length and word shapes that make the font swap worth having. nil map = pass through.
+local function CloakText(s, map)
+    if map == nil or s == "" then return s end
+    return (s:gsub("%a", function(ch)
+        local lower = string.lower(ch)
+        local sub = map[lower]
+        if sub == nil then return ch end
+        if ch == lower then return sub end
+        return string.upper(sub)
+    end))
+end
+
 local function StripSpoilers(text, ink)
     local redact = ThemeEngine.ResolveTokens("<alpha=#FF><mark=@fg><color=@fg>")
     if ink ~= nil then
@@ -1581,18 +1629,21 @@ local function StripSpoilers(text, ink)
     local i, depth = 1, 0
     local markDepth = 0
     local markEnd = nil
+    --Non-nil only inside a language span the reader cannot read, and only when the font
+    --swap actually took (the blanking-bar fallback shows nothing to transliterate).
+    local cloak = nil
 
     while true do
         local a, b, brace = text:find("([{}])", i)
         if not a then
             if depth == 0 then
-                result = result .. text:sub(i)
+                result = result .. CloakText(text:sub(i), cloak)
             end
             break
         end
 
         if depth == 0 and a > i then
-            result = result .. text:sub(i, a - 1)
+            result = result .. CloakText(text:sub(i, a - 1), cloak)
         end
 
         if brace == "{" then
@@ -1659,6 +1710,11 @@ local function StripSpoilers(text, ink)
                         if FontAvailable("tengwar") then
                             result = result .. "<font=\"tengwar\">"
                             markEnd = "</font>"
+                            --bestLanguage is nil when the {:Name:} does not resolve to a
+                            --known language; canSpeak is false either way, so we still
+                            --reach here. Key on the authored name so an unrecognised
+                            --language is cloaked too, and consistently.
+                            cloak = CloakAlphabet(bestLanguage ~= nil and bestLanguage.id or langName)
                         else
                             result = result .. redact
                             markEnd = "</color></mark>"
@@ -1669,12 +1725,22 @@ local function StripSpoilers(text, ink)
                 -- Inline class span {.name text}: copy verbatim so the render-time
                 -- ApplyInlineClasses pass (which has the resolved classes) handles
                 -- it. Stripping here would lose the class for player view.
+                --Inside an unreadable language span the inner text still has to be
+                --cloaked, or a nested class span hands back the one thing it was hiding.
+                --The {.name prefix and closing brace stay literal for ApplyInlineClasses.
+                local function CloakInlineClass(span)
+                    if cloak == nil then return span end
+                    local prefix, inner = span:match("^(%{%.[%w_%-]+ )(.*)%}$")
+                    if prefix == nil then return span end
+                    return prefix .. CloakText(inner, cloak) .. "}"
+                end
+
                 local close = text:find("}", a + 1, true)
                 if close ~= nil then
-                    result = result .. text:sub(a, close)
+                    result = result .. CloakInlineClass(text:sub(a, close))
                     b = close
                 else
-                    result = result .. text:sub(a)
+                    result = result .. CloakInlineClass(text:sub(a))
                     b = #text
                 end
             else
@@ -1688,6 +1754,7 @@ local function StripSpoilers(text, ink)
                 if markDepth == 0 and markEnd ~= nil then
                     result = result .. markEnd
                     markEnd = nil
+                    cloak = nil
                 end
             end
         end
