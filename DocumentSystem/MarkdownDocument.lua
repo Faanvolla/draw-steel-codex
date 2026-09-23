@@ -1242,13 +1242,19 @@ end
 
 --The engine's fixed pale `{...}` colour yields only to a colour tag INSIDE the braces.
 --Closed and reopened at each newline: the caller styles line by line, so an open tag leaks.
-local function ColorizeSecrets(text, color)
-    if color == nil or type(text) ~= "string" or text == "" then return text end
-    if string.find(text, "{", 1, true) == nil then return text end
+--
+--`depth` carries brace state in and out, so a caller that has ALREADY split the text can
+--feed it one line at a time and still colour a secret spanning several of them. Called on
+--a whole string without it, the result is byte-for-byte what it always was.
+local function ColorizeSecrets(text, color, depth)
+    depth = depth or 0
+    if color == nil or type(text) ~= "string" or text == "" then return text, depth end
+    --A continuation line carries no brace of its own but still needs the colour.
+    if depth == 0 and string.find(text, "{", 1, true) == nil then return text, depth end
 
     local open = string.format("<color=%s>", color)
     local out = {}
-    local depth = 0
+    if depth > 0 then out[#out + 1] = open end
     local pos = 1
     while true do
         local idx = string.find(text, "[{}\n]", pos)
@@ -1266,9 +1272,15 @@ local function ColorizeSecrets(text, color)
             if nextChar == "#" then
                 marker = "#"
             elseif nextChar == ":" then
-                --{:Language: ...} -- the marker runs to the closing colon.
+                --{:Language: ...} -- the marker runs to the closing colon, but only
+                --within this line and this span: an unbounded search runs past the
+                --closing brace and claims the next colon in ordinary prose (a time
+                --of day, say), dimming text that was never secret.
+                local stop = string.find(text, "[\n}]", idx + 2)
                 local close = string.find(text, ":", idx + 2, true)
-                if close ~= nil then marker = string.sub(text, idx + 1, close) end
+                if close ~= nil and (stop == nil or close < stop) then
+                    marker = string.sub(text, idx + 1, close)
+                end
             elseif nextChar ~= "!" and nextChar ~= "." then
                 marker = ""
             end
@@ -1296,7 +1308,7 @@ local function ColorizeSecrets(text, color)
     end
 
     if depth > 0 then out[#out + 1] = "</color>" end
-    return table.concat(out)
+    return table.concat(out), depth
 end
 
 MarkdownDocument.__ColorizeSecrets = ColorizeSecrets
@@ -1305,7 +1317,6 @@ local ApplySkinToText
 ApplySkinToText = function(text, base, opts)
     if type(text) ~= "string" or text == "" then return text end
     base = base or {}
-    text = ColorizeSecrets(text, SecretSkinColor(base))
     local out = {}
     -- Split on \n with a manual string.find loop: this preserves empty lines
     -- between consecutive newlines and a possible empty final segment.
@@ -1324,11 +1335,19 @@ ApplySkinToText = function(text, base, opts)
     local bodyColor = (base.body or {}).color
     local bodyFont = (base.body or {}).font
     local linkSkin = base.link
+    --Secrets are coloured per line, below, rather than over the whole text up front:
+    --the tag reopens after every newline, and a continuation line that starts with a
+    --`<color=...>` tag no longer matches the heading/bullet/ordered patterns, so every
+    --list item and heading inside a multi-line secret lost its skin and showed a bare
+    --`-` or `#`. secretDepth carries the brace state from one line to the next.
+    local secretColor = SecretSkinColor(base)
+    local secretDepth = 0
     for _, line in ipairs(lines) do
         local hashes, hContent = string.match(line, "^(#+) (.*)$")
         local bmarker, bContent = string.match(line, "^([%-%*]) (.*)$")
         local onum, oContent = string.match(line, "^(%d+%.) (.*)$")
         if hashes ~= nil and #hashes >= 1 and #hashes <= 5 then
+            hContent, secretDepth = ColorizeSecrets(hContent, secretColor, secretDepth)
             local h = (base.headings or {})[#hashes] or {}
             local before = SkinGapLine(h.spaceBefore)
             if before then out[#out + 1] = before end
@@ -1337,14 +1356,18 @@ ApplySkinToText = function(text, base, opts)
             local ruled = opts and opts.ruledLevels and opts.ruledLevels[#hashes]
             if after and not ruled then out[#out + 1] = after end
         elseif bmarker ~= nil then
+            bContent, secretDepth = ColorizeSecrets(bContent, secretColor, secretDepth)
             out[#out + 1] = SkinBulletMarkup(base.bullet, bmarker, ColorizeLinks(bContent, linkSkin), bodyColor, bodyFont)
         elseif onum ~= nil then
+            oContent, secretDepth = ColorizeSecrets(oContent, secretColor, secretDepth)
             out[#out + 1] = SkinOrderedMarkup(base.ordered, onum, ColorizeLinks(oContent, linkSkin), bodyColor, bodyFont)
         elseif line == "" then
             local gap = SkinGapLine(bodyPS)
             out[#out + 1] = gap or SkinBodyMarkup(base.body, line)
         else
-            out[#out + 1] = SkinBodyMarkup(base.body, ColorizeLinks(line, linkSkin))
+            local body
+            body, secretDepth = ColorizeSecrets(line, secretColor, secretDepth)
+            out[#out + 1] = SkinBodyMarkup(base.body, ColorizeLinks(body, linkSkin))
         end
     end
     return table.concat(out, "\n")
