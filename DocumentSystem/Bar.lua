@@ -9,6 +9,19 @@ RichBar.fillsCell = true
 --Width the two DM buttons take off the track; they collapse in the player view.
 local BUTTON_RESERVE = 56
 
+--DefaultStyles gives fillBarFill a fixed #484848 -> #C1C1C1 ramp on top of its bgcolor,
+--which multiplies an authored page accent down into a muted, dirty version of itself.
+--White shades to nothing, so the accent reads as authored. Same rule the divider follows
+--in MarkdownDocument: clear the gradient with the colour, or it washes the colour out.
+local FLAT_GRADIENT = gui.Gradient{
+    point_a = {x = 0, y = 0},
+    point_b = {x = 1, y = 0},
+    stops = {
+        { position = 0, color = "#FFFFFF" },
+        { position = 1, color = "#FFFFFF" },
+    },
+}
+
 local function BarStyles(pal)
     local styles = {
         { selectors = {"fillBar"}, bgcolor = "@bg" },
@@ -19,7 +32,7 @@ local function BarStyles(pal)
     if pal ~= nil then
         styles[#styles + 1] = { selectors = {"fillBar"}, bgcolor = pal.wash }
         styles[#styles + 1] = { selectors = {"fillBarSegment"}, borderColor = pal.border }
-        styles[#styles + 1] = { selectors = {"fillBarFill"}, bgcolor = pal.accent }
+        styles[#styles + 1] = { selectors = {"fillBarFill"}, bgcolor = pal.accent, gradient = FLAT_GRADIENT }
         styles[#styles + 1] = { selectors = {"label", "~button"}, color = pal.ink }
     end
 
@@ -128,8 +141,20 @@ function RichBar.CreateDisplay(self)
 
         local doc = self:GetDocument()
         doc:PatchToken(m_token, "[[" .. string.rep("#", newValue) .. string.rep("-", m_count - newValue) .. "]]")
-        doc:Upload()
+
         fillBar:SetClass("uploading", true)
+
+        --The only other place this class clears is refreshTag, which needs a render to
+        --fire -- and a write that fails produces no echo, so no render. Left set, the
+        --segment borders stay dimmed to @fgMuted (DefaultStyles' "parent:uploading"
+        --rule) until the journal is reopened. The panel can be gone by the time an
+        --async callback lands, hence the validity check.
+        local function doneUploading()
+            if fillBar ~= nil and fillBar.valid then
+                fillBar:SetClass("uploading", false)
+            end
+        end
+        doc:Upload(nil, { success = doneUploading, failure = doneUploading })
     end
 
     if dmhub.isDM then

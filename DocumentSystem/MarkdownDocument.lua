@@ -3869,10 +3869,12 @@ local function RenderMarkdownTokens(ctx, tokens)
                 divider.selfStyle.bgcolor = Styles.textColor
                 divider.selfStyle.gradient = Styles.horizontalGradient
             end
-            if type(rule.margin) == "number" and rule.margin > 0 then
-                divider.selfStyle.tmargin = rule.margin
-                divider.selfStyle.bmargin = rule.margin
-            end
+            --Assigns on both branches, as the note above requires: a pooled divider
+            --that once carried a margin otherwise keeps it after the stylesheet drops
+            --it back to 0, which the editor's live preview shows immediately.
+            local ruleMargin = (type(rule.margin) == "number" and rule.margin > 0) and rule.margin or 0
+            divider.selfStyle.tmargin = ruleMargin
+            divider.selfStyle.bmargin = ruleMargin
 
             newDividers[#newDividers + 1] = divider
             children[#children + 1] = divider
