@@ -44,7 +44,6 @@ function RichScene.CreateDisplay(self)
 
 	local doc = FullscreenDisplay.GetDocumentSnapshot()
     local m_image = nil
-    local m_palSignature = nil
     return gui.Panel{
         width = 1920*0.15,
         height = "auto",
@@ -55,13 +54,13 @@ function RichScene.CreateDisplay(self)
             element.selfStyle.halign = token.justification or "left"
             element:SetClass("collapsed", element:FindParentWithClass("playerPreview") ~= nil)
 
-            --Reassign only when the palette changes; refreshTag fires every render.
-            local pal = MarkdownDocument.PageSkinPalette((tag or self):GetDocument())
-            local sig = pal ~= nil and (pal.page .. "/" .. pal.ink .. "/" .. pal.accent) or nil
-            if sig ~= m_palSignature then
-                m_palSignature = sig
-                element.styles = SceneStyles(pal)
-            end
+            --Rebuilt every render, as RichCheckbox does. Caching on the palette looks
+            --free but is not: SceneStyles resolves @fg/@bg/@border through
+            --ThemeEngine.MergeTokens, which snapshots the ACTIVE scheme, so a cached
+            --assignment keeps the old scheme's hex values after a theme change -- and on
+            --an unskinned document the palette is nil both before and after, so the cache
+            --never missed and the widget never repainted at all.
+            element.styles = SceneStyles(MarkdownDocument.PageSkinPalette((tag or self):GetDocument()))
         end,
 
         refreshDocument = function(element)

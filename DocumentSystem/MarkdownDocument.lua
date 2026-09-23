@@ -1228,13 +1228,20 @@ end
 -- Test hook.
 MarkdownDocument.__ColorizeLinks = ColorizeLinks
 
+--The page's body ink, with the default sheet's fallback in one place: every site that
+--paints text onto a repainted page has to agree on it, and g_defaultSkin.body.color is
+--nil, so a sheet that repaints the page but leaves body text alone resolves to nothing.
+local function SkinBodyInk(base)
+    return SkinColor(((base or {}).body or {}).color) or "#241f17"
+end
+
 local function SecretSkinColor(base)
     base = base or {}
     local explicit = SkinColor((base.secret or {}).color)
     if explicit ~= nil then return explicit end
     --Only sheets that repaint the page need this; the engine's pale default suits dark chrome.
     if SkinColor((base.page or {}).bgcolor) == nil then return nil end
-    local ink = SkinColor((base.body or {}).color) or "#241f17"
+    local ink = SkinBodyInk(base)
     --Dimmed, so it still reads as "players cannot see this".
     if ink:match("^#%x%x%x%x%x%x$") then return ink .. "aa" end
     return ink
@@ -1535,7 +1542,7 @@ function MarkdownDocument.PageSkinPalette(doc)
     local page = SkinColor((base.page or {}).bgcolor)
     if page == nil then return nil end
 
-    local ink = SkinColor((base.body or {}).color) or "#241f17"
+    local ink = SkinBodyInk(base)
     local accent = SkinColor((base.bullet or {}).color)
         or SkinColor((base.link or {}).color)
         or ink
@@ -5539,7 +5546,7 @@ function MarkdownDocument.DisplayPanel(self, args)
             do
                 local sheet = self:GetResolvedStylesheet().base or {}
                 if SkinColor((sheet.page or {}).bgcolor) ~= nil then
-                    playerInk = SkinColor((sheet.body or {}).color)
+                    playerInk = SkinBodyInk(sheet)
                 end
             end
             local tokens = BreakdownRichTags(self:GetTextContent(), nil, { player = self:IsPlayerView(element), trackPositions = true, inkColor = playerInk }, ctx.tokenExtraInfo)

@@ -33,7 +33,6 @@ function RichBar.CreateDisplay(self)
     local m_segments = {}
     local m_fill
     local m_count = 0
-    local m_palSignature = nil
     --Must stay above fillBar: its refreshTag closes over minusButton.
     local plusButton
     local minusButton
@@ -174,13 +173,10 @@ function RichBar.CreateDisplay(self)
 
             element.selfStyle.maxWidth = (#match.text * 100) + BUTTON_RESERVE
 
-            --Reassign only when the palette changes; refreshTag fires every render.
-            local pal = MarkdownDocument.PageSkinPalette(self:GetDocument())
-            local sig = pal ~= nil and (pal.page .. "/" .. pal.ink .. "/" .. pal.accent) or nil
-            if sig ~= m_palSignature then
-                m_palSignature = sig
-                element.styles = BarStyles(pal)
-            end
+            --Rebuilt every render: BarStyles resolves @bg/@fgStrong/@accent through
+            --ThemeEngine.MergeTokens, which snapshots the ACTIVE scheme, so caching on
+            --the palette holds the old scheme's hex values across a theme change.
+            element.styles = BarStyles(MarkdownDocument.PageSkinPalette(self:GetDocument()))
         end,
 
         minusButton,
