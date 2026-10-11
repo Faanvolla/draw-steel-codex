@@ -69,3 +69,6 @@ function MapManifestLua:DestroyPreviewFloor(floorInfo) end
 
 --- Travel
 function MapManifestLua:Travel() end
+
+--- Start syncing this map in the background so a later Travel() to it skips the loading screen. Cheap to call repeatedly (e.g. on hover). Does nothing in Firebase-backed games or the lobby.
+function MapManifestLua:Prefetch() end

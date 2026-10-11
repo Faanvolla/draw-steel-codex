@@ -699,6 +699,13 @@ local CreateMapNode = function(map)
 		end,
 		drag = DragNode,
 
+		--start syncing the map so the click that usually follows skips the loading screen.
+		hover = function(element)
+			if map.valid and map.id ~= game.currentMapId then
+				map:Prefetch()
+			end
+		end,
+
 		search = function(element, text)
 			local mapName = string.lower(map.description)
 			local searchText = string.lower(text)
@@ -1173,6 +1180,13 @@ local CreatePlayerMapNode = function(map)
 			local mapName = string.lower(map.description)
 			local searchText = string.lower(text)
 			element:SetClass("collapsed", string.find(mapName, searchText) == nil)
+		end,
+
+		--start syncing the map so the click that usually follows skips the loading screen.
+		hover = function(element)
+			if map.valid and map.id ~= game.currentMapId then
+				map:Prefetch()
+			end
 		end,
 
 		click = function(element)
