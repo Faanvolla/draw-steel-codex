@@ -1126,6 +1126,25 @@ local function ImportForgeSteel(element)
     end)
 end
 
+--Imports a hero from a Codex JSON file (the character sheet's Export -> Codex JSON).
+local function ImportCodexJson(element)
+    CharSheetPDFExport.ImportCharacterFromFile(function(c)
+        c:ModifyProperties {
+            description = "Create Character",
+            execute = function()
+                c.properties.mtime = ServerTimestamp()
+                c.properties.creatorid = dmhub.userid
+                --The file carries the source hero's id; this copy has a new one.
+                c.properties.originalid = c.charid
+                --A file exported from an Encounter of the Week hero keeps these
+                --flags, which would hide it from the lobby list.
+                c.properties.eotwHero = nil
+                c.properties.eotwDraft = nil
+            end,
+        }
+    end)
+end
+
 --onCreated (optional) runs once the builder closes on a hero that was kept
 --(not discarded as unstarted), with the character.
 local function CreateHero(element, onCreated)
@@ -9100,6 +9119,38 @@ function CreateTitlescreen(dialog, options)
                                     end,
 
                                     press = ImportForgeSteel,
+                                },
+
+                                --Codex JSON import button.
+                                gui.Button {
+                                    width = 48,
+                                    height = 48,
+                                    halign = "right",
+                                    valign = "center",
+                                    beveledcorners = true,
+                                    cornerRadius = 8,
+                                    y = -10,
+
+                                    hover = function(element)
+                                        gui.Tooltip("Import a Hero from a Codex JSON file")(element)
+                                    end,
+
+                                    monitorGame = "/characters",
+                                    refreshGame = function(element)
+                                        local _, nheroes = LobbyHeroes()
+                                        element:SetClass("hidden", nheroes >= 8)
+                                    end,
+
+                                    press = ImportCodexJson,
+
+                                    gui.Panel {
+                                        classes = { "headerActionIcon" },
+                                        width = "70%",
+                                        height = "70%",
+                                        halign = "center",
+                                        valign = "center",
+                                        bgimage = "game-icons/cloud-upload.png",
+                                    },
                                 },
                             }
                         },
