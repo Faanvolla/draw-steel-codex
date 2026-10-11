@@ -172,6 +172,32 @@ audio.SoundEvent{
     ignoreDuplicates = 1,
 }
 
+audio.SoundEvent{
+    name = "Notify.BigBanner_Pos",
+    mixgroup = "ui",
+    sounds = {"Notify_BigBanner_Positive_v1_01.wav"},
+    volume = 0.2,
+    pitchRand = 0.2,
+    ignoreDuplicates = 1,
+}
+
+audio.SoundEvent{
+    name = "Notify.BigBanner_Neg",
+    mixgroup = "ui",
+    sounds = {"Notify_BigBanner_Negative_v1_01.wav"},
+    volume = 0.2,
+    pitchRand = 0.2,
+    ignoreDuplicates = 1,
+}
+
+audio.SoundEvent{
+    name = "Notify.BigBanner_Generic",
+    mixgroup = "ui",
+    sounds = {"Notify_BigBanner_Generic_v1_01.wav"},
+    volume = 0.2,
+    pitchRand = 0.2,
+    ignoreDuplicates = 1,
+}
 
 
 
