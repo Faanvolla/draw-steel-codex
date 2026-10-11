@@ -541,7 +541,11 @@ local STAMINA_SLIDE_THINK = 0.02
 --hierarchy so the card it sits on can flash red. A rise in stamina does
 --the mirror image: the generic heal sound and "staminaGained", so the
 --card flashes green.
-local function CreateStaminaBar(charid)
+--
+--opts (optional): height (default 14) and fontSize for the numbers, for a
+--bar drawn larger than the card's (the hero sheet's).
+local function CreateStaminaBar(charid, opts)
+    opts = opts or {}
     local fill = gui.Panel{
         classes = {"fillBarFill", "healthFill"},
         width = "0%",
@@ -566,6 +570,7 @@ local function CreateStaminaBar(charid)
         floating = true,
         halign = "center",
         valign = "center",
+        fontSize = opts.fontSize,
         text = "",
         interactable = false,
     }
@@ -617,7 +622,7 @@ local function CreateStaminaBar(charid)
     return gui.Panel{
         classes = {"bordered"},
         width = "100%",
-        height = 14,
+        height = opts.height or 14,
         flow = "horizontal",
         halign = "center",
         cornerRadius = 2,
@@ -635,6 +640,14 @@ local function CreateStaminaBar(charid)
         monitorGame = "/characters",
         refreshGame = function(element)
             element:FireEvent("refreshCard")
+        end,
+
+        --point the bar at another character (the hero sheet's switcher). The
+        --next refresh snaps to them, with no hurt or heal flash.
+        setCharid = function(element, newCharid)
+            charid = newCharid
+            m_shownPct, m_seenTotal, m_seenCur, m_slideTime = nil, nil, nil, nil
+            element.thinkTime = nil
         end,
 
         refreshCard = function(element)
@@ -1120,6 +1133,30 @@ local function CreateSkillsLine(charid)
     }
 end
 
+--Paints a hero's portrait as a panel's full-bleed background, cropped to the
+--panel's shape the way the hero card crops it. `aspect` is the panel's
+--width / height. Leaves the panel alone when the hero has no art, so its own
+--dark ground shows. Returns true when art was applied.
+---@param element Panel
+---@param tok CharacterToken
+---@param aspect number
+---@return boolean
+local function ApplyPortrait(element, tok, aspect)
+    local portrait = nil
+    pcall(function() portrait = tok.offTokenPortrait end)
+    if portrait == nil or portrait == "" then
+        return false
+    end
+    --bgcolor white keeps the artwork untinted; the card's border and the
+    --overlay carry the mine/others styling.
+    element.bgimage = portrait
+    element.selfStyle.bgcolor = "white"
+    local rect = nil
+    pcall(function() rect = tok:GetPortraitRectForAspect(aspect, portrait) end)
+    element.selfStyle.imageRect = rect
+    return true
+end
+
 --opts (all optional):
 --  halign      the card's halign (default "right", the roster's edge)
 --  draggable   non-nil = the drag callbacks below are passed through to
@@ -1329,17 +1366,7 @@ local function CreateHeroCard(entry, opts)
             else
                 playerLabel.text = HeroPlayerName(tok)
             end
-            local portrait = nil
-            pcall(function() portrait = tok.offTokenPortrait end)
-            if portrait ~= nil and portrait ~= "" then
-                --bgcolor white keeps the artwork untinted; the card's
-                --border and the overlay carry the mine/others styling.
-                element.bgimage = portrait
-                element.selfStyle.bgcolor = "white"
-                local rect = nil
-                pcall(function() rect = tok:GetPortraitRectForAspect(CARD_WIDTH / cardHeight, portrait) end)
-                element.selfStyle.imageRect = rect
-            end
+            ApplyPortrait(element, tok, CARD_WIDTH / cardHeight)
         end,
 
         --fired up from the stamina bar in the overlay when this hero loses
@@ -1433,6 +1460,7 @@ EotwHeroCard = {
     CreateHeroCard = CreateHeroCard,
     CreateStaminaBar = CreateStaminaBar,
     CreateCardFlash = CreateCardFlash,
+    ApplyPortrait = ApplyPortrait,
     CollectHeroes = CollectHeroes,
     RosterSignature = RosterSignature,
     HeroDisplayName = HeroDisplayName,

@@ -2096,6 +2096,33 @@ local function categoriserFeatureGrantsResource(feature)
     return found
 end
 
+--- Whether a feature grants skills or languages (shown in their own lists).
+--- @param feature any
+--- @return boolean
+function FeatureCategoriser.FeatureGrantsSkillOrLanguage(feature)
+    return categoriserFeatureGrantsSkillOrLanguage(feature)
+end
+
+--- Whether a feature only raises the five characteristics (shown as numbers).
+--- @param feature any
+--- @return boolean
+function FeatureCategoriser.FeatureIsOnlyCharacteristics(feature)
+    return categoriserFeatureIsOnlyCharacteristics(feature)
+end
+
+--- The section a choice slot belongs to by what it offers ("skill",
+--- "language", "perk", "ancestry"), or nil for a feature that is not one of
+--- those choice slots. A skill or language slot found inside a class feature
+--- belongs to the Skills / Languages lists, not a feature list.
+--- @param feature any
+--- @return string|nil
+function FeatureCategoriser.ChoiceBucket(feature)
+    local tn = nil
+    pcall(function() tn = feature.typeName end)
+    if tn == nil then return nil end
+    return CATEGORISER_CHOICE_BUCKET[tn]
+end
+
 --- Whether a RESOLVED feature is a passive capability worth a chip on the tac
 --- panel. Excludes perks (the Perks section -- a CharacterFeat that is not a
 --- Title or Complication, both of which are CharacterFeat-derived but kept),

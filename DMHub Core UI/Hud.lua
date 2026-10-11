@@ -899,6 +899,17 @@ end
 --      characterPanelAccess = function(token) end,
 --                                       --override CharacterPanel access:
 --                                       --"edit"|"view"|"none"|nil=normal
+--      openSheet = function(token, tabid) end,
+--                                       --a character sheet is opening for
+--                                       --token: return true to show your
+--                                       --own view instead (the full sheet
+--                                       --then closes itself); nil/false
+--                                       --opens the normal sheet
+--      ownsSheet = function(token) end, --true when openSheet will show your
+--                                       --own view for token, so the full
+--                                       --sheet skips refreshing itself
+--                                       --first. No side effects: asked
+--                                       --before openSheet on every open
 --      playersPopout = function() end,  --content for the popout under the
 --                                       --title bar's players row (replaces
 --                                       --the Heroes panel there); nil=normal
@@ -1044,6 +1055,39 @@ GameHud.CustomInterfaceCharacterPanelAccess = function(token)
 		return access
 	end
 	return nil
+end
+
+--Offer the active interface the character sheet a token is about to open.
+--True when it showed its own view instead (the caller must then not open
+--the full sheet); false for the normal sheet (no interface, no hook, or the
+--hook declined or failed).
+GameHud.CustomInterfaceOpenSheet = function(token, tabid)
+	local provider = GameHud.CustomInterface()
+	if provider == nil or type(provider.openSheet) ~= "function" then
+		return false
+	end
+	local ok, handled = pcall(provider.openSheet, token, tabid)
+	if not ok then
+		dmhub.Error(string.format("custom interface openSheet failed: %s", tostring(handled)))
+		return false
+	end
+	return handled == true
+end
+
+--Whether the active interface will show its own view of this token's sheet
+--(see openSheet). Asked before the full sheet refreshes, so that work can be
+--skipped; false when there is no interface, no hook, or the hook fails.
+GameHud.CustomInterfaceOwnsSheet = function(token)
+	local provider = GameHud.CustomInterface()
+	if provider == nil or type(provider.ownsSheet) ~= "function" then
+		return false
+	end
+	local ok, owns = pcall(provider.ownsSheet, token)
+	if not ok then
+		dmhub.Error(string.format("custom interface ownsSheet failed: %s", tostring(owns)))
+		return false
+	end
+	return owns == true
 end
 
 --Offer the active interface a say in the user leaving the game ("leave")

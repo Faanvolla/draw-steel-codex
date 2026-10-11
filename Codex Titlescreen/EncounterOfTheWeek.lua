@@ -1607,6 +1607,16 @@ function EncounterOfTheWeek.IsScreenOpen()
     return m_screen ~= nil and m_screen.valid and not m_screen:HasClass("hidden")
 end
 
+--The town screen, for panels that mount over the whole town (the EotW hero
+--sheet), or nil while it is not up.
+---@return Panel|nil
+function EncounterOfTheWeek.TownScreen()
+    if EncounterOfTheWeek.IsScreenOpen() then
+        return m_screen
+    end
+    return nil
+end
+
 --Extra rows for the titlescreen's Codex menu (CodexTitleBar appends them).
 --Admins get "New Player Window" while the town is open: a second app window
 --logged in as the secondary account, which opens straight into this screen
@@ -3313,6 +3323,15 @@ CreateScreen = function(args)
             extras = extras,
             --another player's roster hero: CreateDetachedCharacter registered its art.
             artRegistered = not mine and heroEntry.kind == "roster",
+            --a lineup card opens its Hero in the EotW hero sheet (a teammate's
+            --read-only); nothing while a teammate's Hero is still on its way
+            click = function()
+                if tok == nil then
+                    return
+                end
+                audio.FireSoundEvent("Mouse.Click")
+                EotwHeroSheet.Show{ token = tok, charid = tok.charid, context = "town" }
+            end,
         }
     end
 
@@ -6027,8 +6046,10 @@ CreateScreen = function(args)
                                     local className, ancestry, level = EotwRoster.HeroDetails(tok)
                                     return EotwRoster.FormatDetails(level, ancestry, className)
                                 end,
+                                --the town's cards open the EotW hero sheet
                                 click = function()
-                                    EotwRoster.EditHero(heroid)
+                                    audio.FireSoundEvent("Mouse.Click")
+                                    EotwHeroSheet.Show{ charid = heroid, context = "town" }
                                 end,
                                 --back to the guild: inactive, not deleted.
                                 dismiss = {

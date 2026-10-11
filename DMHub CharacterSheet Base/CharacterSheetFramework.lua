@@ -1454,6 +1454,24 @@ function CharSheet.CreateCharacterSheet(params)
 		end,
 
 		show = function(element, info, tabid)
+			--a game mode's own interface may show its own view of this
+			--character instead (Encounter of the Week's hero sheet). The
+			--sheet then stays hidden and tells the engine it closed, so the
+			--next open (c, the radial, search...) starts afresh.
+			local token = info ~= nil and info.token or nil
+			if token ~= nil and GameHud ~= nil and GameHud.CustomInterfaceOpenSheet ~= nil
+					and GameHud.CustomInterfaceOpenSheet(token, tabid) then
+				element:SetClass("collapsed", true)
+				dmhub.Schedule(0.01, function()
+					if not mod.unloaded and dmhub.inCharacterSheet then
+						dmhub.CloseCharacterSheet()
+					end
+				end)
+				return
+			end
+			if element.data.refreshDeferred then
+				element:FireEvent("refreshAll")
+			end
             element.data.richstatusid = dmhub.PushUserRichStatus("Viewing Character Sheet", element.data.richstatusid)
 			SelectTab(tabid or CharSheet.defaultSheet)
 			resultPanel:PulseClassTree("fadein")
@@ -1525,7 +1543,21 @@ function CharSheet.CreateCharacterSheet(params)
 			if info ~= nil then
 				contextInfo = info
 				element.data.info = contextInfo
+
+				--the engine refreshes the sheet just before show. When a game
+				--mode will show its own view instead (see show), refreshing
+				--this hidden sheet is wasted work; show catches up if it does not.
+				local token = info.token
+				if token ~= nil and GameHud ~= nil and GameHud.CustomInterfaceOwnsSheet ~= nil
+						and GameHud.CustomInterfaceOwnsSheet(token) then
+					if token.properties ~= nil then
+						token.properties:Invalidate()
+					end
+					element.data.refreshDeferred = true
+					return
+				end
 			end
+			element.data.refreshDeferred = false
 
 			if contextInfo ~= nil then
 				local sw = dmhub.Stopwatch()

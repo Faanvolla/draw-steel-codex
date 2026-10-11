@@ -661,6 +661,8 @@ end
 --  token     the lobby character being built
 --  title     optional heading (default "Create Your Hero")
 --  step      optional step to open on (default: the first incomplete one)
+--  only      optional step id: show only that step (no stepper choice, no
+--            Back / Fill / Next), e.g. "appearance" for Change Appearance
 --  onFinish  function(token) when the player finishes a complete hero
 --  onClose   function(token) when the player closes without finishing
 ---@param args table
@@ -867,6 +869,10 @@ function EotwBuilder.Open(args)
         local pills = {}
         for i,stepStatus in ipairs(status.steps) do
             local stepid = stepStatus.id
+            --args.only shows a single step (the hero sheet's Change Appearance)
+            if args.only ~= nil and stepid ~= args.only then
+                goto continue
+            end
             local left = stepStatus.total - stepStatus.filled
             local sub
             --done = complete and not optional: an optional step the player
@@ -940,6 +946,7 @@ function EotwBuilder.Open(args)
                     },
                 },
             }
+            ::continue::
         end
         stepper.children = pills
     end
@@ -2194,7 +2201,10 @@ function EotwBuilder.Open(args)
     local function UpdateFooter(status)
         local index = StepIndex(state.step)
         local stepStatus = status.steps[index]
-        backButton:SetClass("hidden", index == 1)
+        backButton:SetClass("hidden", index == 1 or args.only ~= nil)
+        --a single-step builder (args.only) has nowhere to go and nothing to fill
+        fillButton:SetClass("hidden", args.only ~= nil)
+        nextButton:SetClass("hidden", args.only ~= nil)
         if status.complete then
             state.fillAllArmed = false
         end
@@ -2550,6 +2560,10 @@ function EotwBuilder.Open(args)
                                     closeButton = element
                                 end,
                                 linger = function(element)
+                                    --the draft / finish wording does not fit a single-step edit
+                                    if args.only ~= nil then
+                                        return
+                                    end
                                     if state.allComplete then
                                         gui.Tooltip("Your hero is complete. Finish and add them to your roster.")(element)
                                     else

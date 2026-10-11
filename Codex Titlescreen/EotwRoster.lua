@@ -723,9 +723,24 @@ end
 
 --- writes -----------------------------------------------------------------
 
+--Pushes waiting for the city's reply, by hero. Two pushes in flight would
+--send the same baseRev and the city would reject the later one as stale, so
+--a push asked for meanwhile waits and runs once the first lands.
+--heroid -> { again = bool, waiting = { onDone... } }
+local m_pushing = {}
+
 --Push a working copy to the city: creates the hero there the first time,
 --replaces it afterwards (revision-checked). onDone(ok, message) optional.
 function EotwRoster.PushHero(charid, onDone)
+    local inFlight = m_pushing[charid]
+    if inFlight ~= nil then
+        inFlight.again = true
+        if onDone ~= nil then
+            inFlight.waiting[#inFlight.waiting+1] = onDone
+        end
+        return
+    end
+
     local tok = dmhub.GetCharacterById(charid)
     if tok == nil or m_conn == nil then
         if onDone ~= nil then
@@ -742,6 +757,26 @@ function EotwRoster.PushHero(charid, onDone)
         return
     end
     local baseRev = GetRevs()[charid] or 0
+    local state = { again = false, waiting = {} }
+    m_pushing[charid] = state
+
+    --the push landed or failed: let a push asked for meanwhile go (with the new
+    --rev), or after a failure tell its callers it did not happen
+    local function Settle(ok, message)
+        m_pushing[charid] = nil
+        if ok and state.again then
+            EotwRoster.PushHero(charid, function(againOk, againMessage)
+                for _,fn in ipairs(state.waiting) do
+                    fn(againOk, againMessage)
+                end
+            end)
+            return
+        end
+        for _,fn in ipairs(state.waiting) do
+            fn(ok, message)
+        end
+    end
+
     m_conn:Request{
         action = "put-hero",
         args = {
@@ -754,6 +789,7 @@ function EotwRoster.PushHero(charid, onDone)
         success = function(result)
             SetRev(charid, result.rev)
             EotwRoster.lastError = nil
+            Settle(true)
             EotwRoster.Refresh()
             if onDone ~= nil then
                 onDone(true)
@@ -761,6 +797,7 @@ function EotwRoster.PushHero(charid, onDone)
         end,
         error = function(message)
             Fail(message)
+            Settle(false, message)
             --a stale revision means another machine saved this hero first:
             --reload the city's copy.
             EotwRoster.Refresh()
@@ -1045,8 +1082,7 @@ function EotwRoster.RecruitTitlescreenHero(source, name, onDone)
 end
 
 --Open a roster hero: in the EotW builder while it can still be rebuilt
---(and a host to mount on is given), otherwise in the character sheet.
---Saved back to the city on close either way.
+--(and a host to mount on is given), otherwise in the EotW hero sheet.
 function EotwRoster.EditHero(heroid, host)
     local tok = dmhub.GetCharacterById(heroid)
     if tok == nil then
@@ -1066,9 +1102,10 @@ function EotwRoster.EditHero(heroid, host)
         }
         return
     end
-    TitlescreenHeroes.Edit(tok, function()
-        EotwRoster.PushHero(heroid)
-    end)
+    --past rebuilding, a roster Hero opens the EotW hero sheet, not the full
+    --editable sheet; its own controls (equip, spend a Recovery, appearance)
+    --push the Hero to the City themselves
+    EotwHeroSheet.Show{ charid = heroid, context = "town" }
 end
 
 --Dismiss a hero: gone from the city, then from this machine.
@@ -1211,10 +1248,12 @@ local function Button(text, click, width)
 end
 
 --A portrait thumbnail from a character's portrait id (or a silhouette).
-local function Portrait(portrait, width, height, halign)
+--click (optional): what clicking the portrait does.
+local function Portrait(portrait, width, height, halign, click)
     if type(portrait) == "string" and portrait ~= "" then
         return gui.Panel{
-            interactable = false,
+            interactable = click ~= nil,
+            click = click,
             width = width,
             height = height,
             halign = halign,
@@ -1225,7 +1264,8 @@ local function Portrait(portrait, width, height, halign)
         }
     end
     return gui.Panel{
-        interactable = false,
+        interactable = click ~= nil,
+        click = click,
         width = width,
         height = height,
         halign = halign,
@@ -1741,7 +1781,13 @@ local function GuildRow(hero, away, host)
     local heroid = hero.heroid
     local confirmingDismiss = false
 
-    local portraitPanel = Portrait(nil, 72, 96)
+    --the Hero's art and name open the EotW hero sheet (the row's icons keep
+    --their own actions, so the click sits here rather than on the row)
+    local function OpenSheet()
+        audio.FireSoundEvent("Mouse.Click")
+        EotwHeroSheet.Show{ charid = heroid, context = "town" }
+    end
+    local portraitPanel = Portrait(nil, 72, 96, nil, OpenSheet)
     portraitPanel:AddClass("eotwGuildPortrait")
     local shownPortrait = nil
     local statStrip, refreshStats = GuildStatStrip()
@@ -1750,6 +1796,7 @@ local function GuildRow(hero, away, host)
         text = "",
         fontSize = 24,
         bold = true,
+        click = OpenSheet,
         color = TEXT,
         width = "100%",
         height = "auto",
@@ -2185,6 +2232,81 @@ end
 
 --- the Graveyard ----------------------------------------------------------
 
+--The Encounter of the Week number a grave belongs to, for the hero sheet's
+--epitaph ("Fell in X, week n"): the encounter's place in the City's schedule
+--(this week, or how many weeks back), else worked out from when they fell.
+--nil when there is no schedule to go by.
+local function GraveWeek(encounter, at)
+    local eotw = rawget(_G, "EncounterOfTheWeek")
+    if eotw == nil or eotw.GetWeek == nil then
+        return nil
+    end
+    local week = eotw.GetWeek()
+    if week == nil or type(week.week) ~= "number" then
+        return nil
+    end
+    if encounter ~= nil and encounter == week.current then
+        return week.week
+    end
+    for i,past in ipairs(type(week.past) == "table" and week.past or {}) do
+        if past == encounter then
+            return math.max(1, week.week - i)
+        end
+    end
+    if type(at) == "number" and type(week.since) == "number" then
+        --server times are in milliseconds (or seconds on older records)
+        local perDay = cond(at > 1e12, 86400000, 86400)
+        if at >= week.since then
+            return week.week
+        end
+        return math.max(1, week.week - math.ceil((week.since - at) / perDay / 7))
+    end
+    return nil
+end
+
+--Open a fallen Hero from the Graveyard in the EotW hero sheet as a memorial
+--(grey art, epitaph, no controls). The Hero is fetched from the City; one the
+--owner later dismissed can no longer load, and the sheet says so.
+local function OpenFallen(g)
+    local e = g.epitaph or {}
+    local where = e.encounter
+    local eotw = rawget(_G, "EncounterOfTheWeek")
+    if where ~= nil and eotw ~= nil and eotw.EncounterDisplayName ~= nil then
+        where = eotw.EncounterDisplayName(e.encounter)
+    end
+    local fallen = {
+        encounter = where,
+        week = GraveWeek(e.encounter, g.at),
+        playedBy = e.owner,
+    }
+    audio.FireSoundEvent("Mouse.Click")
+    --the sheet opens at once on its loading state, and fills in when the
+    --Hero arrives
+    EotwHeroSheet.Show{ charid = g.heroid, name = e.name, context = "town", fallen = fallen }
+    if m_conn == nil or g.userid == nil or g.heroid == nil then
+        return
+    end
+    m_conn:Request{
+        action = "get-hero",
+        args = { userid = g.userid, heroid = g.heroid, asJson = true },
+        success = function(result)
+            if mod.unloaded then
+                return
+            end
+            local tok = dmhub.CreateDetachedCharacter{
+                record = result.record,
+                assets = result.assets,
+            }
+            if tok ~= nil and EotwHeroSheet.IsShowing(g.heroid) then
+                EotwHeroSheet.Show{ token = tok, charid = g.heroid, name = e.name, context = "town", fallen = fallen, switching = true }
+            end
+        end,
+        error = function(message)
+            printf("EotW Graveyard: could not load %s: %s", tostring(e.name), tostring(message))
+        end,
+    }
+end
+
 --Everyone's fallen heroes, newest first, with this account's marked.
 function EotwRoster.ShowGraveyard(host)
     local dlg
@@ -2245,6 +2367,10 @@ function EotwRoster.ShowGraveyard(host)
                 flow = "horizontal",
                 bgimage = "panels/square.png",
                 bgcolor = cond(mine, "#2a2418cc", "#ffffff0a"),
+                --a grave opens its Hero's memorial sheet
+                click = function()
+                    OpenFallen(g)
+                end,
                 cornerRadius = 8,
                 pad = 8,
                 borderBox = true,
