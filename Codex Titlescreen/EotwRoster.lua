@@ -46,8 +46,11 @@ function EotwRoster.FetchHeadcount(callback)
     }
 end
 
---Server-enforced limits (city-core.ts); these only drive the UI.
-EotwRoster.MAX_LIVING = 12
+--Server-enforced limits (city-core.ts); these only drive the UI. A roster
+--starts with BASE_SLOTS hero slots; each completion of the Expand the Guild
+--project adds one, up to MAX_SLOTS (the city reports the account's slots).
+EotwRoster.BASE_SLOTS = 4
+EotwRoster.MAX_SLOTS = 9
 EotwRoster.MAX_ACTIVE = 4
 
 --Bumped whenever the roster (or a working copy) changes; UIs poll it.
@@ -78,6 +81,8 @@ local m_heroes = nil
 --What this account has unlocked in town (list-heroes' `unlocks`), or nil
 --while not yet listed: { dangerRooms = bool }.
 local m_unlocks = nil
+--This account's roster slots (list-heroes' `slots`), or nil while not listed.
+local m_slots = nil
 local m_refreshing = false
 local m_refreshAgain = false
 --heroids being imported right now, so a second refresh does not import twice.
@@ -205,7 +210,33 @@ local function BuildSummary(tok)
             summary.portraitBackground = bg
         end
     end)
+    --a hero who came home dying cannot join a party until they rest (the
+    --city refuses the claim; see checkHeroClaim).
+    if EotwRoster.TokenIsDying(tok) then
+        summary.dying = true
+    end
     return summary
+end
+
+--Is this character dying (Stamina at 0 or below, but not dead)? Such a
+--hero must rest at the Blue Fish Inn before setting out again.
+function EotwRoster.TokenIsDying(tok)
+    local dying = false
+    pcall(function()
+        dying = tok.properties:CurrentHitpoints() <= 0 and not tok.properties:IsDead()
+    end)
+    return dying
+end
+
+--Is this roster hero dying? Reads the working copy when it has loaded,
+--else the city's summary.
+function EotwRoster.IsDying(heroid)
+    local tok = dmhub.GetCharacterById(heroid)
+    if tok ~= nil then
+        return EotwRoster.TokenIsDying(tok)
+    end
+    local hero = EotwRoster.FindHero(heroid)
+    return hero ~= nil and hero.summary ~= nil and hero.summary.dying == true
 end
 
 local function IsTownHero(tok)
@@ -221,6 +252,7 @@ function EotwRoster.Attach(conn)
     m_conn = conn
     m_heroes = nil
     m_unlocks = nil
+    m_slots = nil
     EotwRoster.lastError = nil
     Bump()
 end
@@ -251,6 +283,46 @@ end
 
 function EotwRoster.LivingCount()
     return #(m_heroes or {})
+end
+
+--This account's hero slots (4 plus one per Guild expansion).
+function EotwRoster.Slots()
+    return m_slots or EotwRoster.BASE_SLOTS
+end
+
+--A roster hero's unspent Downtime Activities, as the city last listed them
+--(they are earned at a respite and spent on projects; see EotwDowntime).
+function EotwRoster.GetDowntime(heroid)
+    local hero = EotwRoster.FindHero(heroid)
+    return hero ~= nil and tonumber(hero.downtime) or 0
+end
+
+--Record a hero's Downtime count the city just reported (after a grant or a
+--project roll), so cards update before the next list arrives.
+function EotwRoster.SetListedDowntime(heroid, downtime)
+    local hero = EotwRoster.FindHero(heroid)
+    if hero ~= nil and type(downtime) == "number" then
+        hero.downtime = downtime
+        Bump()
+    end
+end
+
+--The account's slots as the city just reported them (a Guild expansion).
+function EotwRoster.SetListedSlots(slots)
+    if type(slots) == "number" then
+        m_slots = slots
+        Bump()
+    end
+end
+
+--Is the hero's working copy loaded and in step with the city, with nothing
+--in flight that would overwrite a change made to it now?
+function EotwRoster.IsInStep(heroid)
+    local hero = EotwRoster.FindHero(heroid)
+    if hero == nil or dmhub.GetCharacterById(heroid) == nil then
+        return false
+    end
+    return GetRevs()[heroid] == hero.rev and not m_importing[heroid]
 end
 
 --The heroes marked active, in roster order.
@@ -521,6 +593,12 @@ local function ApplyOutcome(key, entry, tok)
                         end
                     end
                 end
+                --the hero's wounds come home with them (Downtime): only a
+                --respite at the Blue Fish Inn heals them.
+                local wounds = type(entry.outcome) == "table" and entry.outcome.wounds or nil
+                if type(wounds) == "table" then
+                    EotwRoster.SetWounds(props, wounds.damage, wounds.recoveriesUsed)
+                end
                 local applied = {}
                 local old = rawget(props, "eotwOutcomes")
                 if type(old) == "table" then
@@ -550,6 +628,21 @@ local function ApplyOutcome(key, entry, tok)
             Record()
         end)
     end)
+end
+
+--Set a hero's lost Stamina and spent Recoveries to the given values (the
+--state they ended an encounter in). Call inside ModifyProperties.
+function EotwRoster.SetWounds(props, damage, recoveriesUsed)
+    damage = math.max(0, math.floor(tonumber(damage) or 0))
+    props.damage_taken = damage
+    local id = CharacterResource.recoveryResourceId
+    local want = math.max(0, math.floor(tonumber(recoveriesUsed) or 0))
+    local used = props:GetResourceUsage(id, "long") or 0
+    if want > used then
+        props:ConsumeResource(id, "long", want - used, "Spent in the encounter")
+    elseif want < used then
+        props:RefreshResource(id, "long", used - want, "Encounter of the Week")
+    end
 end
 
 --Apply every pending outcome whose hero's working copy is in step with the
@@ -707,6 +800,7 @@ function EotwRoster.Refresh()
             end
             m_heroes = heroes
             m_unlocks = type(result.unlocks) == "table" and result.unlocks or {}
+            m_slots = tonumber(result.slots) or EotwRoster.BASE_SLOTS
             Bump()
             SyncWorkingCopies()
             if m_refreshAgain then
@@ -868,7 +962,15 @@ local function JoinRoster(tok, onDone)
 end
 
 function EotwRoster.CanAddHero()
-    return EotwRoster.LivingCount() < EotwRoster.MAX_LIVING
+    return EotwRoster.LivingCount() < EotwRoster.Slots()
+end
+
+--Why a hero cannot be added: the roster fills every slot.
+function EotwRoster.FullRosterMessage()
+    if EotwRoster.Slots() >= EotwRoster.MAX_SLOTS then
+        return string.format("Your roster is full (%d heroes).", EotwRoster.Slots())
+    end
+    return string.format("Your roster is full (%d slots). Start a project to expand the guild for another.", EotwRoster.Slots())
 end
 
 --The player's unfinished hero, if any: a lobby character the EotW builder
@@ -931,7 +1033,7 @@ end
 --builder mounts on (the town screen).
 function EotwRoster.CreateHero(host, onDone)
     if not EotwRoster.CanAddHero() then
-        Fail(string.format("Your roster is full (%d heroes).", EotwRoster.MAX_LIVING))
+        Fail(EotwRoster.FullRosterMessage())
         return
     end
     local draft = EotwRoster.FindDraft()
@@ -981,7 +1083,7 @@ end
 --player's chosen name, then add it to the roster.
 function EotwRoster.RecruitPregen(pregenId, name, onDone)
     if not EotwRoster.CanAddHero() then
-        Fail(string.format("Your roster is full (%d heroes).", EotwRoster.MAX_LIVING))
+        Fail(EotwRoster.FullRosterMessage())
         return
     end
     local source = EncounterOfTheWeek.GetPregenToken(pregenId)
@@ -1030,7 +1132,7 @@ end
 --game) with no items (treasure is earned in town); its kit is kept.
 function EotwRoster.RecruitTitlescreenHero(source, name, onDone)
     if not EotwRoster.CanAddHero() then
-        Fail(string.format("Your roster is full (%d heroes).", EotwRoster.MAX_LIVING))
+        Fail(EotwRoster.FullRosterMessage())
         return
     end
     if source == nil or not source.valid then
@@ -2013,9 +2115,11 @@ end
 function EotwRoster.GuildPanel(host)
     local listPanel = nil
     local headerLabel = nil
+    local slotPips = nil
     local statusLabel = nil
     local createButton = nil
     local recruitButton = nil
+    local projectButton = nil
     local discardButton = nil
     local confirmingDiscard = false
     local rowsById = {} --heroid -> that hero's GuildRow panel
@@ -2049,8 +2153,28 @@ function EotwRoster.GuildPanel(host)
         listPanel.children = rows
 
         local count = EotwRoster.LivingCount()
+        --one pip per slot the roster has: filled for a hero, hollow for a
+        --free slot. How many more the Guild could ever build is not shown
+        --(user direction): players just try to expand it.
+        if slotPips ~= nil and slotPips.valid then
+            local pips = {}
+            local slots = math.max(EotwRoster.Slots(), count)
+            for i = 1, slots do
+                local icon = cond(i <= count, "phosphor/circle-fill.png", "phosphor/circle.png")
+                local color = "#d9b56a"
+                pips[#pips+1] = gui.Panel{
+                    width = 14,
+                    height = 14,
+                    hmargin = 2,
+                    valign = "center",
+                    bgimage = icon,
+                    bgcolor = color,
+                }
+            end
+            slotPips.children = pips
+        end
         if headerLabel ~= nil and headerLabel.valid then
-            headerLabel.text = string.format("%d / %d heroes   <color=#d9b56a>%d / %d active</color>", count, EotwRoster.MAX_LIVING, #EotwRoster.ActiveHeroes(), EotwRoster.MAX_ACTIVE)
+            headerLabel.text = string.format("%d / %d slots   <color=#d9b56a>%d / %d active</color>", count, EotwRoster.Slots(), #EotwRoster.ActiveHeroes(), EotwRoster.MAX_ACTIVE)
         end
         if statusLabel ~= nil and statusLabel.valid then
             statusLabel.text = EotwRoster.lastError or ""
@@ -2060,6 +2184,17 @@ function EotwRoster.GuildPanel(host)
             if b ~= nil and b.valid then
                 b.selfStyle.opacity = cond(canAdd, 1, 0.45)
             end
+        end
+        --a full roster can start the project that builds another slot (no
+        --project runs by default; an ongoing one shows on the scene's left).
+        if projectButton ~= nil and projectButton.valid then
+            local downtime = rawget(_G, "EotwDowntime")
+            --offered whenever the roster is full and no project is under way,
+            --even once the guild cannot grow (its dialog then says so), so
+            --nothing hints at how many expansions there are.
+            local offer = heroes ~= nil and not canAdd
+                and downtime ~= nil and downtime.CanOffer("expand-guild")
+            projectButton:SetClass("collapsed", not offer)
         end
         local hasDraft = EotwRoster.FindDraft() ~= nil
         if createButton ~= nil and createButton.valid then
@@ -2101,6 +2236,20 @@ function EotwRoster.GuildPanel(host)
                 valign = "center",
                 create = function(element)
                     headerLabel = element
+                end,
+            },
+            gui.Panel{
+                width = "auto",
+                height = "auto",
+                flow = "horizontal",
+                halign = "right",
+                valign = "center",
+                lmargin = 10,
+                linger = function(element)
+                    gui.Tooltip(string.format("Your roster has %d hero slots.", EotwRoster.Slots()))(element)
+                end,
+                create = function(element)
+                    slotPips = element
                 end,
             },
         },
@@ -2154,7 +2303,7 @@ function EotwRoster.GuildPanel(host)
                 end,
                 click = function()
                     if not EotwRoster.CanAddHero() then
-                        Fail(string.format("Your roster is full (%d heroes).", EotwRoster.MAX_LIVING))
+                        Fail(EotwRoster.FullRosterMessage())
                         return
                     end
                     EotwRoster.lastError = nil
@@ -2201,11 +2350,30 @@ function EotwRoster.GuildPanel(host)
                 end,
                 click = function()
                     if not EotwRoster.CanAddHero() then
-                        Fail(string.format("Your roster is full (%d heroes).", EotwRoster.MAX_LIVING))
+                        Fail(EotwRoster.FullRosterMessage())
                         return
                     end
                     EotwRoster.lastError = nil
                     ShowRecruitPicker(host)
+                end,
+            },
+            gui.Button{
+                classes = { "collapsed" },
+                text = "Project: Expand Guild",
+                fontSize = 18,
+                width = 250,
+                height = 46,
+                hmargin = 6,
+                create = function(element)
+                    projectButton = element
+                end,
+                linger = function(element)
+                    gui.Tooltip("Start a project to build another hero slot.")(element)
+                end,
+                click = function()
+                    EotwRoster.lastError = nil
+                    Bump()
+                    EotwDowntime.ShowStartProjectDialog(host, "expand-guild")
                 end,
             },
         },
@@ -2219,14 +2387,17 @@ function EotwRoster.GuildPanel(host)
             data = { seen = -1 },
             thinkTime = 0.25,
             think = function(element)
-                if element.data.seen ~= EotwRoster.revision then
-                    element.data.seen = EotwRoster.revision
+                local downtime = rawget(_G, "EotwDowntime")
+                local rev = EotwRoster.revision + (downtime ~= nil and downtime.revision or 0) * 100000
+                if element.data.seen ~= rev then
+                    element.data.seen = rev
                     Rebuild()
                 end
             end,
         },
     }
     EotwRoster.Refresh()
+    EotwDowntime.RefreshProjects()
     return body
 end
 

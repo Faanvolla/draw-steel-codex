@@ -1293,6 +1293,23 @@ pcall(function()
     end)
 end)
 
+--A surviving hero's wounds, to carry home (Downtime: nothing heals on the
+--way back to town; a respite at the Blue Fish Inn does). Stamina lost and
+--Recoveries spent, as the town applies them: absolute values, since this
+--copy started the encounter from the town's working copy.
+local function HeroWounds(tok)
+    local wounds = nil
+    pcall(function()
+        local props = tok.properties
+        local id = CharacterResource.recoveryResourceId
+        wounds = {
+            damage = math.max(0, math.floor(tonumber(props.damage_taken) or 0)),
+            recoveriesUsed = math.max(0, math.floor(tonumber(props:GetResourceUsage(id, "long")) or 0)),
+        }
+    end)
+    return wounds
+end
+
 --Note what this won encounter means for each of MY town heroes, for the
 --town to apply once the player is home (see eotw:pendingOutcomes). Only
 --heroes alive at the end count: the dead are left for the burial
@@ -1326,6 +1343,8 @@ local function VictoryOutcomesFor(userid, encounter)
                 outcome.treasures = treasure
                 printf("EotW: %s takes home %s", tostring(tok ~= nil and tok.name or heroid), DescribeTreasure(treasure))
             end
+            --their wounds come home too (Downtime).
+            outcome.wounds = HeroWounds(tok)
             entries[#entries + 1] = { heroid = heroid, outcome = outcome }
         end
     end

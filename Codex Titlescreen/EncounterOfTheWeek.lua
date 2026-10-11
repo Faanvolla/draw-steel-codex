@@ -143,6 +143,14 @@ CreatorCredit.RegisterArt(GATE_ART, "czepeku")
 --no creator credit. Sources in C:/dev/eotw/art/ (danger-rooms-*).
 local DANGER_ART = "92f3f806-327b-498c-9705-49972311c3e3"
 
+--The Blue Fish Inn: Czepeku Scenes' "Ages of the Vale Pt. 3" (Original Day),
+--a 30s looping 1080p video of a tavern's hearth, over its first frame as the
+--still. Sources in C:/dev/eotw/art/ (blue-fish-inn-*).
+local INN_VIDEO = "07d3b304-792c-4b5c-8340-814c9da9f864"
+local INN_ART = "e9f0c6ae-2041-476b-ba46-e945b374fa6b"
+CreatorCredit.RegisterArt(INN_VIDEO, "czepeku")
+CreatorCredit.RegisterArt(INN_ART, "czepeku")
+
 --The town's locations, as fractions of the map image (so they survive a
 --re-export at another size). open(ctx) runs on click; locked(ctx) returns
 --the reason the location is closed, or nil. A location with a scene opens
@@ -187,6 +195,34 @@ local CITY_LOCATIONS = {
             return nil
         end,
         open = function(ctx) ctx.OpenGate() end,
+    },
+    --Downtime (EotwDowntime.lua): a respite turns Victories into XP and
+    --Downtime Activities and heals every hero at home.
+    {
+        id = "inn",
+        label = "Blue Fish Inn",
+        icon = "phosphor/beer-stein-fill.png",
+        --the tavern building the map's own "Drunken Fool" label points at.
+        x = 0.335,
+        y = 0.575,
+        scene = {
+            art = INN_ART,
+            video = INN_VIDEO,
+            aspect = 16 / 9,
+            focusX = 0.65,
+            title = "The Blue Fish Inn",
+            tagline = "A warm hearth, a hot meal and a bed that does not sway. Rest here to turn your Victories into experience, or just catch your breath before the next fight.",
+        },
+        locked = function(ctx)
+            if EotwRoster.GetHeroes() == nil then
+                return "The guild is still checking your roster..."
+            end
+            if EotwRoster.LivingCount() == 0 then
+                return "You need a hero before you can rest. Visit the Hero's Guild."
+            end
+            return nil
+        end,
+        open = function(ctx) ctx.OpenInn() end,
     },
     --Where new, untried encounters made by the town's own players are run:
     --practice, with nothing kept. Opens for good once the account has won an
@@ -2385,7 +2421,8 @@ CreateScreen = function(args)
             if #heroes >= space then
                 break
             end
-            if hero.status ~= "fallen" and not busy[hero.heroid] then
+            --a dying hero must rest at the inn before setting out again.
+            if hero.status ~= "fallen" and not busy[hero.heroid] and not EotwRoster.IsDying(hero.heroid) then
                 heroes[#heroes+1] = (RosterHeroSpec(hero))
             end
         end
@@ -4412,9 +4449,16 @@ CreateScreen = function(args)
             active[hero.heroid] = true
         end
         local heroes = {}
+        local dyingNames = {}
         for _,hero in ipairs(EotwRoster.GetHeroes() or {}) do
             if not claimed[hero.heroid] and away[hero.heroid] == nil then
-                heroes[#heroes+1] = hero
+                --a dying hero must rest at the Blue Fish Inn first (the city
+                --refuses the claim too).
+                if EotwRoster.IsDying(hero.heroid) then
+                    dyingNames[#dyingNames+1] = (hero.summary or {}).name or "A hero"
+                else
+                    heroes[#heroes+1] = hero
+                end
             end
         end
         --active heroes first: they are the ones adventuring in town.
@@ -4437,6 +4481,10 @@ CreateScreen = function(args)
             rows[#rows+1] = EmptyNote("No heroes are free to join. Visit the Hero's Guild to create or recruit one.")
         else
             rows[#rows+1] = CardGrid(myCards)
+        end
+        if #dyingNames > 0 then
+            rows[#rows+1] = EmptyNote(string.format("%s %s dying and must rest at the Blue Fish Inn before setting out again.",
+                table.concat(dyingNames, ", "), cond(#dyingNames == 1, "is", "are")))
         end
 
         dlg = gui.Panel{
@@ -5406,6 +5454,10 @@ CreateScreen = function(args)
             if #found > 0 then
                 parts[#parts + 1] = "found " .. table.concat(found, ", ")
             end
+            local wounds = type(outcome.wounds) == "table" and outcome.wounds or {}
+            if (tonumber(wounds.damage) or 0) > 0 or (tonumber(wounds.recoveriesUsed) or 0) > 0 then
+                parts[#parts + 1] = "came back wounded"
+            end
             local name = (hero.name ~= nil and hero.name ~= "") and hero.name or "Your hero"
             lines[#lines + 1] = string.format("<b>%s</b>%s", name, cond(#parts > 0, ": " .. table.concat(parts, "; "), ""))
         end
@@ -5567,6 +5619,7 @@ CreateScreen = function(args)
     --game and takes us into it); the Guild's is built on each visit.
     local m_locationId = nil
     local m_guildScene = nil
+    local m_innScene = nil
     local gateScene = nil
     local dangerScene = nil
     local locationHost = nil
@@ -5598,6 +5651,9 @@ CreateScreen = function(args)
         end,
         OpenDangerRooms = function()
             OpenLocation("danger")
+        end,
+        OpenInn = function()
+            OpenLocation("inn")
         end,
         OpenGraveyard = function()
             EotwRoster.ShowGraveyard(resultPanel)
@@ -5876,10 +5932,10 @@ CreateScreen = function(args)
 
     --The top-left of a scene: the way back to the map, then the place's
     --name over a cream rule and a line about it.
-    local SceneHeader = function(scene)
+    local SceneHeader = function(scene, side)
         return gui.Panel{
             floating = true,
-            halign = "left",
+            halign = side or "left",
             valign = "top",
             hmargin = 56,
             vmargin = 40,
@@ -5938,15 +5994,26 @@ CreateScreen = function(args)
     end
 
     --A location's full-screen scene: its art (credited to its creator by
-    --CreatorCredit.Backdrop), a shade down the left for the header to read
-    --on, the header, and a card on the right holding content. The scene is
-    --opaque, so the map behind it takes no clicks.
-    local LocationScene = function(loc, cardWidth, content)
+    --CreatorCredit.Backdrop; scene.video loops over the still), a shade down
+    --the header's side for it to read on, the header, and a card holding
+    --content -- on the right, or on the left when scene.cardSide = "left"
+    --(the header then moves right). `side` (optional) goes in the free space
+    --under the header, at the bottom of the header's side (the Guild's
+    --project under way). The scene is opaque, so the map behind it takes no
+    --clicks.
+    local LocationScene = function(loc, cardWidth, content, side)
         local scene = loc.scene
+        local cardLeft = scene.cardSide == "left"
+        local headerSide = cond(cardLeft, "right", "left")
+        local fadeFrom, fadeTo = 0, 1
+        if cardLeft then
+            fadeFrom, fadeTo = 1, 0
+        end
         return CreatorCredit.Backdrop{
             width = panelWidth,
             height = panelHeight,
             image = scene.art,
+            video = scene.video,
             aspect = scene.aspect,
             focusX = scene.focusX,
             --the Town Gate's art is dark, so its credit shows the logo white.
@@ -5954,7 +6021,7 @@ CreateScreen = function(args)
             children = {
                 gui.Panel{
                     floating = true,
-                    halign = "left",
+                    halign = headerSide,
                     valign = "top",
                     width = 1000,
                     height = panelHeight,
@@ -5962,8 +6029,8 @@ CreateScreen = function(args)
                     bgimage = "panels/square.png",
                     bgcolor = "black",
                     gradient = gui.Gradient{
-                        point_a = { x = 0, y = 0.5 },
-                        point_b = { x = 1, y = 0.5 },
+                        point_a = { x = fadeFrom, y = 0.5 },
+                        point_b = { x = fadeTo, y = 0.5 },
                         stops = {
                             { position = 0, color = core.Color{ r = 1, g = 1, b = 1, a = 0.78 } },
                             { position = 0.4, color = core.Color{ r = 1, g = 1, b = 1, a = 0.45 } },
@@ -5977,11 +6044,21 @@ CreateScreen = function(args)
                     width = "100%",
                     height = "100%",
                     flow = "none",
-                    SceneHeader(scene),
+                    SceneHeader(scene, headerSide),
+                    gui.Panel{
+                        floating = true,
+                        halign = headerSide,
+                        valign = "bottom",
+                        hmargin = 56,
+                        bmargin = 90,
+                        width = "auto",
+                        height = "auto",
+                        children = { side },
+                    },
                     gui.Panel{
                         classes = { "eotwSceneCard" },
                         floating = true,
-                        halign = "right",
+                        halign = cond(cardLeft, "left", "right"),
                         valign = "top",
                         hmargin = SCENE_CARD_MARGIN,
                         tmargin = SCENE_CARD_TOP,
@@ -6042,9 +6119,15 @@ CreateScreen = function(args)
                                 --recoveries, but no skills or heroic resource.
                                 showSkills = false,
                                 showResources = false,
+                                --the hammer chip: Downtime Activities to spend.
+                                showDowntime = true,
                                 subtitle = function(tok)
                                     local className, ancestry, level = EotwRoster.HeroDetails(tok)
-                                    return EotwRoster.FormatDetails(level, ancestry, className)
+                                    local text = EotwRoster.FormatDetails(level, ancestry, className)
+                                    if EotwRoster.TokenIsDying(tok) then
+                                        text = "<color=#ff8f7a>Dying: needs a respite</color>"
+                                    end
+                                    return text
                                 end,
                                 --the town's cards open the EotW hero sheet
                                 click = function()
@@ -6259,6 +6342,10 @@ CreateScreen = function(args)
             m_guildScene:DestroySelf()
         end
         m_guildScene = nil
+        if m_innScene ~= nil and m_innScene.valid then
+            m_innScene:DestroySelf()
+        end
+        m_innScene = nil
         m_locationId = nil
         ApplyLocationMode()
     end
@@ -6295,8 +6382,16 @@ CreateScreen = function(args)
                 end
             end)
         elseif id == "guild" then
-            m_guildScene = LocationScene(CityLocation("guild"), 860, EotwRoster.GuildPanel(resultPanel))
+            m_guildScene = LocationScene(CityLocation("guild"), 860, EotwRoster.GuildPanel(resultPanel),
+                --the guild's project under way, if any, in the space on the left.
+                EotwDowntime.ProjectSidePanel(resultPanel, "expand-guild", 620))
             locationHost:AddChild(m_guildScene)
+        elseif id == "inn" then
+            m_innScene = LocationScene(CityLocation("inn"), 820, EotwDowntime.InnPanel(resultPanel, function(where)
+                OpenLocation(where)
+            end))
+            locationHost:AddChild(m_innScene)
+            EotwRoster.Refresh()
         end
         ApplyLocationMode()
     end
@@ -6778,6 +6873,12 @@ CreateScreen = function(args)
                 EotwRoster.Refresh()
                 MaybeShowDebrief()
                 MaybeShowOfferedOutcomes()
+                --a respite or project roll the last connection did not finish.
+                dmhub.Schedule(2, function()
+                    if not mod.unloaded then
+                        EotwDowntime.ResumePending()
+                    end
+                end)
             end
         end)
     end

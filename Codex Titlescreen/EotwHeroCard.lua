@@ -908,6 +908,69 @@ local function CreateSurgeCorner(charid)
     }
 end
 
+--Downtime Activities the hero has to spend on projects (town only, opts.
+--showDowntime): an amber hammer chip with the count in the card's top-left
+--corner, hidden at 0. The count lives in the City and reaches us with the
+--roster list (EotwRoster.GetDowntime).
+local function CreateDowntimeBadge(charid)
+    local countLabel = gui.Label{
+        text = "",
+        fontSize = 14,
+        bold = true,
+        color = "#ffd38a",
+        width = "auto",
+        height = "auto",
+        valign = "center",
+        lmargin = 3,
+        textWrap = false,
+        interactable = false,
+    }
+    return gui.Panel{
+        classes = {"collapsed"},
+        floating = true,
+        halign = "left",
+        valign = "top",
+        x = 4,
+        y = 4,
+        width = "auto",
+        height = 22,
+        flow = "horizontal",
+        hpad = 5,
+        borderBox = true,
+        bgimage = "panels/square.png",
+        bgcolor = "#3a2a10f0",
+        cornerRadius = 6,
+        border = 1,
+        borderColor = "#e0a43aff",
+        data = { count = 0 },
+        linger = function(element)
+            gui.Tooltip(string.format("%d Downtime %s to spend on projects", element.data.count, cond(element.data.count == 1, "Activity", "Activities")))(element)
+        end,
+        refreshCard = function(element)
+            local count = 0
+            local roster = rawget(_G, "EotwRoster")
+            if roster ~= nil and roster.GetDowntime ~= nil then
+                pcall(function() count = roster.GetDowntime(charid) or 0 end)
+            end
+            if count == element.data.count then
+                return
+            end
+            element.data.count = count
+            countLabel.text = string.format("%d", count)
+            element:SetClass("collapsed", count <= 0)
+        end,
+        gui.Panel{
+            width = 14,
+            height = 14,
+            valign = "center",
+            bgimage = "phosphor/hammer-fill.png",
+            bgcolor = "#ffd38a",
+            interactable = false,
+        },
+        countLabel,
+    }
+end
+
 --A gently pulsing "!" trigger badge in the card's top-left corner while
 --the hero has an available (non-hostile, undismissed) trigger -- the same
 --test the Monster AI's trigger-reaction dice uses. Hostile prompts are
@@ -1179,6 +1242,8 @@ end
 --              cards show the characteristics but not the skills.
 --  showResources  the heroic resource row under the stamina bar (default
 --              true). The town has no use for it outside an encounter.
+--  showDowntime   the hammer chip with the hero's unspent Downtime
+--              Activities (the town's cards; see CreateDowntimeBadge)
 local function CreateHeroCard(entry, opts)
     opts = opts or {}
     local showSkills = opts.showSkills
@@ -1386,6 +1451,9 @@ local function CreateHeroCard(entry, opts)
     }
     if opts.showStats then
         cardArgs[#cardArgs+1] = CreateStatStrip(charid)
+    end
+    if opts.showDowntime then
+        cardArgs[#cardArgs+1] = CreateDowntimeBadge(charid)
     end
     --last, so the washes sit over every other layer of the card.
     cardArgs[#cardArgs+1] = hurtFlash

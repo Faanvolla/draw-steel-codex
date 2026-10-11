@@ -286,8 +286,11 @@ function CreatorCredit.Backdrop(options)
     local aspect = options.aspect
 
     --One art layer: a fresh panel stays invisible until its image has
-    --loaded and then fires imageLoaded, which is when it fades in.
-    local ArtLayer = function(imageid)
+    --loaded and then fires imageLoaded, which is when it fades in. A video
+    --is streamed through its own looping player (the "###LOOP" suffix, as
+    --the montage stage plays scenes); a plain bgimage plays it once and then
+    --goes blank. A streamed video fires no imageLoaded, so it is scheduled.
+    local ArtLayer = function(imageid, isVideo)
         return gui.Panel{
             classes = { "creatorBackdropArt" },
             floating = true,
@@ -296,12 +299,16 @@ function CreatorCredit.Backdrop(options)
             width = width,
             height = height,
             interactable = false,
-            bgimage = imageid,
+            bgimage = cond(isVideo, nil, imageid),
             bgcolor = "white",
             data = { loaded = false },
             create = function(element)
                 if aspect ~= nil then
                     element.selfStyle.imageRect = CoverRect(boxAspect, aspect, fx, fy)
+                end
+                if isVideo then
+                    element.bgimageStreamed = imageid .. "###LOOP" .. dmhub.GenerateGuid()
+                    element:ScheduleEvent("imageLoaded", 0.4)
                 end
             end,
             --art that has not loaded yet fades in on imageLoaded anyway.
@@ -345,7 +352,7 @@ function CreatorCredit.Backdrop(options)
         children[#children+1] = ArtLayer(options.image)
     end
     if type(options.video) == "string" and options.video ~= "" then
-        children[#children+1] = ArtLayer(options.video)
+        children[#children+1] = ArtLayer(options.video, true)
     end
     for _,child in ipairs(options.children or {}) do
         children[#children+1] = child
