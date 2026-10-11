@@ -88,7 +88,7 @@ local function ShouldShareAbility(token)
     if not token.canControl then
         return false
     end
-    if dmhub.GetSettingValue("privaterolls") == "dm" then
+    if GetRollVisibility() == "dm" then
         return false
     end
     return IsTokenOnCurrentTurn(token)
@@ -204,7 +204,7 @@ end
 --"dicetower" -- means some part of what is happening is private, which is what
 --the roll-visibility banner on the ability card announces.
 local function RollsVisibleToEveryone()
-    return dmhub.GetSettingValue("privaterolls") == "visible"
+    return GetRollVisibility() == "visible"
 end
 
 --Apply a roll-visibility change made from the ability card itself (the director's
@@ -1744,7 +1744,7 @@ end
 --itself the one-click way out.
 local function CreateRollVisibilityBanner(token, cardWidth)
     local function BannerText()
-        if dmhub.GetSettingValue("privaterolls") == "dicetower" then
+        if GetRollVisibility() == "dicetower" then
             return "Dice Tower Roll"
         end
         if dmhub.isDM then
@@ -1754,7 +1754,7 @@ local function CreateRollVisibilityBanner(token, cardWidth)
     end
 
     local function BannerTooltip()
-        if dmhub.GetSettingValue("privaterolls") == "dicetower" then
+        if GetRollVisibility() == "dicetower" then
             return "This roll goes to the dice tower -- only the Director sees the result.\n\nClick to make your rolls visible to everyone."
         end
         if dmhub.isDM then
@@ -1965,7 +1965,9 @@ function GameHud:InitAbilityDisplayPanel(abilityDisplayPanel)
                 }
             end
 
-            if dmhub.isDM then
+            --RollPrivacyAllowed: a --director debug window into a directorless game
+            --is isDM, but there are no hidden rolls there for the eyelid to toggle.
+            if dmhub.isDM and RollPrivacyAllowed() then
                 local abilityNamePanel = panel:FindChildRecursive(function(p)
                     return p:HasClass("abilityName")
                 end)
@@ -2913,7 +2915,7 @@ function CharacterPanel.AcquireAbilityRollDialog(token, ability, symbols, displa
     --its first yield, so on a player host it reads false for the monster.
     if aiDriven and displayed and g_sharingData == nil and g_displayedAbility ~= nil
         and IsDMOrPlayerHost()
-        and dmhub.GetSettingValue("privaterolls") ~= "dm"
+        and GetRollVisibility() ~= "dm"
         and IsTokenOnCurrentTurn(token)
     then
         BeginAbilitySharing(token, g_displayedAbility, "main")

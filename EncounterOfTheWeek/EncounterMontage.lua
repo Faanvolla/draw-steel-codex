@@ -327,6 +327,154 @@ function EncounterMontage.GetIntelligence()
     return n
 end
 
+--Per-hero Intelligence. data.intelligenceByHero = { [charid] = n } is what
+--each hero earned and has not spent yet; data.intelligence stays the party
+--TOTAL (what the pools strip shows), so the two are only ever written
+--together, by CreditIntelligence and SpendIntelligence below. Any part of
+--the total no hero holds (Intelligence earned before per-hero tracking, or
+--with no heroes on the map) is "shared": any player may spend it.
+function EncounterMontage.GetHeroIntelligence(charid)
+    local n = 0
+    pcall(function()
+        local byHero = mod:GetDocumentSnapshot(DOC_ID).data.intelligenceByHero
+        if type(byHero) == "table" then
+            n = tonumber(byHero[charid]) or 0
+        end
+    end)
+    return n
+end
+
+--The shared part of the total (see above). `data` is a snapshot's or an
+--OPEN document's data table; nil reads the current snapshot.
+function EncounterMontage.SharedIntelligence(data)
+    local n = 0
+    pcall(function()
+        data = data or mod:GetDocumentSnapshot(DOC_ID).data
+        local held = 0
+        for _, amount in pairs(data.intelligenceByHero or {}) do
+            held = held + (tonumber(amount) or 0)
+        end
+        n = math.max(0, (tonumber(data.intelligence) or 0) - held)
+    end)
+    return n
+end
+
+--What a player running the heroes `heroids` may spend: those heroes' own
+--Intelligence plus the shared part. `data` as for SharedIntelligence.
+function EncounterMontage.SpendableIntelligence(heroids, data)
+    local n = 0
+    pcall(function()
+        data = data or mod:GetDocumentSnapshot(DOC_ID).data
+        local byHero = data.intelligenceByHero or {}
+        for _, charid in ipairs(heroids or {}) do
+            n = n + (tonumber(byHero[charid]) or 0)
+        end
+    end)
+    return n + EncounterMontage.SharedIntelligence(data)
+end
+
+--Host, inside an OPEN change on the script document: change heroes'
+--Intelligence and the party total with them. credits = { { charid, name,
+--qty }, ... }; a negative qty is a loss, which never takes a hero below 0.
+--sharedQty (optional) goes to the total with no hero holding it. Writes one
+--history line for the strip's tooltip, naming who earned what.
+function EncounterMontage.CreditIntelligence(doc, credits, who, note, sharedQty)
+    local byHero = doc.data.intelligenceByHero or {}
+    local before = tonumber(doc.data.intelligence) or 0
+    local delta = sharedQty or 0
+    local parts = {}
+    for _, credit in ipairs(credits or {}) do
+        local have = tonumber(byHero[credit.charid]) or 0
+        local change = math.max(tonumber(credit.qty) or 0, -have)
+        if change ~= 0 then
+            byHero[credit.charid] = cond(have + change > 0, have + change, nil)
+            delta = delta + change
+            parts[#parts + 1] = string.format("%s %+d", tostring(credit.name), change)
+        end
+    end
+    doc.data.intelligenceByHero = byHero
+    if delta == 0 then
+        return 0
+    end
+    doc.data.intelligence = math.max(0, before + delta)
+    local log = doc.data.intelligenceLog or {}
+    if #parts > 0 then
+        note = string.format("%s (%s)", tostring(note), table.concat(parts, ", "))
+    end
+    log[#log + 1] = {
+        value = doc.data.intelligence,
+        amount = delta,
+        who = who,
+        note = note,
+        at = dmhub.serverTime,
+    }
+    doc.data.intelligenceLog = log
+    return delta
+end
+
+--Intelligence no single hero earned (a consequence, a choice the party
+--agreed on), divided evenly across `heroes`. The odd points go to whoever
+--holds the least (a loss: the most), ties in roster order. Returns credits
+--for CreditIntelligence.
+function EncounterMontage.SplitIntelligence(doc, heroes, qty)
+    local credits = {}
+    if #heroes == 0 or qty == 0 then
+        return credits
+    end
+    local byHero = doc.data.intelligenceByHero or {}
+    local sign = cond(qty < 0, -1, 1)
+    local amount = math.abs(qty)
+    local base = math.floor(amount / #heroes)
+    local remainder = amount - base * #heroes
+    local order = {}
+    for i, hero in ipairs(heroes) do
+        credits[i] = { charid = hero.charid, name = hero.name, qty = sign * base }
+        order[i] = { index = i, have = tonumber(byHero[hero.charid]) or 0 }
+    end
+    table.sort(order, function(a, b)
+        if a.have ~= b.have then
+            return cond(sign > 0, a.have < b.have, a.have > b.have)
+        end
+        return a.index < b.index
+    end)
+    for i = 1, remainder do
+        local credit = credits[order[i].index]
+        credit.qty = credit.qty + sign
+    end
+    return credits
+end
+
+--Host, inside an OPEN change: take `qty` Intelligence off the player who
+--runs `heroids` -- from their hero holding the most each point (ties in the
+--order given), then from the shared part. Returns false when they do not
+--have it; true and the names it came from otherwise. Writes no history line
+--(the caller knows what it was spent on).
+function EncounterMontage.SpendIntelligence(doc, heroids, qty, names)
+    if EncounterMontage.SpendableIntelligence(heroids, doc.data) < qty then
+        return false
+    end
+    local byHero = doc.data.intelligenceByHero or {}
+    local from = {}
+    for _ = 1, qty do
+        local best, bestHave = nil, 0
+        for _, charid in ipairs(heroids or {}) do
+            local have = tonumber(byHero[charid]) or 0
+            if have > bestHave then
+                best, bestHave = charid, have
+            end
+        end
+        if best ~= nil then
+            byHero[best] = cond(bestHave > 1, bestHave - 1, nil)
+            from[#from + 1] = (names or {})[best] or best
+        else
+            from[#from + 1] = "the party"
+        end
+    end
+    doc.data.intelligenceByHero = byHero
+    doc.data.intelligence = math.max(0, (tonumber(doc.data.intelligence) or 0) - qty)
+    return true, from
+end
+
 --The pool's change history, in the shape gui.StatsHistoryTooltip wants
 --(newest last), so the strip's cell reads like the malice and hero-token
 --cells beside it.
@@ -2017,7 +2165,9 @@ end
 --heroEntry), userid, entryName, source ("Montage"/"Narrative"), montage
 --(the state table being mutated), entryId, entry (the parsed entry, whose
 --dice tables a "roll on <table>" clause rolls), doc (the script document,
---inside an open change, for effects that outlive the beat) }. Returns the list of
+--inside an open change, for effects that outlive the beat),
+--splitIntelligence (true: Intelligence is split across the party instead of
+--credited to heroEntry -- an agreed narrative choice) }. Returns the list of
 --human-readable results and the list of ally charids spawned.
 function EncounterMontage.ApplyEffects(effects, ctx)
     local applied = {}
@@ -2192,24 +2342,41 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                 end)
                 applied[#applied + 1] = string.format("+%s", EncounterScript.Plural(effect.qty, "Hero Token"))
             elseif effect.kind == "intelligence" then
-                --the party's shared Intelligence pool. It is ours, not a
-                --CharacterResource, so it is kept on the script document
-                --with a history of its own for the strip's tooltip.
+                --the party's Intelligence pool, credited to the heroes who
+                --earned it (each spends their own on Tactical Preparation).
+                --It is ours, not a CharacterResource, so it is kept on the
+                --script document (CreditIntelligence). One hero's test is
+                --theirs; every hero who took a narrative option gets the
+                --full amount; with no hero behind it (a consequence, or a
+                --choice the party agreed on -- ctx.splitIntelligence) it is
+                --split evenly across the party.
                 if ctx.doc == nil then
                     printf("EotW montage: no script document open; '%s' not applied", tostring(effect.text))
                 else
-                    local before = tonumber(ctx.doc.data.intelligence) or 0
-                    ctx.doc.data.intelligence = before + effect.qty
-                    local log = ctx.doc.data.intelligenceLog or {}
-                    log[#log + 1] = {
-                        value = before + effect.qty,
-                        amount = effect.qty,
-                        who = ctx.entryName or "Encounter of the Week",
-                        note = SourceLabel(ctx),
-                        at = dmhub.serverTime,
-                    }
-                    ctx.doc.data.intelligenceLog = log
-                    applied[#applied + 1] = string.format("+%s", EncounterScript.Plural(effect.qty, "Intelligence", "Intelligence"))
+                    local targets = Targets(effect)
+                    local split = ctx.splitIntelligence == true or #targets == 0
+                    local credits = {}
+                    if split then
+                        credits = EncounterMontage.SplitIntelligence(ctx.doc, heroes, effect.qty)
+                    else
+                        for _, target in ipairs(targets) do
+                            credits[#credits + 1] = { charid = target.charid, name = target.name, qty = effect.qty }
+                        end
+                    end
+                    --no heroes on the map at all: it still lands, shared.
+                    local shared = cond(#credits == 0, effect.qty, 0)
+                    EncounterMontage.CreditIntelligence(ctx.doc, credits,
+                        ctx.entryName or "Encounter of the Week", SourceLabel(ctx), shared)
+                    local amountText = EncounterScript.Plural(effect.qty, "Intelligence", "Intelligence")
+                    if split then
+                        applied[#applied + 1] = string.format("+%s, shared among the party", amountText)
+                    else
+                        local names = {}
+                        for _, target in ipairs(targets) do
+                            names[#names + 1] = target.name
+                        end
+                        applied[#applied + 1] = string.format("%s %s", Subject(names, "gains", "gain"), amountText)
+                    end
                 end
             elseif effect.kind == "malice" then
                 local before = CharacterResource.GetMalice() or 0
@@ -6317,6 +6484,7 @@ function EncounterMontage.ResetTest()
     doc.data.objectsRevealed = nil
     doc.data.unlocked = nil
     doc.data.intelligence = nil
+    doc.data.intelligenceByHero = nil
     doc.data.intelligenceLog = nil
     doc.data.prep = nil
     doc:CompleteChange("Montage test reset", { undoable = false })

@@ -515,13 +515,17 @@ CreateDicePanel = function()
 
 		multimonitor = {"privaterolls"},
 		monitor = function(element)
-			element:SetClassTree("gmonly", dmhub.GetSettingValue("privaterolls") == "dm")
+			element:SetClassTree("gmonly", GetRollVisibility() == "dm")
 			-- Re-seed the 3D cages so a director-visibility toggle takes effect on the very next
 			-- roll (each resting die captured its dmonly at seed time).
 			element:FireEventTree("requestReseed")
 		end,
 
 		rightClick = function(element)
+			--its only entry is the Director-only toggle, which a directorless game does not offer.
+			if not RollPrivacyAllowed() then
+				return
+			end
 			element.popup = gui.ContextMenu{
 				entries = {
 					{
@@ -592,7 +596,7 @@ CreateDicePanel = function()
                             --CreateDice(100, {rotate = 180}),
                         },
 					}
-			        resultPanel:SetClassTree("gmonly", dmhub.GetSettingValue("privaterolls") == "dm")
+			        resultPanel:SetClassTree("gmonly", GetRollVisibility() == "dm")
 
 						-- The screen-bounds/spacing/rest-scale tuning is set PER-CAGE in each
 						-- tile's cage create handler (dicePreviewScreenBounds / Spacing /
@@ -604,7 +608,7 @@ CreateDicePanel = function()
 			},
 	}
 
-	resultPanel:SetClassTree("gmonly", dmhub.GetSettingValue("privaterolls") == "dm")
+	resultPanel:SetClassTree("gmonly", GetRollVisibility() == "dm")
 
 	return resultPanel
 

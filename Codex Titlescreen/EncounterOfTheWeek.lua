@@ -151,6 +151,14 @@ local INN_ART = "e9f0c6ae-2041-476b-ba46-e945b374fa6b"
 CreatorCredit.RegisterArt(INN_VIDEO, "czepeku")
 CreatorCredit.RegisterArt(INN_ART, "czepeku")
 
+--The Arcane Market: Czepeku Scenes' "Black Market Streets" (Original Day), a
+--30s looping 1080p video, over its first frame as the still. Sources in
+--C:/dev/eotw/art/ (arcane-market-*).
+local MARKET_VIDEO = "2d82c3b6-de21-47f0-bfd2-f17708bf4c85"
+local MARKET_ART = "a2a30693-a725-48fc-90cd-dfd028e58dc8"
+CreatorCredit.RegisterArt(MARKET_VIDEO, "czepeku")
+CreatorCredit.RegisterArt(MARKET_ART, "czepeku")
+
 --The town's locations, as fractions of the map image (so they survive a
 --re-export at another size). open(ctx) runs on click; locked(ctx) returns
 --the reason the location is closed, or nil. A location with a scene opens
@@ -223,6 +231,35 @@ local CITY_LOCATIONS = {
             return nil
         end,
         open = function(ctx) ctx.OpenInn() end,
+    },
+    --Consumable treasures (EotwMarket.lua): each hero makes a Presence test
+    --to find what is on offer and buys up to their Wealth, once between
+    --encounters.
+    {
+        id = "market",
+        label = "Arcane Market",
+        icon = "phosphor/storefront-fill.png",
+        --the shop the map's own "Front and Back" label points at.
+        x = 0.695,
+        y = 0.18,
+        scene = {
+            art = MARKET_ART,
+            video = MARKET_VIDEO,
+            aspect = 16 / 9,
+            focusX = 0.5,
+            title = "The Arcane Market",
+            tagline = "Behind the honest shopfronts, carts and back rooms deal in potions, powders and stranger things. Ask the right questions and the right stall finds you.",
+        },
+        locked = function(ctx)
+            if EotwRoster.GetHeroes() == nil then
+                return "The guild is still checking your roster..."
+            end
+            if EotwRoster.LivingCount() == 0 then
+                return "You need a hero before you can shop. Visit the Hero's Guild."
+            end
+            return nil
+        end,
+        open = function(ctx) ctx.OpenMarket() end,
     },
     --Where new, untried encounters made by the town's own players are run:
     --practice, with nothing kept. Opens for good once the account has won an
@@ -5420,11 +5457,11 @@ CreateScreen = function(args)
     ---- results left while we were away ------------------------------------
 
     --A game this player left WITHOUT abandoning went on with their heroes as
-    --free agents; when it was won, its host left the heroes' results with
-    --the city (offer-outcomes). Back in town the player chooses: claim them
-    --(the usual pending-outcome queue brings the Victories home) or count
-    --the game as abandoned and drop them. One game at a time; asked once a
-    --connection.
+    --free agents; when it was won or lost, its host left the heroes' results
+    --with the city (offer-outcomes). Back in town the player chooses: accept
+    --them (the usual pending-outcome queue brings the Victories home and
+    --buries the heroes who fell) or count the game as abandoned and drop
+    --them. One game at a time; asked once a connection.
     local m_offersAsked = false
     local m_offersOpen = false
 
@@ -5436,13 +5473,21 @@ CreateScreen = function(args)
         end
 
         local encounter = nil
+        local defeat = false
+        local anyFell = false
         local lines = {}
         for _, hero in ipairs(game.heroes or {}) do
             local outcome = type(hero.outcome) == "table" and hero.outcome or {}
             encounter = encounter or outcome.encounter
+            if outcome.result == "defeat" then
+                defeat = true
+            end
             local parts = {}
             local victories = tonumber(outcome.victories) or 0
-            if victories > 0 then
+            if outcome.died == true then
+                anyFell = true
+                parts[#parts + 1] = "fell in battle"
+            elseif victories > 0 then
                 parts[#parts + 1] = string.format("%d %s", victories, cond(victories == 1, "Victory", "Victories"))
             elseif outcome.completed then
                 parts[#parts + 1] = "no Victory (already completed)"
@@ -5462,6 +5507,13 @@ CreateScreen = function(args)
             lines[#lines + 1] = string.format("<b>%s</b>%s", name, cond(#parts > 0, ": " .. table.concat(parts, "; "), ""))
         end
         local title = encounter ~= nil and EncounterOfTheWeek.EncounterTitle(encounter) or "your Encounter of the Week"
+
+        local hint = "Claim the victory for your heroes, or count the game as abandoned and leave it be."
+        if defeat then
+            hint = "Accept the defeat, and your fallen heroes are laid to rest in the Graveyard; or count the game as abandoned and leave it be."
+        elseif anyFell then
+            hint = "Claim the victory for your heroes, and your fallen heroes are laid to rest in the Graveyard; or count the game as abandoned and leave it be."
+        end
 
         local dlg = nil
         local busy = false
@@ -5506,7 +5558,7 @@ CreateScreen = function(args)
             escape = function() end,
             children = {
                 gui.Label{
-                    text = string.format("Your party finished <b>%s</b> after you left, with your heroes fighting on as free agents, and won.", title),
+                    text = string.format("Your party finished <b>%s</b> after you left, with your heroes fighting on as free agents, and %s.", title, cond(defeat, "was defeated", "won")),
                     fontSize = 20,
                     color = Styles.textColor,
                     width = "100%",
@@ -5524,7 +5576,7 @@ CreateScreen = function(args)
                     vmargin = 6,
                 },
                 gui.Label{
-                    text = "Claim the victory for your heroes, or count the game as abandoned and leave it be.",
+                    text = hint,
                     fontSize = 16,
                     color = Styles.textColor,
                     opacity = 0.7,
@@ -5536,7 +5588,7 @@ CreateScreen = function(args)
             },
             buttons = {
                 gui.Button{
-                    text = "Claim the Victory",
+                    text = cond(defeat, "Accept the Defeat", "Claim the Victory"),
                     fontSize = 20,
                     width = 240,
                     height = 44,
@@ -5620,6 +5672,7 @@ CreateScreen = function(args)
     local m_locationId = nil
     local m_guildScene = nil
     local m_innScene = nil
+    local m_marketScene = nil
     local gateScene = nil
     local dangerScene = nil
     local locationHost = nil
@@ -5654,6 +5707,9 @@ CreateScreen = function(args)
         end,
         OpenInn = function()
             OpenLocation("inn")
+        end,
+        OpenMarket = function()
+            OpenLocation("market")
         end,
         OpenGraveyard = function()
             EotwRoster.ShowGraveyard(resultPanel)
@@ -6346,6 +6402,10 @@ CreateScreen = function(args)
             m_innScene:DestroySelf()
         end
         m_innScene = nil
+        if m_marketScene ~= nil and m_marketScene.valid then
+            m_marketScene:DestroySelf()
+        end
+        m_marketScene = nil
         m_locationId = nil
         ApplyLocationMode()
     end
@@ -6391,6 +6451,10 @@ CreateScreen = function(args)
                 OpenLocation(where)
             end))
             locationHost:AddChild(m_innScene)
+            EotwRoster.Refresh()
+        elseif id == "market" then
+            m_marketScene = LocationScene(CityLocation("market"), 820, EotwMarket.MarketPanel(resultPanel))
+            locationHost:AddChild(m_marketScene)
             EotwRoster.Refresh()
         end
         ApplyLocationMode()

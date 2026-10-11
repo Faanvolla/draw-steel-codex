@@ -289,6 +289,111 @@ local CanControlInitiative = function()
 	return dmhub.isDM or playersControlInitiativeSetting:Get()
 end
 
+--Revert Turn. While the queue is between turns, a client showing the Director UI keeps a
+--snapshot of the board (backup.CreateCombatCheckpoint); the Revert Turn buttons restore it
+--to undo everything the current turn did. One snapshot, held in memory on that client.
+--- @class TurnCheckpointRecord
+--- @field checkpoint CombatCheckpoint
+--- @field turn number q.turn when taken; SelectTurn moves it on by one as the turn starts.
+--- @field round number
+--- @field guid string The combat (initiative queue) the snapshot belongs to.
+--- @field seq number dmhub.gameContentUpdateSeq when taken.
+TurnCheckpoint = {
+	--- @type TurnCheckpointRecord|nil
+	current = nil,
+
+	--dmhub.gameContentUpdateSeq as last seen, and dmhub.Time() when it last changed.
+	seenSeq = -1,
+	seenTime = 0,
+}
+
+--How long game data must have been unchanged (with no cast running on this client)
+--before a between-turn re-snapshot, so a half-applied end-of-turn effect is not captured.
+local g_turnCheckpointQuietSeconds = 0.5
+
+--- @param q InitiativeQueue
+function TurnCheckpoint.Capture(q)
+	TurnCheckpoint.current = {
+		checkpoint = backup.CreateCombatCheckpoint(),
+		turn = q.turn,
+		round = q.round,
+		guid = q.guid,
+		seq = dmhub.gameContentUpdateSeq,
+	}
+end
+
+--Polled while the queue is between turns. Snapshots on entering the gap, then again
+--whenever game data changes and settles -- end-of-turn saves, start-of-round effects
+--(42V3R7VV: Surprised came back), reactions resolved on other clients -- so the snapshot
+--is the board as it stood when the next turn was picked.
+--- @param q InitiativeQueue
+function TurnCheckpoint.TrackBetweenTurns(q)
+	local now = dmhub.Time()
+	local seq = dmhub.gameContentUpdateSeq
+	if seq ~= TurnCheckpoint.seenSeq then
+		TurnCheckpoint.seenSeq = seq
+		TurnCheckpoint.seenTime = now
+	end
+
+	local cur = TurnCheckpoint.current
+	if cur == nil or cur.turn ~= q.turn or cur.round ~= q.round or cur.guid ~= q.guid then
+		TurnCheckpoint.Capture(q)
+	elseif cur.seq ~= seq
+		and now - TurnCheckpoint.seenTime >= g_turnCheckpointQuietSeconds
+		and not ActivatedAbility.IsCasting() then
+		TurnCheckpoint.Capture(q)
+	end
+end
+
+--Called by InitiativeQueue:SelectTurn just before this client starts a turn, so a turn
+--picked faster than the polling above (the Monster AI, a quick click) still reverts to
+--the board as it was at that moment.
+--- @param q InitiativeQueue
+function TurnCheckpoint.BeforeSelectTurn(q)
+	if q.hidden or not q:ChoosingTurn() or not GameHud.DirectorUIVisible() then
+		return
+	end
+
+	local cur = TurnCheckpoint.current
+	if cur ~= nil and cur.turn == q.turn and cur.round == q.round and cur.guid == q.guid
+		and cur.seq == dmhub.gameContentUpdateSeq then
+		return
+	end
+
+	TurnCheckpoint.Capture(q)
+end
+
+--The snapshot to revert the current turn to, or nil. It only belongs to the turn that
+--began right after it was taken: same combat, same round, and q.turn exactly one past.
+--A turn that started while this client never saw the gap gets nil, rather than a revert
+--that would silently undo the previous turn too.
+--- @param q InitiativeQueue|nil
+--- @return CombatCheckpoint|nil
+function TurnCheckpoint.ForCurrentTurn(q)
+	local cur = TurnCheckpoint.current
+	if cur == nil or q == nil or q.hidden or q:ChoosingTurn() then
+		return nil
+	end
+	if cur.guid ~= q.guid or cur.round ~= q.round or q.turn ~= cur.turn + 1 then
+		return nil
+	end
+	return cur.checkpoint
+end
+
+--Restores checkpoint, telling the user when it could not be done.
+--- @param checkpoint CombatCheckpoint
+function TurnCheckpoint.Revert(checkpoint)
+	local err = checkpoint:Restore()
+	if err ~= nil then
+		gui.ModalMessage{
+			title = "Could Not Revert Turn",
+			message = err,
+		}
+		return
+	end
+	audio.DispatchSoundEvent("Notify.Director_Undo")
+end
+
 local function CreateDrawSteelBubble()
 
     local ShouldShowEndTurn = function()
@@ -3338,13 +3443,8 @@ function GameHud.CreateInitiativeBar(self, info)
             classes = {"unavailable"},
 
             data = {
-                checkpoint = nil,
-                checkpointRound = nil,
-                checkpointTurn = nil,
-                checkpointCombatid = nil,
-                checkpointTime = 0,
-                checkpointSettled = true,
                 checkpointReason = "Revert Turn",
+                checkpointReasonTurn = nil,
             },
 
             styles = {
@@ -3371,32 +3471,13 @@ function GameHud.CreateInitiativeBar(self, info)
                 --Combat is active -- show the settings button.
                 element:SetClass("unavailable", false)
 
-                --Track the pre-turn checkpoint so Revert restores the state from
-                --BEFORE the upcoming turn was selected. We must capture during
-                --ChoosingTurn (between turns) -- capturing mid-turn would miss the
-                --turn-selection itself and any action taken in the first frame.
+                --Keep the pre-turn snapshot that Revert Turn restores. It must be taken
+                --between turns: mid-turn would miss the turn selection itself and
+                --anything done in the turn's first frame.
                 if q:ChoosingTurn() then
-                    local needCheckpoint = element.data.checkpoint == nil
-                        or element.data.checkpointTurn ~= q.turn
-                        or element.data.checkpointRound ~= q.round
-                        or element.data.checkpointCombatid ~= q.guid
-                    if needCheckpoint then
-                        element.data.checkpointTurn = q.turn
-                        element.data.checkpointRound = q.round
-                        element.data.checkpointCombatid = q.guid
-                        element.data.checkpoint = backup.CreateCombatCheckpoint()
-                        element.data.checkpointTime = dmhub.Time()
-                        element.data.checkpointSettled = false
-                        element.data.checkpointReason = "Revert Turn"
-                        element.data.checkpointReasonTurn = nil
-                    elseif not element.data.checkpointSettled
-                        and dmhub.Time() - element.data.checkpointTime > 2
-                        and not ActivatedAbility.IsCasting() then
-                        --Take the checkpoint again once things settle. Otherwise
-                        --reverting early in round 2 put Surprised back on everyone (42V3R7VV).
-                        element.data.checkpointSettled = true
-                        element.data.checkpoint = backup.CreateCombatCheckpoint()
-                    end
+                    TurnCheckpoint.TrackBetweenTurns(q)
+                    element.data.checkpointReason = "Revert Turn"
+                    element.data.checkpointReasonTurn = nil
                 else
                     --Mid-turn: q.currentTurn is now set, so we can build a label
                     --like "Revert to start of <Name>'s turn" for the dropdown.
@@ -3426,16 +3507,14 @@ function GameHud.CreateInitiativeBar(self, info)
 
                 local entries = {}
 
-                --Revert Turn -- only when a mid-turn checkpoint is available.
-                local canRevert = element.data.checkpoint ~= nil and not q:ChoosingTurn()
-                if canRevert then
-                    local checkpoint = element.data.checkpoint
+                --Revert Turn -- only when there is a snapshot from just before this turn.
+                local checkpoint = TurnCheckpoint.ForCurrentTurn(q)
+                if checkpoint ~= nil then
                     entries[#entries+1] = {
                         text = element.data.checkpointReason,
                         click = function()
                             element.popup = nil
-                            checkpoint:Restore()
-                            audio.DispatchSoundEvent("Notify.Director_Undo")
+                            TurnCheckpoint.Revert(checkpoint)
                         end,
                     }
                 end
@@ -3519,9 +3598,6 @@ function GameHud.CreateInitiativeBar(self, info)
                 element.popup = gui.ContextMenu{entries = entries}
             end,
         }
-        --Expose the settings button so card-level revert buttons can pull the
-        --start-of-turn checkpoint off of it without duplicating the bookkeeping.
-        self.combatSettingsButton = resetTurnButton
     end
 
 	local addCharacters
@@ -6014,12 +6090,10 @@ function GameHud.CreateInitiativeEntry(self, info, initiativeid, options)
 				click = function(element)
 					--Prefer a full checkpoint restore (same as the settings menu's
 					--Revert Turn), which undoes any in-turn changes. Fall back to
-					--CancelTurn when no checkpoint is available.
-					local settingsButton = self:try_get("combatSettingsButton")
-					local checkpoint = settingsButton ~= nil and settingsButton.data.checkpoint or nil
+					--CancelTurn when no snapshot from just before this turn exists.
+					local checkpoint = TurnCheckpoint.ForCurrentTurn(info.initiativeQueue)
 					if checkpoint ~= nil then
-						checkpoint:Restore()
-						audio.DispatchSoundEvent("Notify.Director_Undo")
+						TurnCheckpoint.Revert(checkpoint)
 					elseif info.initiativeQueue ~= nil then
 						info.initiativeQueue:CancelTurn(initiativeid)
 						info.UploadInitiative()
@@ -6193,15 +6267,12 @@ function GameHud.CreateInitiativeEntry(self, info, initiativeid, options)
                         text = "Revert Turn",
                         click = function()
                             element.popup = nil
-                            --Prefer the full checkpoint restore captured by the
-                            --combat settings button so heroic resources, stamina,
-                            --and other start-of-turn side effects are undone too.
-                            --CancelTurn alone only rewinds the initiative pointer.
-                            local settingsButton = self:try_get("combatSettingsButton")
-                            local checkpoint = settingsButton ~= nil and settingsButton.data.checkpoint or nil
+                            --Prefer the full pre-turn snapshot so heroic resources,
+                            --stamina, and other start-of-turn side effects are undone
+                            --too. CancelTurn alone only rewinds the initiative pointer.
+                            local checkpoint = TurnCheckpoint.ForCurrentTurn(q)
                             if checkpoint ~= nil then
-                                checkpoint:Restore()
-                                audio.DispatchSoundEvent("Notify.Director_Undo")
+                                TurnCheckpoint.Revert(checkpoint)
                             else
                                 q:CancelTurn(initiativeid)
                                 info.UploadInitiative()

@@ -242,6 +242,18 @@ end
 --just approached).
 local m_selectMode = "approach"
 
+--the entry whose hero slot is previewing the hero being dragged (the one
+--under the cursor), so the drag only broadcasts when that changes.
+local m_previewEntry = nil
+
+local function PreviewHero(charid, entryId)
+    if entryId == m_previewEntry then
+        return
+    end
+    m_previewEntry = entryId
+    Broadcast("previewHero", charid, entryId)
+end
+
 local function SelectHero(charid, mode)
     m_selectedHero = charid
     m_selectMode = mode or "approach"
@@ -449,6 +461,56 @@ local function StageRules()
             borderColor = "#e05a4aff",
             border = 3,
         },
+        --while a hero is dragged the engine adds "drag-target" to every
+        --valid drop (and "drag-target-hover" to the one under the cursor),
+        --which the theme fills with the accent colour and inverts the text
+        --of. Keep the cards dark instead (priority beats the theme's 5) and
+        --single out the hovered one: brighter, thicker border, a touch larger.
+        {
+            selectors = {"eotwEntryCard", "drag-target"},
+            bgcolor = "#243044f2",
+            borderColor = "#ffffffff",
+            border = 3,
+            priority = 6,
+        },
+        {
+            selectors = {"eotwEntryCard", "opportunity", "drag-target"},
+            bgcolor = "#372d15f2",
+            borderColor = "#f0c75cff",
+            border = 3,
+            priority = 6,
+        },
+        {
+            selectors = {"eotwEntryCard", "threat", "drag-target"},
+            bgcolor = "#371a15f2",
+            borderColor = "#e05a4aff",
+            border = 3,
+            priority = 6,
+        },
+        {
+            selectors = {"eotwEntryCard", "drag-target-hover"},
+            bgcolor = "#34466af8",
+            borderColor = "#ffffffff",
+            border = 5,
+            scale = 1.03,
+            priority = 7,
+        },
+        {
+            selectors = {"eotwEntryCard", "opportunity", "drag-target-hover"},
+            bgcolor = "#56461cf8",
+            borderColor = "#ffe9a3ff",
+            border = 5,
+            scale = 1.03,
+            priority = 7,
+        },
+        {
+            selectors = {"eotwEntryCard", "threat", "drag-target-hover"},
+            bgcolor = "#56251cf8",
+            borderColor = "#ffa597ff",
+            border = 5,
+            scale = 1.03,
+            priority = 7,
+        },
         --materializing in, and fading out again. Same shape as the item
         --drop-in above: the card is put into the start state IMMEDIATELY
         --(SetClassTreeImmediate ignores transitionTime), so it simply
@@ -525,6 +587,12 @@ local function StageRules()
             selectors = {"eotwEntryHeroSlot", "filled", "hover"},
             borderColor = "#ffd66bff",
         },
+        --the hero being dragged over the entry, shown ahead of the drop.
+        {
+            selectors = {"eotwEntryHeroSlot", "preview"},
+            border = 2,
+            borderColor = "#ffffffff",
+        },
         {
             selectors = {"eotwEntryHeroArt"},
             bgcolor = "white",
@@ -600,6 +668,28 @@ local function StageRules()
         {
             selectors = {"eotwEntryStatus", "deadline"},
             color = "#d8a25a",
+        },
+        --the theme's "parent:drag-target" rule inverts the text of a drop
+        --target's direct children; these cards stay dark, so keep it light.
+        {
+            selectors = {"eotwEntryName", "parent:drag-target"},
+            color = "#ffffff",
+            priority = 6,
+        },
+        {
+            selectors = {"eotwEntryDesc", "parent:drag-target"},
+            color = "#dcdcdc",
+            priority = 6,
+        },
+        {
+            selectors = {"eotwEntryStatus", "parent:drag-target"},
+            color = "#b0b0b0",
+            priority = 6,
+        },
+        {
+            selectors = {"eotwEntryStatus", "deadline", "parent:drag-target"},
+            color = "#d8a25a",
+            priority = 6,
         },
         --the strip of items a hero has picked up this montage, down the
         --left edge of their card.
@@ -1439,6 +1529,23 @@ local function StageRules()
             valign = "center",
             bgcolor = "#9cc4ff",
         },
+        --"your Intelligence" after the big number, and the party total
+        --beside it, quieter: what you can spend is the number that matters.
+        {
+            selectors = {"eotwPrepPoolCaption"},
+            fontSize = 16,
+            color = "#9cc4ff",
+            width = "auto",
+            height = "auto",
+            valign = "center",
+            lmargin = 6,
+            textWrap = false,
+        },
+        {
+            selectors = {"eotwPrepPoolCaption", "party"},
+            color = "#aab4c0",
+            lmargin = 18,
+        },
         {
             selectors = {"eotwPrepTrack"},
             width = "100%",
@@ -2100,6 +2207,34 @@ local function CreateEntryHeroSlot(entry, top)
         text = "",
         interactable = false,
     }
+    --puts `heroid`'s portrait in the art panel; the same hero keeps what
+    --is already there.
+    local shownHero = nil
+    local function ShowPortrait(heroid)
+        if shownHero == heroid then
+            return
+        end
+        shownHero = heroid
+        local tok = dmhub.GetCharacterById(heroid)
+        local portrait = nil
+        local rect = nil
+        if tok ~= nil and tok.valid then
+            --a narrowed local: the nil check does not reach into the closure.
+            local heroTok = tok
+            pcall(function()
+                portrait = heroTok.offTokenPortrait
+                rect = heroTok:GetPortraitRectForAspect(ENTRY_HERO_SLOT_WIDTH / ENTRY_HERO_SLOT_HEIGHT, portrait)
+            end)
+        end
+        if portrait ~= nil and portrait ~= "" then
+            art.bgimage = portrait
+            art.selfStyle.imageRect = rect
+        else
+            art.bgimage = "panels/square.png"
+            art.selfStyle.imageRect = nil
+        end
+    end
+
     return gui.Panel{
         classes = {"eotwEntryHeroSlot"},
         floating = true,
@@ -2110,50 +2245,79 @@ local function CreateEntryHeroSlot(entry, top)
         height = ENTRY_HERO_SLOT_HEIGHT,
         bgimage = "panels/square.png",
         flow = "none",
-        data = { heroid = nil, tooltip = nil },
+        data = { tooltip = nil, preview = nil, held = false, m = nil },
         children = { art, tierLabel, nameLabel },
 
         linger = function(element)
-            if element.data.tooltip ~= nil then
+            if element.data.tooltip ~= nil and element.data.preview == nil then
                 gui.Tooltip(element.data.tooltip)(element)
             end
         end,
 
+        --a hero is being dragged over this entry (charid) or off it: stand
+        --them in the slot ahead of the drop, over whoever is there.
+        --`hold`: the hero was dropped here, so keep them until the montage
+        --state shows them arriving (or a few seconds pass, if it never does).
+        previewHero = function(element, charid, entryId, hold)
+            local preview = nil
+            if charid ~= nil and entryId == entry.id then
+                preview = charid
+            end
+            element.data.held = hold == true and preview ~= nil
+            if element.data.held then
+                element:ScheduleEvent("previewExpire", 3)
+            end
+            if preview == element.data.preview then
+                return
+            end
+            element.data.preview = preview
+            if element.data.m ~= nil then
+                element:FireEvent("refreshMontage", element.data.m)
+            end
+        end,
+        previewExpire = function(element)
+            if element.data.held then
+                element:FireEvent("previewHero", nil, nil)
+            end
+        end,
+
         refreshMontage = function(element, m)
+            element.data.m = m
             local rec, finished = EntryHeroRecord(m, entry)
+            --the dropped hero has arrived: the real record takes over.
+            if element.data.held and rec ~= nil and rec.heroid == element.data.preview then
+                element.data.held = false
+                element.data.preview = nil
+            end
+            local preview = element.data.preview
+            element:SetClass("preview", preview ~= nil)
+            if preview ~= nil then
+                local tok = dmhub.GetCharacterById(preview)
+                local name = ""
+                if tok ~= nil and tok.valid then
+                    name = tok.name or ""
+                end
+                element:SetClass("filled", true)
+                art:SetClass("hidden", false)
+                art:SetClass("finished", false)
+                nameLabel:SetClass("hidden", false)
+                nameLabel.text = name
+                tierLabel:SetClass("hidden", true)
+                ShowPortrait(preview)
+                return
+            end
             local filled = rec ~= nil
             element:SetClass("filled", filled)
             art:SetClass("hidden", not filled)
             nameLabel:SetClass("hidden", not filled)
             if rec == nil then
                 tierLabel:SetClass("hidden", true)
-                element.data.heroid = nil
                 element.data.tooltip = nil
                 return
             end
             --a new hero (a failed threat taken up by someone else) brings
-            --their own artwork; the same hero keeps what is already there.
-            if element.data.heroid ~= rec.heroid then
-                element.data.heroid = rec.heroid
-                local tok = dmhub.GetCharacterById(rec.heroid)
-                local portrait = nil
-                local rect = nil
-                if tok ~= nil and tok.valid then
-                    --a narrowed local: the nil check does not reach into the closure.
-                    local heroTok = tok
-                    pcall(function()
-                        portrait = heroTok.offTokenPortrait
-                        rect = heroTok:GetPortraitRectForAspect(ENTRY_HERO_SLOT_WIDTH / ENTRY_HERO_SLOT_HEIGHT, portrait)
-                    end)
-                end
-                if portrait ~= nil and portrait ~= "" then
-                    art.bgimage = portrait
-                    art.selfStyle.imageRect = rect
-                else
-                    art.bgimage = "panels/square.png"
-                    art.selfStyle.imageRect = nil
-                end
-            end
+            --their own artwork.
+            ShowPortrait(rec.heroid)
             art:SetClass("finished", finished)
             --"+2": the companions who went along.
             local nCompanions = #(rec.companions or {})
@@ -5084,7 +5248,17 @@ local function CreateHeroColumn(hero)
                 element:SetClass("dragging", true)
                 local mode = DragMode(charid) or "approach"
                 SelectHero(nil)
+                PreviewHero(nil, nil)
                 Broadcast("dragTargets", true, mode)
+            end,
+            --every frame of the drag, with the drop target under the
+            --cursor: the entry hovered previews this hero in its slot.
+            dragging = function(element, target)
+                local entryId = nil
+                if target ~= nil and target:HasClass("eotwEntryCard") then
+                    entryId = target.data.entryId
+                end
+                PreviewHero(charid, entryId)
             end,
             canDragOnto = function(element, target)
                 if target:HasClass("eotwAccompanySlot") then
@@ -5101,6 +5275,14 @@ local function CreateHeroColumn(hero)
             drag = function(element, target)
                 element:SetClass("dragging", false)
                 Broadcast("dragTargets", false)
+                --dropped on an entry: the preview holds until the approach
+                --lands, so the slot does not blink empty in between.
+                if target ~= nil and target:HasClass("eotwEntryCard") and EncounterMontage.LocalUserCanAct(charid) then
+                    m_previewEntry = nil
+                    Broadcast("previewHero", charid, target.data.entryId, true)
+                else
+                    PreviewHero(nil, nil)
+                end
                 if target == nil then
                     return
                 end
@@ -6719,7 +6901,12 @@ local function CreatePrepStage(args)
 
     local titleLabel = gui.Label{ classes = {"eotwStageTitle"}, text = EncounterPrep.TITLE, halign = "center" }
     local introLabel = gui.Label{ classes = {"eotwStageSubtitle"}, text = EncounterPrep.INSTRUCTIONS, halign = "center" }
+    --each player spends what their own heroes earned, so the big number is
+    --THEIR Intelligence; the party's total sits beside it (an onlooker, who
+    --has nothing to spend, sees only the total).
     local poolValue = gui.Label{ classes = {"eotwPrepPool"}, text = "0", interactable = false }
+    local poolCaption = gui.Label{ classes = {"eotwPrepPoolCaption"}, text = "yours", interactable = false }
+    local partyCaption = gui.Label{ classes = {"eotwPrepPoolCaption", "party"}, text = "", interactable = false }
     local poolRow = gui.Panel{
         width = "auto",
         height = 38,
@@ -6729,6 +6916,8 @@ local function CreatePrepStage(args)
         tmargin = 4,
         PrepBrainIcon({"eotwPrepPoolIcon"}),
         poolValue,
+        poolCaption,
+        partyCaption,
     }
     local header = gui.Panel{
         width = "100%",
@@ -6869,7 +7058,19 @@ local function CreatePrepStage(args)
             barsPanel.children = cards
         end
 
-        poolValue.text = string.format("%d", EncounterMontage.GetIntelligence())
+        local total = EncounterMontage.GetIntelligence()
+        if EncounterPrep.LocalUserIsVoter() then
+            poolValue.text = string.format("%d", EncounterPrep.LocalSpendable())
+            poolCaption.text = "yours to spend"
+            partyCaption.text = string.format("%d in the party", total)
+            poolCaption:SetClass("collapsed", false)
+            partyCaption:SetClass("collapsed", false)
+        else
+            poolValue.text = string.format("%d", total)
+            poolCaption.text = "in the party"
+            poolCaption:SetClass("collapsed", false)
+            partyCaption:SetClass("collapsed", true)
+        end
 
         local spending = m.phase == "spending"
         local ready = EncounterPrep.LocalUserReady(m)

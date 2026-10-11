@@ -231,7 +231,8 @@ local function CreateHeroRosterPanel()
             return
         end
 
-        local heroes = CollectHeroes()
+        --dead heroes stay in the column with a skull on their card.
+        local heroes = CollectHeroes{ includeDead = true }
         local sig = RosterSignature(heroes)
         if sig ~= m_signature then
             m_signature = sig
@@ -443,7 +444,9 @@ This is a power used by Monsters to charge their most powerful abilities. Beware
 
     intelligence = [==[**Intelligence**
 
-The amount of awareness you have of what you are up against. It can be used at the start of a fight to control how much you know about the encounter.]==],
+The amount of awareness you have of what you are up against. It can be used at the start of a fight to control how much you know about the encounter.
+
+Each hero keeps the Intelligence they earned (shown on their card), and each player spends their own heroes' Intelligence. This is the party's total.]==],
 }
 
 local POOL_TOOLTIP_WIDTH = 420

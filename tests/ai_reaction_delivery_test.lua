@@ -252,6 +252,7 @@ check(not ok and ai._tmp_abortTurn~=nil,"movement failure sets turn abort before
 --Exercise the outer turn boundary as well: cleanup runs, but initiative cannot
 --advance when movement was interrupted by an unconfirmed player reaction.
 assert(load("local OrderMountedRidersFirst=function(t) return t end\nlocal RunYieldingFunction=pcall\n" ..
+    source(aiSource,"local g_abortTurnTaken", "function MonsterAI:PlayTurnCoroutine") ..
     source(aiSource,"function MonsterAI:PlayTurnCoroutine", "local function FindAbilityByName")))()
 assert(load("local RunYieldingFunction=pcall\n" ..
     source(aiSource,"function MonsterAI:PlayTurnSafely", "function MonsterAI:PlayTurnCoroutine")))()

@@ -640,7 +640,7 @@ function GameHud.CreateRollDialog(self)
         width = 300,
         height = 32,
         fontSize = 18,
-        idChosen = dmhub.GetSettingValue("privaterolls"),
+        idChosen = GetRollVisibility(),
         options = cond(dmhub.isDM, g_rollOptionsDM, g_rollOptionsPlayer),
         valign = "bottom",
         prepare = function(element)
@@ -648,8 +648,9 @@ function GameHud.CreateRollDialog(self)
                 element.idChosen = "dicetower"
                 element:SetClass("hidden", true)
             else
-                element.idChosen = dmhub.GetSettingValue("privaterolls")
-                element:SetClass("hidden", false)
+                element.idChosen = GetRollVisibility()
+                --no Director to hide a roll for in a directorless game (Encounter of the Week).
+                element:SetClass("hidden", not RollPrivacyAllowed())
             end
         end,
 
@@ -667,7 +668,7 @@ function GameHud.CreateRollDialog(self)
             if m_forceDiceTower then
                 element:SetClass("hidden", true)
             else
-                element:SetClass("hidden", hideRollDropdown.idChosen == dmhub.GetSettingValue("privaterolls"))
+                element:SetClass("hidden", (not RollPrivacyAllowed()) or hideRollDropdown.idChosen == GetRollVisibility())
             end
         end,
     }
@@ -3344,7 +3345,8 @@ function GameHud.CreateRollDialog(self)
                     autoQuickCheck.data.SetText(string.format("Skip rolling animation for %s", options.autoroll.text))
                     autoRollId = options.autoroll.id
 
-                    autoHideCheck.value = hideFromPlayers or false
+                    autoHideCheck.value = (hideFromPlayers and RollPrivacyAllowed()) or false
+                    autoHideCheck:SetClass("collapsed", not RollPrivacyAllowed())
                     autoQuickCheck.value = quickRoll or false
 
 
@@ -3599,8 +3601,15 @@ function GameHud.CreateRollDialog(self)
                     dicetower = true
                 end
 
+                --A directorless game has no Director to keep a roll for. A dice tower
+                --the roll itself demands (options.dicetower) still stands.
+                if not RollPrivacyAllowed() then
+                    dmonly = false
+                    dicetower = m_forceDiceTower
+                end
+
                 if not m_forceDiceTower then
-                    if hideRollDropdown.idChosen ~= dmhub.GetSettingValue("privaterolls") and updateRollVisibility.value then
+                    if hideRollDropdown.idChosen ~= GetRollVisibility() and updateRollVisibility.value then
                         --update the setting for private rolls from now on.
                         dmhub.SetSettingValue("privaterolls", hideRollDropdown.idChosen)
                     end

@@ -925,8 +925,6 @@ DockablePanel.Register {
 
 local RUN_AGENDA_DOC = "runagenda"
 
-mod:RegisterDocumentForCheckpointBackups(RUN_AGENDA_DOC)
-
 --Phosphor masks, matching the doc-type glyphs so a Run row reads the same
 --whether it points at a doc (which supplies its own DocTypeIcon) or, for a
 --token-backed item, falls back to one of these. Tinted @fg at the callsite.
@@ -1771,8 +1769,6 @@ DockablePanel.Register {
 
 local CAMPAIGN_STATE_DOC = "campaignstate"
 
-mod:RegisterDocumentForCheckpointBackups(CAMPAIGN_STATE_DOC)
-
 CampaignState = rawget(_G, "CampaignState") or {}
 
 --The monitorGame path for panels that react to state changes.
@@ -1959,8 +1955,6 @@ end
 ----------------------------------------------------------------------
 
 local OFFER_DOC = "inteltrackeroffer"
-
-mod:RegisterDocumentForCheckpointBackups(OFFER_DOC)
 
 local function OfferPath()
     return mod:GetDocumentPath(OFFER_DOC)

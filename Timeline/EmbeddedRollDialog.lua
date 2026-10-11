@@ -6701,7 +6701,7 @@ function GameHud.CreateEmbeddedRollDialog()
 
                 OnHide()
 
-                local rollVisibility = dmhub.GetSettingValue("privaterolls")
+                local rollVisibility = GetRollVisibility()
                 local dmonly = rollVisibility == "dm"
                 local dicetower = rollVisibility == "dicetower"
                 local instant = false

@@ -803,7 +803,6 @@ end
 --- @field initiativeCarousel Panel
 --- @field choiceInitiativeBar Panel
 --- @field respiteBar Panel
---- @field combatSettingsButton Panel
 --- @field castingSpell boolean
 --- @field currentInitiativeId? string
 --- @field interactionQueue fun()[] Pending popup interactions, run one per Think when the player is free; set by the hud constructors.

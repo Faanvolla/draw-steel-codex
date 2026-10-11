@@ -4,5 +4,6 @@
 --- @class CombatCheckpoint
 CombatCheckpoint = {}
 
---- Restores the game state to the snapshot captured when this checkpoint was created.
+--- Restores the game state to the snapshot captured when this checkpoint was created. Returns nil on success, or a message saying why nothing was restored.
+--- @return string|nil
 function CombatCheckpoint:Restore() end

@@ -1250,6 +1250,68 @@ function ActivatedAbility.AdjacentAbilityBlockedReason(ability, creatureToken, o
     return nil
 end
 
+--Under Strictly Enforce Action Economy, a player cannot fire a triggered
+--action by hand from the action bar when the game will prompt them for it.
+--Pressed at the wrong moment, the manual copy skips the trigger entirely:
+--Hesitation is Weakness grabbed the turn mid-monster-turn (6TTFJWFP).
+--Only real triggered actions are refused -- ones spending a Trigger or Free
+--Triggered Action that also have an automatic trigger on the creature. Manual
+--triggers with no prompt (Conduit domain effects) and manual helper buttons
+--that spend no triggered action (Tactician Mark) keep working. Failing the
+--ability filter greys the chip, shows the reason in its tooltip, and refuses
+--the press for players (the action bar's strict:resources gate).
+local function SpendsTriggeredAction(ability)
+    local rid = ability:try_get("actionResourceId", "none")
+    return rid == CharacterResource.triggerResourceId or rid == CharacterResource.freeTriggeredActionResourceId
+end
+
+--Does the creature have an automatic trigger by this name (case-insensitive)?
+local function HasAutomaticTrigger(creatureProps, name)
+    local key = string.lower(name or "")
+    for _,entry in ipairs(creatureProps:GetTriggeredAbilities()) do
+        if entry.ability.typeName == "TriggeredAbility" and string.lower(entry.ability.name or "") == key then
+            return true
+        end
+    end
+    return false
+end
+
+local g_baseAbilityFilterFailureMessage = ActivatedAbility.AbilityFilterFailureMessage
+function ActivatedAbility:AbilityFilterFailureMessage(casterCreature)
+    local message, filter = g_baseAbilityFilterFailureMessage(self, casterCreature)
+    if message ~= nil then
+        return message, filter
+    end
+
+    --the prompt's own cast is the TriggeredAbility itself; never refuse that.
+    if self.typeName == "TriggeredAbility" or casterCreature == nil then
+        return nil
+    end
+    local manualCopy = self:try_get("manualVersionOfTrigger", false)
+    if not (manualCopy or self.categorization == "Trigger") then
+        return nil
+    end
+    if not SpendsTriggeredAction(self) then
+        return nil
+    end
+    if not StrictActionEconomyEnforced() then
+        return nil
+    end
+
+    --monsters the AI or the Director runs are not bound by this.
+    local token = dmhub.LookupToken(casterCreature)
+    if token == nil or not token.playerControlled then
+        return nil
+    end
+
+    --a generated manual copy always has its trigger; an authored one may not.
+    if not manualCopy and not HasAutomaticTrigger(casterCreature, self.name) then
+        return nil
+    end
+
+    return "Use this from its prompt when it triggers."
+end
+
 --Tokens on the map with granted abilities, worked out once per frame:
 --GetActivatedAbilities runs many times a frame and would otherwise scan
 --every token on each call.

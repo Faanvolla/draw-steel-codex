@@ -1921,6 +1921,17 @@ function MonsterAI:FindSquadActionToken()
     end
 end
 
+--The turn can move to another entry while the AI is mid-turn (a turn-grab
+--ability, a host clicking the initiative bar). Once it has, the AI must stop:
+--acting on would overlap the new creature's turn, and NextInitiative would
+--end that creature's turn rather than this one (6TTFJWFP).
+local g_abortTurnTaken = "the turn moved to another initiative entry"
+
+local function TurnStillCurrent(initiativeid)
+    local q = dmhub.initiativeQueue
+    return q ~= nil and not q.hidden and q:CurrentInitiativeId() == initiativeid
+end
+
 function MonsterAI:PlayTurnCoroutine(initiativeid)
     local queue = dmhub.initiativeQueue
 	self._tmp_abortTurn = nil
@@ -1952,6 +1963,10 @@ function MonsterAI:PlayTurnCoroutine(initiativeid)
 
         local processedSquads = {}
         for i=1,#tokens do
+            if not TurnStillCurrent(initiativeid) then
+                self._tmp_abortTurn = g_abortTurnTaken
+                break
+            end
             local token = tokens[i]
             local alreadyProcessed = false
             local squadMembers = {}
@@ -2079,6 +2094,9 @@ function MonsterAI:PlayTurnCoroutine(initiativeid)
                         self:LogDecision("MOVE CYCLE FINISHED", {
                             result = result,
                         })
+                        if self:try_get("_tmp_abortTurn") == nil and not TurnStillCurrent(initiativeid) then
+                            self._tmp_abortTurn = g_abortTurnTaken
+                        end
                         if self:try_get("_tmp_abortTurn") ~= nil
                             or result == g_moveResultNone or result == g_moveResultUnsafe then
                             break
@@ -2134,10 +2152,15 @@ function MonsterAI:PlayTurnCoroutine(initiativeid)
             turn = initiativeid,
             round = queue.round,
         })
+		if self:try_get("_tmp_abortTurn") == nil and not TurnStillCurrent(initiativeid) then
+			self._tmp_abortTurn = g_abortTurnTaken
+		end
 		if self:try_get("_tmp_abortTurn") ~= nil then
 			self:LogDecision("TURN PAUSED", {
 				reason = self._tmp_abortTurn,
-				result = "initiative left on the current monster",
+				result = self._tmp_abortTurn == g_abortTurnTaken
+					and "initiative left with the entry that took the turn"
+					or "initiative left on the current monster",
 			})
 			return
 		end

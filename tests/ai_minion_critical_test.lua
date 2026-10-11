@@ -74,7 +74,9 @@ assert(load(section("function MonsterAI:FindSquadActionToken()", "function Monst
 assert(load(section("function MonsterAI:ExecuteSquadStrike(ability)", "function MonsterAI:FindBestMoveToUseStrike")))()
 assert(load(section("function MonsterAI:CalculateRemainingMovementPaths", "function MonsterAI:CountPendingActivityReactions")))()
 assert(load(prefix .. section("function MonsterAI:FindAndExecuteMove()", "function MonsterAI:ExecuteAbility(")))()
-local runCycles = assert(load(prefix .. "return function(self, token, queue, initiativeid, squadid)\n" ..
+--The cycle loop also checks that its turn is still current (6TTFJWFP).
+local turnCheck = section("local g_abortTurnTaken", "function MonsterAI:PlayTurnCoroutine")
+local runCycles = assert(load(prefix .. turnCheck .. "return function(self, token, queue, initiativeid, squadid)\n" ..
     section("                    for cycle=1,6 do", "\n                end)") .. "\nend"))()
 
 local checks = 0
@@ -85,7 +87,8 @@ local function fixture(count)
     tokens.enemy = enemy
     dmhub = {
         unitsPerSquare = 1,
-        initiativeQueue = {hidden = false, round = 1},
+        initiativeQueue = {hidden = false, round = 1, current = "turn",
+            CurrentInitiativeId = function(q) return q.current end},
         GetTokenById = function(id) return tokens[id] end,
         Schedule = function(_, fn) fn() end,
         MarkLineOfSight = function() return {DestroyLineOfSight = noop} end,
@@ -282,6 +285,11 @@ ai, tokens, run = fixture(1)
 ai.afterCast = function() tokens["1"].actions = 1; ai._tmp_abortTurn = true end
 run()
 check(#ai.casts == 1, "stop request prevents the extra action")
+
+ai, tokens, run = fixture(1)
+ai.afterCast = function() tokens["1"].actions = 1; dmhub.initiativeQueue.current = "hero" end
+run()
+check(#ai.casts == 1 and ai._tmp_abortTurn ~= nil, "a turn taken by another entry stops the extra action")
 
 ai, tokens, run = fixture(8)
 run()

@@ -47,21 +47,38 @@ local function HeroPlayerName(tok)
     return name
 end
 
-local function CollectHeroes()
+--
+--opts.includeDead also lists the heroes who died on this map. Hero Death
+--despawns a dead hero into a corpse object, which drops its token out of
+--dmhub.allTokens; dmhub.despawnedTokens still has it. The card itself
+--shows the skull (IsCardHeroDead), so this only decides who is listed.
+local function CollectHeroes(opts)
+    opts = opts or {}
     local result = {}
+    local seen = {}
+    local function Add(tok)
+        if tok == nil or not tok.valid or seen[tok.charid] then
+            return
+        end
+        local isHero = false
+        pcall(function() isHero = tok.properties ~= nil and tok.properties:IsHero() end)
+        if isHero then
+            seen[tok.charid] = true
+            local mine = false
+            pcall(function() mine = tok.ownerId ~= nil and tok.ownerId == dmhub.loginUserid end)
+            result[#result+1] = {
+                charid = tok.charid,
+                mine = mine,
+                name = HeroDisplayName(tok),
+            }
+        end
+    end
     for _, tok in ipairs(dmhub.allTokens) do
-        if tok ~= nil and tok.valid then
-            local isHero = false
-            pcall(function() isHero = tok.properties ~= nil and tok.properties:IsHero() end)
-            if isHero then
-                local mine = false
-                pcall(function() mine = tok.ownerId ~= nil and tok.ownerId == dmhub.loginUserid end)
-                result[#result+1] = {
-                    charid = tok.charid,
-                    mine = mine,
-                    name = HeroDisplayName(tok),
-                }
-            end
+        Add(tok)
+    end
+    if opts.includeDead then
+        for _, tok in ipairs(dmhub.despawnedTokens or {}) do
+            Add(tok)
         end
     end
     table.sort(result, function(a, b)
@@ -74,6 +91,18 @@ local function CollectHeroes()
         return a.charid < b.charid
     end)
     return result
+end
+
+--A hero is dead once Hero Death has despawned it into a corpse, or (for
+--the second before that rule runs) once its stamina is past the kill
+--threshold.
+local function IsCardHeroDead(tok)
+    if tok == nil or not tok.valid then
+        return false
+    end
+    local dead = false
+    pcall(function() dead = tok.despawned or (tok.properties ~= nil and tok.properties:IsDead()) end)
+    return dead == true
 end
 
 --the montage allies ride in the signature too, so a monster joining a
@@ -186,6 +215,29 @@ local g_heroCardRules = {
         border = 3,
         borderColor = "#ffd66bff",
         scale = 1.06,
+    },
+    --a dead hero: the portrait drains to grey and a dark wash with a skull
+    --(eotwDeadMark) covers the card.
+    {
+        selectors = {"eotwHeroCard", "dead"},
+        saturation = 0,
+        brightness = 0.7,
+        borderColor = "#000000ff",
+    },
+    {
+        selectors = {"eotwDeadMark"},
+        hidden = 1,
+    },
+    {
+        selectors = {"eotwDeadMark", "parent:dead"},
+        hidden = 0,
+        bgimage = "panels/square.png",
+        bgcolor = "#000000a0",
+    },
+    {
+        selectors = {"eotwDeadSkull"},
+        bgimage = "phosphor/skull-fill.png",
+        bgcolor = "#e6e6e6ee",
     },
     {
         selectors = {"eotwCardOverlay"},
@@ -908,6 +960,69 @@ local function CreateSurgeCorner(charid)
     }
 end
 
+--Encounter of the Week Intelligence the hero has earned and not yet spent:
+--a brain chip with the count, at the left edge just above the overlay
+--plate. Hidden at 0, and always outside an EotW game (the EncounterMontage
+--codemod is not loaded on the titlescreen, where the town shows this card).
+local function CreateIntelligenceBadge(charid, overlayHeight)
+    local countLabel = gui.Label{
+        text = "",
+        fontSize = 12,
+        bold = true,
+        color = "#ffffff",
+        width = "auto",
+        height = "auto",
+        valign = "center",
+        lmargin = 3,
+        textWrap = false,
+        interactable = false,
+    }
+    return gui.Panel{
+        classes = {"collapsed"},
+        floating = true,
+        halign = "left",
+        valign = "bottom",
+        x = 4,
+        y = -(overlayHeight + 3),
+        width = "auto",
+        height = 20,
+        flow = "horizontal",
+        hpad = 5,
+        borderBox = true,
+        bgimage = "panels/square.png",
+        bgcolor = "#000000cc",
+        cornerRadius = 6,
+        border = 1,
+        borderColor = "#9cc4ffff",
+        data = { count = 0 },
+        linger = function(element)
+            gui.Tooltip(string.format("%d Intelligence earned, to spend before the fight", element.data.count))(element)
+        end,
+        refreshCard = function(element)
+            local count = 0
+            local montage = rawget(_G, "EncounterMontage")
+            if montage ~= nil and montage.GetHeroIntelligence ~= nil then
+                pcall(function() count = montage.GetHeroIntelligence(charid) or 0 end)
+            end
+            if count == element.data.count then
+                return
+            end
+            element.data.count = count
+            countLabel.text = string.format("%d", count)
+            element:SetClass("collapsed", count <= 0)
+        end,
+        gui.Panel{
+            width = 13,
+            height = 13,
+            valign = "center",
+            bgimage = "phosphor/brain.png",
+            bgcolor = "#9cc4ff",
+            interactable = false,
+        },
+        countLabel,
+    }
+end
+
 --Downtime Activities the hero has to spend on projects (town only, opts.
 --showDowntime): an amber hammer chip with the count in the card's top-left
 --corner, hidden at 0. The count lives in the City and reaches us with the
@@ -1227,7 +1342,8 @@ end
 --              card's starting draggable state, which the caller may flip
 --              later (the stage makes only the local user's own heroes
 --              draggable, and only while they can act)
---  canDragOnto, drag, beginDrag   drag callbacks (see Definitions/Panel.lua)
+--  canDragOnto, drag, beginDrag, dragging   drag callbacks (see Definitions/Panel.lua);
+--              dragging fires every frame of a drag with the drop target hovered
 --  useClick    use the click event for the character-panel popout instead
 --              of press (press also fires when a drag gesture ends)
 --  click       replaces the character-panel popout with this handler
@@ -1388,6 +1504,31 @@ local function CreateHeroCard(entry, opts)
     local hurtFlash = CreateCardFlash("eotwHurtFlash", 8)
     local healFlash = CreateCardFlash("eotwHealFlash", 8)
 
+    --the dead hero's wash and skull, hidden until the card gets the "dead"
+    --class. The skull is centered on the artwork above the overlay plate,
+    --so the name and player line stay readable under the wash.
+    local artworkHeight = cardHeight - overlayHeight
+    local skullSize = math.min(64, artworkHeight - 16)
+    local deadMark = gui.Panel{
+        classes = {"eotwDeadMark"},
+        floating = true,
+        width = "100%",
+        height = "100%",
+        halign = "center",
+        valign = "center",
+        cornerRadius = 8,
+        interactable = false,
+        gui.Panel{
+            classes = {"eotwDeadSkull"},
+            width = skullSize,
+            height = skullSize,
+            halign = "center",
+            valign = "top",
+            y = math.floor((artworkHeight - skullSize) / 2),
+            interactable = false,
+        },
+    }
+
     --the card IS the portrait: full-bleed artwork with the overlay and
     --condition chips floating on top.
     local function OpenCharacterPanel(element)
@@ -1425,6 +1566,7 @@ local function CreateHeroCard(entry, opts)
             if tok == nil or not tok.valid then
                 return
             end
+            element:SetClass("dead", IsCardHeroDead(tok))
             nameLabel.text = HeroDisplayName(tok)
             if opts.subtitle ~= nil then
                 playerLabel.text = opts.subtitle(tok) or ""
@@ -1448,6 +1590,7 @@ local function CreateHeroCard(entry, opts)
         overlay,
         CreateSurgeCorner(charid),
         CreateTriggerCorner(charid),
+        CreateIntelligenceBadge(charid, overlayHeight),
     }
     if opts.showStats then
         cardArgs[#cardArgs+1] = CreateStatStrip(charid)
@@ -1456,6 +1599,7 @@ local function CreateHeroCard(entry, opts)
         cardArgs[#cardArgs+1] = CreateDowntimeBadge(charid)
     end
     --last, so the washes sit over every other layer of the card.
+    cardArgs[#cardArgs+1] = deadMark
     cardArgs[#cardArgs+1] = hurtFlash
     cardArgs[#cardArgs+1] = healFlash
     --opts.dismiss = {tooltip=, click=}: an X in the top-right corner that
@@ -1514,6 +1658,7 @@ local function CreateHeroCard(entry, opts)
         cardArgs.canDragOnto = opts.canDragOnto
         cardArgs.drag = opts.drag
         cardArgs.beginDrag = opts.beginDrag
+        cardArgs.dragging = opts.dragging
     end
     --the card as a drop target (the montage drops item icons on it).
     if opts.dragTarget then
@@ -1530,6 +1675,7 @@ EotwHeroCard = {
     CreateCardFlash = CreateCardFlash,
     ApplyPortrait = ApplyPortrait,
     CollectHeroes = CollectHeroes,
+    IsCardHeroDead = IsCardHeroDead,
     RosterSignature = RosterSignature,
     HeroDisplayName = HeroDisplayName,
     --the card's style rules; callers wrap them in their own MergeTokens /

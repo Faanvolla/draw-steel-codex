@@ -488,6 +488,9 @@ local function ResolveSection(m, doc, beat, section, heroes, optionIndex, decide
             userid = anchor ~= nil and anchor.ownerId or nil,
             entryName = section.name,
             source = "Narrative",
+            --the whole party chose this, so its Intelligence is everyone's,
+            --not the anchor's.
+            splitIntelligence = true,
             doc = doc,
         })
         for _, charid in ipairs(newAllies or {}) do

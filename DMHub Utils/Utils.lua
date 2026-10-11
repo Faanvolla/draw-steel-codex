@@ -16,6 +16,29 @@ function IsDMOrPlayerHost()
     return result
 end
 
+--- False in a directorless game (Encounter of the Week): there is no Director
+--- to show a Director-only or dice-tower roll to, so those choices are not
+--- offered there and the "privaterolls" preference is ignored. The preference
+--- belongs to the user, not the game: a host who hides monster rolls in their
+--- own campaigns would otherwise hide every roll their machine makes -- the
+--- Monster AI's included -- from the whole table. The engine's own default for
+--- dmhub.Roll applies the same rule (DiceHarness.cs).
+--- @return boolean
+function RollPrivacyAllowed()
+    return dmhub.directorlessGame ~= true
+end
+
+--- The visibility this client's rolls get by default: the "privaterolls"
+--- preference ("visible", "dm" or "dicetower"), or always "visible" where
+--- RollPrivacyAllowed() is false.
+--- @return string
+function GetRollVisibility()
+    if not RollPrivacyAllowed() then
+        return "visible"
+    end
+    return dmhub.GetSettingValue("privaterolls")
+end
+
 --- Elevate the RUNNING COROUTINE to host permissions: while elevated,
 --- dmhub.isDM reports this client's real hosting status even on a player host,
 --- so player rules enforcement (strict:movement and friends) does not bind

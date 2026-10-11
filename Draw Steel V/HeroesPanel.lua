@@ -1517,7 +1517,6 @@ end
 SafetyTools = {}
 
 SafetyTools.docId = "safetyTools"
-mod:RegisterDocumentForCheckpointBackups(SafetyTools.docId)
 
 SafetyTools.journalTitle = "Director's Journal"
 

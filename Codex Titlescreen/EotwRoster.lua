@@ -529,10 +529,14 @@ end
 --record, so the Victories are never added twice -- not by a retry, nor by
 --another machine. The entry's stage says how far it got ("pushed" skips to
 --the record).
+--An outcome with `died` set is a hero who fell: it skips the copy and the
+--push, and record-outcome {died} buries the hero (fallen, off the roster, a
+--grave in the Graveyard); the next re-list drops the working copy.
 local function ApplyOutcome(key, entry, tok)
     m_outcomeBusy[key] = true
     local gameid = entry.gameid
     local heroid = entry.heroid
+    local died = type(entry.outcome) == "table" and entry.outcome.died == true
 
     local function Failed(message)
         m_outcomeBusy[key] = nil
@@ -547,19 +551,24 @@ local function ApplyOutcome(key, entry, tok)
         end
         m_conn:Request{
             action = "record-outcome",
-            args = { heroid = heroid, gameid = gameid, outcome = entry.outcome },
+            args = { heroid = heroid, gameid = gameid, outcome = entry.outcome, died = died },
             success = function(result)
                 m_outcomeBusy[key] = nil
                 SetOutcomeStage(key, nil)
-                printf("EotW town: %s's encounter recorded (%s)", tostring(tok.name), tostring(gameid))
-                --re-list: the hero's completed encounters changed.
+                if died then
+                    printf("EotW town: %s fell and is buried in the Graveyard (%s)", tostring(tok.name), tostring(gameid))
+                else
+                    printf("EotW town: %s's encounter recorded (%s)", tostring(tok.name), tostring(gameid))
+                end
+                --re-list: the hero's completed encounters changed, or the
+                --hero left the roster for the Graveyard.
                 EotwRoster.Refresh()
             end,
             error = Failed,
         }
     end
 
-    if entry.stage == "pushed" then
+    if died or entry.stage == "pushed" then
         Record()
         return
     end

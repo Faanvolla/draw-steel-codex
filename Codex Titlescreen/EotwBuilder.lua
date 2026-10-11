@@ -104,6 +104,12 @@ local RULES = {
         selectors = { "eotwbCard", "unavailable" },
         opacity = 0.35,
     },
+    --an unavailable card can't be picked, so hovering doesn't highlight it
+    {
+        selectors = { "eotwbCard", "unavailable", "hover" },
+        bgcolor = C.CARD,
+        borderColor = C.BORDER,
+    },
     {
         selectors = { "eotwbCardText" },
         color = C.CREAM,
@@ -143,6 +149,10 @@ local RULES = {
     --a dead language: read, not spoken
     {
         selectors = { "eotwbCard", "dead" },
+        borderColor = "#6b6b8aff",
+    },
+    {
+        selectors = { "eotwbCard", "unavailable", "dead", "hover" },
         borderColor = "#6b6b8aff",
     },
     {
@@ -675,6 +685,8 @@ function EotwBuilder.Open(args)
     local summaryLines
     local page
     local pageContent = nil
+    --above the scrolling page: blocks that stay in view (see BuildPage)
+    local pageHeader
     local detail
     local footer
     local messageLabel
@@ -1386,15 +1398,50 @@ function EotwBuilder.Open(args)
             interactable = false,
         }
         local preview
+        local zoomSlider
         preview = gui.Panel{
             width = 240,
             height = 240,
             valign = "top",
             bgimage = "panels/square.png",
             bgcolor = "white",
-            data = { dragging = false, anchor = nil, start = nil },
+            data = { dragging = false, anchor = nil, start = nil, wheelSerial = 0 },
             linger = function(element)
-                gui.Tooltip("Drag to move the portrait within its frame.")(element)
+                gui.Tooltip("Drag to move the portrait within its frame. Scroll to zoom.")(element)
+            end,
+            --The wheel drives the Zoom slider: each notch moves it 5%, and a
+            --whole spin settles into one upload rather than one per notch.
+            wheel = function(element, delta)
+                local t = Tok()
+                if t == nil or zoomSlider == nil or not zoomSlider.valid then
+                    return true
+                end
+                local current = zoomSlider.value or 1
+                local newZoom = current + 0.05 * delta
+                --clamp to the slider's range, but never snap a typed-in value
+                --that already lies outside it back inside.
+                if delta > 0 then
+                    newZoom = math.min(newZoom, math.max(current, 2))
+                else
+                    newZoom = math.max(newZoom, math.min(current, 0.25))
+                end
+                zoomSlider.value = newZoom
+                t.portraitZoom = newZoom
+                element:FireEvent("refreshPreview")
+
+                element.data.wheelSerial = element.data.wheelSerial + 1
+                local serial = element.data.wheelSerial
+                dmhub.Schedule(0.4, function()
+                    if not element.valid or element.data.wheelSerial ~= serial then
+                        return
+                    end
+                    local tt = Tok()
+                    if tt ~= nil then
+                        tt:UploadAppearance()
+                        RefreshChrome()
+                    end
+                end)
+                return true
             end,
             refreshPreview = function(element)
                 local t = Tok()
@@ -1577,6 +1624,9 @@ function EotwBuilder.Open(args)
                             unclamped = true,
                             labelFormat = "rawpercent",
                             value = zoom,
+                            create = function(element)
+                                zoomSlider = element
+                            end,
                             change = function(element)
                                 local t = Tok()
                                 if t ~= nil then
@@ -1997,29 +2047,35 @@ function EotwBuilder.Open(args)
     --is unchanged keeps its existing panel, so a pick only redraws the
     --blocks it changed (rebuilding the whole page made it flicker).
     --keepScroll false (a new step) starts a fresh page at the top.
+    --A pinned block sits in pageHeader, above the scrolling area, and stays
+    --in view; pinned blocks must come before every unpinned one.
     local function BuildPage(tok, stepStatus, keepScroll)
         local stepid = stepStatus.id
         local step = EotwBuild.STEP_BY_ID[stepid]
         local hero = tok.properties --[[@as character]]
 
+        --the Skills & Languages page keeps its list of choices in view while
+        --the cards scroll, so the title and intro above it stay too.
+        local pinHeader = stepid == "skills"
+
         local specs = {}
-        local function Add(key, signature, build)
-            specs[#specs+1] = { key = key, signature = signature, build = build }
+        local function Add(key, signature, build, pinned)
+            specs[#specs+1] = { key = key, signature = signature, build = build, pinned = pinned or false }
         end
 
         Add("title", stepid, function()
             return gui.Label{ classes = { "eotwbHeading" }, text = step.title, fontSize = 34 }
-        end)
+        end, pinHeader)
         Add("intro", stepid, function()
             return Text(StepIntro(stepid), { "eotwbText", "muted" }, { fontSize = 16, tmargin = 4 })
-        end)
+        end, pinHeader)
 
         if stepid == "skills" then
             local skillView = EotwBuild.PoolTable(tok, "skill")
             local languageView = EotwBuild.PoolTable(tok, "language")
             Add("poolsummary", PoolViewSignature(skillView) .. "#" .. PoolViewSignature(languageView), function()
                 return PoolSummary(skillView, languageView)
-            end)
+            end, true)
             Add("skillsheader", "", function()
                 return gui.Label{ classes = { "eotwbSection" }, text = "Skills" }
             end)
@@ -2147,6 +2203,7 @@ function EotwBuilder.Open(args)
         end
         local offset = keepScroll and ScrollOffset() or 0
         local panels = {}
+        local pinnedPanels = {}
         local cache = {}
         for _,spec in ipairs(specs) do
             local cached = state.blocks[spec.key]
@@ -2157,11 +2214,17 @@ function EotwBuilder.Open(args)
                 panel = spec.build()
             end
             if panel ~= nil then
-                panels[#panels+1] = panel
+                if spec.pinned then
+                    pinnedPanels[#pinnedPanels+1] = panel
+                else
+                    panels[#panels+1] = panel
+                end
                 cache[spec.key] = { signature = spec.signature, panel = panel }
             end
         end
         state.blocks = cache
+        pageHeader.children = pinnedPanels
+        pageHeader:SetClass("collapsed", #pinnedPanels == 0)
 
         if keepScroll and pageContent ~= nil and pageContent.valid then
             --same step: swap the changed blocks in place; the kept ones are
@@ -2352,14 +2415,32 @@ function EotwBuilder.Open(args)
         },
     }
 
+    pageHeader = gui.Panel{
+        classes = { "collapsed" },
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        rpad = 16,
+        bmargin = 4,
+        borderBox = true,
+    }
+
     page = gui.Panel{
-        width = string.format("100%%-%d", SUMMARY_WIDTH + DETAIL_WIDTH + 40),
-        height = "100%",
-        hmargin = 20,
+        width = "100%",
+        height = "100% available",
         flow = "vertical",
         vscroll = true,
         rpad = 16,
         borderBox = true,
+    }
+
+    --the page's column: the pinned header over the scrolling page.
+    local pageColumn = gui.Panel{
+        width = string.format("100%%-%d", SUMMARY_WIDTH + DETAIL_WIDTH + 40),
+        height = "100%",
+        hmargin = 20,
+        flow = "vertical",
+        children = { pageHeader, page },
     }
 
     --holds either a scrolling body or the full-bleed art view (ShowDetail).
@@ -2584,7 +2665,7 @@ function EotwBuilder.Open(args)
                 height = string.format("100%%-%d", HEADER_HEIGHT + FOOTER_HEIGHT),
                 halign = "center",
                 flow = "horizontal",
-                children = { summary, page, detail },
+                children = { summary, pageColumn, detail },
             },
             footer,
         },

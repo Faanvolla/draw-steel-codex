@@ -10,15 +10,11 @@ local audioMixDocId = "audioMix"
 --by mix-group id so each maps 1:1 to an audio.SetGroupShared call.
 local broadcastGroupIds = { "music", "ambience", "effects", "uisounds", "anthem" }
 
---Keep the DM's broadcast levels in checkpoint backups (game-scoped DM state).
-mod:RegisterDocumentForCheckpointBackups(audioMixDocId)
-
 --Game-scoped doc holding the manual order of clips within each library folder.
 --AudioAssetLua has no writable `ord` (folders do, clips don't), so the Audio
 --Studio library keeps per-folder clip order here: data.order[folderid] = { assetid,
 --... }. Clips not listed sort after the listed ones, alphabetically.
 local audioClipOrderDocId = "audioClipOrder"
-mod:RegisterDocumentForCheckpointBackups(audioClipOrderDocId)
 
 --All-clients broadcast sync. The Audio panel's full surface is Director-or-DJ only
 --(see CanControlAudio), but this file's module-load code
@@ -718,11 +714,12 @@ end
 --Playlist core (chunk H-core): engine logic only, no UI (that is later chunks). Two
 --game-scoped shared docs, split by lifecycle:
 --  - "audioPlaylists" holds DM-authored definitions (playlists, tracks, shuffle/
---    playTogether/crossfade/loop settings, and the gamemode->playlist bindings). This
---    is checkpoint-backed like any other DM content.
+--    playTogether/crossfade/loop settings, and the gamemode->playlist bindings).
 --  - "audioPlaylistState" holds live/ephemeral playback state (what's playing, whose
---    client is driving it, the auto-switch bracket). This is NOT checkpoint-backed --
---    it is transient session state, not content, and would be stale/wrong on restore.
+--    client is driving it, the auto-switch bracket). It is transient session state,
+--    not content.
+--Neither is registered for combat checkpoints: Revert Turn must not undo the
+--Director's music.
 --
 --Driver model: whichever client calls AudioPlaylistPlay "drives" that playlist's
 --advance loop from then on (state.playing.driver = dmhub.userid). A single 0.5s poll
@@ -804,14 +801,12 @@ end
 -- dropdown handler for why gating them on dmhub.gameLoadingProgress broke saving
 -- outright (report 6UMTQEEE).
 local audioPlaylistBindingsDocId = "audioPlaylistBindings"
-mod:RegisterDocumentForCheckpointBackups(audioPlaylistBindingsDocId)
 
 local function GetBindingsDoc()
 	return mod:GetDocumentSnapshot(audioPlaylistBindingsDocId)
 end
 
 local audioPlaylistStateDocId = "audioPlaylistState"
---(state doc deliberately NOT registered for checkpoint backups -- see banner above)
 
 local function GetPlaylistStateDoc()
 	return mod:GetDocumentSnapshot(audioPlaylistStateDocId)
@@ -1075,8 +1070,6 @@ local function SetAudioDelegate(userid, granted)
 	doc.data.delegates[userid] = granted == true or nil
 	doc:CompleteChange(granted and "Assign DJ" or "Revoke DJ", {undoable = false})
 end
-
-mod:RegisterDocumentForCheckpointBackups("audioDelegates")
 
 local function AnyAudioLogSubscriber(needEffects)
     local subs = AudioLogSubDoc().data.subs

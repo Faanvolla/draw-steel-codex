@@ -502,6 +502,33 @@ local RULES = {
         bgcolor = "#15151500",
         transitionTime = 0.25,
     },
+    --on a switch, the last Hero's art (or dark ground) held over the card
+    --and faded out, so the new Hero's art cross-fades in beneath it
+    {
+        selectors = { "eotwsOldArt" },
+        bgimage = "panels/square.png",
+        bgcolor = "#151515ff",
+        cornerRadius = 10,
+    },
+    {
+        selectors = { "eotwsOldArt", "art" },
+        bgcolor = "#ffffffff",
+    },
+    {
+        selectors = { "eotwsOldArt", "dead" },
+        saturation = 0,
+        brightness = 0.7,
+    },
+    {
+        selectors = { "eotwsOldArt", "fading" },
+        bgcolor = "#15151500",
+        transitionTime = 0.4,
+    },
+    {
+        selectors = { "eotwsOldArt", "art", "fading" },
+        bgcolor = "#ffffff00",
+        transitionTime = 0.4,
+    },
     --the card's wash for a hit or a heal, at 30%; PulseClass fades it out
     --over the pulse rule's transitionTime
     {
@@ -2115,6 +2142,18 @@ local function CardRegion(ctx)
         height = "100%",
         interactable = false,
     }
+    --the last Hero's art, faded out over the new one on a switch (see
+    --eotwsSwitch and eotwsState)
+    local oldArt = gui.Panel{
+        classes = { "eotwsOldArt", "collapsed" },
+        floating = true,
+        width = "100%",
+        height = "100%",
+        interactable = false,
+    }
+    --the Hero whose art the card shows (nil = the dark ground), for oldArt
+    --to copy when the switcher moves on
+    local shownTok = nil
     local washPanel = gui.Panel{
         classes = { "eotwsWash" },
         floating = true,
@@ -2350,19 +2389,27 @@ local function CardRegion(ctx)
             live:SetClass("collapsed", not ready)
             if ready then
                 local tok = ctx.Token()
-                if tok ~= nil then
-                    EotwHeroCard.ApplyPortrait(element, tok, LEFT_WIDTH / CARD_HEIGHT)
+                local hasArt = tok ~= nil and EotwHeroCard.ApplyPortrait(element, tok, LEFT_WIDTH / CARD_HEIGHT)
+                if not hasArt then
+                    --ApplyPortrait leaves a Hero without art alone, so clear
+                    --the last Hero's art back to the dark ground
+                    element.bgimage = "panels/square.png"
+                    element.selfStyle.bgcolor = "#151515ff"
+                    element.selfStyle.imageRect = nil
                 end
+                shownTok = cond(hasArt, tok, nil)
                 Paint(ctx.data)
                 bar:FireEvent("refreshCard")
-                --the art fades in over the card's dark ground; at once under
-                --Reduce Motion
+                --the art fades in over the card's dark ground on open, or out
+                --of the last Hero's art on a switch; at once under Reduce Motion
                 if ThemeEngine.GetAccessibility().reduceMotion then
                     artCover:SetClass("collapsed", true)
+                    oldArt:SetClass("collapsed", true)
                 else
                     dmhub.Schedule(0.05, function()
                         if artCover.valid then
                             artCover:SetClass("shown", true)
+                            oldArt:SetClass("fading", true)
                         end
                     end)
                 end
@@ -2387,12 +2434,32 @@ local function CardRegion(ctx)
         end,
 
         --the switcher moved to another Hero: forget what the plate showed, and
-        --cover the art again so the new Hero's fades in (see eotwsState)
+        --hold the last Hero's art over the card so the new Hero's cross-fades
+        --in beneath it once it is painted (see eotwsState)
         eotwsSwitch = function(element)
             seen = {}
             surges.data.count = nil
             bar:FireEvent("setCharid", ctx.charid)
-            artCover:SetClass("shown", false)
+            local portrait = nil
+            local rect = nil
+            if shownTok ~= nil then
+                local tok = shownTok
+                pcall(function() portrait = tok.offTokenPortrait end)
+                if portrait == "" then
+                    portrait = nil
+                end
+                if portrait ~= nil then
+                    pcall(function() rect = tok:GetPortraitRectForAspect(LEFT_WIDTH / CARD_HEIGHT, portrait) end)
+                end
+            end
+            --Immediate: a plain SetClass(false) animates the removal too, which
+            --would fade the old art back in over the new one before fading out
+            oldArt:SetClassImmediate("fading", false)
+            oldArt.bgimage = portrait or "panels/square.png"
+            oldArt.selfStyle.imageRect = rect
+            oldArt:SetClassImmediate("art", portrait ~= nil)
+            oldArt:SetClassImmediate("dead", element:HasClass("dead"))
+            oldArt:SetClassImmediate("collapsed", ThemeEngine.GetAccessibility().reduceMotion)
         end,
 
         --any character change: re-read the cheap live sections and repaint
@@ -2412,6 +2479,7 @@ local function CardRegion(ctx)
             end
         end,
 
+        oldArt,
         artCover,
         plate,
         washPanel,

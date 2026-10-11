@@ -22,7 +22,10 @@ Commands.RegisterMacro{
         end
 
         print("Checkpoint: restoring...")
-        g_checkpoint:Restore()
+        local err = g_checkpoint:Restore()
+        if err ~= nil then
+            print("Checkpoint: not restored: " .. err)
+        end
     end,
 }
 
