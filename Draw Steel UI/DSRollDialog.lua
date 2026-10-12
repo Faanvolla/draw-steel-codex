@@ -3720,9 +3720,12 @@ function GameHud.CreateRollDialog(self)
                                         sourceNames[#sourceNames + 1] = trim(usedMod.name)
                                     end
                                 end
+                                --_G.creature is the creature type: the local `creature` here is the roller.
+                                --Spawned monsters have no token name, so this falls back to their type.
+                                local targetName = _G.creature.GetTokenDescription(target.token)
                                 freeSurgeNotes[#freeSurgeNotes + 1] = string.format("%s: %d free %s for %s, %d used%s",
                                     cond(#sourceNames > 0, table.concat(sourceNames, ", "), "Modifier"), freeGranted,
-                                    cond(freeGranted > 1, "surges", "surge"), target.token.name, freeUsed,
+                                    cond(freeGranted > 1, "surges", "surge"), targetName, freeUsed,
                                     cond(freeUsed < freeGranted, " (unused surge forfeited)", ""))
                             end
 
@@ -3847,15 +3850,16 @@ function GameHud.CreateRollDialog(self)
                     end
 
                     if #freeSurgeNotes > 0 then
-                        local tokenUsed = dmhub.LookupToken(creatureUsed)
+                        local roller = creatureUsed
+                        local tokenUsed = roller ~= nil and dmhub.LookupToken(roller) or nil
                         local surgeid = CharacterResource.nameToId["Surges"]
-                        if tokenUsed ~= nil and surgeid ~= nil then
+                        if roller ~= nil and tokenUsed ~= nil and surgeid ~= nil then
                             tokenUsed:ModifyProperties {
                                 description = "Record free surges",
                                 undoable = false,
                                 execute = function()
-                                    --A zero change adds an action log entry without moving the pool.
-                                    creatureUsed:AddUnboundedResource(surgeid, 0, table.concat(freeSurgeNotes, "; "))
+                                    --A zero change records the note in the Surges history without moving the pool.
+                                    roller:AddUnboundedResource(surgeid, 0, table.concat(freeSurgeNotes, "; "))
                                 end,
                             }
                         end

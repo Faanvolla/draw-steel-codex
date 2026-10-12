@@ -697,7 +697,7 @@ GameSystem.RegisterGoblinScriptField{
     name = "Has Line Of Effect To",
 
 	type = "function",
-	desc = "Given another creature, true if there is any clear line between this creature and that one (walls and solid objects fully blocking every line make it false). Unlike Line of Sight this ignores partial cover.",
+	desc = "Given another creature, true if this creature has line of effect to it: not cut off by total cover, by a creature that blocks its enemies' line of effect, or by an effect such as Dazzled. Unlike Line of Sight this ignores partial cover.",
 	examples = {"Self.HasLineOfEffectTo(Caster)"},
 
     calculate = function(creatureSelf)
@@ -707,11 +707,8 @@ GameSystem.RegisterGoblinScriptField{
             if tokenA == nil or tokenB == nil or (not tokenA.valid) or (not tokenB.valid) then
                 return true
             end
-            local pierce = 0
-            if tokenA.properties ~= nil then
-                pierce = tokenA.properties:GetPierceWalls()
-            end
-            return tokenA:GetLineOfSight(tokenB, pierce) > 0
+            --the same test targeting uses for retargets and opportunity attacks.
+            return RuleUtils.HasLineOfEffect(tokenA, tokenB)
         end
     end,
 }

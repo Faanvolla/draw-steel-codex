@@ -716,7 +716,29 @@ local g_rulePatterns = {
                 abilityAttr.promptOverride = abilityAttr.promptOverride .. " (" .. table.concat(adjustments, ", ") .. ")"
             end
 
-            if executeOnRemote and casterToken.activeControllerId then
+            if match.straightup then
+                --"straight up N" has exactly one destination, so there is nothing to choose:
+                --resolve it here, even when the push was handed to another creature's
+                --controller. It still runs the standard forced-movement ability, so the
+                --forced-move events, collisions and falling all apply as for any push.
+                local abilityClone = DeepCopy(MCDMUtils.GetStandardAbility(abilityName))
+                MCDMUtils.DeepReplace(abilityClone, "<<range>>", string.format("%d", range))
+                for k,v in pairs(abilityAttr) do
+                    --with no prompt text the invoke casts at targetArgs instead of asking.
+                    if k ~= "promptOverride" then
+                        abilityClone[k] = v
+                    end
+                end
+                abilityClone.forcedMovementStraightUp = true
+
+                options.targetArgs = {
+                    {
+                        loc = targetToken.loc:WithAltitude(targetToken.loc.altitude + range),
+                    }
+                }
+                InvokeAbility(ability, abilityClone, targetToken, casterToken, options)
+                options.targetArgs = nil
+            elseif executeOnRemote and casterToken.activeControllerId then
                 ability:CommitToPaying(casterToken, options)
                 InvokeAbilityRemote(abilityName, targetToken, casterToken, abilityAttr, options)
             else
@@ -724,40 +746,6 @@ local g_rulePatterns = {
                 MCDMUtils.DeepReplace(abilityClone, "<<range>>", string.format("%d", range))
                 for k,v in pairs(abilityAttr) do
                     abilityClone[k] = v
-                end
-
-                if match.straightup then
-                    --"straight up N": no choice to make, so move the target straight up as a
-                    --forced move (the engine animates the rise) and let it fall back down.
-                    --Stability and bonuses were already folded into range above.
-                    ability:CommitToPaying(casterToken, options)
-                    local startLoc = targetToken.loc
-                    targetToken.properties._tmp_freeMovement = true
-                    local path = targetToken:Move(startLoc:WithAltitude(startLoc.altitude + range), {
-                        straightline = true,
-                        moveThroughFriends = true,
-                        maxCost = 30000,
-                        movementType = "move",
-                        forcedMovementDistance = range,
-                        freeMovement = true,
-                        forced = true,
-                        slide = true,
-                    })
-                    targetToken.properties._tmp_freeMovement = false
-                    if path ~= nil then
-                        options.symbols.cast.spacesMoved = options.symbols.cast.spacesMoved + path.numSteps
-                        ability.RecordTokenMessage(targetToken, options, string.format("Launched %d %s into the air", range, range == 1 and "square" or "squares"))
-                    end
-
-                    --Let the rise and the fall finish before the cast moves on.
-                    local startTime = dmhub.Time()
-                    while targetToken.valid and targetToken.isMoving and dmhub.Time() < startTime + 4 do
-                        coroutine.yield(0.1)
-                    end
-                    if targetToken.valid then
-                        targetToken:TryFall()
-                    end
-                    return
                 end
 
                 InvokeAbility(ability, abilityClone, targetToken, casterToken, options)

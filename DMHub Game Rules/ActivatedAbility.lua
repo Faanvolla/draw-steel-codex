@@ -31,6 +31,8 @@ end
 --- @field grantedToTokenId nil|string Charid of the creature a granted clone belongs to (its caster).
 --- @field aimCasterAtTarget boolean An object caster turns to face its target while this is aimed, and keeps that facing (a Field Ballista's Release Bolt).
 --- @field _tmp_boundCaster nil|creature The creature a temporary clone was generated for.
+--- @field forcedMovementStraightUp boolean A forced-movement clone that moves its creature straight up ("vertical push straight up N").
+--- @field stolenStamp nil|string Fresh guid on each ability copied by Steal Ability, so the action bar flags every steal as new.
 --- @field lineDistance number|string Length for line-area targeting: a number or a GoblinScript formula.
 --- @field rangeDisadvantage string|number|table GoblinScript: if truthy, ranged attacks have disadvantage.
 --- @field selfTarget boolean If true, the ability always targets the caster.
@@ -374,6 +376,10 @@ ActivatedAbility.wallStacking = false
 
 --when true, forced movement continues through creatures instead of stopping on collision.
 ActivatedAbility.forcedMovementThroughCreatures = false
+
+--when true, a vertical forced move goes straight up with no sideways part ("vertical push
+--straight up N"). Set on the invoked forced-movement clone, never in data.
+ActivatedAbility.forcedMovementStraightUp = false
 
 --for line type targeting.
 ActivatedAbility.canChooseLowerRange = false
@@ -2889,32 +2895,34 @@ function CastActivatedAbilityChatMessage.Render(self, message)
     --Builds the little target portraits. A function so that targets added mid-cast (e.g. by
     --Chain Reaction) can be shown when the message refreshes.
     local function BuildTargetTokenPanels(message)
-    local targetTokenPanels = {}
-    for _,tok in ipairs(message:GetTargetTokens()) do
-        targetTokenPanels[#targetTokenPanels+1] = gui.CreateTokenImage(tok, {
-            width = 28,
-            height = 28,
-            valign = "center",
-            halign = "left",
+        local targetTokenPanels = {}
+        for _,tok in ipairs(message:GetTargetTokens()) do
+            targetTokenPanels[#targetTokenPanels+1] = gui.CreateTokenImage(tok, {
+                width = 28,
+                height = 28,
+                valign = "center",
+                halign = "left",
 
-            interactable = true,
-            hover = function(element)
-                local text = string.format("<b>%s</b>", tok.name)
-                local messages = self:try_get("tokenMessages", {})
-                local messageLog = messages[tok.charid] or {}
-                if messageLog ~= nil then
-                    for _,msg in ipairs(messageLog) do
-                        text = text .. "\n" .. msg
+                interactable = true,
+                hover = function(element)
+                    local text = string.format("<b>%s</b>", tok.name)
+                    local messages = self:try_get("tokenMessages", {})
+                    local messageLog = messages[tok.charid] or {}
+                    if messageLog ~= nil then
+                        for _,msg in ipairs(messageLog) do
+                            text = text .. "\n" .. msg
+                        end
                     end
+                    gui.Tooltip(text)(element)
                 end
-                gui.Tooltip(text)(element)
-            end
-        })
-    end
-    return targetTokenPanels
+            })
+        end
+        return targetTokenPanels
     end
 
     local targetTokenPanels = BuildTargetTokenPanels(self)
+    --how many target ids the portraits were built from; refreshMessage rebuilds when it grows.
+    local m_targetIdCount = #self.targetids
 
     local m_statusCount = 0
     local statusLabel = gui.Label{
@@ -3029,7 +3037,8 @@ function CastActivatedAbilityChatMessage.Render(self, message)
             self = message.properties
             m_status = message.properties.status
             --Targets can be added while the ability is casting; redraw the portraits.
-            if targetsPanel ~= nil and targetsPanel.valid and #self.targetids ~= #targetsPanel.children then
+            if targetsPanel ~= nil and targetsPanel.valid and #self.targetids ~= m_targetIdCount then
+                m_targetIdCount = #self.targetids
                 targetsPanel.children = BuildTargetTokenPanels(self)
             end
             --statusLabel may have been recycled/destroyed out from under this closure

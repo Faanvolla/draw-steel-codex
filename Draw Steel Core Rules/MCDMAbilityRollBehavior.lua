@@ -62,6 +62,7 @@ ActivatedAbilityModifyCastBehavior.RegisterParam{
 --- @class ActivatedAbilityPowerRollBehavior : ActivatedAbilityBehavior
 --- @field new fun(o?: table): ActivatedAbilityPowerRollBehavior
 --- @field tiers string[] The three power table tier texts (tier 1, 2, 3), set when the behavior is created.
+--- @field bakedRollCharacteristic? number Characteristic value written into the roll of a stolen ability that uses its original owner's bonus (Steal Ability).
 --- @field callback? fun(token: CharacterToken, tier: number) Transient per-target result hook set by ActivatedAbilityPowerRollBehavior.CustomRoll.
 --- @field ExecuteCommand fun(self: ActivatedAbilityPowerRollBehavior, ability: ActivatedAbility, casterToken: CharacterToken|nil, targetToken: CharacterToken|nil, options: table, rule: string) Borrowed from ActivatedAbilityDrawSteelCommandBehavior (assigned below).
 ActivatedAbilityPowerRollBehavior = RegisterGameType("ActivatedAbilityPowerRollBehavior", "ActivatedAbilityBehavior")
@@ -2242,6 +2243,13 @@ end
 --- @param caster creature
 --- @return number|nil
 function ActivatedAbilityPowerRollBehavior:GetRollCharacteristicValue(caster)
+    --A stolen ability rolled with its original owner's bonus (Steal Ability's "use
+    --target bonus") has the value written into the roll; report that value.
+    local baked = self:try_get("bakedRollCharacteristic")
+    if baked ~= nil then
+        return baked
+    end
+
     local rollFormula = self:try_get("roll", "")
     if rollFormula == "" then
         return nil

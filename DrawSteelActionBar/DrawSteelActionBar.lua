@@ -4085,6 +4085,15 @@ local m_activeImprovements = {}
 --top-level-locals ceiling (same consolidation as g_overviewRisk).
 local g_filterSightlines = { rays = {}, owner = nil, MAX = 12 }
 
+--Red links the Chain Reaction hover preview draws (see highlightTargetToken). A table field,
+--not a local: this file's main chunk is at the 200-local ceiling.
+g_filterSightlines.ClearChainHover = function()
+    for _, ray in ipairs(g_filterSightlines.chainHover or {}) do
+        pcall(function() ray:Destroy() end)
+    end
+    g_filterSightlines.chainHover = nil
+end
+
 local function ClearFilterSightlineRays()
     for _,ray in ipairs(g_filterSightlines.rays) do
         ray:DestroyLineOfSight()
@@ -9152,6 +9161,8 @@ local function ClearLineOfSightMark()
     --Before the early return: the diagram can outlive the arrow (a path that nils the
     --mark by hand leaves nothing for this to destroy, but the tooltip is still up).
     CrossSection.ClearAttack()
+    --Same for a chain preview: a cast can end with the cursor still on its target.
+    g_filterSightlines.ClearChainHover()
     if m_markLineOfSight == nil then
         return
     end
@@ -12252,10 +12263,15 @@ CreateAbilityController = function()
                 for _, behavior in ipairs(g_currentAbility.behaviors or {}) do
                     if behavior.typeName == "ActivatedAbilityChainReachBehavior" then
                         local _, links = ActivatedAbilityChainReachBehavior.ComputeChain(g_token, targetToken,
-                            tonumber(behavior:try_get("chainRange", 3)) or 3, nil)
-                        g_filterSightlines.chainHover = g_filterSightlines.chainHover or {}
+                            tonumber(behavior:try_get("chainRange", 3)) or 3, nil, g_currentAbility)
+                        g_filterSightlines.ClearChainHover()
+                        g_filterSightlines.chainHover = {}
                         for _, link in ipairs(links) do
-                            local ray = dmhub.HighlightLine{ color = "red", a = link.from.pos, b = link.to.pos }
+                            --a link to a creature this player cannot see would give its position away.
+                            local ray = nil
+                            if dmhub.isDM or (link.from.canSee and link.to.canSee) then
+                                ray = dmhub.HighlightLine{ color = "red", a = link.from.pos, b = link.to.pos }
+                            end
                             if ray ~= nil then
                                 g_filterSightlines.chainHover[#g_filterSightlines.chainHover+1] = ray
                             end
@@ -12267,12 +12283,7 @@ CreateAbilityController = function()
         end,
 
         unhighlightTargetToken = function(element, targetToken)
-            if g_filterSightlines.chainHover ~= nil then
-                for _, ray in ipairs(g_filterSightlines.chainHover) do
-                    pcall(function() ray:Destroy() end)
-                end
-                g_filterSightlines.chainHover = nil
-            end
+            g_filterSightlines.ClearChainHover()
             if targetToken == nil or targetToken == m_markLineOfSightToken then
                 CrossSection.ClearAttack()
             end
@@ -12348,7 +12359,6 @@ CreateAbilityController = function()
             local destroyThroughCreatureLabels = g_pointTargeting.labelsAtThroughCreatures ~= nil
             local destroyFallDamageLabel = g_pointTargeting.fallDamageLabel ~= nil
             local destroyChargeJumpLabel = g_pointTargeting.chargeJumpLabel ~= nil
-            local destroyReboundLabel = g_pointTargeting.reboundLabel ~= nil
             g_pointTargeting.chargeJumpUnreachable = false
             g_pointTargeting.chargeJumpRequiresRoll = false
             local pathfinding = false
