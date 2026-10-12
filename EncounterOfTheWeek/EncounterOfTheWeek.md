@@ -109,6 +109,8 @@ handovers on a non-host screen.
 | **Consumables in a montage** (2026-10-09, user direction; see "Consumables in a montage" under "Runtime state and authority"): the strip shows every carried consumable; click for a use menu (free, any time in the rounds but mid-roll); short effects last one location, long ones the encounter; an alert "!" + "Use it now:" tooltip + option highlight when an item would reveal a secret option, open a knack or add an edge | `EncounterMontage.lua` (`GetStripItems`, the "consumables in the montage" and "what an item could do" sections, the `consumed` request, `MaintainMontageUses` in the host tick, `EndMontageUses` in `ApplyPendingCombatBoons`, the `HeroFacts` override + consumeSeq), `EncounterMontageStage.lua` (`CreateItemIcon` menu / badge / tooltip / highlight, `CreateItemStrip`, `TurnSignature`, styles) | luac + typing clean. Needs an app RESTART. UNTESTED: nothing has been run in the app. Check: Healing Potion heals and leaves the strip; Buzz Balm's Speed +2 survives the turn it was used in and ends when it resolves; Float Powder / Concealment Potion last into combat; Imp's Tongue on a companion raises the "!" where a `you speak X` secret option exists and the option appears after use; Concealment Potion "!" on a Sneak test; a garbled Hyrallic line on screen fades into plain words when a hero in the group uses Imp's Tongue (and the "!" offered it), and later lines show plain; a dice-rolling item (Restorative) shows its roll over the stage; Black Ash Dart greyed "combat only"; a second client sees the "!" and the effects end there too. UNCOMMITTED |
 | **Downtime** (2026-10-10, user direction; see "Downtime: wounds, the Blue Fish Inn, respite and projects", which has the file-by-file table): wounds come home, the Blue Fish Inn (respite + Catch Your Breath), Downtime Activities, projects, Expand the Guild + roster slots 4 -> 9 | City `city-core.ts`/`city.ts`/tests/`CLAUDE.md`; game `EncounterOfTheWeek.lua`; town `EotwRoster.lua`, NEW `EotwDowntime.lua` (registered), `EotwHeroCard.lua`, `Codex Titlescreen/EncounterOfTheWeek.lua`; core `DMHub Core UI/CreatorCredit.lua` | Server tests + tsc pass, DEPLOYED to staging; Lua luac + typing clean; assets uploaded; played live 2026-10-10 (respite, project start, rolls, breakthrough refund, completion). COMMITTED 2026-10-10 except the defeat-survivor wounds (they ride with the burial write-back) |
 | **The Arcane Market** (2026-10-10, user direction; see "The Arcane Market"): a town location selling consumable treasures -- a Presence test (Alchemy/Magic) sets 2/3/4 treasures on offer (a critical: 4 + one extra purchase), buy up to Wealth, once per hero between Town Gate encounters | NEW `Codex Titlescreen/EotwMarket.lua` (registered, Firebase confirmed), `Codex Titlescreen/EncounterOfTheWeek.lua` (location + scene), `DMHub Game Rules/Creature.lua` (field annotation); video + poster core assets uploaded | luac + typing clean; needs an app RESTART; NOT run (the user is testing it). UNCOMMITTED |
+| **Leads: carousing at the inn; the Arcane Market must be found** (2026-10-11, user direction; see "Leads: carousing at the Blue Fish Inn"): the inn moves up-left to (0.235, 0.455); a respite needs someone hurt; each respite earns one Carouse (Presence test, tier 3 learns a lead); the old Elementalist's conversation; the lead opens Find the Arcane Market (90 points, Intuition/Presence; Alchemy, Magic, Read Person) with hero lines by tier and progress; completing it puts the market on the map, which is otherwise hidden | City `city-core.ts` (Leads section, `CITY_LEADS`, `find-arcane-market`, `requiresLead`, `unlocks.market`), `city.ts` (tables `city_leads`, `city_carouse_chance`, `city_carouses`; `carouse`, `dev-reset-leads`), tests; town NEW `EotwLeads.lua` (registered after `EotwDowntime.lua`, position 8, Firebase confirmed), `EotwDowntime.lua`, `EotwRoster.lua`, `EncounterOfTheWeek.lua` | Server tsc + 338 tests pass, **DEPLOYED to staging 2026-10-11** (version `910e1fa0`). Lua luac + typing clean (0). Played live 2026-10-11 (respite gate, carouse, lead, conversation, project rolls). COMMITTED 2026-10-12 with the inn's reveal (the Hero-module pregen hunks in the same files stay uncommitted) |
+| **The montage builder, step B1: the lossless edit layer** (2026-10-11, user direction; see "The montage builder"): the parser now records where each field it reads sits (`roll.line` / `tierLines` / `lastLine`, `free.lines`, `entry.descriptionLines` / `approachLines` / `consequence.lines` / `sceneSepLine`, `option.textLines`, `knack.textLines`, `beat.introLines`, delve `orderLines` / `chestLines`, table `line` / `lastLine`, `beat.encounterLine`, narrative `section.textLines` / `promptLines`); the new pure module `EncounterScriptEdit` splits and rejoins text byte for byte and turns builder edits into line patches on the right sub-document | `EncounterScript.lua` (additive fields only), NEW `EncounterScriptEdit.lua` (NOT yet registered in the codemod: register it with the builder's UI file, one restart for both), NEW `tests/encounter_script_edit_test.lua` | luac + typing clean (both 0); `encounter_script_test.lua` 934 pass; `encounter_script_edit_test.lua` 91 pass on its own, 1476 with the authoring corpus (258 documents from `C:\dev\eotw`, 6 scripts, 37 entries, every one of 80 rolls rewritten by the writers reads back identical with no new warnings). Nothing runs in the app yet. UNCOMMITTED |
 | This document | | |
 
 The codex working copy also holds plenty of unrelated uncommitted work, so
@@ -282,6 +284,14 @@ In a real EotW game with **at least two clients** and the current week:
    Market"). Restart the app and run that section's five "To test" steps,
    then commit `EotwMarket.lua` with the location.
 
+16. **The montage builder** (DESIGNED 2026-10-11; B1 BUILT; see "The
+   montage builder"). Next is B2, the clause catalogue, then the window
+   shell (B3) and the board (B4). B1 needs nothing live.
+
+17. **Leads** (BUILT 2026-10-11, played live, COMMITTED 2026-10-12; see
+   "Leads: carousing at the Blue Fish Inn"). Left: finish a hunt to the
+   market's appearance on the map, and the release deploy of the City.
+
    Progression is Phase 11, after its own design pass. Downtime (step 14) is
    its first piece. **Note:** the EotW
    screen now IS the town, and its games live in the City's roster instead
@@ -297,12 +307,14 @@ In a real EotW game with **at least two clients** and the current week:
 | Titlescreen link | `Codex Titlescreen/CodexTitlescreen.lua` (`eotwTitlescreenLink`) |
 | Town roster sync, Hero's Guild, Graveyard | `Codex Titlescreen/EotwRoster.lua` (global `EotwRoster`) |
 | The Arcane Market (consumable treasures: Presence test, Wealth purchases) | `Codex Titlescreen/EotwMarket.lua` (global `EotwMarket`) |
+| Leads: carousing at the inn, the lead conversations, the inn's leads section | `Codex Titlescreen/EotwLeads.lua` (global `EotwLeads`) |
 | Creator credits (logo badge, art backdrop) for the location scenes | `DMHub Core UI/CreatorCredit.lua` (global `CreatorCredit`, core) |
 | Hero card (town strip + montage HUD) | `Codex Titlescreen/EotwHeroCard.lua` (global `EotwHeroCard`) |
 | City DO (the town's server) | `cloudflare-game-server/src/city-core.ts` (pure logic), `src/city.ts` (`CityObject`), tests `test/city-core.test.ts`, `test/city-smoke.ts` |
 | Character export/import | `dmhub.ExportCharacter` / `dmhub.ImportCharacter` in `Assets/Scripts/LuaInterface.cs` -> `GameController.ExportCharacter` / `ImportCharacter` |
 | Game-side mod (codemod `cdc19d98-...`, `EncounterOfTheWeek_1428`, ships in the module) | `EncounterOfTheWeek/`: `EncounterOfTheWeek.lua` (setup, map script, beat machine, combat glue), `EncounterScript.lua` (pure parser), `EncounterZones.lua` (traps/zones), `EncounterReinforcements.lua` (reinforcements, the clear-the-map victory), `EncounterScriptValidator.lua` (dev panel), `EncounterMontage.lua` (montage runtime + shared effect application), `EncounterNarrative.lua`, `EncounterOfTheWeekHud.lua` (custom interface), `EncounterPrep.lua` (Tactical Preparation), `EncounterMontageStage.lua` (all stage UI), `EncounterTest.lua` (the authoring test's menu rows, hero picker and test bar) -- that is the codemod's file order |
 | Parser unit tests | `tests/encounter_script_test.lua` (run with `../dependencies/lua/bin/lua.exe` from the codex root) |
+| Montage builder: lossless script edits (pure) + tests | `EncounterOfTheWeek/EncounterScriptEdit.lua`, `tests/encounter_script_edit_test.lua` (optional arg: a corpus manifest; see "The montage builder") |
 | Test riders (core, also used by the journal) | `DMHub Game Rules/TestRiders.lua` |
 | Lobby server | `cloudflare-game-server/src/lobby-core.ts` (pure logic), `src/lobby.ts` (`LobbyObject` DO), tests `test/lobby-core.test.ts`, `test/lobby-smoke.ts` |
 | Lobby C# client + Lua bridge | `Assets/Scripts/LobbyConnection.cs`, `Assets/Scripts/LobbiesLua.cs` (global `lobbies`), stub `Definitions/lobbies.lua` |
@@ -607,8 +619,8 @@ already has natural homes (fractions of the 6160x4480 canvas):
 | **Town Gate** | the walled city gate, top centre (~0.53, 0.13) | labeled "City Gate" on the source map |
 | **Graveyard** | the green churchyard beside the Cathedral (~0.31, 0.85) | |
 | **Hero's Guild** | the small walled green island with a lone building in the canal (0.44, 0.42) | chosen when building (2026-10-02); the Safe House block (~0.54, 0.60) was the alternative |
-| **Blue Fish Inn** | the tavern the "Drunken Fool" label points at (0.335, 0.575) | BUILT 2026-10-10 (Downtime) |
-| **Arcane Market** | the shop the "Front and Back" label points at (0.695, 0.18) | BUILT 2026-10-10 |
+| **Blue Fish Inn** | the canal-side building west of the Guild (0.235, 0.455); moved 2026-10-11 (user direction) from the "Drunken Fool" tavern (0.335, 0.575), which the hero cards along the bottom covered | BUILT 2026-10-10 (Downtime); hidden until heroes first come home, then revealed once (2026-10-11, see "The inn's reveal") |
+| **Arcane Market** | the shop the "Front and Back" label points at (0.695, 0.18) | BUILT 2026-10-10; since 2026-10-11 hidden until the player finds it (see "Leads") |
 | later | the Docks, Bora's Wagon Yard, the Cathedral, the Safe House | |
 
 ## Decisions taken (2026-10-01, with the user)
@@ -1493,6 +1505,60 @@ Victories.
 | The inn location (node at (0.335, 0.575), `phosphor/beer-stein-fill.png`, locked until a living hero), scene with the looping video, laid out like the other locations (`scene.cardSide = "left"` is supported but unused), Away/dying gates in `ClaimActiveHeroes` and the add-hero picker, "came back wounded" in While You Were Away, `ResumePending` 2s after connecting | `Codex Titlescreen/EncounterOfTheWeek.lua` (`INN_VIDEO`, `INN_ART`, `LocationScene`, `SceneHeader(scene, side)`, `m_innScene`) | clean; untested |
 | `CreatorCredit.Backdrop`'s video layer now streams through a private looping player (`bgimageStreamed = id .. "###LOOP" .. guid`, as the montage stage does) and schedules its own `imageLoaded`; before, a plain `bgimage` played once and went blank | `DMHub Core UI/CreatorCredit.lua` | clean; untested (the first real video backdrop) |
 | Assets: inn video core image `07d3b304-792c-4b5c-8340-814c9da9f864` (isVideo true) and its poster `e9f0c6ae-2041-476b-ba46-e945b374fa6b`, both tagged `czepeku` | sources `C:/dev/eotw/art/blue-fish-inn-ages-of-the-vale-pt3-day.webm`, `blue-fish-inn-poster.jpg` | UPLOADED 2026-10-10 |
+| The inn's reveal (2026-10-11): inn hidden until unlocked, a returning hero's line in a montage-style dialog box, the node dropping onto the map | `Codex Titlescreen/EotwRoster.lua` (`eotw:innState`, `InnUnlocked`, `InnRevealed`, `MarkInnRevealed`, `Homecomings`, `NoteHomecoming` in `ApplyOutcome`'s `Record`, `OutcomesInFlight`); `Codex Titlescreen/EncounterOfTheWeek.lua` (`hidden(ctx)` on `CITY_LOCATIONS` rows, `InnShown`, `PlayInnReveal`, `MaybePlayInnReveal`, `PickInnSpeaker`, per-node halo ids `eotwTownHalo-<id>`, hero strip id `eotwTownHeroStrip`) | luac + typing clean; played live 2026-10-11 through the fallback path (an account with past wins, no homecoming this session). The homecoming path (NoteHomecoming after a real encounter) is NOT yet run |
+
+### The inn's reveal (BUILT 2026-10-11)
+
+User direction (2026-10-11): a new player's town has no Blue Fish Inn. It
+appears the first time heroes come home from a Town Gate adventure, and then
+one of the returning heroes says, in a dialog box like the montage's, "That
+was a tough challenge! We should head to the Blue Fish Inn to rest before
+continuing on more adventures."
+
+- **What unlocks it.** Any living hero coming home from a Town Gate
+  adventure, a victory or a defeat (user direction: today a defeat means the
+  whole party is dead and in the Graveyard, so in practice it is a win). The
+  Danger Rooms send nothing home, so they never unlock it. The trigger is
+  `record-outcome` succeeding for a living hero (`NoteHomecoming` in
+  `EotwRoster`'s `ApplyOutcome`).
+- **Where the state lives.** A machine-local preference per account,
+  `eotw:innState` = `{ [userid] = {unlocked, revealed} }`. So that an
+  account that adventured before this change, or on another machine, keeps
+  its inn, `InnUnlocked()` is also true when the city says the account has
+  won before (`unlocks.dangerRooms`, or any hero's `completed` list). Such
+  an account sees the reveal once on each machine. If that matters later, a
+  server-side unlock (`accountUnlocks` gains `inn`: the account has any
+  living outcome on record) would make it per account rather than per
+  machine; not built.
+- **When it plays.** `MaybePlayInnReveal`, from a 0.5s watcher on the town
+  screen, waits until the town is up and on the map (no location, no
+  dialog, no debrief or While You Were Away, no outcome still being carried
+  home) and that has held for 1.5s. `EncounterOfTheWeek.innRevealWaitingOn`
+  says what it is waiting on (`screen`, `unlock`, `location`, `dialog`,
+  `outcomes`, `speaker`), for debugging over MCP.
+- **Who speaks.** Of this session's homecomings, the hero who lost the most
+  Stamina; with none (the fallback above), the most wounded hero at home,
+  active heroes first. The hero needs a loaded working copy for the
+  portrait, so right after a restart it waits a few seconds (`speaker`).
+- **The sequence** (`PlayInnReveal`):
+  1. The map pans (0.9s, ease in-out) to put the inn in the upper third.
+  2. The hero's portrait and an opaque dialog box rise in at the bottom
+     (the montage stage's sizes and box style), and the hero strip hides.
+     The line types at 45 characters a second.
+  3. When it finishes, or on a click, the inn's node appears at 5x its size,
+     fades in, and accelerates down into place (0.85s), lands with a small
+     bounce, a halo pulse, a stone thud and a short jolt of the map.
+  4. A blinking caret waits for a click (or Escape). The dialog fades and
+     sinks away, the strip returns, the reveal is recorded, and the inn's
+     halo pulses three more times. The Guild's own "no active hero" beckon
+     holds off during all of this.
+- **Gotcha found while building it:** `Panel:Get(id)` searches the whole
+  hierarchy from the root, so every node's halo shared one id and the inn's
+  pulses lit the Guild's halo. The halos now have per-location ids.
+- **Test it again:** `dmhub.SetSettingValue("eotw:innState", "")`, then
+  reopen the town (`EncounterOfTheWeek.ShowScreen()`; the codemod needs a
+  RESTART after edits). Still to try: a real homecoming on a fresh account,
+  so the speaker is a hero who just came back wounded.
 
 **To test, in order** (the City is deployed to staging; needs an app
 restart):
@@ -1523,7 +1589,7 @@ restart):
 admin account; the town must be open): `grant <n> [hero]` gives Downtime
 Activities through `grant-downtime` with a fresh `dev-` grant id (every hero
 at home when no name is given; a name matches its start), `victories <n>
-[hero]`, `wound <n> [hero]` (n damage + one Recovery spent), `breakthrough`
+[hero]`, `wound <n> [hero]` (n damage + one Recovery spent), `tire <n> [hero]` (n Recoveries spent, no damage: enough for a respite; added 2026-10-11), `breakthrough`
 (toggles: the next project roll counts as a natural 20), and `state`.
 
 **Known limits.** Rolls are client-reported (the city checks only that the
@@ -1607,8 +1673,10 @@ only the characteristic and +2 for a listed skill.
   **(0.335, 0.575)**. That is the tavern building the map's own "Drunken
   Fool" label points at: the label sits at (0.298, 0.636), and its arrow
   (`Labels/Line 4`) ends at about (0.33, 0.58), read from the PSD on
-  2026-10-10. The inn is unlocked once the roster has a living hero, like the
-  Gate.
+  2026-10-10. The inn is not on the map at all for a new player: it appears
+  once a living hero first comes home from the Town Gate (see "The inn's
+  reveal" below). After that it is locked only while the roster has no
+  living hero, like the Gate.
 - **Scene** (the Guild/Gate pattern, `LocationScene`):
   - The webm is uploaded as a core image asset and passed as the scene's
     `video`, with the poster jpg as the still underneath. Credit: `czepeku`
@@ -1903,7 +1971,9 @@ only the characteristic and +2 for a listed skill.
 # The Arcane Market (BUILT 2026-10-10; not run live)
 
 User direction (2026-10-10): a town location where heroes buy consumable
-treasures.
+treasures. Since 2026-10-11 it is **not on the map until the player finds
+it** through a lead and a project (see "Leads: carousing at the Blue Fish
+Inn").
 
 - **Shopping is a test.** A hero makes a **Presence test**; Alchemy or Magic
   apply (+2 for having either). The result sets how many treasures are on
@@ -2007,6 +2077,98 @@ built once per run):
 5. `/eotwmarket state`; restart the app: the visit survives (it came back
    from the City). Win a Town Gate encounter with a shopper: the market
    offers them a new roll.
+
+---
+
+# Leads: carousing at the Blue Fish Inn (BUILT 2026-10-11; not run live)
+
+User direction (2026-10-11):
+- **The inn moves** further up and to the left so the hero cards do not
+  cover it: the canal-side building west of the Guild, **(0.235, 0.455)**,
+  level with the Guild and the Danger Rooms.
+- **The Arcane Market is not there by default.** A player finds it.
+- **A respite needs healing**: at least one hero at home has lost Stamina or
+  spent Recoveries. Otherwise Take a Respite is dimmed and says "Your heroes
+  are fresh and whole...". No spamming it.
+- **Leads** are things a player can learn. While some are left to learn,
+  each respite earns **one Carouse** at the inn: the player picks a hero,
+  who makes a **Presence test**. Tier 1-2 learns nothing; **tier 3 learns a
+  lead**, and learning it is a conversation. The first and only lead so far
+  is the Arcane Market, told by **Old Ysolde, an old Elementalist**, that
+  the hero talks to: a market you get into with "just the right set of
+  contacts".
+- **The lead opens a project**, **Find the Arcane Market**: 90 Project
+  Points, Intuition or Presence, Alchemy, Magic or Read Person. Each roll
+  on it ends with a **line the hero says**, picked by the roll's tier and
+  how close the project now is ("This seems like I'm getting close.",
+  "Hmmm stymied again, but we'll keep looking.", "If I have to talk to one
+  more Crazy Gnome Tinkerer I think I'm going to come unglued...").
+- **Completing it** puts the Arcane Market on that player's map for good,
+  and the project is gone.
+
+## Decisions taken while building (not asked; easy to change)
+
+- **What counts as hurt:** Stamina below max OR any Recovery spent. A hero
+  with Victories but no wounds therefore cannot convert them until they are
+  hurt again -- a consequence of the literal rule; say if Victories alone
+  should also allow a respite (still unspammable, since they drop to 0).
+- **One carouse per respite, lost at the next respite** (not banked).
+  After the last lead is learned no carouse is offered at all.
+- **Carouse skills** (+2 when trained): Brag, Flirt, Gamble, Music,
+  Perform, Rumors (`EotwLeads.CAROUSE_SKILLS`). Tiers are Draw Steel's: 11-,
+  12-16, 17+, and a natural 19-20 is tier 3.
+- **The Elementalist's portrait** is the bestiary's Rival Elementalist art
+  (image `3492c3c2-871e-44c5-abc1-1cde5a7fb097`); her name is invented.
+- **Project roll lines, a jukebox** (user direction 2026-10-11/12: the
+  same line kept repeating): three progress bands (under 34%, 34-66%,
+  67%+) x three moods from the roll's tier (3 hopeful, 2 neutral, 1 fed
+  up), three lines each, plus three completion lines (`rollLines` on the
+  project). `EotwDowntime.PickRollLine` never picks a line said among the
+  project's last 12 while its pool has another; when the whole pool was
+  said lately, the one said longest ago plays. The history lives for the
+  session (not saved). The user's three lines are used verbatim. Project
+  rolls still have no tiers for points; the tier only picks the mood.
+- **Where the project lives**: at the inn. Under way, its card shows on
+  the inn scene's left (`ProjectSidePanel`), and the inn's "spend your
+  Downtime" button opens its roll dialog directly.
+- **The market's appearance**: no drop animation (the inn's reveal is
+  inn-specific). The completing roll shows the banner "The Arcane Market!";
+  back on the map the node appears and its halo beckons three times
+  (`RevealFoundLocations`). Accounts that used the market before keep
+  their purchases but lose the location until they find it.
+
+## As built
+
+| Piece | Where | State |
+|---|---|---|
+| City: `CITY_LEADS = ["arcane-market"]`; `testTier`; tables `city_leads(userid, leadid, heroid, at)`, `city_carouse_chance(userid PK, respiteid, at)`, `city_carouses(userid, respiteid PK pair, heroid, natural, total, tier, leadid, at)`; `grant-downtime` with `respite: true` opens the carouse (a resend or a dev grant does not) and returns `carouse`; `carouse {respiteid, heroid, natural, total}` (write bucket; refused unless it is the latest respite, uncaroused, with a lead left; idempotent per respite: `duplicate`); `find-arcane-market` (player, 90, one completion, `effect: "marketAccess"`, `requiresLead`); `start-project` refuses it without the lead; `projectView.locked`; `unlocks.market`; `list-heroes` returns `leads` and `carouse`; admin `dev-reset-leads`; `dev-reset-account` wipes all three tables | `cloudflare-game-server/src/city-core.ts` (section "Leads" at the end), `src/city.ts`, `test/city-core.test.ts` (6 new tests) | tsc + 338 tests pass. **DEPLOYED to staging 2026-10-11** (version `910e1fa0`) |
+| Town: `EotwRoster.MarketUnlocked` (unlocks.market, or the project's completions), `LearnedLeads`, `CarouseRespite`, `SetListedLeads` | `Codex Titlescreen/EotwRoster.lua` | clean; not run |
+| Town: the `find-arcane-market` mirror (`lead`, `completeBanner`, `rollLines` + the `PickRollLine` jukebox), `EotwDowntime.TestTier`, `RestCandidates().wounded` + `NO_WOUNDS_MESSAGE` (respite gate in `TakeRespite` and the inn card), `respite = true` on the grant, the hero's line in the roll dialog (portrait + quote, after the bar settles), the project card's characteristics from the project (was hard-coded Reason or Presence), inn-located projects open their roll dialog from the inn, `EotwDowntime.UI` (helpers EotwLeads reuses), `/eotwdowntime resetproject [id]` | `Codex Titlescreen/EotwDowntime.lua` | clean; not run |
+| NEW `Codex Titlescreen/EotwLeads.lua` (global `EotwLeads`; registered in the Codex Titlescreen codemod after `EotwDowntime.lua`, position 8, Firebase confirmed): `LEADS` (title, project, npc, `conversation(heroName)`), `ORDER`, `CAROUSE_SKILLS`, `CanCarouse`, the carouse dialog (`ShowCarouseDialog`: hero chips, skill, formula, a power-roll tier table like the game's roll dialog (`TierTable`: DrawSteelGlyphs tier glyphs, the tier the tumbling dice show lit gold, a flash when they land; user direction 2026-10-11), dice cage, tier text, "A New Lead!" banner, **Listen...**), `eotw:pendingCarouse` + `ResumePending`, the conversation (`ShowConversation`: NPC figure left, hero right, the speaker lit, typed at 45 cps, click to advance, Escape skips), then the Start Project dialog; `InnLeadsPanel` (Carouse row; Start Project row per learned lead not yet started); dev `/eotwleads` | new file | luac + typing clean (0); needs an app RESTART; not run |
+| Map: inn at (0.235, 0.455); market `hidden` unless found; `RevealFoundLocations` (a collapsed node stops thinking, so the town's watcher un-hides it); the inn scene's left shows Find the Arcane Market while under way | `Codex Titlescreen/EncounterOfTheWeek.lua` | clean; not run |
+
+**Dev** (`/eotwleads`, dev or admin, town open): `crit` (next carouse is a
+natural 20), `reset` (forget leads and carouses; the latest respite's
+carouse opens again), `talk` (replay the conversation; open the inn first),
+`state`. To restart the whole hunt: `/eotwleads reset` and `/eotwdowntime
+resetproject find-arcane-market`.
+
+**To test** (the City is deployed to staging; RESTART the app):
+1. Town map: the inn node sits on the canal-side building west of the
+   Guild, clear of the hero cards; the Arcane Market node is gone.
+2. Inn with everyone unhurt: Take a Respite dimmed, the footer says why.
+   `/eotwdowntime wound 5`, then rest: the Carouse row appears.
+3. Carouse: chips with Presence, skill dropdown (Rumors etc.), formula; click
+   the dice. Tier 1/2: the result text, no lead, Close; the Carouse row is
+   gone. Rest again (wound first) and `/eotwleads crit`: tier 3, the "A New
+   Lead!" banner, **Listen...**, the conversation (portraits, typing, click
+   through), then "Start a Project: Find the Arcane Market?" (90 points).
+4. Start it: its card on the inn's left; the inn's Downtime button opens the
+   roll dialog. Roll (grant Downtime with `/eotwdowntime grant 10`): each
+   roll ends with the hero's line, varying with tier and progress.
+5. Complete it: "The Arcane Market!" banner; Back to Town: the market node
+   appears and beckons; it opens as before. Restart: still there
+   (`unlocks.market`).
 
 ---
 
@@ -4513,6 +4675,175 @@ document "Encounter (backup before scenes, 2026-09-23)" (`4711d2b5`).
 
 ---
 
+# The montage builder (DESIGNED 2026-10-11; step B1 BUILT)
+
+User direction (2026-10-11): a dedicated graphical interface for building
+and editing EotW montages that works through the journal system, presents
+everything graphically, and covers every possibility the script grammar has
+now, so an author can add and edit montages without learning the markdown.
+
+## Decisions (2026-10-11, with the user)
+
+1. **The markdown stays the source of truth.** The builder edits the
+   script's own journal documents through a lossless layer; hand edits, the
+   `/eotw` skill, publishing and the parser are unchanged, and existing
+   scripts open as they are. (Rejected: a structured document type like
+   `MontageDocument` with generated text; it would need a migration and
+   break hand-editing.)
+2. **Scope: montages and delves first**, fully. Narratives, the encounter
+   beat (setup lines, reinforcements) and the story sections show as text
+   blocks in the beat list until a later step (B9).
+3. **A dedicated builder window**, opened from a button on script documents
+   and from the Game menu. A script spans the master and many
+   sub-documents, which one journal tab cannot.
+4. **A new entry goes into its own sub-document** in the map's journal
+   folder, named after the entry, with an include line `[Name]` in the
+   master under its round (the current authoring convention).
+
+## Why a lossless layer (what was found)
+
+- `EncounterScript.Parse` builds the full tree, but it is lossy: it trims
+  every line, collapses blank lines, pulls rolls, `Options:` and
+  `Consequence:` out of the prose order, joins free clause lines, and drops
+  prose before the first beat. There is no tree-to-text writer. "Parse,
+  edit the tree, regenerate" would therefore rewrite authors' documents.
+- What it does keep is a `line` on nearly every element, and
+  `ParseExpanded`'s `sources[expandedLine] = {docid, name, line}` maps each
+  line back to the sub-document it came from.
+- So the builder never regenerates a document. Each edit replaces only the
+  lines of the field it changes, in the document that field came from, and
+  the real parser re-runs afterwards. This is the standard technique of code
+  refactoring tools (Roslyn, rust-analyzer, recast): a lossless syntax layer
+  under a semantic model.
+
+## The layers
+
+1. **Parser line fields** (BUILT, additive): `roll.line`, `roll.tierLines`
+   (none for an automatic critical), `roll.lastLine`, `free.lines`,
+   `entry.descriptionLines` / `approachLines` (lists of `{first, last}`
+   spans), `entry.consequence.lines`, `entry.sceneSepLine`,
+   `option.textLines`, `knack.textLines`, `beat.introLines` (a montage
+   beat's intro paragraphs that sit outside a round; prose mixed into a
+   round's scaling lines has no span), delve `orderLines` / `chestLines`,
+   table `line` / `lastLine`, `beat.encounterLine`, and narrative
+   `section.textLines` / `promptLines` (for B9). Every line number is in the
+   expanded text; `EncounterScriptEdit.Source` turns it into a document line.
+2. **`EncounterScriptEdit`** (BUILT, pure Lua, tested):
+   - `Split` / `Join`: lines with their own terminators (`\n`, or `\v` for
+     a journal soft break), byte-identical round trip, numbered exactly like
+     `EncounterScript.SplitLines`.
+   - Patches `{docid, first, last, lines}` and `Apply` (bottom-up per
+     document); `Source`, `SourceRange`, `PatchExpanded`, `PatchAfter` (an
+     insertion after a sub-document's last line stays in that sub-document),
+     `ElementRange` (an entry / option / knack's extent in its own document).
+   - Writers that read back to the same values: `EntryHeadingLine`,
+     `OptionHeadingLine`, `KnackHeadingLine`, `RoundHeadingLine`,
+     `AttrText`, `RollHeaderLine`, `TierLine` (teasers), `RiderLine`
+     (`Allow` / `Edge` / ... with `(Round N)`), `RollLines`, `TableLines`,
+     `ScalingLine`, `ProseLines` + `ProseProblem` (refuses prose that would
+     become a heading, rule, scene break, tag or field), `OptionBlock`,
+     `EntryBlock`, `IncludeLine`.
+   - Edit operations returning patches: `SetLine`, `DeleteLine`,
+     `SetEntryHeading`, `SetDescription`, `SetConsequence`, `SetRollHeader`,
+     `SetTier`, `ClearCritical`, `AddRider` / `SetRider` / `RemoveRider`,
+     `SetRules` (a whole roll or free-rules block), `InsertAfterElement`,
+     `DeleteElement`, `ElementLines`.
+   - Writing rule found while building it: **`Consequence:` must come before
+     the first option.** Below an option the parser reads it as that
+     option's text and warns "threat has no Consequence:". `SetConsequence`
+     and `EntryBlock` write it right under the card text. NB the worked
+     example in the `/eotw` skill's `script-reference.md` (Goblin Scouts)
+     puts it after the option, so it shows the warning; the real scripts
+     put it first. That doc example was not changed (flagged to the user).
+3. **Clause catalogue** (B2, not built): there is no enumerable list of
+   effect clauses; `ParseClause` is an ordered if-chain of about 26 kinds.
+   Add `EncounterScript.CLAUSES`: per kind a label, parameters (quantity,
+   item / monster / zone / object / keyword / option / entry name, self vs
+   party) and a template that writes the canonical clause, with a unit test
+   that every template parses back to its own kind. That keeps the picker
+   from drifting from the parser. Requirements for riders, knacks and scene
+   conditions come from TestRiders: `CAPABILITIES`, `BARE_FORMS` and the
+   requirement kinds of `ParseRequirementClause`.
+4. **The builder window** (B3 on). It loads the map's script with
+   `EncounterMontage.LoadScript`, keeps `docTexts` for the master and every
+   included document, and writes a change by applying patches, then
+   `doc:SetTextContent(text)` + `doc:Upload(orig)` on a fresh copy from
+   `dmhub.GetTable("documents")`. When one change touches several
+   documents, uploads are spaced with `dmhub.Schedule`, because a second
+   upload to the same table in one frame is dropped. It watches each
+   document's path (`/assets/objectTables/documents/table/<id>`) and
+   re-parses when another client or the journal changes one. It keeps its
+   own undo stack of text snapshots per change.
+
+## The interface (planned)
+
+- **Beat list** down the left: every beat in order, montages expandable.
+  Other beats show their text read-only, with "Edit in journal".
+- **The board** (a montage): rounds as columns or tabs, round backdrop
+  thumbnail, the party-size trim as steppers for 4 / 5 / 6 heroes,
+  Opportunity and Threat cards styled like the play stage (name, tags,
+  outcome icons from `EncounterScript.EntryOutcomes`, a warning badge).
+  Add / delete / duplicate / move entries between rounds.
+- **Entry editor**:
+  - Required / Locked / Temporary toggles, name, card text, approach text,
+    and for a threat its consequence (clause chips).
+  - Options, each with a test editor: test name, characteristic(s), skills
+    picked from `Skill.skillsDropdownOptions` (so a misspelt skill cannot
+    happen), and tier rows (teaser + full text, recognised clauses shown
+    green as on the validator).
+  - An automatic-critical toggle (a written 4th tier when off).
+  - Riders (effect, Round limit, requirement builder), secret options, free
+    options with no roll, `#### If` knack versions (rolled or free), dice
+    tables (`roll on X` checked against the entry's tables), and
+    `Delve: <Name>` options linked to the delve editor.
+- **Scene editor**: the `---` scene and each option's pre / outcome scene
+  as a step list -- narration, speech (speaker from the cast, a language
+  for garbling), enter / exit (monster picker for the portrait), emotes --
+  and if / elseif / else blocks with a condition builder (`PC speaks`, `PC
+  is`, `PC can`, `PC chose`, `tier1-3`, `crit`, not / and / or).
+- **Delve editor**: random or in-order, chest interval, obstacles (the
+  entry editor again), the chest table, and the Continue / Leave / Forced
+  Out / End scenes.
+- **Live checks**: after every change the parse re-runs and the warnings,
+  the validator's `NameChecks` / `AttrProblems` and the Knack coverage
+  report show beside what they are about, each with "Show in journal". A
+  "Test this montage" button starts the authoring test (Montage).
+- Anything the forms cannot express stays editable as text in place
+  ("Edit as text" on every element), and unknown lines survive untouched.
+
+## Build plan
+
+| Step | What | State |
+|---|---|---|
+| B1 | parser line fields, `EncounterScriptEdit`, `tests/encounter_script_edit_test.lua` | BUILT 2026-10-11, tested offline |
+| B2 | clause catalogue (`EncounterScript.CLAUSES` + test), requirement / condition picker data | not started |
+| B3 | window shell: open (journal button on script documents, Game menu), load, apply + upload, watch, undo; register `EncounterScriptEdit.lua` + the UI file in the EncounterOfTheWeek codemod (restart) | not started |
+| B4 | the board: rounds, cards, scaling, add / delete / move entries (new sub-document + include line) | not started |
+| B5 | the entry editor (heading, prose, consequence, options, tests, tiers, riders, knacks, free options, tables) | not started |
+| B6 | the scene editor | not started |
+| B7 | the delve editor | not started |
+| B8 | inline validation, Show in journal, Test this montage | not started |
+| B9 | narratives, encounter setup, reinforcements, story sections | later |
+
+**Running the edit tests against real scripts.** The corpus is not in the
+repo. Dump the authoring repo's documents to text (TextStorage sections
+joined in sorted key order; raw vertical tabs in the YAML must be swapped
+out before `yaml.safe_load` and back after), write a `manifest.lua` of
+`{id, name, folder, hidden, file}` rows, then run
+`../dependencies/lua/bin/lua.exe tests/encounter_script_edit_test.lua
+<dir>/manifest.lua`. The 2026-10-11 run used `C:\dev\eotw` (Goblin Ambush
+and older journal pages). The Dwarvish Bandits documents live only in
+game `1e3c159e` and are not in it.
+
+**Open questions (ask the user when the step comes up):**
+- Is the builder Director-only in any game, or only with
+  `dev:encounteroftheweek` on?
+- A document open in the journal editor while the builder writes it: warn,
+  refuse, or let the journal's own refresh take it?
+- More than one montage beat in a script: tabs, or one board per beat?
+
+---
+
 # The module and publishing
 
 ## What the module carries
@@ -5014,6 +5345,14 @@ outcome (victory and defeat survivors); [~] 96 town: wounds applied, respite
 [~] 97 Guild slots + the Expand the Guild card + the project roll dialog
 with breakthroughs; [ ] 98 single-client verification (the section's "To
 test").
+
+**Phase 17 -- the montage builder (designed 2026-10-11).** [x] B0 design +
+the user's four decisions; [x] B1 lossless edit layer (parser line fields,
+`EncounterScriptEdit`, tests incl. the corpus); [ ] B2 clause catalogue +
+requirement picker data; [ ] B3 window shell (open, load, write, watch,
+undo); [ ] B4 board; [ ] B5 entry editor; [ ] B6 scene editor; [ ] B7 delve
+editor; [ ] B8 inline validation + authoring-test launch; [ ] B9 the rest of
+the script (narratives, encounter setup, reinforcements, story sections).
 
 **Launch readiness (not started).** [ ] lobby on the release worker and games on
 release DOs, [ ] non-owner module access verified, [ ] disconnected-player

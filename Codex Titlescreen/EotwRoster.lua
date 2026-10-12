@@ -83,6 +83,11 @@ local m_heroes = nil
 local m_unlocks = nil
 --This account's roster slots (list-heroes' `slots`), or nil while not listed.
 local m_slots = nil
+--The leads this account has learned by carousing (list-heroes' `leads`),
+--and the respite whose carouse is still open (`carouse`, false when none).
+--See EotwLeads.lua.
+local m_leads = nil
+local m_carouse = nil
 local m_refreshing = false
 local m_refreshAgain = false
 --heroids being imported right now, so a second refresh does not import twice.
@@ -253,6 +258,8 @@ function EotwRoster.Attach(conn)
     m_heroes = nil
     m_unlocks = nil
     m_slots = nil
+    m_leads = nil
+    m_carouse = nil
     EotwRoster.lastError = nil
     Bump()
 end
@@ -346,6 +353,51 @@ function EotwRoster.DangerRoomsUnlocked()
     return m_unlocks.dangerRooms == true
 end
 
+--Has this account found the Arcane Market? It is not open to everyone: a
+--lead heard while carousing at the inn starts a project (Find the Arcane
+--Market), and completing it puts the market on the map (EotwLeads.lua).
+function EotwRoster.MarketUnlocked()
+    if m_unlocks ~= nil and m_unlocks.market == true then
+        return true
+    end
+    --the project's completion is known before the next list-heroes.
+    local state = EotwDowntime.GetProject("find-arcane-market")
+    return state ~= nil and (tonumber(state.completions) or 0) >= 1
+end
+
+--The lead ids this account has learned, as a set; empty while not listed.
+function EotwRoster.LearnedLeads()
+    local result = {}
+    for _, id in ipairs(m_leads or {}) do
+        result[id] = true
+    end
+    return result
+end
+
+--The respite whose one carouse is still open, or nil (none, or nothing
+--left to learn; the city decides).
+function EotwRoster.CarouseRespite()
+    if type(m_carouse) == "string" then
+        return m_carouse
+    end
+    return nil
+end
+
+--Record the leads and open carouse the city just reported (list-heroes,
+--a respite's grant-downtime, or a carouse). leads may be nil to keep them.
+function EotwRoster.SetListedLeads(leads, carouse)
+    if type(leads) == "table" then
+        local list = {}
+        for _, id in ipairs(leads) do
+            list[#list+1] = id
+        end
+        m_leads = list
+    end
+    --the city sends null (nil here) when no carouse is open.
+    m_carouse = cond(type(carouse) == "string", carouse, false)
+    Bump()
+end
+
 --Has this hero (a hero view from list-heroes) won the named encounter (a
 --map name, "Encounter: Goblin Ambush")? The city lists each hero's wins.
 function EotwRoster.HasCompleted(hero, encounter)
@@ -355,6 +407,98 @@ function EotwRoster.HasCompleted(hero, encounter)
         end
     end
     return false
+end
+
+--- the Blue Fish Inn: hidden until heroes come home ----------------------
+
+--A new player's town has no inn. It opens once a living hero comes home from
+--a Town Gate adventure (won or lost; the Danger Rooms send nothing home), and
+--the town then plays its reveal once (EncounterOfTheWeek.lua). Per account,
+--machine-local, as JSON text: { [userid] = { unlocked = bool, revealed = bool } }.
+setting{
+    id = "eotw:innState",
+    default = "",
+    storage = "preference",
+}
+
+--Heroes who came home alive this session, in the order their outcomes were
+--recorded: { { heroid, damage }, ... }. The inn's reveal picks its speaker here.
+local m_homecomings = {}
+
+local function LoadInnStates()
+    local all = nil
+    local text = dmhub.GetSettingValue("eotw:innState")
+    if type(text) == "string" and text ~= "" then
+        local parsed = dmhub.FromJson(text)
+        if type(parsed) == "table" and parsed.success then
+            all = parsed.result
+        end
+    end
+    if type(all) ~= "table" then
+        all = {}
+    end
+    local mine = all[dmhub.loginUserid]
+    if type(mine) ~= "table" then
+        mine = {}
+        all[dmhub.loginUserid] = mine
+    end
+    return all, mine
+end
+
+local function SetInnFlag(key)
+    local all, mine = LoadInnStates()
+    if mine[key] == true then
+        return
+    end
+    mine[key] = true
+    dmhub.SetSettingValue("eotw:innState", dmhub.ToJson(all))
+    Bump()
+end
+
+--Is the Blue Fish Inn open to this account? Besides the flag a homecoming
+--sets on this machine, a roster that has already won an encounter counts,
+--so an account that adventured before the inn was hidden (or on another
+--machine) keeps it. nil while the roster has not been listed.
+function EotwRoster.InnUnlocked()
+    local _, mine = LoadInnStates()
+    if mine.unlocked == true or mine.revealed == true then
+        return true
+    end
+    if m_heroes == nil then
+        return nil
+    end
+    if EotwRoster.DangerRoomsUnlocked() == true then
+        return true
+    end
+    for _,hero in ipairs(m_heroes) do
+        if #(hero.completed or {}) > 0 then
+            return true
+        end
+    end
+    return false
+end
+
+--Has this machine played the inn's reveal for this account?
+function EotwRoster.InnRevealed()
+    local _, mine = LoadInnStates()
+    return mine.revealed == true
+end
+
+function EotwRoster.MarkInnRevealed()
+    SetInnFlag("revealed")
+end
+
+--This session's homecomings (see m_homecomings), oldest first.
+function EotwRoster.Homecomings()
+    return m_homecomings
+end
+
+--A hero came home alive from a Town Gate adventure: the inn opens.
+local function NoteHomecoming(heroid, outcome)
+    local wounds = type(outcome) == "table" and outcome.wounds or nil
+    local damage = type(wounds) == "table" and tonumber(wounds.damage) or 0
+    m_homecomings[#m_homecomings + 1] = { heroid = heroid, damage = damage or 0 }
+    SetInnFlag("unlocked")
 end
 
 --heroid -> party name for each of this account's heroes claimed by a party
@@ -488,6 +632,11 @@ local m_outcomeBusy = {}
 local m_outcomeFailures = {}
 local MAX_OUTCOME_ATTEMPTS = 3
 
+--Is a returning hero's outcome being carried home right now?
+function EotwRoster.OutcomesInFlight()
+    return next(m_outcomeBusy) ~= nil
+end
+
 local function LoadPendingOutcomes()
     local all = nil
     local text = dmhub.GetSettingValue("eotw:pendingOutcomes")
@@ -559,6 +708,7 @@ local function ApplyOutcome(key, entry, tok)
                     printf("EotW town: %s fell and is buried in the Graveyard (%s)", tostring(tok.name), tostring(gameid))
                 else
                     printf("EotW town: %s's encounter recorded (%s)", tostring(tok.name), tostring(gameid))
+                    NoteHomecoming(heroid, entry.outcome)
                 end
                 --re-list: the hero's completed encounters changed, or the
                 --hero left the roster for the Graveyard.
@@ -810,6 +960,7 @@ function EotwRoster.Refresh()
             m_heroes = heroes
             m_unlocks = type(result.unlocks) == "table" and result.unlocks or {}
             m_slots = tonumber(result.slots) or EotwRoster.BASE_SLOTS
+            EotwRoster.SetListedLeads(result.leads, result.carouse)
             Bump()
             SyncWorkingCopies()
             if m_refreshAgain then
