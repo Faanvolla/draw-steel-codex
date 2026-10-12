@@ -1590,6 +1590,26 @@ creature.RegisterSymbol {
     },
 }
 
+--True only on the very first turn of combat, for the creature taking it.
+--The Troubadour's introduction used to be offered on every turn of round 1.
+creature.RegisterSymbol {
+    symbol = "firstturnofencounter",
+    lookup = function(c)
+        local q = dmhub.initiativeQueue
+        if q == nil or q.hidden or q.round ~= 1 then
+            return false
+        end
+        local entry = q:GetFirstInitiativeEntry()
+        return entry ~= nil and entry.turn == 1 and c:IsOurTurn()
+    end,
+    help = {
+        name = "First Turn Of Encounter",
+        type = "boolean",
+        desc = "True if it is this creature's turn and it is the first turn of the combat encounter.",
+        seealso = {"Combat Round"},
+    },
+}
+
 --Winded isn't a condition, so register it separately to make "Winded" usable as a
 --criteria string in Count Nearby Creatures and friends.
 creature.RegisterMatchString{
