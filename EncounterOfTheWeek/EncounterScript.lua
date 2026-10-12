@@ -2848,11 +2848,21 @@ function EncounterScript.Parse(text)
         return round
     end
 
+    --Where a paragraph sat: holder[key] collects {first, last} line spans so
+    --the montage builder (EncounterScriptEdit) can rewrite exactly those lines.
+    local spanFirst, spanLast = 0, 0
+    local function AddSpan(holder, key)
+        holder[key] = holder[key] or {}
+        local spans = holder[key]
+        spans[#spans + 1] = { spanFirst, spanLast }
+    end
+
     local function FlushParagraph()
         if #paragraph == 0 then
             return
         end
         local text = trim(table.concat(paragraph, "\n"))
+        spanFirst, spanLast = paragraphLine, paragraphLine + #paragraph - 1
         paragraph = {}
         if text == "" then
             return
@@ -2863,6 +2873,7 @@ function EncounterScript.Parse(text)
         end
         if beat.kind == "story" then
             beat.text = cond(beat.text == "", text, beat.text .. "\n\n" .. text)
+            AddSpan(beat, "textLines")
             return
         end
         if beat.kind == "narrative" then
@@ -2888,6 +2899,7 @@ function EncounterScript.Parse(text)
             end
             if option ~= nil then
                 option.text = cond(option.text == "", text, option.text .. "\n\n" .. text)
+                AddSpan(option, "textLines")
                 return
             end
             if section ~= nil then
@@ -2902,12 +2914,15 @@ function EncounterScript.Parse(text)
                     if rest ~= "" then
                         section.prompt = cond(section.prompt == "", rest, section.prompt .. "\n\n" .. rest)
                     end
+                    AddSpan(section, "promptLines")
                     return
                 end
                 section.text = cond(section.text == "", text, section.text .. "\n\n" .. text)
+                AddSpan(section, "textLines")
                 return
             end
             beat.intro = cond(beat.intro == "", text, beat.intro .. "\n\n" .. text)
+            AddSpan(beat, "introLines")
             return
         end
         if beat.kind == "encounter" and reinforcement ~= nil then
@@ -2984,6 +2999,7 @@ function EncounterScript.Parse(text)
         if knack ~= nil then
             --prose under a knack heading is that version's description.
             knack.text = cond(knack.text == "", text, knack.text .. "\n\n" .. text)
+            AddSpan(knack, "textLines")
             return
         end
         if option ~= nil then
@@ -2996,6 +3012,7 @@ function EncounterScript.Parse(text)
                 return
             end
             option.text = cond(option.text == "", text, option.text .. "\n\n" .. text)
+            AddSpan(option, "textLines")
             return
         end
         if entry ~= nil then
@@ -3010,6 +3027,7 @@ function EncounterScript.Parse(text)
             end
             if key == "options" or key == "option" then
                 entry.approach = cond(entry.approach == "", rest, entry.approach .. "\n\n" .. rest)
+                AddSpan(entry, "approachLines")
                 return
             end
             if key == "consequence" or key == "consequences" then
@@ -3017,7 +3035,7 @@ function EncounterScript.Parse(text)
                     Warn(paragraphLine, "Consequence: on an opportunity (%s) is ignored", entry.name)
                     return
                 end
-                entry.consequence = { text = rest, effects = EncounterScript.ParseEffects(rest) }
+                entry.consequence = { text = rest, effects = EncounterScript.ParseEffects(rest), lines = { spanFirst, spanLast } }
                 return
             end
             if EncounterScript.IsScalingDirectiveLine(text) then
@@ -3025,6 +3043,7 @@ function EncounterScript.Parse(text)
                 return
             end
             entry.description = cond(entry.description == "", text, entry.description .. "\n\n" .. text)
+            AddSpan(entry, "descriptionLines")
             return
         end
         if beat.kind == "delve" then
@@ -3035,6 +3054,7 @@ function EncounterScript.Parse(text)
             if string.match(orderText, "^order:%s*in%s+sequence%.?$") or string.match(orderText, "^order:%s*in%s+order%.?$")
                 or string.match(orderText, "^obstacles:%s*in%s+order%.?$") then
                 beat.ordered = true
+                beat.orderLines = { spanFirst, spanLast }
                 return
             end
             --"Chest: every 1-2 obstacles" sets how often a chest turns up;
@@ -3051,9 +3071,11 @@ function EncounterScript.Parse(text)
                 else
                     beat.chestEvery = { lo, hi }
                 end
+                beat.chestLines = { spanFirst, spanLast }
                 return
             end
             beat.intro = cond(beat.intro == "", text, beat.intro .. "\n\n" .. text)
+            AddSpan(beat, "introLines")
             return
         end
         if round ~= nil then
@@ -3081,6 +3103,10 @@ function EncounterScript.Parse(text)
                 return
             end
             text = table.concat(leftover, "\n")
+        else
+            --prose mixed into a round's scaling lines has no clean span of its
+            --own; only the beat's own intro paragraphs are editable as such.
+            AddSpan(beat, "introLines")
         end
         beat.intro = cond(beat.intro == "", text, beat.intro .. "\n\n" .. text)
     end
@@ -3368,6 +3394,7 @@ function EncounterScript.Parse(text)
                 end
                 entry.scripted = true
                 entry.sceneLines = entry.sceneLines or {}
+                entry.sceneSepLine = entry.sceneSepLine or i
                 sceneTarget = entry.sceneLines
             end
         elseif string.match(line, "^%[%[.+%]%]$") then
@@ -3411,6 +3438,7 @@ function EncounterScript.Parse(text)
                     reinforcement.islands[#reinforcement.islands + 1] = { tag = tagText, line = i }
                 elseif tagName == "encounter" and beat.encounterTag == nil then
                     beat.encounterTag = tagText
+                    beat.encounterLine = i
                 end
             end
         elseif string.match(line, "^|") and beat ~= nil and beat.kind == "narrative" then
@@ -3461,7 +3489,8 @@ function EncounterScript.Parse(text)
                 local rulesText = trim(string.gsub(string.match(line, "^|(.*)$") or "", "|%s*$", ""))
                 if rulesText ~= "" then
                     local first = holder.free == nil
-                    holder.free = holder.free or { text = "", effects = {}, line = i }
+                    holder.free = holder.free or { text = "", effects = {}, line = i, lines = {} }
+                    holder.free.lines[#holder.free.lines + 1] = i
                     holder.free.text = cond(holder.free.text == "", rulesText, holder.free.text .. " " .. rulesText)
                     for _, effect in ipairs(EncounterScript.ParseEffects(rulesText)) do
                         if effect.unrecognized then
@@ -3477,7 +3506,7 @@ function EncounterScript.Parse(text)
             elseif name ~= nil and dice ~= nil then
                 --"|Treasure: 1d6" then one "|1-2: result" row per range: a
                 --table rolled on with plain dice (a delve's chest).
-                local tableRoll = { name = trim(name), dice = lower(dice), rows = {} }
+                local tableRoll = { name = trim(name), dice = lower(dice), rows = {}, line = i }
                 local j = i + 1
                 while j <= #lines do
                     local rowText = string.match(trim(lines[j]), "^|([^|]*)$")
@@ -3503,6 +3532,7 @@ function EncounterScript.Parse(text)
                     end
                     j = j + 1
                 end
+                tableRoll.lastLine = j - 1
                 if entry ~= nil and entry.section == "chest" then
                     if entry.table ~= nil then
                         Warn(i, "the chest already has a table; '%s' ignored", trim(name))
@@ -3528,6 +3558,7 @@ function EncounterScript.Parse(text)
                 Warn(i, "'|' line is not a power roll header (|Name: Attr); ignored")
             else
                 local tiers = {}
+                local tierLines = {}
                 local riders = {}
                 local j = i + 1
                 while j <= #lines do
@@ -3556,6 +3587,7 @@ function EncounterScript.Parse(text)
                         break
                     else
                         tiers[#tiers + 1] = trim(tierText)
+                        tierLines[#tiers] = j
                     end
                     j = j + 1
                 end
@@ -3575,7 +3607,10 @@ function EncounterScript.Parse(text)
                         tiers[4] = EncounterScript.AutoCriticalText(select(2, EncounterScript.SplitTeaser(tiers[3])))
                         critAuto = true
                     end
-                    local roll = { name = trim(name), attr = trim(attr), tiers = tiers, teasers = {}, effects = {}, riders = riders, critAuto = critAuto }
+                    --line / tierLines / lastLine: where the block sits (tierLines
+                    --has no entry for an automatic critical), for EncounterScriptEdit.
+                    local roll = { name = trim(name), attr = trim(attr), tiers = tiers, teasers = {}, effects = {}, riders = riders, critAuto = critAuto,
+                        line = i, tierLines = tierLines, lastLine = j - 1 }
                     for t, tierText in ipairs(tiers) do
                         local teaser, fullText = EncounterScript.SplitTeaser(tierText)
                         if teaser == "" then

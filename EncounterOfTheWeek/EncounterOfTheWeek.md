@@ -110,7 +110,7 @@ handovers on a non-host screen.
 | **Downtime** (2026-10-10, user direction; see "Downtime: wounds, the Blue Fish Inn, respite and projects", which has the file-by-file table): wounds come home, the Blue Fish Inn (respite + Catch Your Breath), Downtime Activities, projects, Expand the Guild + roster slots 4 -> 9 | City `city-core.ts`/`city.ts`/tests/`CLAUDE.md`; game `EncounterOfTheWeek.lua`; town `EotwRoster.lua`, NEW `EotwDowntime.lua` (registered), `EotwHeroCard.lua`, `Codex Titlescreen/EncounterOfTheWeek.lua`; core `DMHub Core UI/CreatorCredit.lua` | Server tests + tsc pass, DEPLOYED to staging; Lua luac + typing clean; assets uploaded; played live 2026-10-10 (respite, project start, rolls, breakthrough refund, completion). COMMITTED 2026-10-10 except the defeat-survivor wounds (they ride with the burial write-back) |
 | **The Arcane Market** (2026-10-10, user direction; see "The Arcane Market"): a town location selling consumable treasures -- a Presence test (Alchemy/Magic) sets 2/3/4 treasures on offer (a critical: 4 + one extra purchase), buy up to Wealth, once per hero between Town Gate encounters | NEW `Codex Titlescreen/EotwMarket.lua` (registered, Firebase confirmed), `Codex Titlescreen/EncounterOfTheWeek.lua` (location + scene), `DMHub Game Rules/Creature.lua` (field annotation); video + poster core assets uploaded | luac + typing clean; needs an app RESTART; NOT run (the user is testing it). UNCOMMITTED |
 | **Leads: carousing at the inn; the Arcane Market must be found** (2026-10-11, user direction; see "Leads: carousing at the Blue Fish Inn"): the inn moves up-left to (0.235, 0.455); a respite needs someone hurt; each respite earns one Carouse (Presence test, tier 3 learns a lead); the old Elementalist's conversation; the lead opens Find the Arcane Market (90 points, Intuition/Presence; Alchemy, Magic, Read Person) with hero lines by tier and progress; completing it puts the market on the map, which is otherwise hidden | City `city-core.ts` (Leads section, `CITY_LEADS`, `find-arcane-market`, `requiresLead`, `unlocks.market`), `city.ts` (tables `city_leads`, `city_carouse_chance`, `city_carouses`; `carouse`, `dev-reset-leads`), tests; town NEW `EotwLeads.lua` (registered after `EotwDowntime.lua`, position 8, Firebase confirmed), `EotwDowntime.lua`, `EotwRoster.lua`, `EncounterOfTheWeek.lua` | Server tsc + 338 tests pass, **DEPLOYED to staging 2026-10-11** (version `910e1fa0`). Lua luac + typing clean (0). Played live 2026-10-11 (respite gate, carouse, lead, conversation, project rolls). COMMITTED 2026-10-12 with the inn's reveal (the Hero-module pregen hunks in the same files stay uncommitted) |
-| **The montage builder, step B1: the lossless edit layer** (2026-10-11, user direction; see "The montage builder"): the parser now records where each field it reads sits (`roll.line` / `tierLines` / `lastLine`, `free.lines`, `entry.descriptionLines` / `approachLines` / `consequence.lines` / `sceneSepLine`, `option.textLines`, `knack.textLines`, `beat.introLines`, delve `orderLines` / `chestLines`, table `line` / `lastLine`, `beat.encounterLine`, narrative `section.textLines` / `promptLines`); the new pure module `EncounterScriptEdit` splits and rejoins text byte for byte and turns builder edits into line patches on the right sub-document | `EncounterScript.lua` (additive fields only), NEW `EncounterScriptEdit.lua` (NOT yet registered in the codemod: register it with the builder's UI file, one restart for both), NEW `tests/encounter_script_edit_test.lua` | luac + typing clean (both 0); `encounter_script_test.lua` 934 pass; `encounter_script_edit_test.lua` 91 pass on its own, 1476 with the authoring corpus (258 documents from `C:\dev\eotw`, 6 scripts, 37 entries, every one of 80 rolls rewritten by the writers reads back identical with no new warnings). Nothing runs in the app yet. UNCOMMITTED |
+| **The montage builder** (Game > Montage Builder; B1 the lossless edit layer 2026-10-11, the UI 2026-10-12, user direction; see "The montage builder"): the parser now records where each field it reads sits (`roll.line` / `tierLines` / `lastLine`, `free.lines`, `entry.descriptionLines` / `approachLines` / `consequence.lines` / `sceneSepLine`, `option.textLines`, `knack.textLines`, `beat.introLines`, delve `orderLines` / `chestLines`, table `line` / `lastLine`, `beat.encounterLine`, narrative `section.textLines` / `promptLines`); the new pure module `EncounterScriptEdit` splits and rejoins text byte for byte and turns builder edits into line patches on the right sub-document | `EncounterScript.lua` (additive fields only), NEW `EncounterScriptEdit.lua`, NEW `EncounterMontageBuilder.lua` (both registered in the EncounterOfTheWeek codemod), NEW `tests/encounter_script_edit_test.lua` (99 checks alone, 1484 with the corpus) | luac + typing clean (both 0); `encounter_script_test.lua` 934 pass; `encounter_script_edit_test.lua` 91 pass on its own, 1476 with the authoring corpus (258 documents from `C:\dev\eotw`, 6 scripts, 37 entries, every one of 80 rolls rewritten by the writers reads back identical with no new warnings). 2026-10-12: the builder UI `EncounterMontageBuilder.lua` (B3-B8 first version) built on it, both files registered in the codemod (Firebase confirmed) and verified live in `e96656f3` (see "The montage builder"). UNCOMMITTED |
 | This document | | |
 
 The codex working copy also holds plenty of unrelated uncommitted work, so
@@ -284,9 +284,11 @@ In a real EotW game with **at least two clients** and the current week:
    Market"). Restart the app and run that section's five "To test" steps,
    then commit `EotwMarket.lua` with the location.
 
-16. **The montage builder** (DESIGNED 2026-10-11; B1 BUILT; see "The
-   montage builder"). Next is B2, the clause catalogue, then the window
-   shell (B3) and the board (B4). B1 needs nothing live.
+16. **The montage builder** (first version BUILT and verified live
+   2026-10-12; see "The montage builder"). Next: the user's first real
+   authoring session with it, then B2 (the clause picker), speaker /
+   monster pickers in the scene editor, the journal-document button, and
+   B9 (narratives, encounter setup).
 
 17. **Leads** (BUILT 2026-10-11, played live, COMMITTED 2026-10-12; see
    "Leads: carousing at the Blue Fish Inn"). Left: finish a hunt to the
@@ -315,6 +317,7 @@ In a real EotW game with **at least two clients** and the current week:
 | Game-side mod (codemod `cdc19d98-...`, `EncounterOfTheWeek_1428`, ships in the module) | `EncounterOfTheWeek/`: `EncounterOfTheWeek.lua` (setup, map script, beat machine, combat glue), `EncounterScript.lua` (pure parser), `EncounterZones.lua` (traps/zones), `EncounterReinforcements.lua` (reinforcements, the clear-the-map victory), `EncounterScriptValidator.lua` (dev panel), `EncounterMontage.lua` (montage runtime + shared effect application), `EncounterNarrative.lua`, `EncounterOfTheWeekHud.lua` (custom interface), `EncounterPrep.lua` (Tactical Preparation), `EncounterMontageStage.lua` (all stage UI), `EncounterTest.lua` (the authoring test's menu rows, hero picker and test bar) -- that is the codemod's file order |
 | Parser unit tests | `tests/encounter_script_test.lua` (run with `../dependencies/lua/bin/lua.exe` from the codex root) |
 | Montage builder: lossless script edits (pure) + tests | `EncounterOfTheWeek/EncounterScriptEdit.lua`, `tests/encounter_script_edit_test.lua` (optional arg: a corpus manifest; see "The montage builder") |
+| Montage builder window (Game > Montage Builder, `/eotwbuilder`) | `EncounterOfTheWeek/EncounterMontageBuilder.lua` (global `EncounterMontageBuilder`; codemod file order after `EncounterTest.lua`) |
 | Test riders (core, also used by the journal) | `DMHub Game Rules/TestRiders.lua` |
 | Lobby server | `cloudflare-game-server/src/lobby-core.ts` (pure logic), `src/lobby.ts` (`LobbyObject` DO), tests `test/lobby-core.test.ts`, `test/lobby-smoke.ts` |
 | Lobby C# client + Lua bridge | `Assets/Scripts/LobbyConnection.cs`, `Assets/Scripts/LobbiesLua.cs` (global `lobbies`), stub `Definitions/lobbies.lua` |
@@ -4675,7 +4678,7 @@ document "Encounter (backup before scenes, 2026-09-23)" (`4711d2b5`).
 
 ---
 
-# The montage builder (DESIGNED 2026-10-11; step B1 BUILT)
+# The montage builder (BUILT 2026-10-12; first version verified live)
 
 User direction (2026-10-11): a dedicated graphical interface for building
 and editing EotW montages that works through the journal system, presents
@@ -4775,54 +4778,93 @@ now, so an author can add and edit montages without learning the markdown.
    re-parses when another client or the journal changes one. It keeps its
    own undo stack of text snapshots per change.
 
-## The interface (planned)
+## The interface (as built, `EncounterMontageBuilder.lua`)
 
-- **Beat list** down the left: every beat in order, montages expandable.
-  Other beats show their text read-only, with "Edit in journal".
-- **The board** (a montage): rounds as columns or tabs, round backdrop
-  thumbnail, the party-size trim as steppers for 4 / 5 / 6 heroes,
-  Opportunity and Threat cards styled like the play stage (name, tags,
-  outcome icons from `EncounterScript.EntryOutcomes`, a warning badge).
-  Add / delete / duplicate / move entries between rounds.
-- **Entry editor**:
-  - Required / Locked / Temporary toggles, name, card text, approach text,
-    and for a threat its consequence (clause chips).
-  - Options, each with a test editor: test name, characteristic(s), skills
-    picked from `Skill.skillsDropdownOptions` (so a misspelt skill cannot
-    happen), and tier rows (teaser + full text, recognised clauses shown
-    green as on the validator).
-  - An automatic-critical toggle (a written 4th tier when off).
-  - Riders (effect, Round limit, requirement builder), secret options, free
-    options with no roll, `#### If` knack versions (rolled or free), dice
-    tables (`roll on X` checked against the entry's tables), and
-    `Delve: <Name>` options linked to the delve editor.
-- **Scene editor**: the `---` scene and each option's pre / outcome scene
-  as a step list -- narration, speech (speaker from the cast, a language
-  for garbling), enter / exit (monster picker for the portrait), emotes --
-  and if / elseif / else blocks with a condition builder (`PC speaks`, `PC
-  is`, `PC can`, `PC chose`, `tier1-3`, `crit`, not / and / or).
-- **Delve editor**: random or in-order, chest interval, obstacles (the
-  entry editor again), the chest table, and the Continue / Leave / Forced
-  Out / End scenes.
-- **Live checks**: after every change the parse re-runs and the warnings,
-  the validator's `NameChecks` / `AttrProblems` and the Knack coverage
-  report show beside what they are about, each with "Show in journal". A
-  "Test this montage" button starts the authoring test (Montage).
-- Anything the forms cannot express stays editable as text in place
-  ("Edit as text" on every element), and unknown lines survive untouched.
+Opened from **Game > Montage Builder** (Director only) or `/eotwbuilder`,
+on the current map's script (`EncounterMontage.FindMapScript`). A full-screen
+modal: the board on the left, the editor for what is picked on the right,
+Undo / Test this montage / Validator / Close in the header, the last action
+and the real-problem count in the footer.
+
+- **Board**: the montage intro; each round with its party-size lines (raw
+  text inputs + Remove + "+ Party-size line"), the count it introduces, its
+  entry cards (kind, name, options / secret options / scene, tags, problem
+  count) and "+ Opportunity" / "+ Threat"; "+ Round". Then each delve the
+  montage's options lead into: a settings card, its obstacles, its scenes,
+  "+ Obstacle". Several montage beats: a dropdown in the header.
+- **Entry editor**: name (renaming an entry that is the whole of a
+  sub-document named after it renames the document and the master's link
+  too), kind, Required / Locked / Temporary, card text, approach
+  (`Options:`) text, consequence (threats), the scene (or "+ Add a scene",
+  which writes `---`), dice tables, the options, problems and text-only
+  clauses, and Edit entry as text / Open in journal / Move to round /
+  Delete entry (two clicks; a sub-document entry is unlinked and its
+  document hidden).
+- **Option editor**: name; prose (unscripted entries) or pre-roll scene
+  (scripted); the test (name, characteristic checks, skill chips with a
+  searchable add dropdown -- unknown skill names show red -- tiers 1-3 as
+  teaser + text with the recognised clauses lit and described, the
+  automatic critical toggle or a written critical); or no-roll rules; the
+  riders (effect, round, requirement, with TestRiders' requirement
+  problems inline; + Edge / + Bane / + Secret); the outcome scene; knack
+  versions (the same rules editor under an `#### If <requirement>`
+  heading, with its own scenes); and Edit as text / Make it no-roll / Make
+  it a test / + Knack version (no roll / own test) / Delete option. "+
+  Option that enters a delve" makes a new delve sub-document (included at
+  the END of the master, after every beat, so it never splits the
+  montage) with a starter obstacle, chest and exit scenes.
+- **Scene editor**: one row per line, labelled Narration / Says / Enters /
+  Exits / Emote / Branch, branch bodies indented; each row edits its own
+  line keeping its indentation, "+" adds a line below, "x" removes; an "Add
+  a step" dropdown of templates (narration, PC says, character enters /
+  says / says in a language / emote / exits, if-speaks and by-tier
+  branches).
+- **Delve editor**: in sequence or random, the chest interval, the intro,
+  which scenes exist and "+" buttons for the missing ones; obstacles edit
+  in the entry editor, delve scenes in the scene editor with the chest's
+  treasure table.
+- **Writes**: every change is a patch; the builder's own copy of each
+  document is updated, the parse re-run, and the documents uploaded (each
+  `dmhub.Schedule`d 0.1 s apart). While an upload is in flight the 1 s poll
+  for outside changes skips that document. Undo is a stack of
+  per-document text snapshots.
+- **Text-only clauses** (the parser's "unrecognized effect" warnings, 128
+  of them in Goblin Ambush, all deliberate flavour) are listed apart from
+  real problems and never counted as problems on the cards.
+
+**Verified live 2026-10-12** in the authoring game `e96656f3` (Goblin
+Ambush): the board and every editor render the real script; a tier edit
+lands as exactly that change in the right sub-document and Undo restores
+it byte for byte; + Opportunity made a sub-document under the map and
+linked it in round 1; renaming it renamed the document and the link;
+Delete unlinked it and hid the document (the hidden "The Old Mill"
+document is left in the journal); a batch of a scene-line edit, a scene
+step added, a chest-row edit, a knack version added and Elvish Enclave
+moved to round 2 then undone left all 17 documents byte-identical. Found
+and fixed on the way: deleting a link left a double blank line (it now
+takes one blank line with it).
+
+**Not yet**: the clause picker (B2: tier text is free text with a live
+"Does: ..." preview instead); structured fields inside a scene line
+(speaker / monster pickers); round backdrop `[[scene]]` tags; moving an
+entry written inline in a shared sub-document (refused: move it as text);
+renaming a delve; a "Montage Builder" button on the journal document
+itself; narratives and the encounter beat (B9). Not seen: two Directors
+editing at once (the poll takes the other's text, but an edit made from a
+stale parse could patch the wrong lines).
 
 ## Build plan
 
 | Step | What | State |
 |---|---|---|
 | B1 | parser line fields, `EncounterScriptEdit`, `tests/encounter_script_edit_test.lua` | BUILT 2026-10-11, tested offline |
-| B2 | clause catalogue (`EncounterScript.CLAUSES` + test), requirement / condition picker data | not started |
-| B3 | window shell: open (journal button on script documents, Game menu), load, apply + upload, watch, undo; register `EncounterScriptEdit.lua` + the UI file in the EncounterOfTheWeek codemod (restart) | not started |
-| B4 | the board: rounds, cards, scaling, add / delete / move entries (new sub-document + include line) | not started |
-| B5 | the entry editor (heading, prose, consequence, options, tests, tiers, riders, knacks, free options, tables) | not started |
-| B6 | the scene editor | not started |
-| B7 | the delve editor | not started |
-| B8 | inline validation, Show in journal, Test this montage | not started |
+| B2 | clause catalogue (`EncounterScript.CLAUSES` + test), requirement / condition picker data | not started (tiers are free text with a live preview) |
+| B3 | window shell: open (Game menu, `/eotwbuilder`), load, apply + upload, watch, undo; `EncounterScriptEdit.lua` (after `EncounterScript.lua`) and `EncounterMontageBuilder.lua` (after `EncounterTest.lua`) registered in the EncounterOfTheWeek codemod, Firebase confirmed | BUILT 2026-10-12, verified live; journal-document button not done |
+| B4 | the board: rounds, cards, scaling, add / delete / move entries (new sub-document + include line) | BUILT, verified live |
+| B5 | the entry editor (heading, prose, consequence, options, tests, tiers, riders, knacks, free options, tables) | BUILT, verified live |
+| B6 | the scene editor | BUILT (line rows + templates), verified live; no per-field speaker / monster pickers yet |
+| B7 | the delve editor | BUILT, verified live (renaming a delve not supported) |
+| B8 | inline validation, Show in journal, Test this montage | BUILT (parser warnings per entry, Open in journal, Test this montage, Validator); the validator's name checks and knack coverage are not inline yet |
 | B9 | narratives, encounter setup, reinforcements, story sections | later |
 
 **Running the edit tests against real scripts.** The corpus is not in the
@@ -5349,9 +5391,9 @@ test").
 **Phase 17 -- the montage builder (designed 2026-10-11).** [x] B0 design +
 the user's four decisions; [x] B1 lossless edit layer (parser line fields,
 `EncounterScriptEdit`, tests incl. the corpus); [ ] B2 clause catalogue +
-requirement picker data; [ ] B3 window shell (open, load, write, watch,
-undo); [ ] B4 board; [ ] B5 entry editor; [ ] B6 scene editor; [ ] B7 delve
-editor; [ ] B8 inline validation + authoring-test launch; [ ] B9 the rest of
+requirement picker data; [x] B3 window shell (open, load, write, watch,
+undo); [x] B4 board; [x] B5 entry editor; [~] B6 scene editor (line rows);
+[x] B7 delve editor; [~] B8 inline validation + authoring-test launch; [ ] B9 the rest of
 the script (narratives, encounter setup, reinforcements, story sections).
 
 **Launch readiness (not started).** [ ] lobby on the release worker and games on

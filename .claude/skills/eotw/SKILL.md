@@ -182,6 +182,14 @@ with the author, beat by beat, in the order the players will see it:
 5. `# Encounter` -- setup lines (traps) and the `[[encounter]]` island.
 6. `# Conclusion` and `# Defeat` story text.
 
+**The Montage Builder** (Game menu > Montage Builder, or `/eotwbuilder`) edits
+a montage graphically: rounds, entries, tests, tiers, knacks, scenes, dice
+tables and delves, writing straight into the same journal documents. Offer it
+to an author who would rather click than write markdown. Once the script has a
+`# Montage` heading it opens on it; a new entry it adds gets its own
+sub-document. Never write a document over MCP while the author has the builder
+open on it.
+
 Craft notes:
 - Put each montage entry (and each delve) in its **own sub-document** in the
   Map Documents folder and include it from the master with a line that is only
