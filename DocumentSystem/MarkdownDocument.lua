@@ -1807,8 +1807,10 @@ local function StripSpoilers(text, ink)
 
                     if markDepth == 1 and not canSpeak then
                         --Guarded: an unavailable font id leaks the literal <font> tag into the text.
-                        if FontAvailable("tengwar") then
-                            result = result .. "<font=\"tengwar\">"
+                        --The font is the language's script (Dwarvish runes, ...); availableFonts ids are lowercase.
+                        local font = string.lower(bestLanguage ~= nil and bestLanguage:UnreadableFont() or Language.UnreadableFontForId(nil))
+                        if FontAvailable(font) then
+                            result = result .. string.format("<font=\"%s\">", font)
                             markEnd = "</font>"
                             --bestLanguage is nil when the {:Name:} does not resolve to a
                             --known language; canSpeak is false either way, so we still
@@ -3213,10 +3215,10 @@ end
 
 --------------------------------------------------------------------------------
 -- Glossary hints: rules terms in rendered documents get the design
--- system's broken-underline treatment (solid on hover/Bold) and act as
+-- theme's accent-colour underline (ink-coloured on Bold) and act as
 -- glossary: link regions. Hovering (with dwell) shows the definition
 -- card; clicking pins it. Design brief: glossary-hints-brief.md (locked
--- 2026-07-12; visual updated to the broken underline 2026-07-13).
+-- 2026-07-12; visual updated to the accent underline 2026-10-08).
 --
 -- The pass runs at label-text assembly time inside RenderMarkdownTokens'
 -- MakeTextLabel path only (never a whole-tree walk), display mode only,
@@ -3232,8 +3234,8 @@ local g_glossaryToastSeen = setting{
     storage = "preference",
 }
 
---Off / Subtle / Bold. Subtle (broken underline) is the default; Bold is
---a solid underline.
+--Off / Subtle / Bold. Subtle (accent-colour underline) is the default;
+--Bold underlines in the text's own colour.
 local g_glossaryHintsSetting
 g_glossaryHintsSetting = setting{
     id = "glossaryhints",
@@ -3262,44 +3264,20 @@ local GLOSSARY_DWELL = 0.35        --hover time before the card shows.
 local GLOSSARY_HYSTERESIS = 0.15   --hover gaps shorter than this accumulate.
 local GLOSSARY_HIDE_GRACE = 0.30   --card survives this much dehover.
 
---Broken underline (the design system's treatment for term hints): TMP has
---no dashed-underline tag, so the break is literal - alternate 2-character
---<u> runs with 1-character gaps. No characters are added or removed, so
---layout is identical to the plain span. Spans are ASCII by construction
---(the matcher's word pattern), so byte slicing is safe. Spaces are never
---underlined; they read as natural breaks in multi-word terms.
-local function GlossaryBrokenUnderline(span)
-    local out = {}
-    local i = 1
-    local n = #span
-    while i <= n do
-        if string.sub(span, i, i) == " " then
-            out[#out + 1] = " "
-            i = i + 1
-        else
-            local j = math.min(i + 1, n)
-            if string.sub(span, j, j) == " " then
-                j = i
-            end
-            out[#out + 1] = "<u>" .. string.sub(span, i, j) .. "</u>"
-            i = j + 1
-            --one-character gap between runs.
-            if i <= n and string.sub(span, i, i) ~= " " then
-                out[#out + 1] = string.sub(span, i, i)
-                i = i + 1
-            end
-        end
-    end
-    return table.concat(out)
-end
+--The hinted-term treatment for the current setting step: Subtle = accent
+--underline, Bold = ink underline.
+--A creature's name is underlined in its own colour, so it reads apart from
+--a rules term.
+local CREATURE_UNDERLINE = "<u color=#c9783c>"
 
---The hinted-term treatment for the current setting step: Subtle = broken
---underline, Bold = solid underline.
-local function GlossaryUnderlineForm(span)
-    if g_glossaryHintsSetting:Get() == "bold" then
-        return "<u>" .. span .. "</u>"
+local function GlossaryUnderlineForm(span, creature)
+    local open = "<u>"
+    if creature then
+        open = CREATURE_UNDERLINE
+    elseif g_glossaryHintsSetting:Get() ~= "bold" then
+        open = ThemeEngine.ResolveTokens("<u color=@accent>")
     end
-    return GlossaryBrokenUnderline(span)
+    return open .. span .. "</u>"
 end
 
 --Term index: lowercase first word -> candidate entries sorted longest
@@ -3348,6 +3326,136 @@ local function GlossaryTermById(id)
         return nil
     end
     return dataTable[id]
+end
+
+--Creature hints. A page that embeds an encounter marks that encounter's
+--monsters, and the bands they belong to, by name the way rules terms are
+--marked, for the Director only. They ride the glossary machinery as terms
+--with the id "creature:<bestiary id>" or "band:<band id>", and are scoped to
+--the page's own encounters: a bestiary-wide index would mark ordinary words
+--("Knight", "Wave") on every page.
+local CREATURE_ID_PREFIX = "creature:"
+local BAND_ID_PREFIX = "band:"
+
+--- @param termid string
+--- @return nil|MonsterGroup the band a band hint names
+local function BandForHint(termid)
+    if not string.starts_with(termid, BAND_ID_PREFIX) then
+        return nil
+    end
+    return MonsterGroup.Get(string.sub(termid, #BAND_ID_PREFIX + 1))
+end
+
+--- @param termid string
+--- @return nil|table the bestiary entry a creature hint names
+local function CreatureForHint(termid)
+    if not string.starts_with(termid, CREATURE_ID_PREFIX) then
+        return nil
+    end
+    return assets.monsters[string.sub(termid, #CREATURE_ID_PREFIX + 1)]
+end
+
+local function LowerWords(text)
+    local words = {}
+    for w in string.gmatch(string.lower(text or ""), "[%w']+") do
+        words[#words + 1] = w
+    end
+    return words
+end
+
+--The glossary index with a page's creatures laid over it, or nil when the
+--page has none to mark. A creature answers to its full name and to its name
+--without the leading words it shares with its band or keywords ("Angulotl
+--Needler" is also "needler"), which is how the prose refers to it.
+--- @param doc table|nil
+--- @return table|nil
+function MarkdownDocument.CreatureHintIndex(doc)
+    if doc == nil or not dmhub.isDM then
+        return nil
+    end
+    local monsterids = {}
+    for _, annotation in pairs(doc:try_get("annotations", {})) do
+        local encounter = type(annotation) == "table" and rawget(annotation, "encounter") or nil
+        for _, group in ipairs(encounter ~= nil and encounter:try_get("groups", {}) or {}) do
+            for monsterid, _ in pairs(group.monsters or {}) do
+                monsterids[monsterid] = true
+            end
+        end
+    end
+
+    local base = GetGlossaryIndex()
+    local overlay = {}
+    local bands = dmhub.GetTable(MonsterGroup.tableName) or {}
+    local bandids = {}
+    local function Add(words, id)
+        if #words == 0 then
+            return
+        end
+        local bucket = overlay[words[1]]
+        if bucket == nil then
+            bucket = {}
+            for _, entry in ipairs(base[words[1]] or {}) do
+                bucket[#bucket + 1] = entry
+            end
+            overlay[words[1]] = bucket
+        end
+        bucket[#bucket + 1] = { words = words, id = id, creature = true }
+    end
+    for monsterid, _ in pairs(monsterids) do
+        local asset = assets.monsters[monsterid]
+        if asset ~= nil and asset.properties ~= nil then
+            local id = CREATURE_ID_PREFIX .. monsterid
+            local words = LowerWords(asset.name)
+            Add(words, id)
+
+            local shared = {}
+            for keyword, _ in pairs(asset.properties:try_get("keywords", {})) do
+                shared[string.lower(keyword)] = true
+            end
+            local band = bands[asset.properties:try_get("groupid", "")]
+            if band ~= nil and band:IsBand() and not band:IsDefaultMaliceGroup() then
+                bandids[band.id] = true
+            end
+            for _, w in ipairs(LowerWords(band ~= nil and band.name or "")) do
+                shared[w] = true
+                shared[w .. "s"] = true
+                if string.sub(w, -1) == "s" then
+                    shared[string.sub(w, 1, -2)] = true
+                end
+            end
+            local short = {}
+            for i, w in ipairs(words) do
+                if #short > 0 or not shared[w] then
+                    short[#short + 1] = w
+                end
+            end
+            if #short > 0 and #short < #words then
+                Add(short, id)
+            end
+        end
+    end
+    for bandid, _ in pairs(bandids) do
+        --the matcher folds a plural onto a singular term, not the reverse,
+        --and bands are named in the plural ("Angulotls").
+        local words = LowerWords(bands[bandid].name)
+        local last = words[#words]
+        if last ~= nil and #last > 1 and string.sub(last, -1) == "s" then
+            words[#words] = string.sub(last, 1, -2)
+        end
+        Add(words, BAND_ID_PREFIX .. bandid)
+    end
+    if next(overlay) == nil then
+        return nil
+    end
+    for _, bucket in pairs(overlay) do
+        table.sort(bucket, function(a, b)
+            if #a.words ~= #b.words then
+                return #a.words > #b.words
+            end
+            return (a.creature or false) and not b.creature
+        end)
+    end
+    return setmetatable(overlay, { __index = base })
 end
 
 local function IsCapitalized(word)
@@ -3424,7 +3532,7 @@ local function GlossaryMatchRanges(seg, index, washed)
             end
         end
 
-        if matched ~= nil and #matched.words == 1 and IsCapitalized(w.text) then
+        if matched ~= nil and #matched.words == 1 and IsCapitalized(w.text) and not matched.creature then
             --proper-noun guard: a capitalized single-word term adjacent to
             --another capitalized word is probably part of a name ("The
             --Winded Man"); skip it - the hint falls through to the next
@@ -3443,6 +3551,7 @@ local function GlossaryMatchRanges(seg, index, washed)
                 to = lastWord.e,
                 id = matched.id,
                 underline = not washed[matched.id],
+                creature = matched.creature,
             }
             washed[matched.id] = true
             k = k + #matched.words
@@ -3451,32 +3560,6 @@ local function GlossaryMatchRanges(seg, index, washed)
         end
     end
     return matches
-end
-
---Broken-underline runs for a span, as inclusive (from, to) offsets relative
---to the span (1-based): alternating 2-character underlined runs with
---1-character gaps, spaces never underlined. The same geometry as
---GlossaryBrokenUnderline; the seamless editor emits these as style
---decorations while the display path rewrites the string.
-local function GlossaryUnderlineRuns(span)
-    local runs = {}
-    local i = 1
-    local n = #span
-    while i <= n do
-        if string.sub(span, i, i) == " " then
-            i = i + 1
-        else
-            local j = math.min(i + 1, n)
-            if string.sub(span, j, j) == " " then
-                j = i
-            end
-            runs[#runs + 1] = { i, j }
-            --one-character gap between runs (a following space serves as
-            --the gap itself, same net advance).
-            i = j + 2
-        end
-    end
-    return runs
 end
 
 --Mark glossary terms inside one plain-text segment (no tags). washed maps
@@ -3495,7 +3578,7 @@ local function GlossaryMarkSegment(seg, index, washed)
         local span = string.sub(seg, m.from, m.to)
         if m.underline then
             out[#out + 1] = string.format("<link=glossary:%s>%s</link>",
-                m.id, GlossaryUnderlineForm(span))
+                m.id, GlossaryUnderlineForm(span, m.creature))
         else
             out[#out + 1] = string.format("<link=glossary:%s>%s</link>", m.id, span)
         end
@@ -3549,11 +3632,13 @@ end
 --anything inside an existing <link> or <size> run (size = skinned
 --headings), and raw markdown heading lines (# ...) which the engine
 --renders as headings in default-skin documents.
-local function ApplyGlossaryHints(text)
+--`index`: the term index to mark from, when the page lays its creatures
+--over the glossary (MarkdownDocument.CreatureHintIndex).
+local function ApplyGlossaryHints(text, index)
     if text == nil or text == "" then
         return text
     end
-    local index = GetGlossaryIndex()
+    index = index or GetGlossaryIndex()
     if index == nil or next(index) == nil then
         return text
     end
@@ -3774,6 +3859,148 @@ function MarkdownDocument.CreateGlossaryCard(term, options)
     }
 end
 
+--A creature hint's card. Hovering shows the creature at a glance; pinned
+--(clicked), it is the whole stat block.
+local function CreateCreatureCard(asset, options)
+    local stats = asset.properties
+    local children
+    if options.pinned then
+        children = {
+            gui.Label{
+                floating = true,
+                width = "auto", height = "auto", halign = "right", valign = "top",
+                fontSize = 16, color = "#ffffff99", hpad = 4,
+                bgimage = "panels/square.png", bgcolor = "#00000000",
+                text = "x",
+                hover = function(element) element.selfStyle.color = "#ffffff" end,
+                dehover = function(element) element.selfStyle.color = "#ffffff99" end,
+                click = function(element)
+                    if options.close ~= nil then
+                        options.close()
+                    end
+                end,
+            },
+            asset:Render{
+                width = 560,
+                maxHeight = math.floor(dmhub.screenDimensionsBelowTitlebar.y * 0.6),
+                vscroll = true,
+                rpad = 12,
+                borderBox = true,
+            },
+        }
+    else
+        local keywords = {}
+        for keyword, _ in pairs(stats:try_get("keywords", {})) do
+            keywords[#keywords + 1] = ActivatedAbility.CanonicalKeyword(keyword)
+        end
+        table.sort(keywords)
+        children = {
+            gui.Label{
+                width = "100%", height = "auto",
+                fontSize = 18, bold = true, color = "white",
+                text = asset.name,
+            },
+            gui.Label{
+                width = "100%", height = "auto",
+                fontSize = 14, color = "#e8e8e8",
+                text = string.format("%s\n%s", stats:RoleDescription(), table.concat(keywords, ", ")),
+            },
+            gui.Label{
+                width = "100%", height = "auto", tmargin = 6,
+                fontSize = 15, color = "#e8e8e8",
+                text = string.format("Stamina %d    Speed %d    EV %d",
+                    stats:MaxHitpoints(), stats:WalkingSpeed(), stats:EV()),
+            },
+            gui.Label{
+                width = "100%", height = "auto", tmargin = 8,
+                fontSize = 13, color = "#ffffff77",
+                text = "Click for the stat block",
+            },
+        }
+    end
+    return gui.Panel{
+        width = options.pinned and "auto" or 300,
+        height = "auto",
+        flow = "vertical",
+        pad = 10,
+        borderBox = true,
+        bgimage = "panels/square.png",
+        bgcolor = "#101010f2",
+        border = 1,
+        borderColor = "#ffffff47",
+        swallowPress = true,
+        children = children,
+    }
+end
+
+--A band hint's hover card: its Malice features and how it fights. Clicking
+--a band opens its compendium page rather than pinning a card.
+local function CreateBandCard(band)
+    local malice = {}
+    for _, ability in ipairs(band.maliceAbilities) do
+        malice[#malice + 1] = string.format("%s (%s Malice)", ability.name, tostring(ability:try_get("resourceNumber", "?")))
+    end
+    local children = {
+        gui.Label{
+            width = "100%", height = "auto",
+            fontSize = 18, bold = true, color = "white",
+            text = band.name,
+        },
+    }
+    if #malice > 0 then
+        children[#children + 1] = gui.Label{
+            width = "100%", height = "auto", tmargin = 4,
+            fontSize = 14, color = "#e8e8e8",
+            text = table.concat(malice, "\n"),
+        }
+    end
+    --the opening of the tactics is the gist of how the band fights.
+    local tactics = string.match(band:try_get("tactics", ""), "^%s*(.-[%.!?])%s") or band:try_get("tactics", "")
+    if tactics ~= "" then
+        children[#children + 1] = gui.Label{
+            width = "100%", height = "auto", tmargin = 6,
+            fontSize = 14, color = "#e8e8e8",
+            text = tactics,
+        }
+    end
+    children[#children + 1] = gui.Label{
+        width = "100%", height = "auto", tmargin = 8,
+        fontSize = 13, color = "#ffffff77",
+        text = "Click to open the band",
+    }
+    return gui.Panel{
+        width = 340,
+        height = "auto",
+        flow = "vertical",
+        pad = 10,
+        borderBox = true,
+        bgimage = "panels/square.png",
+        bgcolor = "#101010f2",
+        border = 1,
+        borderColor = "#ffffff47",
+        swallowPress = true,
+        children = children,
+    }
+end
+
+--The card for a hinted term, rules term, creature or band; nil when it
+--names none of them.
+local function GlossaryCardFor(termid, options)
+    local asset = CreatureForHint(termid)
+    if asset ~= nil then
+        return CreateCreatureCard(asset, options)
+    end
+    local band = BandForHint(termid)
+    if band ~= nil then
+        return CreateBandCard(band)
+    end
+    local term = GlossaryTermById(termid)
+    if term == nil then
+        return nil
+    end
+    return MarkdownDocument.CreateGlossaryCard(term, options)
+end
+
 --Hover state machine: dwell with hysteresis, hide grace, wash brighten.
 --Module-level: there is one cursor.
 local g_glossHover = {
@@ -3852,7 +4079,8 @@ local function GlossaryHintHover(element, link)
         g_glossHover.shown = false
     end
 
-    if GlossaryTermById(string.sub(link, 10)) == nil then
+    local termid = string.sub(link, 10)
+    if GlossaryTermById(termid) == nil and CreatureForHint(termid) == nil and BandForHint(termid) == nil then
         return
     end
 
@@ -3908,7 +4136,8 @@ end
 --hints off (mute/setting): pooled labels can occasionally survive a render
 --without text reassignment, so stale washes are removed positively rather
 --than trusting the reassignment path. Mirrors the ApplyFindMarks walk.
-local function StripGlossaryMarks(root)
+--`keep`: remember each label's marked text, for RestoreGlossaryMarks.
+local function StripGlossaryMarks(root, keep)
     local function walk(panel)
         local ok, valid = pcall(function() return panel.valid end)
         if not ok or not valid then
@@ -3922,9 +4151,15 @@ local function StripGlossaryMarks(root)
             newText = string.gsub(newText, "<mark=#%x+><link=glossary:[^>]*>(.-)</link></mark>", "%1")
             --underline form: unwrap the link and its <u> runs.
             newText = string.gsub(newText, "<link=glossary:[^>]*>(.-)</link>", function(inner)
+                inner = string.gsub(inner, "<u color=#%x+>", "")
                 return (string.gsub(inner, "</?u>", ""))
             end)
-            pcall(function() panel.text = newText end)
+            pcall(function()
+                if keep then
+                    panel.data.glossaryMarked = text
+                end
+                panel.text = newText
+            end)
         end
         local kids = nil
         pcall(function() kids = panel.children end)
@@ -3932,6 +4167,28 @@ local function StripGlossaryMarks(root)
             for _, c in ipairs(kids) do
                 walk(c)
             end
+        end
+    end
+    walk(root)
+end
+
+--Put back the marks StripGlossaryMarks(root, true) took out.
+local function RestoreGlossaryMarks(root)
+    local function walk(panel)
+        local kids = nil
+        pcall(function()
+            if not panel.valid then
+                return
+            end
+            local marked = panel.data.glossaryMarked
+            if marked ~= nil then
+                panel.data.glossaryMarked = nil
+                panel.text = marked
+            end
+            kids = panel.children
+        end)
+        for _, c in ipairs(kids or {}) do
+            walk(c)
         end
     end
     walk(root)
@@ -4716,7 +4973,7 @@ local function RenderMarkdownTokens(ctx, tokens)
 
                 local finalText = ApplySkinToText(ApplyInlineClasses(text, resolvedClasses), resolvedSkin)
                 if ctx.render.glossaryHints then
-                    finalText = ApplyGlossaryHints(finalText)
+                    finalText = ApplyGlossaryHints(finalText, ctx.render.creatureIndex)
                 end
                 textPanel.text = finalText
                 newTextPanels[#newTextPanels + 1] = textPanel
@@ -4832,7 +5089,7 @@ local function RenderMarkdownTokens(ctx, tokens)
                         resolvedSkin,
                         { ruledLevels = ruledLevels })
                     if ctx.render.glossaryHints then
-                        finalText = ApplyGlossaryHints(finalText)
+                        finalText = ApplyGlossaryHints(finalText, ctx.render.creatureIndex)
                     end
                     label.text = finalText
                     newTextPanels[#newTextPanels + 1] = label
@@ -5492,101 +5749,52 @@ local function ScrollFindTargetIntoView(target)
     return true
 end
 
-function MarkdownDocument.DisplayPanel(self, args)
-    args = args or {}
-    local embedDepth = args.embedDepth or 0
-    args.embedDepth = nil
-
-    --Related-entries footer: opt-in by the top-level viewer only, so page
-    --embeds, hover previews, and template previews stay clean.
-    local m_relatedFooter = args.relatedFooter or false
-    args.relatedFooter = nil
-
-    --Panels a document class puts on the page around its text, so the page
-    --scrolls as one: each is fun(doc, playerView): Panel? and is called on
-    --every render.
-    local m_pageHeader = args.pageHeader
-    local m_pageFooter = args.pageFooter
-    args.pageHeader = nil
-    args.pageFooter = nil
-
-    --Find-in-page state (driven by the findInPage event below).
-    local m_findTerm = nil
-    local m_findIndex = 1
-    local m_findCallback = nil
-    local m_findGeneration = 0
-
-    -- Host page color handed down to an embedded document. When this embed has
-    -- no page background of its own, it falls back to this so it blends into
-    -- the host page. nil for top-level documents and for embeds whose host has
-    -- no page color. Captured as a closure local so it survives re-renders,
-    -- exactly like embedDepth above.
-    local m_hostPageColor = args.hostPageColor
-    args.hostPageColor = nil
-
-    --TODO: respect this parameter.
-    local m_noninteractive = args.noninteractive or false
-    args.noninteractive = nil
-
-    local resultPanel
-
-    --Glossary hints: per-view mute (toolbar eye), a floating host for the
-    --one-time teach toast, and the hover / pinned definition cards. Both
-    --cards are engine popups positioned at the mouse: popups live on the
-    --top-level layer, so they render above the journal panel and never
-    --scroll away with, or get clipped by, the document view. The hover
-    --card is owned by the document panel and the pinned card by the label
-    --that was clicked, so hovering another term never replaces a pin.
-    local m_glossaryMuted = false
-    local m_glossaryToastHost = nil
-    local m_glossaryPinSource = nil  --label whose popup is the pinned card.
-    local m_glossaryPinPending = nil --{termid, src} awaiting the deferred build.
-
-    local BuildGlossaryPin
-
-    --Pixels the document view is currently scrolled by. The floating hosts
-    --below are children of the scrolled content panel, so they are laid out
-    --at the TOP of the content (viewport-sized) and scroll away with it. A
-    --card placed in a host must therefore be offset by this to land in the
-    --visible window, and clamped against [offset, offset + viewport].
-    --Primary source: the host and its scroller both report mousePoint
-    --relative to their own rect, and the difference is exactly the scroll.
-    --Fallback (mouse outside the view): content extent vs scrollbar position.
-    local function GlossaryScrollOffset(host)
-        local scroller = nil
-        pcall(function() scroller = host.parent end)
-        if scroller == nil or not scroller.valid then
-            return 0
+--Glossary hints for a label drawn outside the markdown renderer (a class
+--page's fields): marks the terms in args.text and adds the handlers that
+--show and pin the definition card. The label must be markdown.
+--- @param args table arguments for gui.Label
+--- @param doc table|nil the page, when its creatures are to be marked too
+--- @return table args
+function MarkdownDocument.GlossaryLabelArgs(args, doc)
+    args.text = ApplyGlossaryHints(args.text, MarkdownDocument.CreatureHintIndex(doc))
+    args.links = true
+    args.hoverLink = function(element, link)
+        if string.starts_with(link, "glossary:") then
+            GlossaryHintHover(element, link)
         end
-        local viewH = scroller.renderedHeight or 0
-        local offset = nil
-        pcall(function()
-            local ps = scroller.mousePoint
-            local ph = host.mousePoint
-            if ps ~= nil and ph ~= nil and (ps.x ~= 0 or ps.y ~= 0) then
-                offset = (1 - ph.y) * (host.renderedHeight or 0) - (1 - ps.y) * viewH
-            end
-        end)
-        if offset == nil then
-            local contentH = 0
-            pcall(function()
-                for _, c in ipairs(scroller.children) do
-                    if not c.floating then
-                        local bottom = -c.renderpos.y + (c.renderedHeight or 0) / 2
-                        if bottom > contentH then
-                            contentH = bottom
-                        end
-                    end
-                end
-                offset = (1 - (scroller.vscrollPosition or 1)) * (contentH - viewH)
-            end)
-        end
-        return math.max(0, offset or 0)
     end
+    args.dehoverLink = function(element, link)
+        if string.starts_with(link, "glossary:") then
+            GlossaryHintDehover(element, link)
+        end
+    end
+    args.glossaryDwell = function(element)
+        GlossaryDwellEvent(element)
+    end
+    args.glossaryHideGrace = function(element)
+        GlossaryHideGraceEvent(element)
+    end
+    args.press = function(element)
+        if element.linkHovered ~= nil and string.starts_with(element.linkHovered, "glossary:") then
+            GlossaryHintPress(element, element.linkHovered)
+        end
+    end
+    return args
+end
+
+--The hover and pinned definition cards of one page. Both are engine popups
+--positioned at the mouse: popups live on the top-level layer, so they render
+--above the journal panel and never scroll away with, or get clipped by, the
+--page. The hover card is owned by the page's panel and the pinned card by
+--the label that was clicked, so hovering another term never replaces a pin.
+local function NewGlossaryCards()
+    local cards = {}
+    local m_pinSource = nil  --label whose popup is the pinned card.
+    local m_pinPending = nil --{termid, src} awaiting the deferred build.
 
     --Spawn card as owner's popup at the current mouse point. Popups are
     --their own style island by default; inheriting keeps the theme cascade.
-    local function SpawnGlossaryPopup(owner, card)
+    local function Spawn(owner, card)
         owner.popupsInheritStyles = true
         owner.popupPositioning = "mouse"
         owner.popup = card
@@ -5595,12 +5803,14 @@ function MarkdownDocument.DisplayPanel(self, args)
     --Hover card: a non-interactive popup off the document panel. It is
     --hosted here rather than as an engine tooltip because tooltips anchor
     --to the whole paragraph label, which reads as center-screen.
-    local function ShowGlossaryHoverCard(termid)
-        local term = (dmhub.GetTable("glossaryTerms") or {})[termid]
-        if term == nil or resultPanel == nil or not resultPanel.valid then
+    function cards.ShowHover(panel, termid)
+        if panel == nil or not panel.valid then
             return
         end
-        local card = MarkdownDocument.CreateGlossaryCard(term, {})
+        local card = GlossaryCardFor(termid, {})
+        if card == nil then
+            return
+        end
 
         g_glossHover.gen = (g_glossHover.gen or 0) + 1
         local wrapper
@@ -5642,9 +5852,190 @@ function MarkdownDocument.DisplayPanel(self, args)
         }
         wrapper:MakeNonInteractiveRecursive()
         GlossaryDestroyFrame()
-        SpawnGlossaryPopup(resultPanel, wrapper)
+        Spawn(panel, wrapper)
         g_glossHover.frame = wrapper
-        g_glossHover.owner = resultPanel
+        g_glossHover.owner = panel
+    end
+
+    function cards.ClosePin()
+        local src = m_pinSource
+        m_pinSource = nil
+        pcall(function()
+            if src ~= nil and src.valid then
+                src.popup = nil
+            end
+        end)
+    end
+
+    --Single pin: pinning a new term replaces the old card. Creation is
+    --deferred past the pinning click's release: buttons fire on mouse-up,
+    --so a card materializing during the click could have a button eat it.
+    function cards.Pin(panel, termid, src)
+        if panel == nil or not panel.valid then
+            return
+        end
+        m_pinPending = { termid = termid, src = src }
+        panel:ScheduleEvent("glossaryPinDeferred", 0.12)
+    end
+
+    local function BuildPin(termid, src)
+        local srcValid = false
+        pcall(function() srcValid = src ~= nil and src.valid end)
+        if not srcValid then
+            return
+        end
+        cards.ClosePin()
+        local band = BandForHint(termid)
+        if band ~= nil then
+            Compendium.Open{ contentType = MonsterGroup.tableName, search = band.name, targetKey = band.id }
+            return
+        end
+        local card = GlossaryCardFor(termid, {
+            pinned = true,
+            close = cards.ClosePin,
+        })
+        if card == nil then
+            return
+        end
+        --click-away dismissal is the engine's popup behaviour; escape is ours.
+        local wrapper = gui.Panel{
+            width = "auto",
+            height = "auto",
+            halign = "right",
+            valign = "bottom",
+            captureEscape = true,
+            escapePriority = EscapePriority.DMHUB_POPUP,
+            escape = function(element)
+                cards.ClosePin()
+            end,
+            card,
+        }
+        m_pinSource = src
+        Spawn(src, wrapper)
+    end
+
+    --The pin a press asked for, once its click has been released.
+    function cards.BuildPending()
+        local pending = m_pinPending
+        m_pinPending = nil
+        if pending ~= nil then
+            BuildPin(pending.termid, pending.src)
+        end
+    end
+
+    return cards
+end
+
+--The definition cards for a page drawn outside the markdown renderer: add
+--these handlers to the arguments of a panel above its GlossaryLabelArgs
+--labels. The page's mute button hides the marks and puts them back.
+--- @param args table arguments for gui.Panel
+--- @return table args
+function MarkdownDocument.GlossaryHostArgs(args)
+    local cards = NewGlossaryCards()
+    args.pinGlossaryTerm = function(element, termid, src)
+        cards.Pin(element, termid, src)
+    end
+    args.glossaryPinDeferred = function(element)
+        cards.BuildPending()
+    end
+    args.hoverGlossaryTerm = function(element, termid)
+        cards.ShowHover(element, termid)
+    end
+    args.glossaryMute = function(element, muted)
+        cards.ClosePin()
+        GlossaryClearHoverCard()
+        if muted then
+            StripGlossaryMarks(element, true)
+        else
+            RestoreGlossaryMarks(element)
+        end
+    end
+    return args
+end
+
+function MarkdownDocument.DisplayPanel(self, args)
+    args = args or {}
+    local embedDepth = args.embedDepth or 0
+    args.embedDepth = nil
+
+    --Related-entries footer: opt-in by the top-level viewer only, so page
+    --embeds, hover previews, and template previews stay clean.
+    local m_relatedFooter = args.relatedFooter or false
+    args.relatedFooter = nil
+
+    --Panels a document class puts on the page around its text, so the page
+    --scrolls as one: each is fun(doc, playerView): Panel? and is called on
+    --every render.
+    local m_pageHeader = args.pageHeader
+    local m_pageFooter = args.pageFooter
+    args.pageHeader = nil
+    args.pageFooter = nil
+
+    --Find-in-page state (driven by the findInPage event below).
+    local m_findTerm = nil
+    local m_findIndex = 1
+    local m_findCallback = nil
+    local m_findGeneration = 0
+
+    -- Host page color handed down to an embedded document. When this embed has
+    -- no page background of its own, it falls back to this so it blends into
+    -- the host page. nil for top-level documents and for embeds whose host has
+    -- no page color. Captured as a closure local so it survives re-renders,
+    -- exactly like embedDepth above.
+    local m_hostPageColor = args.hostPageColor
+    args.hostPageColor = nil
+
+    --TODO: respect this parameter.
+    local m_noninteractive = args.noninteractive or false
+    args.noninteractive = nil
+
+    local resultPanel
+
+    --Glossary hints: per-view mute (toolbar eye), a floating host for the
+    --one-time teach toast, and the hover / pinned definition cards.
+    local m_glossaryMuted = false
+    local m_glossaryToastHost = nil
+    local m_glossaryCards = NewGlossaryCards()
+
+    --Pixels the document view is currently scrolled by. The floating hosts
+    --below are children of the scrolled content panel, so they are laid out
+    --at the TOP of the content (viewport-sized) and scroll away with it. A
+    --card placed in a host must therefore be offset by this to land in the
+    --visible window, and clamped against [offset, offset + viewport].
+    --Primary source: the host and its scroller both report mousePoint
+    --relative to their own rect, and the difference is exactly the scroll.
+    --Fallback (mouse outside the view): content extent vs scrollbar position.
+    local function GlossaryScrollOffset(host)
+        local scroller = nil
+        pcall(function() scroller = host.parent end)
+        if scroller == nil or not scroller.valid then
+            return 0
+        end
+        local viewH = scroller.renderedHeight or 0
+        local offset = nil
+        pcall(function()
+            local ps = scroller.mousePoint
+            local ph = host.mousePoint
+            if ps ~= nil and ph ~= nil and (ps.x ~= 0 or ps.y ~= 0) then
+                offset = (1 - ph.y) * (host.renderedHeight or 0) - (1 - ps.y) * viewH
+            end
+        end)
+        if offset == nil then
+            local contentH = 0
+            pcall(function()
+                for _, c in ipairs(scroller.children) do
+                    if not c.floating then
+                        local bottom = -c.renderpos.y + (c.renderedHeight or 0) / 2
+                        if bottom > contentH then
+                            contentH = bottom
+                        end
+                    end
+                end
+                offset = (1 - (scroller.vscrollPosition or 1)) * (contentH - viewH)
+            end)
+        end
+        return math.max(0, offset or 0)
     end
 
     local function GetGlossaryToastHost()
@@ -5660,56 +6051,6 @@ function MarkdownDocument.DisplayPanel(self, args)
             interactable = false,
         }
         return m_glossaryToastHost
-    end
-
-    local function CloseGlossaryPin()
-        local src = m_glossaryPinSource
-        m_glossaryPinSource = nil
-        pcall(function()
-            if src ~= nil and src.valid then
-                src.popup = nil
-            end
-        end)
-    end
-
-    --Single pin: pinning a new term replaces the old card. Creation is
-    --deferred past the pinning click's release: buttons fire on mouse-up,
-    --so a card materializing during the click could have a button eat it.
-    local function PinGlossaryCard(termid, src)
-        if resultPanel == nil or not resultPanel.valid then
-            return
-        end
-        m_glossaryPinPending = { termid = termid, src = src }
-        resultPanel:ScheduleEvent("glossaryPinDeferred", 0.12)
-    end
-
-    BuildGlossaryPin = function(termid, src)
-        local term = (dmhub.GetTable("glossaryTerms") or {})[termid]
-        local srcValid = false
-        pcall(function() srcValid = src ~= nil and src.valid end)
-        if term == nil or not srcValid then
-            return
-        end
-        CloseGlossaryPin()
-        local card = MarkdownDocument.CreateGlossaryCard(term, {
-            pinned = true,
-            close = CloseGlossaryPin,
-        })
-        --click-away dismissal is the engine's popup behaviour; escape is ours.
-        local wrapper = gui.Panel{
-            width = "auto",
-            height = "auto",
-            halign = "right",
-            valign = "bottom",
-            captureEscape = true,
-            escapePriority = EscapePriority.DMHUB_POPUP,
-            escape = function(element)
-                CloseGlossaryPin()
-            end,
-            card,
-        }
-        m_glossaryPinSource = src
-        SpawnGlossaryPopup(src, wrapper)
     end
 
     local function ShowGlossaryToast()
@@ -5874,7 +6215,7 @@ function MarkdownDocument.DisplayPanel(self, args)
             --Glossary hints: top-level interactive documents only (no
             --embeds, no preview panels), gated by the setting and the
             --per-view mute. Suspended while find-in-page has a term: the
-            --broken-underline runs would split hinted words so find could
+            --hint markup would split hinted phrases so find could
             --never match them (find wins; hints return when cleared).
             local glossaryOn = embedDepth == 0
                 and (not m_noninteractive)
@@ -5891,11 +6232,13 @@ function MarkdownDocument.DisplayPanel(self, args)
                 usesAlign = SkinUsesAlign(resolvedSkin),
                 pageColor = pageColor,
                 glossaryHints = glossaryOn,
+                creatureIndex = glossaryOn and (not self:IsPlayerView(element))
+                    and MarkdownDocument.CreatureHintIndex(self) or nil,
             }
 
             local children = RenderMarkdownTokens(ctx, tokens)
             if m_pageHeader ~= nil then
-                local header = m_pageHeader(self, self:IsPlayerView(element))
+                local header = m_pageHeader(self, self:IsPlayerView(element), glossaryOn)
                 if header ~= nil then
                     table.insert(children, 1, header)
                 end
@@ -5960,24 +6303,20 @@ function MarkdownDocument.DisplayPanel(self, args)
         --labels (pin), the hover machinery (toast), and the document
         --toolbar (mute).
         pinGlossaryTerm = function(element, termid, src)
-            PinGlossaryCard(termid, src)
+            m_glossaryCards.Pin(element, termid, src)
         end,
         glossaryPinDeferred = function(element)
-            local pending = m_glossaryPinPending
-            m_glossaryPinPending = nil
-            if pending ~= nil then
-                BuildGlossaryPin(pending.termid, pending.src)
-            end
+            m_glossaryCards.BuildPending()
         end,
         hoverGlossaryTerm = function(element, termid)
-            ShowGlossaryHoverCard(termid)
+            m_glossaryCards.ShowHover(element, termid)
         end,
         glossaryToast = function(element)
             ShowGlossaryToast()
         end,
         glossaryMute = function(element, muted)
             m_glossaryMuted = muted and true or false
-            CloseGlossaryPin()
+            m_glossaryCards.ClosePin()
             GlossaryClearHoverCard()
             element:FireEvent("refreshDocument")
         end,
@@ -8300,7 +8639,8 @@ function Seamless.CompileDecorations(doc, text)
         end
     end
     local glossaryWashed = {}
-    local glossaryBold = g_glossaryHintsSetting:Get() == "bold"
+    local glossaryUnderlineOpen = g_glossaryHintsSetting:Get() == "bold" and "<u>"
+        or ThemeEngine.ResolveTokens("<u color=@accent>")
 
 
     local group = 0
@@ -8798,21 +9138,8 @@ function Seamless.CompileDecorations(doc, text)
                         if m.underline then
                             local g = G()
                             local mFrom = segStart + m.from - 1
-                            if glossaryBold then
-                                decs[#decs + 1] = { kind = "style", from = A(mFrom), to = A(segStart + m.to - 1),
-                                    open = "<u>", close = "</u>", group = g }
-                            else
-                                --broken underline: one short style run per
-                                --underlined pair, same geometry as the
-                                --display treatment.
-                                local span = segText:sub(m.from, m.to)
-                                for _, run in ipairs(GlossaryUnderlineRuns(span)) do
-                                    decs[#decs + 1] = { kind = "style",
-                                        from = A(mFrom + run[1] - 1),
-                                        to = A(mFrom + run[2] - 1),
-                                        open = "<u>", close = "</u>", group = g }
-                                end
-                            end
+                            decs[#decs + 1] = { kind = "style", from = A(mFrom), to = A(segStart + m.to - 1),
+                                open = glossaryUnderlineOpen, close = "</u>", group = g }
                         end
                     end
                 end
@@ -11279,7 +11606,7 @@ function MarkdownDocument:SeamlessEditPanel(args)
     --classes the document shell (DocumentSystem.lua) sets on the panel tree:
     --  changes     - the text differs from the last save (re-checked every second)
     --  savePending - a save is uploading and the server has not confirmed it yet
-    --  saveError   - the server never confirmed a save; stays until one confirms
+    --  saveError   - a save threw or the server never confirmed it; stays until one confirms
     local function SaveDocumentNow(element)
         local documentPanel = element:FindParentWithClass("documentPanel")
         if documentPanel ~= nil then
@@ -11336,7 +11663,7 @@ function MarkdownDocument:SeamlessEditPanel(args)
             valign = "center",
             hmargin = 4,
             hover = function(element)
-                gui.Tooltip("The server did not confirm your save, so your latest changes may not be stored. Keep this document open -- saving retries automatically and this message clears once a save goes through. You can also press Save (Ctrl+S) to retry now.")(element)
+                gui.Tooltip("Your save did not go through, so your latest changes may not be stored. Keep this document open -- saving retries automatically and this message clears once a save goes through. You can also press Save (Ctrl+S) to retry now.")(element)
             end,
         },
 

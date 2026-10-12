@@ -367,6 +367,8 @@ local function ParseCharacterEquipment(c, doc)
     end
 
 
+    --The slot the first armor found is equipped into; nil once it is filled.
+    ---@type string|nil
     local armorSlot = "armor"
 
     local stripstr = function(s) return string.lower(string.gsub(s, "%W", "")) end
@@ -375,12 +377,14 @@ local function ParseCharacterEquipment(c, doc)
     for _,itemName in ipairs(equipmentTable) do
         if type(itemName) == "string" then
             local name = itemName
+            ---@type number
             local quantity = 1
             local i,j,nameParsed,quantityParsed = string.find(itemName, "^(.+) %((%d+)%)$")
 
             if nameParsed ~= nil then
                 name = nameParsed
-                quantity = tonumber(quantityParsed)
+                --quantityParsed is a %d+ capture, so tonumber cannot fail.
+                quantity = tonumber(quantityParsed) --[[@as number]]
             end
 
             name = stripstr(name)
@@ -425,6 +429,8 @@ local function ParseCharacterEquipment(c, doc)
         if type(entry.quantity) == "number" and entry.quantity > 0 then
             local itemInfo = itemsTable[k]
             if itemInfo.isWeapon then
+                --isWeapon is true only on the weapon type.
+                ---@cast itemInfo weapon
                 primaryHandItems[#primaryHandItems+1] = {
                     itemid = k,
                     twohanded = itemInfo:TwoHanded(),
@@ -719,7 +725,7 @@ Importers = {
             elseif durationType == "day" then
                 newSpell.durationType = "days"
             else
-                import:Log(string.format("Unimplemented duration type: %s", duration.type))
+                import:Log(string.format("Unimplemented duration type: %s", durationType))
             end
         end
 
@@ -730,17 +736,18 @@ Importers = {
 
         if type(spellDuration) == "string" then
             if string.find(string.lower(spellDuration), "^instant") ~= nil then
-                newspellDuration = "instant"
+                newSpell.durationType = "instant"
             else
+                --quantity is a %d+ capture, so tonumber cannot fail.
                 local i,j,quantity,durationType = string.find(spellDuration, "^(%d+) (%a+)")
                 if i ~= nil then
-                    newSpell.duration = tonumber(quantity)
+                    newSpell.durationLength = tonumber(quantity) --[[@as number]]
                     ParseDurationType(durationType)
                 else
                     local i,j,quantity,durationType = string.find(spellDuration, "^concentration.+to (%d+) (%a+)")
                     if i ~= nil then
                         newSpell.concentration = true
-                        newSpell.duration = tonumber(quantity)
+                        newSpell.durationLength = tonumber(quantity) --[[@as number]]
                         ParseDurationType(durationType)
                     else
                         newSpell.durationType = "indefinite"
@@ -821,6 +828,8 @@ Importers = {
 
         local is_character = doc.isNamedCreature
 
+        --A CharacterToken when is_character, otherwise a MonsterAssetLua.
+        ---@type CharacterToken|MonsterAssetLua
         local m
 
         local notes = {}
@@ -846,11 +855,13 @@ Importers = {
 
             m = token
         else
-            m = import:GetExistingItem("monster", doc.name)
-            if m == nil then
-                m = import:CreateMonster()
-                m.properties = monster.CreateNew()
+            --the "monster" table only ever yields a MonsterAssetLua (or nil).
+            local existing = import:GetExistingItem("monster", doc.name) --[[@as MonsterAssetLua|nil]]
+            if existing == nil then
+                existing = import:CreateMonster()
+                existing.properties = monster.CreateNew()
             end
+            m = existing
         end
 
 
@@ -1208,7 +1219,8 @@ Importers = {
         if type(hp) == "string" or type(hp) == "number" then
             if type(hp) == "string" and string.find(hp, "^%d+ %(.+%)") then
                 local i,j,hp_base,hp_roll = string.find(hp, "^(%d+) %((.+)%)")
-                c.max_hitpoints = tonumber(hp_base)
+                --the guard above matched, so hp_base is a %d+ capture and tonumber cannot fail.
+                c.max_hitpoints = tonumber(hp_base) --[[@as number]]
                 c.max_hitpoints_roll = hp_roll
             else
                 c.max_hitpoints = tonumber(hp)
@@ -1437,11 +1449,17 @@ Importers = {
                 name, description = splitOnColonOrPeriod(action)
             end
 
+            ---@type number
             local numActions = 1
-            local i,j,numActionsStr = string.find(name, " %((%d+) actions")
-            if numActionsStr ~= nil then
-                numActions = tonumber(numActionsStr)
-                name = string.sub(name, 1, i-1)
+            --name is nil for a string with no ":" or "." and for a table with no name;
+            --the check below skips those, so do not crash on them here.
+            if type(name) == "string" then
+                local i,j,numActionsStr = string.find(name, " %((%d+) actions")
+                if numActionsStr ~= nil then
+                    --a %d+ capture, so tonumber cannot fail.
+                    numActions = tonumber(numActionsStr) --[[@as number]]
+                    name = string.sub(name, 1, i-1)
+                end
             end
 
             if type(name) == "string" then
@@ -1548,6 +1566,10 @@ Importers = {
                         magicalDamage = (foundAttackType == "ms" or foundAttackType == "rs"),
                     }
 
+                    --a damage behavior may be appended below.
+                    ---@type ActivatedAbilityBehavior[]
+                    local behaviors = {attackBehavior}
+
                     local abilityArgs = {
                         name = name,
                         iconid = ImportUtils.GetExistingIconForAttackName(name),
@@ -1557,7 +1579,7 @@ Importers = {
                         range = range,
                         rangeDisadvantage = rangeDisadvantage,
                         actionResourceId = "standardAction",
-                        behaviors = {attackBehavior},
+                        behaviors = behaviors,
                     }
 
                     if action.additional_damage ~= nil and type(action.additional_damage) == "table" then
@@ -1612,8 +1634,12 @@ Importers = {
         import:StoreLogFromBookmark(bookmark, m)
 
         if is_character then
+            --is_character built m with CreateCharacter.
+            ---@cast m CharacterToken
             import:ImportCharacter(m)
         else
+            --otherwise m came from GetExistingItem("monster") or CreateMonster.
+            ---@cast m MonsterAssetLua
             import:ImportMonster(m)
         end
     end,

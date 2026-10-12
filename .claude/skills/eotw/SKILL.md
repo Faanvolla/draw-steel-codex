@@ -1,6 +1,6 @@
 ---
 name: eotw
-description: Build and publish an Encounter of the Week (EotW) encounter, guiding the author step by step in the running DMHub app -- name the encounter map, paint the hero Start zone (and hidden Trap zones), build and position the monsters, write the script document (narratives, montages with tests, riders, scenes, delves, traps, Town Gate / Conclusion / Defeat story text), validate and playtest it, then publish it as an "Encounter of the Week" module so it joins the Town Gate's encounter pool. Use whenever the user invokes /eotw or asks to author, write, script, fix, playtest or publish an Encounter of the Week encounter, montage or narrative. NOT for developing the EotW game mode's own code (that is /week, in the dmhub engine repo).
+description: Build and publish an Encounter of the Week (EotW) encounter, guiding the author step by step in the running DMHub app -- name the encounter map, paint the hero Start zone (and hidden Trap zones), build and position the monsters, write the script document (narratives, montages with tests, riders, scenes, delves, traps, Town Gate / Conclusion / Defeat story text), validate and playtest it, then publish it as an "Encounter of the Week" module so it joins the encounter pool and plays in the town's Danger Rooms (where players vote on it and nominate the next Encounter of the Week). Use whenever the user invokes /eotw or asks to author, write, script, fix, playtest or publish an Encounter of the Week encounter, montage or narrative. NOT for developing the EotW game mode's own code (that is /week, in the dmhub engine repo).
 ---
 
 # /eotw -- authoring an Encounter of the Week encounter
@@ -8,7 +8,12 @@ description: Build and publish an Encounter of the Week (EotW) encounter, guidin
 You are an encounter-authoring partner. You guide the author through building one
 EotW encounter in their running DMHub app, check each step yourself through the
 DMHub MCP server (`execute_lua`), write script text with them, and finish by
-publishing it into the Town Gate's encounter pool.
+publishing it into the encounter pool. A newly published community encounter
+plays in the town's **Danger Rooms** (practice: no Victories or treasure;
+players vote, leave the author feedback and nominate next week's Encounter of
+the Week). It reaches the Town Gate only when an admin makes it the Encounter
+of the Week (`/eotw-rotate` in the dmhub repo). The author reads players'
+feedback in the Danger Rooms ("Feedback on Your Encounters").
 
 Two companion files hold the detail. Load them when the phase needs them:
 - [`script-reference.md`](script-reference.md) -- the complete script language
@@ -177,6 +182,14 @@ with the author, beat by beat, in the order the players will see it:
 5. `# Encounter` -- setup lines (traps) and the `[[encounter]]` island.
 6. `# Conclusion` and `# Defeat` story text.
 
+**The Montage Builder** (Game menu > Montage Builder, or `/eotwbuilder`) edits
+a montage graphically: rounds, entries, tests, tiers, knacks, scenes, dice
+tables and delves, writing straight into the same journal documents. Offer it
+to an author who would rather click than write markdown. Once the script has a
+`# Montage` heading it opens on it; a new entry it adds gets its own
+sub-document. Never write a document over MCP while the author has the builder
+open on it.
+
 Craft notes:
 - Put each montage entry (and each delve) in its **own sub-document** in the
   Map Documents folder and include it from the master with a line that is only
@@ -287,9 +300,10 @@ give them to the party first):
    browser -- it is found there only by typing its exact module ID), agree to
    the terms, **Create Module**. The status line should end "Its encounters are
    now in the Encounter of the Week pool."
-5. Verify: titlescreen -> Encounter of the Week (the town) -> Town Gate -> Form a
-   Party: the module appears as a flyout ("<module> by <author>") with the
-   encounter and its backstory.
+5. Verify: titlescreen -> Encounter of the Week (the town) -> Danger Rooms
+   (unlocked once the account has won an Encounter of the Week): the
+   encounter is listed under "Encounters to Try" with "<module> by <author>"
+   and its backstory, and Form a Party works for it.
 6. To change the encounter later: edit, re-check, and publish again choosing the
    same module ("Update Module"). New parties get the new version.
 

@@ -50,9 +50,7 @@ function ActivatedAbilityMacroBehavior:EditorItems(parentPanel)
     return result
 end
 
---- Opens the casting creature's character sheet on a chosen tab, on the
---- client that resolved the ability. Lets a prompted trigger send the
---- Director straight to, e.g., a monster's Builder tab.
+--- Opens the caster's character sheet on a chosen tab (e.g. a monster's Builder).
 --- @class ActivatedAbilityOpenSheetBehavior: ActivatedAbilityBehavior
 --- @field new fun(o?: table): ActivatedAbilityOpenSheetBehavior
 --- @field tab string Character sheet tab id (see CharSheet.TabOptions).

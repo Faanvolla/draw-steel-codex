@@ -641,7 +641,8 @@ MCDMImporter.ParseMonsterAbility = function(bestiaryEntry, lines, knownAbilities
             hasErrors = true
         else
             newAbility.resourceCost = resourceKey
-            newAbility.resourceNumber = tonumber(abilityHeaderMatch.vp)
+            --vp only ever captures [0-9]+, so tonumber cannot fail.
+            newAbility.resourceNumber = tonumber(abilityHeaderMatch.vp) --[[@as number]]
             import:Log(FormatNote("Set Malice cost to " .. abilityHeaderMatch.vp))
         end
     end
@@ -733,19 +734,20 @@ MCDMImporter.ParseMonsterAbility = function(bestiaryEntry, lines, knownAbilities
     --unnoticed.
     local baseRangeMatch = regex.MatchGroups(distance, "^Melee (?<melee>[0-9]+) or Ranged? (?<range>[0-9]+)")
     if baseRangeMatch ~= nil then
-        newAbility.range = tonumber(baseRangeMatch.range)
+        --Every capture here and below is [0-9]+, so its tonumber cannot fail.
+        newAbility.range = tonumber(baseRangeMatch.range) --[[@as number]]
         newAbility.meleeRange = tonumber(baseRangeMatch.melee)
     else
         local simpleRange = regex.MatchGroups(distance, "^(?:Range|Reach|Melee)? ?(?<range>[0-9]+)$")
         if simpleRange ~= nil then
-            newAbility.range = tonumber(simpleRange.range)
+            newAbility.range = tonumber(simpleRange.range) --[[@as number]]
         else
             --Area forms carry their reach as "within N" ("3 cube within 10",
             --"10 wall within 10"). The shape branches below override this where
             --they recognize the shape; it is the floor for the ones they do not.
             local withinMatch = regex.MatchGroups(distance, "within (?<range>[0-9]+)")
             if withinMatch ~= nil then
-                newAbility.range = tonumber(withinMatch.range)
+                newAbility.range = tonumber(withinMatch.range) --[[@as number]]
             end
         end
     end
@@ -836,7 +838,8 @@ MCDMImporter.ParseMonsterAbility = function(bestiaryEntry, lines, knownAbilities
 
         newAbility.targetType = "target"
         newAbility.numTargets = numbersTable[string.lower(numberedTargetsMatch.number)] or tonumber(numberedTargetsMatch.number)
-        newAbility.range = range
+        --range is the tonumber of "1" or of a [0-9]+ capture, so never nil.
+        newAbility.range = range --[[@as number]]
 
         if numberedTargetsMatch.type == "enemy" or numberedTargetsMatch.type == "enemies" then
             newAbility.targetFilter = "Enemy"
@@ -858,9 +861,10 @@ MCDMImporter.ParseMonsterAbility = function(bestiaryEntry, lines, knownAbilities
 
         local _, flat_range = regex.Match(distance, "^\\s*(\\d+)\\s*$")
 
+        --Every capture in this block is \d+ or [0-9]+, so its tonumber cannot fail.
         if flat_range ~= nil then
             newAbility.targetType = "all"
-            newAbility.range = tonumber(flat_range)
+            newAbility.range = tonumber(flat_range) --[[@as number]]
             newAbility.numTargets = 1
         else
             local cubeMatch = regex.MatchGroups(distance, "(?<radius>\\d+)\\s+cube within (?<range>\\d+)( squares?)?")
@@ -868,7 +872,7 @@ MCDMImporter.ParseMonsterAbility = function(bestiaryEntry, lines, knownAbilities
                 newAbility.targetType = "cube"
                 newAbility.numTargets = "1"
                 newAbility.radius = tonumber(cubeMatch.radius)
-                newAbility.range = tonumber(cubeMatch.range)
+                newAbility.range = tonumber(cubeMatch.range) --[[@as number]]
             else
                 local lineMatch = regex.MatchGroups(distance, "(?<length>\\d+)\\s*x\\s*(?<width>\\d+)\\s*line within (?<range>\\d+)( squares?)?")
                 if lineMatch ~= nil then
@@ -878,12 +882,12 @@ MCDMImporter.ParseMonsterAbility = function(bestiaryEntry, lines, knownAbilities
                     newAbility.targetType = "line"
                     newAbility.numTargets = 1
                     newAbility.radius = tonumber(lineMatch.width)
-                    newAbility.range = tonumber(lineMatch.length)
+                    newAbility.range = tonumber(lineMatch.length) --[[@as number]]
                 else
                     local burstMatch = regex.MatchGroups(distance, "(?<radius>\\d+)\\s*burst")
                     if burstMatch ~= nil then
                         newAbility.targetType = "all"
-                        newAbility.range = tonumber(burstMatch.radius)
+                        newAbility.range = tonumber(burstMatch.radius) --[[@as number]]
                         newAbility.numTargets = 1
                     else
                         --A Draw Steel aura is a persistent burst centred on the
@@ -896,7 +900,7 @@ MCDMImporter.ParseMonsterAbility = function(bestiaryEntry, lines, knownAbilities
 
                         if auraMatch ~= nil then
                             newAbility.targetType = "all"
-                            newAbility.range = tonumber(auraMatch.radius)
+                            newAbility.range = tonumber(auraMatch.radius) --[[@as number]]
                             newAbility.numTargets = 1
                             import:Log(FormatNote("Aura imported as a burst of radius " .. auraMatch.radius .. "."))
                         elseif regex.MatchGroups(distance, "walls?") ~= nil then
@@ -954,7 +958,7 @@ MCDMImporter.ParseMonsterAbility = function(bestiaryEntry, lines, knownAbilities
         end
 
         if abilityTemplate == nil then
-            import:Log(FormatImpl("Effect: Could not find implementation.", "impl"))
+            import:Log(FormatImpl("Effect: Could not find implementation."))
             hasErrors = true
 
             newAbility.implementation = 0
@@ -1341,7 +1345,8 @@ MCDMImporter.ParseCreatureAbilities = function(bestiaryEntry, inputLines, knownA
                 if string.starts_with(string.lower(resourceName), string.lower(resourceInfo.name)) then
                     --newAbility.resourceCost = k --now give all heroes the heroic resource.
                     newAbility.resourceCost = CharacterResource.heroicResourceId
-                    newAbility.resourceNumber = tonumber(nameResourceMatch.resourceCost)
+                    --resourceCost only captures [0-9]+, so tonumber cannot fail.
+                    newAbility.resourceNumber = tonumber(nameResourceMatch.resourceCost) --[[@as number]]
                     found = true
                 end
             end
@@ -1507,11 +1512,12 @@ MCDMImporter.ParseCreatureAbilities = function(bestiaryEntry, inputLines, knownA
                 end
             end
 
-            range = tonumber(range)
+            --range is "1" or a [0-9]+ capture, so tonumber cannot fail.
+            local rangeNumber = tonumber(range) --[[@as number]]
 
             newAbility.targetType = "target"
             newAbility.numTargets = numbersTable[string.lower(numberedTargetsMatch.number)] or tonumber(numberedTargetsMatch.number)
-            newAbility.range = range
+            newAbility.range = rangeNumber
 
             if numberedTargetsMatch.type == "enemy" or numberedTargetsMatch.type == "enemies" then
                 newAbility.targetFilter = "Enemy"
@@ -1523,9 +1529,10 @@ MCDMImporter.ParseCreatureAbilities = function(bestiaryEntry, inputLines, knownA
             local _, flat_range = regex.Match(distance, "^\\s*(\\d+)\\s*$")
                         print("TARGET:: match for burst", newAbility.name, "have match", target, "flat_range =", flat_range)
 
+            --Every capture in this block is \d+, so its tonumber cannot fail.
             if flat_range ~= nil then
                 newAbility.targetType = "all"
-                newAbility.range = tonumber(flat_range)
+                newAbility.range = tonumber(flat_range) --[[@as number]]
                 newAbility.numTargets = 1
             else
                 local cubeMatch = regex.MatchGroups(distance, "(?<radius>\\d+)\\s+cube within (?<range>\\d+)( squares?)?")
@@ -1537,7 +1544,7 @@ MCDMImporter.ParseCreatureAbilities = function(bestiaryEntry, inputLines, knownA
                     newAbility.targetType = "cube"
                     newAbility.numTargets = "1"
                     newAbility.radius = tonumber(cubeMatch.radius)
-                    newAbility.range = tonumber(cubeMatch.range)
+                    newAbility.range = tonumber(cubeMatch.range) --[[@as number]]
                 else
                     local lineMatch = regex.MatchGroups(distance, "(?<length>\\d+)\\s*x\\s*(?<width>\\d+)\\s*line within (?<range>\\d+)( squares?)?")
                     if lineMatch ~= nil then
@@ -1547,13 +1554,13 @@ MCDMImporter.ParseCreatureAbilities = function(bestiaryEntry, inputLines, knownA
                         newAbility.targetType = "line"
                         newAbility.numTargets = 1
                         newAbility.radius = tonumber(lineMatch.width)
-                        newAbility.range = tonumber(lineMatch.length)
+                        newAbility.range = tonumber(lineMatch.length) --[[@as number]]
                     else
                         local burstMatch = regex.MatchGroups(distance, "(?<radius>\\d+)\\s*burst")
                         print("TARGET:: burst match", newAbility.name, burstMatch ~= nil)
                         if burstMatch ~= nil then
                             newAbility.targetType = "all"
-                            newAbility.range = tonumber(burstMatch.radius)
+                            newAbility.range = tonumber(burstMatch.radius) --[[@as number]]
                             newAbility.numTargets = 1
                         else
                             abilityErrors[#abilityErrors+1] = "Could not recognize target distance: (" .. distance .. ") with target (" .. target .. ")"
@@ -1888,7 +1895,8 @@ MCDMImporter.ImportText = function(importer, text)
 
             a.description = ""
             a.resourceCost = CharacterResource.maliceResourceId
-            a.resourceNumber = tonumber(maliceAbilityMatch.malice)
+            --malice only captures [0-9]+, so tonumber cannot fail.
+            a.resourceNumber = tonumber(maliceAbilityMatch.malice) --[[@as number]]
             currentMaliceAbility = a
 
             print("MonsterGroup:: import ability", a.name)
@@ -2102,10 +2110,12 @@ MCDMImporter.ImportText = function(importer, text)
 
                 local bookmark = import:BookmarkLog()
 
+                ---@type MonsterAssetLua|nil
                 local bestiaryEntry
-                
+
                 if options.replaceExisting ~= false then
-                    bestiaryEntry = import:GetExistingItem("monster", monsterHeadingMatch.name)
+                    --the "monster" table only ever yields a MonsterAssetLua (or nil).
+                    bestiaryEntry = import:GetExistingItem("monster", monsterHeadingMatch.name) --[[@as MonsterAssetLua|nil]]
                 end
 
                 print("MONSTER:: PARSED AND ADDING", monsterHeadingMatch.name, "bestiaryEntry:", bestiaryEntry ~= nil, "replaceExisting=", options.replaceExisting)

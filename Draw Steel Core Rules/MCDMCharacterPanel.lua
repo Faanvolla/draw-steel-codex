@@ -5635,6 +5635,14 @@ function TacPanel.Stamina()
     }
 end
 
+--- The normal speed, shown crossed out when the creature moves slower, such as while climbing.
+--- It includes bonuses like a kit's, so a speed 7 hero shows 7 crossed out, not 5 (D9WASF6V).
+--- @param token CharacterToken
+--- @return number
+local function SpeedBoxNormalSpeed(token)
+    return math.max(token.properties:GetBaseSpeed(), token.properties:WalkingSpeed())
+end
+
 --- Display the Speed box
 --- @return Panel
 function TacPanel.SpeedBox()
@@ -5682,7 +5690,7 @@ function TacPanel.SpeedBox()
                 text = "0",
                 refreshCharacter = function(element, token)
                     if token == nil or not token.valid or token.properties == nil then return end
-                    local baseMove = token.properties:GetBaseSpeed()
+                    local baseMove = SpeedBoxNormalSpeed(token)
                     local curMove = token.properties:CurrentMovementSpeed()
                     element.text = tostring(curMove >= baseMove and curMove or baseMove)
                     element:SetClass("restricted", curMove < baseMove)
@@ -5699,7 +5707,7 @@ function TacPanel.SpeedBox()
                 text = "0",
                 refreshCharacter = function(element, token)
                     if token == nil or not token.valid or token.properties == nil then return end
-                    local baseMove = token.properties:GetBaseSpeed()
+                    local baseMove = SpeedBoxNormalSpeed(token)
                     local curMove = token.properties:CurrentMovementSpeed()
                     element.text = tostring(curMove)
                     element:SetClass("collapsed", curMove >= baseMove)

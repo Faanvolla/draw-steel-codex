@@ -2103,7 +2103,8 @@ function EotwBuild.Fill(token, stepid)
     return Modify(token, "Fill in the rest", function(hero) return EotwBuild.hero.Fill(hero, stepid) end) or {}
 end
 
---Fill every step in order (a dev convenience: a complete random hero).
+--Fill every step in order, completing the hero (the builder's second
+--Fill in the Rest click, "For All Tabs?").
 ---@param token CharacterToken
 ---@return string[]
 function EotwBuild.FillAll(token)

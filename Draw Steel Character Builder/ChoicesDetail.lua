@@ -29,7 +29,7 @@ function CBChoicesDetail._navPanel()
         data = { category = INITIAL_CATEGORY },
         refreshBuilderState = function(element, state)
             element:FireEvent("setAvailable", true)
-            -- A fresh builder state (e.g. a just-placed monster) has no page picked yet: show Overview.
+            -- No page picked yet (fresh builder state) means Overview.
             element:FireEvent("setSelected", (state:Get(SELECTOR .. ".category.selectedId") or INITIAL_CATEGORY) == element.data.category)
         end,
     })
@@ -616,8 +616,7 @@ function CBChoicesDetail._artPanel()
         bgcolor = "white",
     }
 
-    -- "Animal 1 EV: 14 (+2 EV)": the same EV as the character sheet, with the
-    -- part added by modifiers (e.g. animal traits past the free points) in red.
+    -- "Animal 1 EV: 14 (+2 EV)": the sheet's EV, with the amount over base EV in red.
     local evLabel = gui.Label{
         classes = {"builder-base", "label", "choices-art-ev"},
         text = "",

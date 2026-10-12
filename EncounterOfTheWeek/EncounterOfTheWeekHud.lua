@@ -231,7 +231,8 @@ local function CreateHeroRosterPanel()
             return
         end
 
-        local heroes = CollectHeroes()
+        --dead heroes stay in the column with a skull on their card.
+        local heroes = CollectHeroes{ includeDead = true }
         local sig = RosterSignature(heroes)
         if sig ~= m_signature then
             m_signature = sig
@@ -443,7 +444,9 @@ This is a power used by Monsters to charge their most powerful abilities. Beware
 
     intelligence = [==[**Intelligence**
 
-The amount of awareness you have of what you are up against. It can be used at the start of a fight to control how much you know about the encounter.]==],
+The amount of awareness you have of what you are up against. It can be used at the start of a fight to control how much you know about the encounter.
+
+Each hero keeps the Intelligence they earned (shown on their card), and each player spends their own heroes' Intelligence. This is the party's total.]==],
 }
 
 local POOL_TOOLTIP_WIDTH = 420
@@ -920,6 +923,21 @@ end
 
 --- The custom-interface registration ----------------------------------------
 
+--The EotW hero sheet, when this token's sheet should be it: a Hero, with the
+--sheet's code loaded. Monsters and objects get nil (the normal sheet).
+local function HeroSheetFor(token)
+    local sheet = rawget(_G, "EotwHeroSheet")
+    if sheet == nil or token == nil then
+        return nil
+    end
+    local isHero = false
+    pcall(function() isHero = token.properties ~= nil and token.properties:IsHero() end)
+    if not isHero then
+        return nil
+    end
+    return sheet
+end
+
 --pcall: an older core codex without the hook just shows the normal hud.
 pcall(function()
     GameHud.RegisterCustomInterface{
@@ -970,6 +988,27 @@ pcall(function()
             return { test.CreateTitlebarItem() }
         end,
 
+        --the players row's popout lists who is here and their heroes, and
+        --lets the host hand a departed player's heroes to someone else
+        --(EncounterPresence loads after this file: looked up at call time).
+        playersPopout = function()
+            local presence = rawget(_G, "EncounterPresence")
+            if presence == nil then
+                return nil
+            end
+            return presence.CreatePlayersPopout()
+        end,
+
+        --leaving or quitting asks whether the player will come back (Leave)
+        --or gives the game up (Abandon Game).
+        confirmExit = function(kind, proceed)
+            local presence = rawget(_G, "EncounterPresence")
+            if presence == nil then
+                return false
+            end
+            return presence.ConfirmExit(kind, proceed)
+        end,
+
         suppressPanel = { ["Compendium"] = true },
 
         suppressSearchBucket = { ["compendium"] = true },
@@ -985,6 +1024,25 @@ pcall(function()
                 return "view"
             end
             return nil
+        end,
+
+        --every route to a hero's full character sheet (c / i, the radial,
+        --search, /opensheet...) opens the EotW hero sheet instead. Other
+        --tokens (monsters, objects) keep the normal sheet.
+        ownsSheet = function(token)
+            return HeroSheetFor(token) ~= nil
+        end,
+        openSheet = function(token, tabid)
+            local sheet = HeroSheetFor(token)
+            if sheet == nil then
+                return false
+            end
+            --c toggles: asked again for the Hero on show, it closes
+            if sheet.IsShowing ~= nil and sheet.IsShowing(token.charid) then
+                sheet.Close()
+                return true
+            end
+            return sheet.Show{ charid = token.charid, context = "game" } ~= nil
         end,
     }
 end)

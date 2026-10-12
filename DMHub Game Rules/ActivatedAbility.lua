@@ -31,7 +31,7 @@ end
 --- @field grantedToTokenId nil|string Charid of the creature a granted clone belongs to (its caster).
 --- @field aimCasterAtTarget boolean An object caster turns to face its target while this is aimed, and keeps that facing (a Field Ballista's Release Bolt).
 --- @field _tmp_boundCaster nil|creature The creature a temporary clone was generated for.
---- @field lineDistance number|string|table Length for line-area targeting.
+--- @field lineDistance number|string Length for line-area targeting: a number or a GoblinScript formula.
 --- @field rangeDisadvantage string|number|table GoblinScript: if truthy, ranged attacks have disadvantage.
 --- @field selfTarget boolean If true, the ability always targets the caster.
 --- @field castImmediately boolean If true, auto-casts when there are no targeting choices.
@@ -55,6 +55,7 @@ end
 --- @field actionNumber number|string|table Number of action resources consumed.
 --- @field resourceCost string|nil Secondary resource id cost ("none" if free).
 --- @field resourceNumber number|string|table Amount of the secondary resource cost.
+--- @field numTargets number|string Number of targets: a number, or a GoblinScript formula string (default "1").
 --- @field targetFilter string|number|table GoblinScript formula to filter valid targets.
 --- @field channeledResource string|nil Resource id that can be channeled into this ability for variable power ("none" if unused).
 --- @field channelDescription string Description shown when channeling resource into the ability.
@@ -1217,7 +1218,8 @@ function ActivatedAbility:GetNumTargets(casterToken, symbols)
             return numericTargets
         end
 
-        local m = regex.MatchGroups(self.numTargets, "^(?<num>\\d+)")
+        --tonumber failed above, so numTargets is a formula string here.
+        local m = regex.MatchGroups(self.numTargets --[[@as string]], "^(?<num>\\d+)")
         local leadingNumber = m ~= nil and tonumber(m.num) or nil
         if leadingNumber ~= nil then
             return leadingNumber
@@ -1667,6 +1669,13 @@ function ActivatedAbility:TargetPassesFilter(casterToken, targetToken, symbols, 
 	end
 
 	if targetToken.properties:CalculateNamedCustomAttribute("Untargetable") > 0 then
+		return false
+	end
+
+	--An object hidden from players (a concealed Snare Trap) is not a target
+	--outside the Director experience, like an invisible creature. Targeting it
+	--would reveal it.
+	if targetToken.isObject and targetToken.objectInvisibleToPlayers and not dmhub.isDM then
 		return false
 	end
 
@@ -2229,6 +2238,7 @@ end
 --an item in the details list is the form { cost = string resourceid, quantity = (optional) number, canAfford = bool, paymentOptions = {{resourceid = string, quantity = number}}, expendedOptions = {{resourceid = string, quantity = number}}, refreshType (optional) = string resource refresh frequency, description = optional string describing resource available/max, maxCharges (optional) = int, availableCharges (optional) = int, payerTokenId (optional) = charid of a token other than the caster that pays this entry }
 --the cost gives the listed resource id cost, but paymentOptions is a list of resources the token has which it could use, in preferred order.
 --expendedOptions is a list of resources the token has expended which could normally be used to pay.
+--- @return table
 function ActivatedAbility:GetCost(casterToken, options)
 	options = options or {}
 
@@ -2239,7 +2249,7 @@ function ActivatedAbility:GetCost(casterToken, options)
 		return Spell.GetCost(self --[[@as Spell]], casterToken, options)
 	end
 
-	local creature = casterToken:GetCreature()
+	local creature = casterToken.properties
 	if creature == nil then
 		return { canAfford = false, details = {}}
 	end
@@ -3067,6 +3077,16 @@ function ActivatedAbility.RecordTokenMessage(targetToken, options, message)
     chat.UpdateCustom(options.chatMessageKey, options.chatMessage)
 end
 
+local g_castStartHandlers = {}
+
+--- Registers fn(ability, casterToken, options) to run synchronously at the start of every
+--- ActivatedAbility:Cast, before any cost is paid or the cast's coroutine starts. It must
+--- not yield. Turn Rewind uses it to checkpoint the board before an ability.
+--- @param fn fun(ability: ActivatedAbility, casterToken: CharacterToken, options: table|nil)
+function ActivatedAbility.RegisterCastStartHandler(fn)
+	g_castStartHandlers[#g_castStartHandlers+1] = fn
+end
+
 --casterToken: a token representing the caster.
 --targets: a list of { loc = (loc object), token = (optional)token }
 --- @param casterToken CharacterToken
@@ -3080,6 +3100,14 @@ function ActivatedAbility:Cast(casterToken, targets, options)
 	if dmhub.frozen and not IsDMOrPlayerHost() then
 		print("Cast:: refused; the game is frozen")
 		return
+	end
+
+	--a broken handler must never stop the cast itself.
+	for _,handler in ipairs(g_castStartHandlers) do
+		local ok, err = pcall(handler, self, casterToken, options)
+		if not ok then
+			print("Cast:: cast start handler failed:", err)
+		end
 	end
 
 	options = options or {}
@@ -3894,13 +3922,10 @@ function ActivatedAbility:RequireSavingThrowsCo(behavior, casterToken, tokenids,
 
 	local dcresult = {}
 
-	if self.silent then
-        print("AWAIT:: silent requested...")
-		AwaitRequestedActionCoroutine(actionid, dcresult)
-	else
-        print("AWAIT:: show summary...")
-		gamehud:ShowRollSummaryDialog(actionid, dcresult)
-	end
+	--A Monster AI caster accepts the rolls itself; otherwise a silent ability
+	--waits quietly and the Director gets the summary dialog.
+	print("AWAIT:: awaiting rolls, silent =", self.silent)
+	AwaitCastRollRequest(casterToken, actionid, dcresult, self.silent)
 
 	while dcresult.result == nil do
 		coroutine.yield(0.1)
@@ -5823,11 +5848,8 @@ function ActivatedAbilityContestedAttackBehavior:Cast(ability, casterToken, targ
 
 	local dcresult = {}
 
-	if self.silent then
-		AwaitRequestedActionCoroutine(actionid, dcresult)
-	else
-		gamehud:ShowRollSummaryDialog(actionid, dcresult)
-	end
+	--A Monster AI caster accepts the rolls itself (AwaitCastRollRequest).
+	AwaitCastRollRequest(casterToken, actionid, dcresult, self.silent)
 
 	while dcresult.result == nil do
 		coroutine.yield(0.1)
@@ -5888,9 +5910,9 @@ function ActivatedAbilityForcedMovementBehavior:Cast(ability, casterToken, targe
 	local sign = 1
 	--when pushing process tokens furthest away first, when pulling process nearest tokens first.
 	if self.moveType == "push" then
-		table.sort(targetsSorted, function(a,b) return casterToken:DistanceInFeet(a) > casterToken:DistanceInFeet(b) end)
+		table.sort(targetsSorted, function(a,b) return casterToken:Distance(a) > casterToken:Distance(b) end)
 	else
-		table.sort(targetsSorted, function(a,b) return casterToken:DistanceInFeet(a) < casterToken:DistanceInFeet(b) end)
+		table.sort(targetsSorted, function(a,b) return casterToken:Distance(a) < casterToken:Distance(b) end)
 		sign = -1
 	end
 

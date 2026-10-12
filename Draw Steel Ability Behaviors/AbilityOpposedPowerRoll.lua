@@ -74,9 +74,9 @@ function ActivatedAbilityOpposedRollBehavior:Cast(ability, casterToken, targets,
 		--Check targets for modifiers that would effect this roll
 		for _, target in ipairs(targets) do
 			if target.token ~= nil then
-				local targetCreature = target.token:GetCreature()
+				local targetCreature = target.token.properties
 				local targetMods = targetCreature:GetActiveModifiers()
-				local caster = casterToken:GetCreature()
+				local caster = casterToken.properties
 
 				for _,mod in ipairs(targetMods) do
 					--this is run from the defender's perspective.
@@ -146,11 +146,8 @@ function ActivatedAbilityOpposedRollBehavior:Cast(ability, casterToken, targets,
 
 	local dcresult = {}
 
-	if self.silent then
-		AwaitRequestedActionCoroutine(actionid, dcresult)
-	else
-		gamehud:ShowRollSummaryDialog(actionid, dcresult)
-	end
+	--A Monster AI caster accepts the rolls itself (AwaitCastRollRequest).
+	AwaitCastRollRequest(casterToken, actionid, dcresult, self.silent)
 
 	while dcresult.result == nil do
 		coroutine.yield(0.1)

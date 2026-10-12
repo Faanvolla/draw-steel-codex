@@ -640,10 +640,13 @@ end
 
 K.ENVIRONMENTAL_KEYWORDS_TABLE = "environmentalKeywords"
 
+---@return table<string, EnvironmentalKeyword>
 local function GetKeywordTable()
     return dmhub.GetTable(K.ENVIRONMENTAL_KEYWORDS_TABLE) or {}
 end
 
+---@param keywordid string|nil
+---@return EnvironmentalKeyword|nil
 local function GetKeyword(keywordid)
     if keywordid == nil then
         return nil

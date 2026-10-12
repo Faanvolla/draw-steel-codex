@@ -41,8 +41,10 @@ function creature:RequestProjectRoll(casterToken, options)
         }
     }
     
+    --Only the player who clicked roll gets the prompt. Rolling for a follower
+    --used to prompt other players too, and the roll was often lost (A2RXEVGG).
     local tokens = {}
-    tokens[casterToken.id] = {}
+    tokens[casterToken.id] = dmhub.isDM and {} or { forceuserid = dmhub.loginUserid }
     
     -- Send the request and wait for response
     local actionid = dmhub.SendActionRequest(RollRequest.new{

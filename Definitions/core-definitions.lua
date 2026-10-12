@@ -56,6 +56,7 @@ RollDefinition = {}
 --- @field typeName string The registered type name.
 --- @field baseTypeName nil|string The registered base type name, if any.
 --- @field mt table The metatable RegisterGameType sets on instances of this type.
+--- @field __typeName? string The serialized type key; set on an instance to change the type it loads back as.
 GameType = {}
 
 --- Creates an instance of this type: o (or a new table) with the type's metatable set.

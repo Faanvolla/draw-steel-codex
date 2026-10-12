@@ -600,7 +600,8 @@ do
             idChosen = class.icon or "",
             change = function(element)
                 ---@cast element Dropdown
-                local id = element.idChosen
+                --every IconOptions id is a string (an icon path, or "" for Inherit).
+                local id = element.idChosen --[[@as string]]
                 class.icon = id ~= "" and id or false
                 UploadClass(class)
                 RefreshPreview()
@@ -1142,6 +1143,47 @@ do
         }
     end
 
+    --Prose on a read page. It carries glossary hints while the page is being
+    --built with hints on (BuildWithProseHints).
+    local g_proseHints = false
+    local g_proseDoc = nil
+    local function ProseLabel(args)
+        args.markdown = true
+        if g_proseHints then
+            MarkdownDocument.GlossaryLabelArgs(args, g_proseDoc)
+        end
+        return gui.Label(args)
+    end
+    CustomDocument.ReadProse = ProseLabel
+
+    --`hints`: whether the prose carries glossary hints; nil follows the setting.
+    local function BuildWithProseHints(build, doc, playerView, hints)
+        if hints == nil then
+            hints = dmhub.GetSettingValue("glossaryhints") ~= "off"
+        end
+        g_proseHints = hints
+        --the page's creatures are marked for the Director only.
+        g_proseDoc = (not playerView) and doc or nil
+        local ok, result = pcall(build, doc, playerView)
+        g_proseHints = false
+        g_proseDoc = nil
+        if not ok then
+            error(result, 0)
+        end
+        return result
+    end
+
+    --For a type that draws its own read view: build(doc, playerView) with
+    --glossary hints on its ReadProse and ReadNamedRow text. The panel it
+    --returns needs MarkdownDocument.GlossaryHostArgs for the cards to show.
+    --- @param build fun(doc: table, playerView: boolean): Panel
+    --- @param doc table
+    --- @param playerView boolean
+    --- @return Panel
+    function CustomDocument.ReadWithGlossaryHints(build, doc, playerView)
+        return BuildWithProseHints(build, doc, playerView)
+    end
+
     --One entry of a read-view list: a name with its detail indented under it.
     --- @param name string
     --- @param detail string markdown; "" for none
@@ -1156,11 +1198,11 @@ do
                 textWrap = true, textAlignment = "topleft",
                 text = name,
             },
-            (detail ~= "") and gui.Label{
+            (detail ~= "") and ProseLabel{
                 classes = { "sizeS" },
                 width = "100%-40", height = "auto", halign = "left",
                 lmargin = 16, tmargin = 1,
-                markdown = true, textWrap = true, textAlignment = "topleft",
+                textWrap = true, textAlignment = "topleft",
                 text = detail,
             } or nil,
         }
@@ -1369,6 +1411,7 @@ do
         local keys = field.keys or {}
         local rows = {}
         for _, key in ipairs(field.displayReversed and Reversed(keys) or keys) do
+            ---@type Panel[]
             local cells = {
                 gui.Label{ width = 150, height = 24, valign = "top", text = key.label },
             }
@@ -1699,8 +1742,18 @@ do
     local function PicturePanel(image, args, full)
         args.bgimage = image
         args.bgcolor = "white"
-        args.click = function()
-            GameHud.instance:ViewJournalEntry{ image = full or image }
+        --the frame is a child: a border does not draw on a picture.
+        args[#args + 1] = gui.Panel{
+            classes = { "docPictureFrame" },
+            styles = ThemeEngine.MergeStyles({
+                { selectors = { "docPictureFrame" }, bgcolor = "clear", borderColor = "@border" },
+            }),
+            width = "100%", height = "100%", interactable = false,
+            bgimage = "panels/square.png",
+            border = 1,
+        }
+        args.click = function(element)
+            GameHud.instance:ViewJournalEntry{ image = full or image, owner = element }
         end
         args.linger = gui.Tooltip("Click to enlarge")
         return gui.Panel(args)
@@ -1937,10 +1990,10 @@ do
                     width = "auto", height = "auto", halign = "left",
                     text = field.label,
                 },
-                gui.Label{
+                ProseLabel{
                     classes = { "sizeS" },
                     width = "95%", height = "auto", halign = "left",
-                    markdown = true, textWrap = true, textAlignment = "topleft",
+                    textWrap = true, textAlignment = "topleft",
                     text = text,
                 },
             }
@@ -1963,7 +2016,7 @@ do
     end
 
     --The fields that other pages in this page's folder show on every page of
-    --it (a field's wholeFolder), as { doc, field }: a lair's features on each
+    --it (a field's wholeFolder), as { doc, field }: a delve's features on each
     --of its rooms. The journal's top level is not a folder.
     local function FolderFields(self, playerView)
         local result = {}
@@ -1994,12 +2047,18 @@ do
     end
 
     --The fields of the generated read view: every field that has a value. The
-    --page opens with its name; the first image field sits beside it as the
-    --portrait, and number, enum and bool fields gather into one row of chips
+    --page opens with its name; the first image field sits to its right as the
+    --picture, and number, enum and bool fields gather into one row of chips
     --under the name. Fields ahead of the first list join that header, the rest
     --follow at full width, and its folder's fields close it. nil when there
     --are none of either.
-    local function FieldsHeaderPanel(self, playerView)
+    local FieldsHeaderContent
+    --`hints`: whether its prose carries glossary hints; nil follows the setting.
+    local function FieldsHeaderPanel(self, playerView, hints)
+        return BuildWithProseHints(FieldsHeaderContent, self, playerView, hints)
+    end
+
+    FieldsHeaderContent = function(self, playerView)
         local fields = CustomDocument.ClassFields(self)
         local folderFields = FolderFields(self, playerView)
         if #fields == 0 and #folderFields == 0 then
@@ -2027,11 +2086,32 @@ do
             if field == nil then
                 --the Director's, and this is a player.
             elseif kind == "image" and portrait == nil and value ~= "" then
-                portraitWidth = (field.width or 96) + 12
+                --in the picture's own shape, within the size the field declares.
+                local maxWidth, maxHeight = field.width or 240, field.height or 300
+                local function Fit(dims)
+                    local scale = math.min(maxWidth / dims.width, maxHeight / dims.height)
+                    return math.floor(dims.width * scale), math.floor(dims.height * scale)
+                end
+                local dims = gui.TryGetImageDimensions(value)
+                local width, height = maxWidth, math.min(maxWidth, maxHeight)
+                if dims ~= nil then
+                    width, height = Fit(dims)
+                end
+                portraitWidth = maxWidth + 26
                 portrait = PicturePanel(value, {
                     classes = { "image" },
-                    width = field.width or 96, height = field.height or 120,
-                    valign = "top", rmargin = 12,
+                    width = width, height = height,
+                    halign = "right", valign = "top", lmargin = 12, rmargin = 14,
+                    create = function(element)
+                        if dims ~= nil then
+                            return
+                        end
+                        gui.GetImageDimensionsCallback(value, function(loaded)
+                            if element.valid and loaded ~= nil then
+                                element.selfStyle.width, element.selfStyle.height = Fit(loaded)
+                            end
+                        end)
+                    end,
                 })
             elseif kind == "number" then
                 chips[#chips + 1] = string.format("%s **%s**", field.label, tostring(value))
@@ -2055,17 +2135,14 @@ do
         if #chips > 0 then
             table.insert(header, hasTitle and 2 or 1, CustomDocument.StatChips(chips))
         end
-        --with no picture of its own, the page shows its map's: on the right,
-        --in the map's shape, no wider than 240 and no taller than 300.
-        local portraitRight = false
+        --with no picture of its own, the page shows its map's, in the map's
+        --shape, no wider than 240 and no taller than 300.
         for _, declared in ipairs(fields) do
             local info = portrait == nil and declared.kind == "map" and FieldMapInfo(self, declared) or nil
             if info ~= nil and info.thumb ~= nil then
                 local aspect = info.aspect or (9 / 16)
                 local width = math.floor(math.min(240, 300 / aspect))
-                --clear of the scrollbar on its right.
                 portraitWidth = width + 26
-                portraitRight = true
                 portrait = PicturePanel(info.thumb, {
                     classes = { "image" },
                     width = width, height = math.floor(width * aspect), valign = "top", lmargin = 12, rmargin = 14,
@@ -2081,13 +2158,11 @@ do
             width = string.format("100%%-%d", portraitWidth),
             children = header,
         }
-        local top = { headerColumn }
-        if portrait ~= nil then
-            table.insert(top, portraitRight and 2 or 1, portrait)
-        end
+        --the picture sits on the right, clear of the scrollbar.
         table.insert(children, 1, gui.Panel{
             flow = "horizontal", width = "100%", height = "auto", halign = "left",
-            children = top,
+            headerColumn,
+            portrait,
         })
         return gui.Panel{
             flow = "vertical", width = "100%", height = "auto", halign = "left", valign = "top", bmargin = 8,
@@ -2103,7 +2178,10 @@ do
         --loads after this file, hence rawget.
         if dmhub.isDM and not playerView and rawget(_G, "RichExit") ~= nil then
             for _, exit in ipairs(CustomDocument.DeclaredExits(self)) do
-                children[#children + 1] = RichExit.CreateDisplay(RichExit.new(exit))
+                --an exit that leads nowhere and writes nothing has nothing to take.
+                if exit.nextDocid or #exit.writes > 0 then
+                    children[#children + 1] = RichExit.CreateDisplay(RichExit.new(exit))
+                end
             end
         end
         for _, entry in ipairs(CustomDocument.ClassActions(self, "read")) do
@@ -2652,7 +2730,10 @@ function CustomDocument.OnDeserialize(self)
     end
 end
 
-function CustomDocument:Render()
+--- Render the document for display; nil on the base type (subclasses override it).
+--- @param options? table Render options, e.g. {summary = ...}; meaning is per subclass.
+--- @return Panel|nil
+function CustomDocument:Render(options)
     return nil
 end
 
@@ -2731,7 +2812,8 @@ function CustomDocument:ShowCreateDialog()
     self:ShowDocument{edit = true}
 end
 
-function CustomDocument:EditPanel()
+--- @param args? table Editor options from ShowDocument; unused by the base editor (MarkdownDocument reads them).
+function CustomDocument:EditPanel(args)
     local editInput = gui.TextEditor {
         width = "90%",
         height = "90%",
@@ -2834,6 +2916,11 @@ local function checkUnsavedChanges(writePanel, resultPanel, doc, onProceed)
         local baseline = resultPanel.data.pendingOriginal or resultPanel.data.original
         needSave.save = baseline ~= nil and not dmhub.DeepEqual(doc, baseline)
     end
+    if resultPanel.data.pendingUploadFailed or resultPanel.data.saveThrew then
+        --A failed save has already flushed the editors into the document object,
+        --so they answer "nothing to save" while the server holds none of it.
+        needSave.save = true
+    end
     if not needSave.save then
         onProceed()
         return
@@ -2847,7 +2934,10 @@ local function checkUnsavedChanges(writePanel, resultPanel, doc, onProceed)
                 text = "Save",
                 execute = function()
                     resultPanel:FireEventTree("savedoc")
-                    if not dmhub.DeepEqual(doc, resultPanel.data.original) then
+                    if resultPanel.data.pendingUploadFailed or resultPanel.data.saveThrew then
+                        --the delta route has already failed; send everything.
+                        doc:Upload()
+                    elseif not dmhub.DeepEqual(doc, resultPanel.data.original) then
                         doc:Upload(resultPanel.data.original)
                     end
                     onProceed()
@@ -2952,14 +3042,14 @@ end
 local g_journalTreeExpanded = {}
 
 --- Builds a popup tree view of the journal hierarchy
---- @param currentDocId string The ID of the currently displayed document
---- @param dialogPanel Panel The dialog panel with navigation handlers
+--- @param currentDocId string|nil The ID of the currently displayed document, if any
+--- @param dialogPanel Panel|nil The dialog panel with navigation handlers (nil when opts.onPick handles picks)
 --- @param opts nil|{onPick: fun(docId: string), onNewDocument: fun(typeInfo: table), bare?: boolean}
 ---   onPick: picking a document calls this instead of navigating dialogPanel
 ---   (the tab bar's + uses it to open the pick in a new tab). onNewDocument:
 ---   when set, a "New Document" entry heads the popup; it expands to the
 ---   registered document types and picking one calls this.
---- @return Panel The popup panel
+--- @return Panel|nil The popup panel; nil when there is nothing to list or create
 local function buildJournalTree(currentDocId, dialogPanel, opts)
     --pick-once latch: a single physical click can deliver press more than
     --once while the popup is being torn down mid-dispatch (observed with the
@@ -3750,6 +3840,53 @@ function CustomDocument:CreateInterface(args)
         return true
     end
 
+    -- BeginSaveAttempt behind a pcall: a save that throws never arms the watchdog, so
+    -- it failed with nothing on screen. A throw on the delta path falls back to a
+    -- whole-document write; if that throws too, the save error shows.
+    -- Returns sent, threw.
+    local function GuardedSaveAttempt(fullWrite)
+        local ok, result = pcall(BeginSaveAttempt, fullWrite)
+        local firstError = nil
+        if not ok and not fullWrite then
+            firstError = result
+            ok, result = pcall(BeginSaveAttempt, true)
+        end
+
+        if ok then
+            if firstError ~= nil then
+                dmhub.CloudError(string.format("JOURNAL_SAVE:: delta save of document '%s' threw (%s); wrote the whole document instead.", tostring(self.id), tostring(firstError)))
+            end
+            if resultPanel.data.saveThrew then
+                resultPanel.data.saveThrew = nil
+                if not result and not resultPanel.data.pendingUploadFailed then
+                    --nothing left to send, so no confirmation is coming to clear it.
+                    resultPanel:SetClassTree("saveError", false)
+                end
+            end
+            return result, false
+        end
+
+        if not resultPanel.data.saveThrew then
+            --once per streak: the retries below would otherwise flood the log.
+            dmhub.CloudError(string.format("JOURNAL_SAVE:: save of document '%s' threw; surfacing save error to user. %s", tostring(self.id), tostring(result)))
+        end
+        resultPanel.data.saveThrew = true
+
+        --retry on the autosave cadence rather than every tick.
+        local now = dmhub.Time()
+        resultPanel.data.firstEditTime = now
+        resultPanel.data.editTime = now
+        if resultPanel.data.pendingUpload ~= nil then
+            --stops the watchdog re-running a full write that just threw.
+            resultPanel.data.pendingUploadFailed = true
+        end
+
+        resultPanel:SetClassTree("savePending", false)
+        resultPanel:SetClassTree("saveError", true)
+        resultPanel:FireEventTree("saveFailed")
+        return false, true
+    end
+
     if dmhub.isDM and not args.presentationMode then
     -- Present to Players
         m_presentButton = gui.Button {
@@ -3864,6 +4001,7 @@ function CustomDocument:CreateInterface(args)
                     resultPanel.data.originalUpdateId = self.updateid
                     resultPanel.data.pendingOriginal = nil
                     resultPanel.data.pendingUpload = nil
+                    resultPanel.data.saveThrew = nil
                     --fresh baseline, nothing in flight: the save status starts clean
                     --(a save left in flight by the last session is never confirmed here).
                     resultPanel:SetClassTree("savePending", false)
@@ -4750,7 +4888,7 @@ function CustomDocument:CreateInterface(args)
         saveDocument = function(element)
             --normal (delta) save. The write-verification watchdog in 'think' escalates to
             --a full write and then to a visible error if the server never confirms this.
-            BeginSaveAttempt(false)
+            GuardedSaveAttempt(false)
         end,
 
         documentEdited = function(element)
@@ -4786,7 +4924,8 @@ function CustomDocument:CreateInterface(args)
             if resultPanel.data.firstEditTime ~= nil and IsEditing() then
                 local now = dmhub.Time()
                 if (now - resultPanel.data.editTime) >= AUTOSAVE_IDLE_DELAY or (now - resultPanel.data.firstEditTime) >= AUTOSAVE_MAX_DELAY then
-                    if not BeginSaveAttempt(false) then
+                    local sent, threw = GuardedSaveAttempt(false)
+                    if not sent and not threw then
                         resultPanel.data.firstEditTime = nil
                         resultPanel.data.editTime = nil
                     end
@@ -4804,7 +4943,7 @@ function CustomDocument:CreateInterface(args)
                 if elapsed >= SAVE_CONFIRM_TIMEOUT then
                     if not resultPanel.data.pendingUploadFull then
                         dmhub.Debug(string.format("JOURNAL_SAVE:: delta upload for document '%s' not confirmed after %.1fs; retrying with a full document write.", tostring(self.id), elapsed))
-                        BeginSaveAttempt(true)
+                        GuardedSaveAttempt(true)
                     else
                         dmhub.CloudError(string.format("JOURNAL_SAVE:: full document write for '%s' not confirmed after %.1fs; surfacing save error to user.", tostring(self.id), elapsed))
                         resultPanel.data.pendingUploadFailed = true
@@ -6271,6 +6410,7 @@ function CustomDocument.GetOrCreateTabbedViewer()
         --diverged from its baseline, so firing it at every realized tab costs nothing
         --for the tabs nobody edited. Unrealized tabs have no panel and no edits.
         nativeWindowClosed = function(element)
+            element.data.popoutTeardownReason = "windowClosed"  --POPOUT-DIAG
             for _, tab in ipairs(element.data.tabs or {}) do
                 if tab.contentPanel ~= nil and tab.contentPanel.valid then
                     tab.contentPanel:FireEvent("saveDocument")
@@ -6671,8 +6811,9 @@ end
 function CustomDocument:PresentDocument(args)
     args = args or {}
 
-    local dialogWidth = args.width or 1100
-    local dialogHeight = args.height or 940
+    --placement sizes are pixel numbers (see the args notes above).
+    local dialogWidth = (args.width or 1100) --[[@as number]]
+    local dialogHeight = (args.height or 940) --[[@as number]]
 
     local loc = {
         x = 1920 * 0.5 * ((dmhub.screenDimensionsBelowTitlebar.x / dmhub.screenDimensionsBelowTitlebar.y) / (1920 / 1080)) - dialogWidth / 2,
@@ -6704,8 +6845,10 @@ function CustomDocument:PresentDocument(args)
         loc.y = args.y
     end
 
-    dialogWidth = loc.width
-    dialogHeight = loc.height
+    --a remembered size is the window's own selfStyle size, which this
+    --function only ever sets to pixel numbers.
+    dialogWidth = loc.width --[[@as number]]
+    dialogHeight = loc.height --[[@as number]]
 
     local dialog
 
@@ -8961,6 +9104,7 @@ function PanelDocument:CreateInterface(args)
     --there the header sits in the middle of somebody else's window, not
     --along its top edge.
     local themeCornerRadius = ThemeEngine.ResolveStyleProperty({"framedPanel"}, "cornerRadius", 0)
+    ---@type number|Vector4Arg
     local headerCornerRadius = 0
     if tabbed and type(themeCornerRadius) == "number" and themeCornerRadius > 0 then
         headerCornerRadius = {x1 = themeCornerRadius, y1 = themeCornerRadius, x2 = 0, y2 = 0}
@@ -10135,6 +10279,54 @@ local function IconRailUIHeight()
     return 1080
 end
 
+--Returns a rail window position moved so the whole window is on screen.
+--Why: a window dropped outside the app window has no title bar left to
+--grab, and its saved position would strand it again on every restart.
+--  x, y: the window's top-left in rail units (dialog.x / dialog.y); a nil
+--      coordinate passes through untouched.
+--  width, height: the window's UNzoomed size; nil means the default size.
+--      The Font Size zoom is applied here, since that is what shows on screen.
+--Lives on PanelDocument because this file has hit Lua's 200-locals limit.
+function PanelDocument.ClampWindowOnScreen(x, y, width, height)
+    local scale = WindowUIScale()
+    local w = (width or PanelDocument.DefaultWidth) * scale
+    local h = (height or PanelDocument.DefaultHeight) * scale
+    local margin = 8
+    --math.max runs last on purpose: if the window is bigger than the
+    --screen, its top-left (and so its title bar) is what stays visible.
+    if type(x) == "number" then
+        x = math.max(margin, math.min(x, IconRailUIWidth() - w - margin))
+    end
+    if type(y) == "number" then
+        y = math.max(margin, math.min(y, IconRailUIHeight() - h - margin))
+    end
+    return x, y
+end
+
+--Call from a rail window's onMoved, before saving its position: moves
+--the window back on screen so the saved position is one the user can reach.
+--  dialog: the window panel that was just dropped.
+--  doc: the PanelDocument that owns the window.
+function PanelDocument.ClampDroppedWindow(dialog, doc)
+    local w = dialog.renderedWidth
+    local h = dialog.renderedHeight
+    local x, y = PanelDocument.ClampWindowOnScreen(dialog.x, dialog.y,
+        cond(type(w) == "number" and w > 0, w, nil),
+        cond(type(h) == "number" and h > 0, h, nil))
+    if x == dialog.x and y == dialog.y then
+        return
+    end
+    dialog.x = x
+    dialog.y = y
+    --the drag handler already saved the unclamped drop in _tmp_location,
+    --and reopening the window this session reads it from there.
+    local loc = doc:try_get("_tmp_location")
+    if loc ~= nil then
+        loc.x = x
+        loc.y = y
+    end
+end
+
 --Buttons occupy SLOTS on their rail: a sparse column where empty slots
 --render as gaps, so users can leave blank spots between buttons. Slot
 --pitch is one button plus one gap. MAX_SLOT is the rearrange-drop clamp:
@@ -11138,6 +11330,9 @@ function ToggleCharacterPanelDocument(charid, anchorToken, anchorPanel)
             if MaybeMinimizeCharacterWindow(key, element) then
                 return
             end
+            --clamp only after the dock check: dropping a character window
+            --past the screen edge is how it docks into the rail.
+            PanelDocument.ClampDroppedWindow(element, doc)
             RailRememberWindow(key, element.x, element.y, doc)
         end
         --a plain resize keeps a stuck window's recorded size current
@@ -11633,6 +11828,9 @@ local function OpenIconRailWindow(panelName, placement)
             if MaybeMinimizeCharacterWindow(key, element) then
                 return
             end
+            --clamp only after the dock check: dropping a character window
+            --past the screen edge is how it docks into the rail.
+            PanelDocument.ClampDroppedWindow(element, doc)
             RailRememberWindow(key, element.x, element.y, doc)
             --a cluster member dragged by hand STAYS in the cluster,
             --following its strip from the new relative spot (owner
@@ -11708,8 +11906,10 @@ local function OpenIconRailWindow(panelName, placement)
         end,
     }
     if placement ~= nil then
-        args.x = placement.x
-        args.y = placement.y
+        --startup restore and Views pass saved positions straight through,
+        --and positions saved before drops were clamped can be off screen.
+        args.x, args.y = PanelDocument.ClampWindowOnScreen(placement.x, placement.y,
+            placement.width, placement.height)
         args.width = placement.width
         args.height = placement.height
         args.anchor = placement.anchor
@@ -23728,7 +23928,8 @@ end
 --own iconRailIcon rules by selector count, so the accent wins at rest
 --and under the pointer.
 function MapButtons.Styles()
-    local styles = IconRailStyles()
+    --MergeTokens returns nil only for a nil rule list; IconRailStyles passes a literal.
+    local styles = IconRailStyles() --[[@as table[] ]]
     local extra = ThemeEngine.MergeTokens({
         {
             selectors = {"iconRailIcon", "mapButtonIcon"},

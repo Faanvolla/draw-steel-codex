@@ -3024,7 +3024,7 @@ end
 
 --- @class ContextMenuEntry
 --- @field text string
---- @field click fun(entry?: ContextMenuEntry):nil gui.ContextMenuItem calls it with this entry when the item is pressed.
+--- @field click? fun(entry?: ContextMenuEntry):nil gui.ContextMenuItem calls it with this entry when the item is pressed. Optional: a submenu-only entry has none.
 --- @field group nil|string When consecutive elements have a different group, a divider is drawn between them.
 --- @field check nil|boolean
 --- @field disabled nil|boolean

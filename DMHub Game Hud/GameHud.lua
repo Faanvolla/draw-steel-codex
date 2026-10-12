@@ -503,10 +503,8 @@ function GameHud.TooltipPlacementOutsideBox(minx, miny, maxx, maxy)
 	--the map. (This used dmhub.mouseLoc, which does not exist, so it never ran.)
 	local mouseLoc = dmhub.GetMouseWorldPoint()
 	local usable = dmhub.cameraUsableBounds
-	if usable ~= nil and (mouseLoc.x < usable.x1 or mouseLoc.x > usable.x2 or mouseLoc.y < usable.y1 or mouseLoc.y > usable.y2) then
-		mouseLoc = nil
-	end
-	if mouseLoc ~= nil then
+	local mouseOnMap = usable == nil or not (mouseLoc.x < usable.x1 or mouseLoc.x > usable.x2 or mouseLoc.y < usable.y1 or mouseLoc.y > usable.y2)
+	if mouseOnMap then
 		local cursorPad = 1.2
 		if mouseLoc.x - cursorPad < minx then minx = mouseLoc.x - cursorPad end
 		if mouseLoc.x + cursorPad > maxx then maxx = mouseLoc.x + cursorPad end
@@ -644,7 +642,7 @@ function GameHud.TokenMoving(self, token, path)
 	local diagonals = dmhub.GetSettingValue("truediagonals") and math.floor(path.numDiagonals/2) or 0
 
 	local distance = path.numSteps + diagonals
-	distance = distance * dmhub.FeetPerTile
+	distance = distance * dmhub.unitsPerSquare
 
     local forcedText = ""
 
@@ -681,20 +679,20 @@ function GameHud.TokenMoving(self, token, path)
 		local moveType = token.properties:CurrentMoveType()
 		if moveType == "walk" or moveType == "swim" then
 
-			local waterSteps = math.floor(path.waterSteps) * dmhub.FeetPerTile
+			local waterSteps = math.floor(path.waterSteps) * dmhub.unitsPerSquare
 			if waterSteps > 0 and waterSteps < distance then
 				text = string.format("%s; swim %s %s", text, MeasurementSystem.NativeToDisplayString(waterSteps), string.lower(MeasurementSystem.UnitName()))
 				walkAndSwim = true
 			end
 
-			local difficultDistance = math.floor(path.difficultSteps) * dmhub.FeetPerTile
+			local difficultDistance = math.floor(path.difficultSteps) * dmhub.unitsPerSquare
 			if difficultDistance == distance and distance > 0 then
 				text = string.format("%s; all in difficult terrain", text)
 			elseif difficultDistance > 0 then
 				text = string.format("%s; %s %s in difficult terrain", text, MeasurementSystem.NativeToDisplayString(difficultDistance), string.lower(MeasurementSystem.UnitName()))
 			end
 
-			local squeezeDistance = math.floor(path.squeezeSteps) * dmhub.FeetPerTile
+			local squeezeDistance = math.floor(path.squeezeSteps) * dmhub.unitsPerSquare
 			if squeezeDistance == distance and distance > 0 then
 				text = string.format("%s; squeezing through a tight space", text)
 			elseif squeezeDistance > 0 then
@@ -749,7 +747,7 @@ function GameHud.TokenMoving(self, token, path)
 
 		local distMoved = creature:DistanceMovedThisTurn()
 		if distMoved > 0 then
-			text = string.format("%s\nAlready moved %s %s this turn.", text, MeasurementSystem.NativeToDisplayString(distMoved*dmhub.FeetPerTile), string.lower(MeasurementSystem.UnitName()))
+			text = string.format("%s\nAlready moved %s %s this turn.", text, MeasurementSystem.NativeToDisplayString(distMoved*dmhub.unitsPerSquare), string.lower(MeasurementSystem.UnitName()))
 		end
 	end
 
@@ -2400,11 +2398,19 @@ end
 --so a source may read replicated state (a shared document, token
 --properties) without any monitor of its own. Dismiss hides only the
 --current text of the current notice; new text shows again.
+--text() may also return a controls table, re-read every tick, that decides
+--the banner buttons: {dismiss = nil|fun(), action = nil|{text, press}}.
+--With controls, Dismiss shows only when controls.dismiss is set (it runs
+--before the banner hides) and action adds a button on the left. Without
+--controls, Dismiss shows and only hides the banner.
 --Stored on Tip so hot-reloading this file keeps sources registered from
 --other modules (the Monster AI registers its "waiting on a player" notice).
 Tip.notices = Tip.notices or {}
 
----@param spec {id: string, priority: nil|number, text: fun(): nil|string}
+---@alias TipNoticeControls {dismiss: nil|fun(), action: nil|{text: string, press: fun()}}
+---@alias TipNoticeText fun(): string|nil, TipNoticeControls|nil
+
+---@param spec {id: string, priority: nil|number, text: TipNoticeText}
 function Tip.RegisterNotice(spec)
 	Tip.notices[spec.id] = spec
 end
@@ -2690,6 +2696,46 @@ function GameHud:CreateTipBanner()
 		end,
 	}
 
+	--A notice's extra button (e.g. "Select Shadow"), pinned to the left edge
+	--opposite Dismiss. Collapsed unless the notice's controls ask for it.
+	local actionButton = gui.Label{
+		id = "tipBannerAction",
+		classes = {"tipBannerContent", "sizeS", "collapsed"},
+		text = "",
+		color = "white",
+		fontSize = 14,
+		bold = true,
+		width = "auto",
+		height = "auto",
+		maxWidth = 150,
+		textWrap = true,
+		floating = true,
+		halign = "left",
+		valign = "center",
+		hmargin = 24,
+		--action: the {text, press} currently shown, set by _ApplyTipControls.
+		data = {},
+		styles = {
+			{
+				selectors = {"hover"},
+				color = "#ffe39a",
+				brightness = 1.1,
+			},
+			{
+				selectors = {"press"},
+				brightness = 0.7,
+			},
+		},
+		press = function(element)
+			local action = element.data.action
+			if action ~= nil then
+				action.press()
+				--hide at once; the next driver tick re-reads the controls.
+				element:SetClass("collapsed", true)
+			end
+		end,
+	}
+
 	local banner
 	banner = gui.Panel{
 		id = "tipBanner",
@@ -2753,15 +2799,46 @@ function GameHud:CreateTipBanner()
 
 		tipLabel,
 		dismissButton,
+		actionButton,
 	}
 
 	self.tipBanner = banner
 	self.tipBannerLabel = tipLabel
+	self.tipBannerDismiss = dismissButton
+	self.tipBannerAction = actionButton
 
 	return banner
 end
 
-function GameHud:ShowTip(text)
+--Set the banner buttons from a notice's controls (see Tip.RegisterNotice).
+--nil controls (every tip, and a notice that returns none) means a plain
+--Dismiss and no action button.
+---@param controls nil|TipNoticeControls
+function GameHud:_ApplyTipControls(controls)
+	local banner = self:try_get("tipBanner")
+	if banner == nil or not banner.valid then
+		return
+	end
+	banner.data.controls = controls
+
+	local dismiss = self:try_get("tipBannerDismiss")
+	if dismiss ~= nil and dismiss.valid then
+		dismiss:SetClass("collapsed", controls ~= nil and controls.dismiss == nil)
+	end
+
+	local actionButton = self:try_get("tipBannerAction")
+	if actionButton ~= nil and actionButton.valid then
+		local action = controls ~= nil and controls.action or nil
+		actionButton.data.action = action
+		if action ~= nil and actionButton.text ~= action.text then
+			actionButton.text = action.text
+		end
+		actionButton:SetClass("collapsed", action == nil)
+	end
+end
+
+---@param controls nil|TipNoticeControls
+function GameHud:ShowTip(text, controls)
 	local banner = self:try_get("tipBanner")
 	if banner == nil or not banner.valid then
 		return
@@ -2771,6 +2848,7 @@ function GameHud:ShowTip(text)
 		label.text = text or ""
 	end
 	banner.data.currentText = text or ""
+	self:_ApplyTipControls(controls)
 	banner:SetClass("visible", true)
 	banner.interactable = true
 end
@@ -2802,6 +2880,15 @@ function GameHud:HideTip()
 	local activeNotice = self:try_get("activeNoticeId")
 	if activeNotice ~= nil then
 		local banner = self:try_get("tipBanner")
+		--A notice that supplies its own dismiss (the Monster AI dismissing
+		--the hero's prompt) runs it; the banner hides either way.
+		local controls = banner ~= nil and banner.valid and banner.data.controls or nil
+		if controls ~= nil and controls.dismiss ~= nil then
+			local ok, err = pcall(controls.dismiss)
+			if not ok then
+				print("TIP:: notice dismiss failed:", err)
+			end
+		end
 		self._noticeDismissed = {
 			id = activeNotice,
 			text = banner ~= nil and banner.valid and banner.data.currentText or "",
@@ -2829,26 +2916,28 @@ function GameHud:_HideNoticeBanner()
 	end
 end
 
---Poll every notice source; return the highest-priority one with text.
+--Poll every notice source; return the highest-priority one with text, and
+--its controls.
 function GameHud:_TipFindNotice()
-	local best, bestText = nil, nil
+	local best, bestText, bestControls = nil, nil, nil
 	for _, spec in pairs(Tip.notices) do
-		local ok, text = pcall(spec.text)
+		local ok, text, controls = pcall(spec.text)
 		if ok and type(text) == "string" and text ~= "" then
 			if best == nil or (spec.priority or 0) > (best.priority or 0) then
 				best = spec
 				bestText = text
+				bestControls = type(controls) == "table" and controls or nil
 			end
 		end
 	end
-	return best, bestText
+	return best, bestText, bestControls
 end
 
 --Notice half of the driver tick. Returns true when a notice owns the
 --banner this tick (shown, dismissed, or blocked by a dialog), in which case
 --the tip half must not run.
 function GameHud:_TipDriverNoticeTick()
-	local notice, noticeText = self:_TipFindNotice()
+	local notice, noticeText, noticeControls = self:_TipFindNotice()
 	local activeNotice = self:try_get("activeNoticeId")
 	if notice == nil then
 		if activeNotice ~= nil then
@@ -2879,7 +2968,10 @@ function GameHud:_TipDriverNoticeTick()
 	if activeNotice ~= notice.id or currentText ~= noticeText
 		or (banner ~= nil and banner.valid and not banner:HasClass("visible")) then
 		self.activeNoticeId = notice.id
-		self:ShowTip(noticeText)
+		self:ShowTip(noticeText, noticeControls)
+	else
+		--Same text, but the buttons can still change (the hero got selected).
+		self:_ApplyTipControls(noticeControls)
 	end
 	return true
 end

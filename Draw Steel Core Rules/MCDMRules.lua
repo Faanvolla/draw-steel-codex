@@ -982,6 +982,9 @@ GameSystem.RegisterFeatureTag{ name = "Hidden", defaultExcluded = true }
 GameSystem.RegisterFeatureTag{ name = "Ability", filterable = false }
 GameSystem.RegisterFeatureTag{ name = "Trigger", filterable = false }
 GameSystem.RegisterFeatureTag{ name = "Core Feature" }
+--Marks a kit-less class's kit stand-in choices (Prayer, Ward, Enchantment,
+--Augmentation, Summoner's Kit): the EotW hero sheet shows the pick in its Kit card.
+GameSystem.RegisterFeatureTag{ name = "Kit Equivalent", filterable = false }
 GameSystem.RegisterFeatureMode("Combat")
 GameSystem.RegisterFeatureMode("Exploration")
 GameSystem.RegisterFeatureMode("Montage")

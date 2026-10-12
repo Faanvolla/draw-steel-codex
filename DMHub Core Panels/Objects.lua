@@ -90,6 +90,95 @@ local function MapPackObjectsStatusText(info, creatorName)
 	return string.format("This map comes with %s, unlocked along with the map.", objects)
 end
 
+--Props packs (PropsPackManager.cs, PROPS_PACKS_PLAN.md): each synced pack is
+--a folder at the library root holding a folder per bundle. A bundle's objects
+--are loaded only when its folder is opened or a search hits it, so until then
+--the folder is empty and a status line under it says why.
+
+--{pack = PropsPackInfo, bundle = nil|PropsPackBundleInfo} for a pack or
+--bundle folder, else nil.
+local function PropsPackFolderInfo(nodeid)
+	local folder = propspacks.GetFolder(nodeid)
+	if folder == nil then
+		return nil
+	end
+	local pack = propspacks.GetPack(folder.pack)
+	if pack == nil then
+		return nil
+	end
+	if folder.bundle == nil then
+		return {pack = pack}
+	end
+	for _,bundle in ipairs(pack.bundles) do
+		if bundle.key == folder.bundle then
+			return {pack = pack, bundle = bundle}
+		end
+	end
+	return nil
+end
+
+--the line under a pack or bundle folder, or nil when there is nothing to say.
+local function PropsPackStatusText(info, creatorName)
+	if info == nil then
+		return nil
+	end
+	local pack = info.pack
+	local bundle = info.bundle
+	if bundle == nil then
+		if pack.access then
+			return nil
+		end
+		local requirement = mod.shared.MapPackPatreonText({tier = pack.tier, tierName = pack.tierName, owned = false}, creatorName)
+		return string.format("%d props in %d bundles. %s.", pack.count, #pack.bundles, requirement or "Locked")
+	end
+	if bundle.status == "loading" or bundle.status == "unloaded" then
+		return string.format("Loading %d props...", bundle.count)
+	end
+	if bundle.status == "error" then
+		return "Could not load these props."
+	end
+	if bundle.status == "locked" then
+		local requirement = mod.shared.MapPackPatreonText({tier = bundle.tier, tierName = bundle.tierName, owned = false}, creatorName)
+		return string.format("%d props. %s.", bundle.count, requirement or "Locked")
+	end
+	return nil
+end
+
+--Loads every unlocked, not yet loaded bundle that has an object matching
+--text. Returns true if it started any load.
+local function LoadPropsPackBundlesMatching(text)
+	local hits = propspacks.Search{text = text, maxResults = 2000}
+	if #hits == 0 then
+		return false
+	end
+	local wanted = {}
+	for _,hit in ipairs(hits) do
+		wanted[hit.pack .. "/" .. hit.bundle] = {pack = hit.pack, bundle = hit.bundle}
+	end
+	local started = false
+	for _,pack in ipairs(propspacks.packs) do
+		for _,bundle in ipairs(pack.bundles) do
+			if wanted[pack.id .. "/" .. bundle.key] ~= nil and bundle.status == "unloaded" then
+				if propspacks.LoadBundle(pack.id, bundle.key) then
+					started = true
+				end
+			end
+		end
+	end
+	return started
+end
+
+local function PropsPackBundlesLoading()
+	for _,pack in ipairs(propspacks.packs) do
+		for _,bundle in ipairs(pack.bundles) do
+			if bundle.status == "loading" then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 mod.shared.selectedObjectEntries = {}
 
 local ObjectPanelHeight = 30
@@ -983,6 +1072,12 @@ local function CreateObjectFolder(nodeid, parentElement, options)
 		isCollapsed = false
 	end
 
+	--a props pack's folder or one of its bundle folders; see PropsPackFolderInfo.
+	local propsFolder = nil
+	if fromMapPack then
+		propsFolder = propspacks.GetFolder(nodeid)
+	end
+
 	---@type Panel
 	local folderPane = nil
 
@@ -996,13 +1091,32 @@ local function CreateObjectFolder(nodeid, parentElement, options)
 
 		isCollapsed = false
 
-		local updateSearch = function(element)
+		local updateSearch
+		updateSearch = function(element)
 			local text = element.text
 			if string.len(text) <= 1 then
 				--one character searches just count as no search.
 				text = ""
 			end
 			local count = 0
+			if text ~= "" and LoadPropsPackBundlesMatching(text) then
+				--props pack bundles with matches are loading: search again
+				--once they have landed so their objects show up too.
+				local searchedText = element.text
+				local function rerun()
+					dmhub.Schedule(0.5, function()
+						if mod.unloaded or not element.valid or element.text ~= searchedText then
+							return
+						end
+						if PropsPackBundlesLoading() then
+							rerun()
+						else
+							updateSearch(element)
+						end
+					end)
+				end
+				rerun()
+			end
 			if text ~= "" then
 				local nodeids = node:GetNodeIdsMatchingSearch(element.text)
 				--GetNodeIdsMatchingSearch returns nil if the C# search aborted (e.g. it hit a
@@ -1202,7 +1316,8 @@ local function CreateObjectFolder(nodeid, parentElement, options)
 							end
 
 						end
-						element:SetClass('empty', nchildren < 1)
+						--a props bundle folder is empty until it is opened and loads.
+						element:SetClass('empty', nchildren < 1 and (propsFolder == nil or propsFolder.bundle == nil))
 					end,
 					refreshCollapse = function(element)
 						element:SetClass('expanded', not isCollapsed)
@@ -1237,6 +1352,11 @@ local function CreateObjectFolder(nodeid, parentElement, options)
 
 						triangle:SetClass('expanded', not isCollapsed)
 						folderPane.data.refreshCollapsed(folderPane)
+
+						if propsFolder ~= nil and propsFolder.bundle ~= nil and not isCollapsed then
+							--fills the folder in when it lands (the objects category refreshes).
+							propspacks.LoadBundle(propsFolder.pack, propsFolder.bundle)
+						end
 
 						if rootPanel ~= nil and not isCollapsed then
 							--send the parent of the objects an expand event to collapse other areas.
@@ -1415,6 +1535,96 @@ local function CreateObjectFolder(nodeid, parentElement, options)
 				end
 			end)
 		end
+	elseif propsFolder ~= nil then
+		--under a props pack's folder: who made it, and what unlocks it while
+		--locked; under a bundle folder: loading, locked or failed.
+		local creatorName = nil
+		local children = {}
+		local creditLogo = nil
+		local creditLabel = nil
+		if propsFolder.bundle == nil then
+			creditLogo = gui.Panel{
+				classes = {"collapsed"},
+				width = 16,
+				height = 16,
+				valign = "center",
+				hmargin = 4,
+				bgcolor = "white",
+			}
+			creditLabel = gui.Label{
+				width = "auto",
+				height = "auto",
+				maxWidth = 240,
+				valign = "center",
+				fontSize = 12,
+				italics = true,
+				color = "#bbbbbb",
+				text = "",
+			}
+			children[#children+1] = gui.Panel{
+				width = "auto",
+				height = "auto",
+				halign = "left",
+				flow = "horizontal",
+				children = {creditLogo, creditLabel},
+			}
+		end
+		local statusLabel
+		statusLabel = gui.Label{
+			classes = {"collapsed"},
+			width = 260,
+			height = "auto",
+			halign = "left",
+			fontSize = 12,
+			italics = true,
+			color = "#bbbbbb",
+			textWrap = true,
+			create = function(element)
+				element:FireEvent("refreshAssets")
+			end,
+			refreshAssets = function(element)
+				local info = PropsPackFolderInfo(nodeid)
+				local text = PropsPackStatusText(info, creatorName)
+				element:SetClass("collapsed", text == nil)
+				if text ~= nil then
+					element.text = text
+				end
+				element.data.error = info ~= nil and info.bundle ~= nil and info.bundle.error or nil
+			end,
+			hover = function(element)
+				if element.data.error ~= nil and element.data.error ~= "" then
+					gui.Tooltip(element.data.error)(element)
+				end
+			end,
+		}
+		children[#children+1] = statusLabel
+		creditPanel = gui.Panel{
+			classes = {cond(isCollapsed, "collapsed")},
+			x = 18,
+			width = "auto",
+			height = "auto",
+			halign = "left",
+			flow = "vertical",
+			vmargin = 2,
+			children = children,
+		}
+
+		mod.shared.GetMapPackCreator({pack = propsFolder.pack}, function(creator)
+			creatorName = creator.displayName
+			if statusLabel.valid then
+				statusLabel:FireEvent("refreshAssets")
+			end
+			if creditLabel == nil or not creditLabel.valid then
+				return
+			end
+			if (creator.displayName or "") ~= "" then
+				creditLabel.text = string.format("From %s", creator.displayName)
+			end
+			if (creator.logo or "") ~= "" and creditLogo ~= nil then
+				creditLogo.bgimage = creator.logo
+				creditLogo:SetClass("collapsed", false)
+			end
+		end)
 	end
 
 	local elements = {}
@@ -1654,13 +1864,24 @@ local function CreateObjectFolder(nodeid, parentElement, options)
 						end
 					end
 
-					--the current map's "Objects for this map" folder goes first.
+					--the current map's "Objects for this map" folder goes first,
+					--the game's own folders next, props packs last.
 					local pinnedFolder = MapPackObjectsFolderId()
+					local function rank(folder)
+						local folderNode = folder.data.node()
+						if folderNode.id == pinnedFolder then
+							return 0
+						end
+						if nodeid == '' and folderNode.fromMapPack and propspacks.GetFolder(folderNode.id) ~= nil then
+							return 2
+						end
+						return 1
+					end
 					table.sort(folderChildren, function(a,b)
-						local aPinned = a.data.node().id == pinnedFolder
-						local bPinned = b.data.node().id == pinnedFolder
-						if aPinned ~= bPinned then
-							return aPinned
+						local aRank = rank(a)
+						local bRank = rank(b)
+						if aRank ~= bRank then
+							return aRank < bRank
 						end
 						return a.data.node().description < b.data.node().description
 					end)

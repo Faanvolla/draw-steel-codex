@@ -62,6 +62,7 @@ local mod = dmhub.GetModLoading()
 --- @field interceptStrikes? boolean "modifytrigger": if true, intercepts strikes.
 --- @field classid? string "spellcasting": the spellcasting type id (a class id, "monster" or "none").
 --- @field spellcastingLevel? number "spellcasting": caster level (monster spellcasting).
+--- @field spellcasting? SpellcastingFeature "spellcasting": the spellcasting feature it grants (created by the type's init).
 CharacterModifier = RegisterGameType("CharacterModifier")
 
 CharacterModifier.name = "UNKNOWN"

@@ -488,6 +488,9 @@ local function ResolveSection(m, doc, beat, section, heroes, optionIndex, decide
             userid = anchor ~= nil and anchor.ownerId or nil,
             entryName = section.name,
             source = "Narrative",
+            --the whole party chose this, so its Intelligence is everyone's,
+            --not the anchor's.
+            splitIntelligence = true,
             doc = doc,
         })
         for _, charid in ipairs(newAllies or {}) do
@@ -664,6 +667,7 @@ function EncounterNarrative.HostTick(script, beat, beatIndex)
         doc:CompleteChange("Narrative: the party has arrived", { undoable = false })
         m = doc.data.narrative
         printf("EotW narrative: beat %d -- the party has arrived", beatIndex)
+        printf("[EOTWPROF] server=%.3f app=%.3f host: opening beat opened (party in)", dmhub.serverTimeMilliseconds * 0.001, dmhub.Time())
     end
 
     if m.phase == "done" then

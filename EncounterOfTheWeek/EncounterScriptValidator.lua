@@ -356,7 +356,7 @@ local function Report(parse)
                         for t in ipairs(v.roll.tiers) do
                             local label = string.format("tier %d: ", t)
                             if t == 4 then
-                                label = "critical: "
+                                label = cond(v.roll.critAuto, "critical (automatic): ", "critical: ")
                             end
                             if v.roll.teasers[t] ~= nil then
                                 Row(depth + 1, "note", "%steaser '%s'", label, v.roll.teasers[t])

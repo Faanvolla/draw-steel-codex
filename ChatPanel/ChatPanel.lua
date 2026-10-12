@@ -1509,7 +1509,7 @@ CreateChatPanel = function()
 			SetImageDropPreview(nil)
 		end,
 		dropfiles = DropChatImages,
-		width = 330,
+		width = "100%",
 		text = "preview text",
 		italics = true,
 		monitorGame = mod:GetDocumentSnapshot("chatEvents").path,
@@ -1606,8 +1606,11 @@ CreateChatPanel = function()
             },
         },
         flow = "horizontal",
-        width = 330,
-        height = 20,
+        --In a narrow chat window the language picker moves to a second line.
+        --It used to stick out past the edge of the window.
+        wrap = true,
+        width = "100%",
+        height = "auto",
         create = function(element)
             element:FireEventTree("refreshSelectedTokens")
         end,

@@ -16,6 +16,16 @@ vocabulary, `CreatureFacts`). The montage parts are in
 `EncounterMontage.lua`, `EncounterMontageStage.lua`). Tests are in
 `tests/encounter_script_test.lua`.
 
+**Companions** (montages only, 2026-10-08). A hero who approaches an
+entry may take companions along. Their knack versions (`#### If ...`),
+secret options (`Allow` lines) and languages (garbled speech, `PC speaks
+X`) count for the turn, credited as "..., thanks to Mira". **Edge and bane
+riders, and the other scene conditions, read only the hero making the
+test**, so a companion's weakness never puts a bane on the roll -- and a
+companion's language does not earn an `Edge: you speak X` either. Write a
+language that should help as a knack version or a secret option if a
+companion should be able to supply it.
+
 ## 1. The four ways a knack shows up
 
 ### Edge / bane riders
@@ -222,22 +232,23 @@ These need no authoring. They work in every montage.
 |---|---|
 | Brawny | A failed (tier 1) Might test: the hero is offered "lose 1d6 + level Stamina, raise one tier". |
 | Lucky Dog | The same, for a test that lists an intrigue skill. |
-| Put Your Back Into It! | An assist that rolls tier 1 imposes no bane. Once per montage, the perk's owner is offered "turn an ally's tier 1 into tier 2" (not inside a solo delve). |
+| Put Your Back Into It! | An assist that rolls tier 1 imposes no bane. Once per montage, the perk's owner is offered "turn an ally's tier 1 into tier 2" (inside a delve, only a companion of the delving hero). |
+| Pardon My Friend | When the hero fails (tier 1) a Presence test, a companion with the perk may make the test instead, with a bane: Presence + their own skill, edges and perks, on the test's table. Their roll replaces the hero's. Once per test. |
 | Team Leader | In round 1, before anyone acts: spend a hero token, and every hero tests (and assists) as if they had the leader's exploration skills. |
-| Teamwork | In round 1, the hero may both take a test and assist one, once. |
-| Ritualist | Once a round, bless the test of the hero at an entry (or your own): a double edge. A button appears for the Ritualist's player while the hero chooses. |
+| Teamwork | Everyone may now approach AND go along each round, so Teamwork lets the hero go along with two approaches in round 1. |
+| Ritualist | Once a round, bless the test of the hero at an entry: your own, or the hero you are accompanying (the ritual needs a touch). A double edge. A button appears for the Ritualist's player while the hero chooses. |
 | Born Tracker | An edge on a test that lists Track or Navigate. |
 | Polymath / Handy | +1 on a lore / crafting test when the hero has none of the listed skills. |
 | Power Player | Might may stand in for the listed characteristic on a Brag, Flirt or Intimidate test. |
 | Mighty Leaps (Fury) | A Might test that lists Jump never lands below tier 2. |
 | any skill-scoped feature edge | The montage roll now passes the test's skills to the modifier query. So Wode Elf Glamor (Sneak), High Elf Glamor (Persuade), Perseverance (Endurance), Four-Armed Athletics and the like apply exactly as on a sheet-rolled skill test. |
 
-Perk offers time out after 30 seconds, like the assist window.
+Perk offers time out after 30 seconds.
 
 **Not yet implemented:**
 - Wood Wise (needs a reroll inside the dice dialog).
 - Area of Expertise and Specialist (they need the perk's chosen skill).
-- Pardon My Friend and Charming Liar.
+- Charming Liar.
 
 ## 4. The authoring standard
 

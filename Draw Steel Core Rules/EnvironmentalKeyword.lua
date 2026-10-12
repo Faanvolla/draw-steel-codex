@@ -24,6 +24,7 @@ local mod = dmhub.GetModLoading()
 --- @field concealment boolean If true, an area marked with this keyword grants concealment. Uses the same terrain rule flag name as tiles (asset.rules.concealment).
 --- @field climbable boolean If true, an area marked with this keyword can be climbed, like a climbable wall: creatures in it may climb up to the ceiling of the floor.
 --- @field climbersOnly boolean Only meaningful when climbable is true: restricts climbing to natural climbers (climb speed >= walk speed), matching walls' "Climbable (Climbers Only)". Uses the same terrain rule flag name as tiles (rules.climbersOnly).
+--- @field stepped boolean "Stepped Terrain": a 1-square change in ground height whose HIGHER tile is in an area marked with this keyword is a sharp step, not a slope. Forced movement bangs into the step going up (a collision) and is carried out over it going down (falling at the end), exactly like a cliff. Walking is unaffected. Solid building blocks are always stepped without it. Engine: Aura.stepped -> TileGameRules.stepped, read by CharacterToken.FindStraightLinePath.
 --- @field dynamicLight boolean If true, the Map Markup zone palette offers the "Dynamic Light" option for this keyword (its zones/blanket apply only where the light added by light sources is at or below a per-map threshold; ambient light is ignored). Purely a UI/eligibility gate: the sampling and carving live in MapMarkupPanel.lua; unchecking disables an already-configured threshold without deleting it.
 --- @field dispels string[]|nil Ids (environmentalKeywords table keys) of keywords this keyword dispels. Painting a zone of this keyword deletes the overlap from zones of a dispelled keyword (and a dispelled keyword cannot be painted over this one); an aura carrying this keyword suppresses zones of dispelled keywords beneath it for as long as the aura covers them. No class default: assigned per instance by the editor (a class-level default table would be shared-mutable).
 --- @field movedamage string Damage type dealt to creatures moving through an area with this keyword, or "none" for no damage. Uses the same field names as Aura so the values copy straight onto zone auras.
@@ -59,6 +60,7 @@ EnvironmentalKeyword.water = false
 EnvironmentalKeyword.concealment = false
 EnvironmentalKeyword.climbable = false
 EnvironmentalKeyword.climbersOnly = false
+EnvironmentalKeyword.stepped = false
 EnvironmentalKeyword.dynamicLight = false
 EnvironmentalKeyword.movedamage = "none"
 EnvironmentalKeyword.damage = 0
@@ -158,6 +160,9 @@ function EnvironmentalKeyword.ApplyToAura(auraDef, keywordid)
 			if keyword:try_get("climbersOnly", false) == true then
 				auraDef.climbersOnly = true
 			end
+		end
+		if keyword:try_get("stepped", false) == true then
+			auraDef.stepped = true
 		end
 		--the area extends one tile outward for enter/start-of-turn trigger
 		--contact (adjacent tiles never take terrain rules or modifiers, so
@@ -2065,6 +2070,21 @@ local SetData = function(tableName, keywordPanel, keyid)
 			end,
 		},
 		climbersOnlyCheck,
+	}
+
+	--Stepped Terrain: 1-square height changes at the edge of this area are
+	--sharp steps rather than slopes, but only for forced movement.
+	children[#children+1] = gui.Panel{
+		classes = {"formStackedRow"},
+		gui.Check{
+			value = keyword:try_get("stepped", false),
+			text = "Stepped Terrain",
+			hover = gui.Tooltip("A 1-square rise or drop whose higher side is in this area is a sharp step, not a slope. A creature force moved into the step collides with it, and one force moved off it is carried out over the edge and falls, as at a cliff. Walking is unaffected. Solid blocks are always stepped."),
+			change = function(element)
+				keyword.stepped = element.value
+				UploadKeyword()
+			end,
+		},
 	}
 
 	--How far up a zone painted with this keyword reaches, by default. Zone bands

@@ -26,8 +26,6 @@ SpellRenderStyles = {
 		textAlignment = "left",
 		height = 'auto',
 		halign = 'left',
-
-		textAlignment = 'left',
 	},
 
 	gui.Style{
@@ -68,7 +66,6 @@ SpellRenderStyles = {
 
 		bgimage = 'panels/square.png',
 		bgcolor = '#666666',
-		halign = "left",
 		width = '100%',
 		height = 1,
 		halign = 'center',
@@ -366,7 +363,6 @@ local SpellsDialogStyles = {
 		height = 680,
 		halign = 'center',
 		valign = 'center',
-		bgcolor = 'white',
 		flow = 'vertical',
 	},
 	gui.Style{

@@ -3178,8 +3178,9 @@ function DSVictoryScreen.Create()
 
         showTitle = function(element, g)
             if g ~= element.data.generation then return end
-            --play the same dramatic-banner sword sound as the swords sweep apart.
-            audio.FireSoundEvent(DramaticBanner.defaultSound)
+            --big-banner sting as the swords sweep apart: positive for a
+            --victory, negative for a defeat.
+            audio.FireSoundEvent(cond(element.data.outcome == "defeat", "Notify.BigBanner_Neg", "Notify.BigBanner_Pos"))
             titleLabel:SetClass("shown", true)
             titleShadow:SetClass("shown", true)
             titleClip:SetClass("titleClip-closed", false)
@@ -3197,6 +3198,7 @@ function DSVictoryScreen.Create()
                 --ITSELF -- the fade rule {"victoryFade","shown"} matches same-element, like
                 --the title. A plain SetClass would only mark the card, leaving leaves hidden.
                 card:SetClassTree("shown", true)
+                audio.FireSoundEvent("Notify.Victory_Card")
             end
         end,
 

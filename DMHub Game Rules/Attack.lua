@@ -21,6 +21,7 @@ local mod = dmhub.GetModLoading()
 --- @field meleeRange nil|number If set, the attack is melee when within this range (for thrown weapons).
 --- @field attrid nil|string Attribute id used for this attack (e.g. "str", "dex").
 --- @field consumeAmmo nil|table<string, number> Map of item id to quantity consumed as ammo.
+--- @field ammoType nil|string Equipment category of the ammunition the weapon uses (its ammunitionType).
 --- @field outOfAmmo nil|boolean If true, there is no available ammo for this attack.
 --- @field properties nil|table Weapon property objects keyed by property id.
 --- @field weaponid nil|string Gear id of the equipped weapon this attack comes from.

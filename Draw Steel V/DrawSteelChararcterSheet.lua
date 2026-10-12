@@ -1212,7 +1212,8 @@ local function CreateAbilityListPanel()
 
     ThemeEngine.OnThemeChanged(mod, function()
         if resultPanel ~= nil and resultPanel.valid then
-            resultPanel.styles = buildActionMenuStyles()
+            --MergeTokens returns nil only for a nil rule list; this one is a literal.
+            resultPanel.styles = buildActionMenuStyles() --[[@as StyleArgs[] ]]
         end
     end)
 
@@ -2555,6 +2556,7 @@ local EditResistanceEntry = function(creature, resistanceEntry, params)
                     end,
 
                     refresh = function(element)
+                        ---@cast element Dropdown
                         element.idChosen = cond(resistanceEntry.dr >= 0, "immunity", "vulnerability")
                     end,
                 },
@@ -5108,7 +5110,11 @@ local function DSCharSheet()
                                             end,
                                         }
                                     }
-                                    CharacterSheet.instance:AddChild(CharacterSkillDialog.CreateAsChild(options))
+                                    --nil when the sheet's token is not a hero or follower.
+                                    local dialog = CharacterSkillDialog.CreateAsChild(options)
+                                    if dialog ~= nil then
+                                        CharacterSheet.instance:AddChild(dialog)
+                                    end
                                 end,
                             },
 
@@ -5670,7 +5676,8 @@ local function DSCharSheet()
                                         end
                                         ThemeEngine.OnThemeChanged(mod, function()
                                             if element ~= nil and element.valid then
-                                                element.styles = rebuild()
+                                                --MergeTokens returns nil only for a nil rule list; this one is a literal.
+                                                element.styles = rebuild() --[[@as StyleArgs[] ]]
                                             end
                                         end)
                                     end,
@@ -6331,7 +6338,6 @@ local function DSCharSheet()
 
                             width = 220,
                             height = 70,
-                            halign = "horizontal",
                             valign = "top",
 
                             lmargin = 20,
@@ -6478,7 +6484,6 @@ local function DSCharSheet()
 
                             width = 120,
                             height = 120,
-                            halign = "horizontal",
                             valign = "center",
 
                             lmargin = -2,
@@ -6706,8 +6711,6 @@ local function DSCharSheet()
                                 bgcolor = "clear",
                                 width = "auto",
                                 height = "50%",
-                                bgimage = true,
-                                bgcolor = "clear",
 
                                 valign = "center",
                                 halign = "center",

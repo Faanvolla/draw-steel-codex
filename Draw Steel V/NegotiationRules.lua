@@ -840,8 +840,8 @@ do
         { id = "traits", label = "Motivations & Pitfalls", kind = "recordList", storage = "document", groupBy = "kind",
             columns = {
                 { id = "kind", label = "Kind", kind = "enum", options = {
-                    { id = "motivation", text = "Motivation", heading = "What they want (motivations)" },
-                    { id = "pitfall", text = "Pitfall", heading = "Never touch (pitfalls)" },
+                    { id = "motivation", text = "Motivation", heading = "Motivations" },
+                    { id = "pitfall", text = "Pitfall", heading = "Pitfalls" },
                 } },
                 { id = "name", label = "Name", kind = "string" },
                 { id = "line", label = "Line", kind = "text", placeholder = "What they say about it (their voice)" },
@@ -979,8 +979,8 @@ CustomDocument.docTypeInfo.negotiator = {
         { id = "traits", label = "Motivations & Pitfalls", kind = "recordList", groupBy = "kind",
             columns = {
                 { id = "kind", label = "Kind", kind = "enum", options = {
-                    { id = "motivation", text = "Motivation", heading = "What they want (motivations)" },
-                    { id = "pitfall", text = "Pitfall", heading = "Never touch (pitfalls)" },
+                    { id = "motivation", text = "Motivation", heading = "Motivations" },
+                    { id = "pitfall", text = "Pitfall", heading = "Pitfalls" },
                 } },
                 { id = "name", label = "Name", kind = "string" },
                 { id = "line", label = "Line", kind = "text", placeholder = "What they say about it (their voice)" },
@@ -1791,7 +1791,7 @@ function NegotiationDocument:EditPanel()
             children[#children + 1] = gui.Label{
                 classes = { "bold" },
                 width = "auto", height = "auto", halign = "left", vmargin = 4,
-                text = kind == "motivation" and "What they want (motivations)" or "Never touch (pitfalls)",
+                text = kind == "motivation" and "Motivations" or "Pitfalls",
             }
             for _, t in ipairs(doc:try_get("traits", {})) do
                 if t.kind == kind then
@@ -2055,18 +2055,17 @@ function NegotiationDocument:EditPanel()
     }
 end
 
-function NegotiationDocument:DisplayPanel()
-    local doc = self
+local function NegotiationReadPanel(doc)
     local resultPanel
 
     local interest, patience = doc:StartingMeters()
     local att = NegotiationRules.AttitudeById(doc:try_get("attitude", "suspicious"))
 
     local function md(text, classes)
-        return gui.Label{
+        return CustomDocument.ReadProse{
             classes = classes or { "sizeS" },
             width = "95%", height = "auto", halign = "left",
-            markdown = true, textWrap = true, textAlignment = "topleft",
+            textWrap = true, textAlignment = "topleft",
             vmargin = 2,
             text = text,
         }
@@ -2074,7 +2073,7 @@ function NegotiationDocument:DisplayPanel()
 
     local SectionHeader = CustomDocument.ReadSectionHeader
 
-    --want / never-touch, with the voiced lines.
+    --motivations / pitfalls, with the voiced lines.
     local function TraitGroup(kind, heading)
         local children = {}
         for _, t in ipairs(doc:try_get("traits", {})) do
@@ -2093,8 +2092,8 @@ function NegotiationDocument:DisplayPanel()
     end
 
     local traitGroups = {}
-    traitGroups[#traitGroups + 1] = TraitGroup("motivation", "What they want")
-    traitGroups[#traitGroups + 1] = TraitGroup("pitfall", "Never touch")
+    traitGroups[#traitGroups + 1] = TraitGroup("motivation", "Motivations")
+    traitGroups[#traitGroups + 1] = TraitGroup("pitfall", "Pitfalls")
     local traitsPanel = CustomDocument.ReadColumns(traitGroups)
 
     local loopColumns = {}
@@ -2205,7 +2204,7 @@ function NegotiationDocument:DisplayPanel()
         gui.Panel{ width = 1, height = 12 },
     }
 
-    resultPanel = gui.Panel{
+    resultPanel = gui.Panel(MarkdownDocument.GlossaryHostArgs{
         width = "100%", height = "100%", flow = "vertical",
         body,
         --marks where the scrolling page ends
@@ -2218,9 +2217,13 @@ function NegotiationDocument:DisplayPanel()
                 doc:BeginFromPage(element, resultPanel)
             end,
         } or nil,
-    }
+    })
 
     return resultPanel
+end
+
+function NegotiationDocument:DisplayPanel()
+    return CustomDocument.ReadWithGlossaryHints(NegotiationReadPanel, self, not dmhub.isDM)
 end
 
 --Begin Negotiation as the page's button does it: present the stage, then

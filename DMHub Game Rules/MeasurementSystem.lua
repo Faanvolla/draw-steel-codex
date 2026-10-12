@@ -181,7 +181,7 @@ dmhub.DistanceDisplayFunction = function(num)
     local sys = MeasurementSystem.CurrentSystem()
     local n = tonumber(num)
     if sys == nil or n == nil then
-        return num
+        return tostring(num)
     end
 
     local display = MeasurementSystem.NativeToDisplay(n, sys)

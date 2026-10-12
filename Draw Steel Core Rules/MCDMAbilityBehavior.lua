@@ -435,6 +435,8 @@ local g_tablesLookup = {}
 local function GetTableNameRegex(tableName, key, nameKey)
     nameKey = nameKey or "name"
     local table = dmhub.GetTable(tableName) or {}
+    --rows of whichever table was named; only their name fields are read.
+    ---@cast table table<string, table>
     g_tablesLookup[tableName] = {}
     local pattern = ""
     for k,v in pairs(table) do
@@ -684,6 +686,8 @@ local g_rulePatterns = {
 
             local description = string.format("You may %s the target %d square%s", match.movement, range, range > 1 and "s" or "")
 
+            --ability fields to overwrite on the standard ability's clone.
+            ---@type table<string, any>
             local abilityAttr = {
                 name = string.gsub(match.movement, "^%l", string.upper) .. "!",
                 range = range,
@@ -822,7 +826,10 @@ local g_rulePatterns = {
             end
 
             local movementAllowed = casterToken.properties:CurrentMovementSpeed() - movedThisTurn
-            abilityClone.range = math.min(tonumber(match.distance), movementAllowed)
+            --the pattern only captures digits, so this always parses.
+            local jumpDistance = tonumber(match.distance)
+            ---@cast jumpDistance -nil
+            abilityClone.range = math.min(jumpDistance, movementAllowed)
 
             local startingMovement = options.symbols.cast.spacesMoved
             InvokeAbility(ability, abilityClone, casterToken, casterToken, options)
@@ -2025,6 +2032,7 @@ function ActivatedAbilityDrawSteelCommandBehavior:ExecuteCommandInternal(ability
                     return
                 end
 
+                ---@type boolean?
                 local result = false
                 if options.powerRollPass == nil or options.powerRollPass == (entry.pass or "target") then
                     result = entry.execute(self, ability, casterToken, targetToken, options, match)
@@ -2431,7 +2439,7 @@ end
 
 --- Parse "or" choice groups out of power table rule text.
 --- @param text string
---- @return nil|{alts: {s: number, e: number}[], suffixS: number, suffixE: number}[]
+--- @return nil|{alts: {s: number, e: number, useSuffix: boolean}[], suffixS: number, suffixE: number}[]
 function ActivatedAbilityDrawSteelCommandBehavior.ParseOrGroups(text)
     if type(text) ~= "string" or text == "" then
         return nil
@@ -2645,7 +2653,7 @@ end
 
 --- @param caster creature
 --- @param rule string
---- @param notes {string}|nil
+--- @param notes? string[] Explanations of the substitutions made are appended here.
 --- @return string
 function ActivatedAbilityDrawSteelCommandBehavior.NormalizeDamageRuleTextForCreature(caster, rule, notes)
     local original = rule
@@ -2695,11 +2703,12 @@ end
 
 --- @param caster creature
 --- @param rule string
---- @param notes {string}|nil
+--- @param notes? string[] Explanations of the substitutions made are appended here.
 --- @return string
 function ActivatedAbilityDrawSteelCommandBehavior.NormalizeRuleTextForCreature(caster, rule, notes)
     local result = ActivatedAbilityDrawSteelCommandBehavior.NormalizeDamageRuleTextForCreature(caster, rule, notes)
-    result = StringInterpolateGoblinScript(result, caster)
+    --non-nil: result is a string.
+    result = StringInterpolateGoblinScript(result, caster) --[[@as string]]
     return result
 end
 
@@ -2848,8 +2857,8 @@ local g_diagnosticStopwords = {
     -- positives during the Silver+ compendium sweep. Most are
     -- modals, pronouns, or quantifiers that share short edit
     -- distance with mechanical vocab (e.g. "can" -> "cant",
-    -- "other" -> "another", "whose" -> "choose").
-    ["can"] = true, ["cant"] = true,
+    -- "other" -> "another", "whose" -> "choose"). ("can" is listed above.)
+    ["cant"] = true,
     ["other"] = true, ["others"] = true,
     ["whose"] = true, ["whom"] = true, ["who"] = true,
     ["which"] = true, ["whether"] = true,
@@ -3453,7 +3462,9 @@ local function DiagnoseUnparsedSegment(segment, vocab, compendiumKeywords, known
     -- knownWordsLookup is the union of every vocab bucket so we
     -- don't suggest typo corrections for words that legitimately
     -- live in vocab (e.g. rider-name components like "tail").
+    ---@type string?
     local kind1Word = nil
+    ---@type string?
     local kind1Suggestion = nil
     local conditionAlreadyFlagged = nil
     if #findings > 0 and findings[1].kind == "duration_missing" then
@@ -3471,6 +3482,8 @@ local function DiagnoseUnparsedSegment(segment, vocab, compendiumKeywords, known
     end
 
     if kind1Word ~= nil then
+        --set together with kind1Word.
+        ---@cast kind1Suggestion -nil
         findings[#findings+1] = {
             kind = "near_miss",
             severity = "warning",

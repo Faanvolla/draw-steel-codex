@@ -198,7 +198,7 @@ is a journal power-roll block:
 |<tier 1 text: 11 or lower>
 |<tier 2 text: 12-16>
 |<tier 3 text: 17+>
-|<optional 4th line: critical>
+|<optional 4th line: critical, a natural 19-20>
 |<optional rider lines>
 ```
 
@@ -215,6 +215,11 @@ is a journal power-roll block:
   header -- is taken without a test: its clauses apply at once. Lines above
   its rules are its own scene; lines below are its outcome scene.
 - Tier text is clauses (see the table). Make every tier say something.
+- **Every test has a critical** (natural 19 or 20). Leave the 4th line out
+  and it is built for you: tier 3's full text plus "The party gains an
+  additional hero token." Write a 4th line only when a critical should give
+  something different. Players never see the critical tier (stage, roll
+  dialog, outcome icons) until one is rolled; then the stage reveals it.
 
 **Teasers.** `|<teaser> => <full text>` on a tier line: players see the teaser
 until that tier lands; tiers never reached keep their teaser. Only the full
@@ -263,8 +268,14 @@ rules, and the authoring STANDARD are in `EncounterOfTheWeek/KNACKS_REFERENCE.md
 - The validator's **Knack coverage** section checks the standard: every test
   has a knack, opportunities have secret options, each pregen meets 3+.
 
-**Assists** happen automatically: when a roll lands below tier 3, a hero who has
-not acted and is trained in another listed skill may assist (costs their turn).
+**Companions and assists** need no authoring. When a hero approaches an
+entry, other heroes may go along (once a round each). Their knack versions,
+secret options and languages count for the turn; edge and bane riders read
+only the hero making the test, so if a companion's language should help,
+write it as a knack version or a secret option, not as `Edge: you speak X`.
+Before a test is rolled, each companion may assist with a listed skill
+nobody has used (never the hero's last), adding an edge or bane. So list two
+or more skills on a test if you want it assistable.
 
 **Party-size scaling.** Lines directly under `## Round N`:
 `<range> Players: -<n> Opportunity, -<n> Threat`, where range is `4`, `4-5`
@@ -338,7 +349,8 @@ PC turns back toward the light.
 Exhausted, PC staggers out.
 ```
 
-The whole delve is that hero's one turn, alone (no assists). They meet random
+The whole delve is that hero's one turn; their companions go in with them
+(each may assist one obstacle test in the whole delve). They meet random
 obstacles (shaped exactly like opportunities); a chest comes due every 1-2
 obstacles (dice table rows are clauses; unfound rows read `???`). Then "Press
 deeper (lose 1 Recovery)" or "Turn back" (`## Leave` or `## Turn Back`); at 0

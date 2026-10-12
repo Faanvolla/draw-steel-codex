@@ -241,7 +241,7 @@ local CalculateGameTimeSeek = function()
 	return t - math.floor(t), isSeeking
 end
 
-local g_dayNightGradient = core.Gradient {
+local g_dayNightGradient = gui.Gradient {
 			point_a = { x = 0, y = 0 },
 			point_b = { x = 1, y = 0 },
 			stops = {
@@ -284,7 +284,7 @@ local g_dayNightGradient = core.Gradient {
 			},
 		}
 
-local g_undergroundGradient = core.Gradient {
+local g_undergroundGradient = gui.Gradient {
 			point_a = { x = 0, y = 0 },
 			point_b = { x = 1, y = 0 },
 			stops = {

@@ -17,6 +17,7 @@
 --- @field version string The current version of the DMHub engine.
 --- @field versionStatus AppVersionStatus (Read-only) Where this build sits relative to the app versions published on each channel (/AppVersions). Available immediately from the on-disk cache when one exists; listen to versionStatusEvent to be told when it changes.
 --- @field versionStatusEvent nil|EventSourceLua (Read-only) Event source that fires 'appVersionStatus' on listening panels whenever versionStatus is recomputed, i.e. when the cached or fresh /AppVersions record is applied. nil before the monitor exists.
+--- @field safeMode boolean True if the app was launched with --safe-mode: the lobby game (the titlescreen) loads no module code, so a broken Hero module can be removed.
 --- @field commandLineArguments string[] The command line arguments passed to the app.
 --- @field tokenAnimations TokenAnimationsLuaInterface Registry of token animations. RegisterTeleport / RegisterDeath / RegisterTransformation register category-specific animation functions.
 --- @field tokenFrames TokenFramesLuaInterface Registry of premium token frame materials. Register{...} defines a frame (albedo + normal + roughness maps and lighting parameters); a token uses it by setting token.portraitFrameMaterial to the id (and token.portraitFrame to the material's albedo asset).
@@ -62,8 +63,8 @@
 --- @field DistanceDisplayFunction fun(distance: number): string Given a distance in the world, converts to a string ready to be displayed to the player.
 --- @field RankPrimaryToken fun(creature: Creature): number|nil Given a creature, this function should return a score to reflect how likely this creature is to be a player character. It is used so if a player has control of multiple tokens, to determine which one, by default, is considered their primary character.
 --- @field EditObjectDialog fun(objids: string[]): any (Undocumented: engine-internal, not part of the modding API.)
---- @field GetActiveWhiteboardTool fun(): { tool: string, color: Color, width: Number } A function that returns the currently active whiteboard drawing tool and its settings.
---- @field CancelEditing fun(sheet: Sheet): boolean A function that attempts to cancel editing a sheet, returning true if editing was successfully cancelled.
+--- @field GetActiveWhiteboardTool fun(): { tool: string, color: Color, width: number } A function that returns the currently active whiteboard drawing tool and its settings.
+--- @field CancelEditing fun(sheet: table): boolean A function that attempts to cancel editing a sheet, returning true if editing was successfully cancelled.
 --- @field GetSymbolTypesDocumentation fun(typename: string): nil|{name: string, type: string, desc: string}[] A function that returns documentation for symbol types of the given type name, or nil if not found.
 --- @field AddCustomTranslationString fun(label: Label, text: string): nil (Undocumented: engine-internal, not part of the modding API.)
 --- @field IsDialogOpen fun(): boolean Function that can be used to communicate to the engine whether a modal dialog is currently open.
@@ -77,7 +78,7 @@
 --- @field CreateDataInputComponent fun(): table A function that creates a data input component table for attaching to an object.
 --- @field CreateDataOutputComponent fun(): table A function that creates a data output component table for attaching to an object.
 --- @field TokensAreFriendly fun(a: CharacterToken, b: CharacterToken): boolean|nil A function that determines whether two tokens are considered friendly to each other. Returning nil (anything but a boolean) makes the engine fall back to its own default friendliness test.
---- @field DescribeToken fun(token: CharacterToken): string A function that returns a human-readable description of the given token.
+--- @field DescribeToken fun(token: CharacterToken|MonsterAssetLua): string|nil A function that returns a human-readable description of the given token.
 --- @field HoldAmendableRollOpen fun(): boolean (Undocumented: engine-internal, not part of the modding API.)
 --- @field DataError fun(message: string): nil Function which is called by the engine when a networking error occurs allowing display of a message to the user.
 --- @field GetHeightEditingInfo fun(): nil|{opacity: number, blend: number, height: number, directional: boolean} Editor callback function: Used to determine what height editing options the user has selected in the UI. Returning nil means height editing is off.
@@ -86,7 +87,7 @@
 --- @field CreateTargetableComponent fun(): table A function that creates a targetable component table for attaching to an object.
 --- @field CreateCorpseComponent fun(): table A function that creates a corpse component table for attaching to an object.
 --- @field TokenMovingOnPath fun(args: {token: CharacterToken, path: LuaPath, position: Vector3, delta: Vector3, distanceMoved: number, stepIndex: number}): nil A function that is called each frame while a token is moving along a path, receiving movement details.
---- @field GetSelectedEncounter fun(): {groups: table<string,number>[]}|nil A function that can be set to tell the engine which encounter is currently selected. The selected encounter should be deployable onto the map.
+--- @field GetSelectedEncounter fun(): {groups: {monsters: table<string,number>}[]}|nil A function that can be set to tell the engine which encounter is currently selected. The selected encounter should be deployable onto the map.
 --- @field CreateAuraComponent fun(): table A function that creates an aura component to attach to an object.
 --- @field ObjectDirectImport fun(string, Vector3): nil A function that is called when we directly import an object.
 --- @field LiveEditSessionsUpdated fun(): nil A function that is called when the set of active image live-edit sessions changes, or when a session's state changes (a change was detected, uploaded, reverted, or closed).
@@ -124,6 +125,7 @@
 --- @field Selection LuaSelectionController (Undocumented: engine-internal, not part of the modding API.)
 --- @field tablesUpdateId number A number which increases by 1 every time the compendium assets are updated. Can save this value and then compare to it later to see if the compendium has changed at all since we last checked.
 --- @field ngameupdate integer (read-only) A sequential integer that is unique to the game being updated from the cloud. Anytime this value changes we have new data from the cloud and the game is in a different state.
+--- @field gameContentUpdateSeq integer (read-only) Like ngameupdate, but not advanced by session pings (the periodic /usersToSessions writes every connected client makes). It changes whenever game data that matters to play changes -- characters, initiative, shared documents, map objects -- so poll it to tell whether anything has happened since a value was last seen.
 --- @field gameupdateid string (read-only) A guid that is unique to the game being updated from the cloud. Anytime this value changes we have new data from the cloud and the game is in a different state.
 --- @field tooltipsSuppressed boolean Tooltip Suppression Mode: while true, no tooltip is displayed anywhere on this client -- panel hover tooltips, map/tile tooltips, and the token-drag movement tooltip (and with it the movement cross-section diagram it carries). Any tooltip already on screen is dismissed the moment this is set. Client-only and session-scoped: it lives on the game session, so leaving the game always restores tooltips even if a mod forgets to clear it. Intended for a mod that needs an uncluttered phase of play; prefer the core codex wrapper GameHud.SetTooltipsSuppressed(key, value), which also stops the movement cross-section diagram from being rendered at all and lets several mods hold the suppression independently.
 --- @field currentRollGuid nil|string (Read-only) The guid that has been assigned to the current roll that is being previewed.
@@ -134,7 +136,7 @@
 --- @field userid string (read-only) the userid of the current user. Note that this may be the userid the game owner is impersonating within their game. @see loginUserid to get their true id.
 --- @field userDisplayName string The display name of the current user. When written to, the new display name will be sent to the cloud. Remote users will take up to a minute to reflect the new name.
 --- @field unitsPerSquare number (read-only) the measurement units per square. Typically this is 5.
---- @field titleBarContainer Panel A UI container suitable for containing the title bar at the top of the screen.
+--- @field titleBarContainer SheetContainer A UI container suitable for containing the title bar at the top of the screen.
 --- @field floorid string (read-only) the id of the current floor.
 --- @field isGameOwner boolean (read-only) true if the current user has ownership privileges in the game.
 --- @field isDM boolean (read-only) true if the current user has GM status in the game.
@@ -225,7 +227,7 @@ dmhub = {}
 --- TestFunction
 function dmhub.TestFunction() end
 
---- Keep the game loading screen up past the point the game has finished loading. Call BEFORE entering the game (it survives the switch into the game and every codemod reload). While held, the engine runs the lobby:EnterGame arrival callback behind the loading screen instead of after it clears, and the screen stays until ReleaseLoadingScreen() -- or a 20s safety timeout -- so arrival work (map travel, token placement, presenting a full-screen dialog) is never seen happening. Leaving the game clears the hold.
+--- Keep the game loading screen up past the point the game has finished loading. Call BEFORE entering the game (it survives the switch into the game and every codemod reload). While held, the engine runs the lobby:EnterGame arrival callback behind the loading screen instead of after it clears, and the screen stays until ReleaseLoadingScreen() -- or a 20s safety timeout, which each further call re-arms -- so arrival work (map travel, token placement, presenting a full-screen dialog) is never seen happening. Leaving the game clears the hold.
 function dmhub.HoldLoadingScreen() end
 
 --- Release a HoldLoadingScreen() hold: the loading screen fades out over whatever is on screen now. Harmless when nothing is held.
@@ -287,7 +289,7 @@ function dmhub.GetTypeDocumentation(typeid) end
 
 --- Registers an event handler for the named global event that the engine can fire. Returns a unique id that can later be passed to @see DeregisterEventHandler to deregister and stop listening for this event.
 --- @param eventName string The name of the event to respond to.
---- @param fn fun(...: any) Called with the event's arguments when it is raised.
+--- @param fn fun(...: any): boolean? Called with the event's arguments when it is raised. Returning true reports the event as handled (swallowed).
 --- @return string The handler id, for DeregisterEventHandler.
 function dmhub.RegisterEventHandler(eventName, fn) end
 
@@ -371,7 +373,7 @@ function dmhub.CreateObjectImporter(options) end
 function dmhub.Import(value) end
 
 --- Captures a screenshot of the current frame and begins a new bug report. The callback is invoked with a BugReport object once the screenshot has been captured. Call this before showing any bug report dialog so the screenshot shows the screen as the user saw it.
---- @param callback fun(report: BugReport)
+--- @param callback fun(report: BugReportLua)
 function dmhub.BeginBugReport(callback) end
 
 --- Reads the user survey definition from the cloud and calls callback(survey, error). survey is a table with id, title, intro, completedMessage, thanks, and a questions list (each with id, type ('rating', 'select', 'multiselect' or 'text'), prompt and type-specific fields), or nil if no survey is published. error is nil on success.
@@ -793,7 +795,7 @@ function dmhub.MarkRadius(radius, color, center) end
 function dmhub.MarkLocs(args) end
 
 --- Create an object describing a shape on the map. If targetFloorIndex is provided, the shape's locs and visual marker are placed on that floor instead of the caster's floor (used for cross-floor targeting).
---- @param args {shape: SpellShapes, token: CharacterToken, objectTemplate: nil|string, targetPoint: Vector3Arg, range: nil|number, radius: nil|number, locOverride: nil|Loc, requireEmpty: nil|boolean, checklos: nil|boolean, altitude: nil|number, targetFloorIndex: nil|number }
+--- @param args {shape: SpellShapes, token: CharacterToken, objectTemplate: nil|string, targetPoint: nil|Vector3, range: nil|number, radius: nil|number, locOverride: nil|Loc, requireEmpty: nil|boolean, checklos: nil|boolean, altitude: nil|number, targetFloorIndex: nil|number }
 --- @return LuaShape
 function dmhub.CalculateShape(args) end
 
@@ -1428,12 +1430,12 @@ function dmhub.GetTokensAtLoc(loc) end
 function dmhub.GetTokens(options) end
 
 --- Given a token's Lua properties (the CharacterToken.properties member, which is most often a Creature) returns the CharacterToken if found.
---- @param properties table
+--- @param properties nil|table
 --- @return nil|CharacterToken
 function dmhub.LookupToken(properties) end
 
 --- Given a token's Lua properties (the CharacterToken.properties member, which is most often a Creature) returns the tokenid of the token if found.
---- @param properties table
+--- @param properties nil|table
 --- @return nil|string
 function dmhub.LookupTokenId(properties) end
 
@@ -1688,8 +1690,11 @@ function dmhub.CancelActionRequest(id) end
 --- (Undocumented: engine-internal, not part of the modding API.)
 function dmhub.TermsOfServiceAccepted() end
 
---- Quit the application.
+--- Quit the application. Every quit -- this call, the window's close button, Alt+F4, Cmd+Q -- first calls the Lua global function OnQuitRequested() if it is defined. If that returns true, the quit is put on hold: the Lua code has taken over (typically to show its own confirmation) and must call @see ForceQuitApplication to really quit. Any other result, or an error, quits as normal.
 function dmhub.QuitApplication() end
+
+--- Quit the application now, without asking the Lua OnQuitRequested hook. Call this from a quit confirmation that hook put up.
+function dmhub.ForceQuitApplication() end
 
 --- Try to recover the user's password to the supplied email address.
 --- @param email? string
@@ -1755,6 +1760,10 @@ function dmhub.PushNativeCCallCoroutineContext() end
 --- @deprecated
 --- @return any
 function dmhub.PopNativeCCallCoroutineContext() end
+
+--- Creates an empty cache for CharacterToken:FindChargeRoutes. Use one per planning pass: it remembers routes for the board as it was, so discard it once anything may have moved.
+--- @return LuaChargeRouteCache
+function dmhub.CreateChargeRouteCache() end
 
 --- Creates a stopwatch object which can be used to measure time.
 --- @return LuaStopwatch

@@ -30,6 +30,7 @@ local mod = dmhub.GetModLoading()
 --- @field water? boolean Tiles in the area count as water (engine tile rule via AuraInstance:GetWater); read with try_get.
 --- @field climbable? boolean Tiles in the area can be climbed like a climbable wall (AuraInstance:GetClimbable); read with try_get.
 --- @field climbersOnly? boolean With climbable, restricts climbing to natural climbers; read with try_get.
+--- @field stepped? boolean Stepped Terrain: a 1-square height change whose higher tile is in the area is a sharp step for forced movement, not a slope (AuraInstance:GetStepped); read with try_get.
 --- @field entryEffectRule? string Flat effect rule text applied to creatures entering or starting a turn in the area (Aura:GetSimpleEntryEffectTrigger); read with try_get.
 Aura = RegisterGameType("Aura", "CharacterFeature")
 
@@ -1759,6 +1760,14 @@ function AuraInstance:GetClimbable()
         return nil
     end
     return { climbersOnly = self.aura:try_get("climbersOnly", false) == true }
+end
+
+--Whether the aura's tiles are Stepped Terrain: a 1-square change in ground
+--height whose higher tile is in the area is a sharp step, not a slope, so
+--forced movement collides with it going up and goes out over it going down.
+--Read by the engine (Aura.stepped -> TileGameRules.stepped).
+function AuraInstance:GetStepped()
+    return self.aura:try_get("stepped", false) == true
 end
 
 --Whether the aura's tiles are a HOLE in the map, like the excavate hole

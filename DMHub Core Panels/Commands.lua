@@ -103,7 +103,9 @@ Commands.Register{
     execute = function()
         if dmhub.tokensLoggedInAs ~= nil then
             dmhub.tokensLoggedInAs = nil
-        else
+        elseif not GameHud.CustomInterfaceConfirmExit("leave", function() dmhub.LeaveGame() end) then
+            --(a custom interface, e.g. Encounter of the Week, may confirm
+            --the leave itself first.)
             dmhub.LeaveGame()
         end
     end,

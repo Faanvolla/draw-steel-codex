@@ -138,7 +138,7 @@ CharacterAttribute.baseValue = 10
 --- Gets the value of the attribute
 --- @return number
 function CharacterAttribute:Value()
-	return math.tointeger(self.baseValue)
+	return math.floor(self.baseValue)
 end
 
 --- Gets the modifier for the attribute
@@ -231,6 +231,7 @@ end
 --- @field hiddenInvisibilityApplied? boolean True when invisibleToPlayers was applied by the Hidden condition sync.
 --- @field eotwAllyOf? string Encounter of the Week: charid of the hero this ally belongs to.
 --- @field eotwReinforcement? string Encounter of the Week: id of the reinforcements section this monster arrived with.
+--- @field eotwMarket? table|false Encounter of the Week town heroes: the hero's Arcane Market visit since their last encounter (EotwMarket.lua).
 --- @field followers? table Characters: follower entries (legacy shape, migrated by validation).
 --- @field levelOverride? integer Characters: minimum character level (slow start / level picker).
 --- @field extraLevelInfo? table Characters: additional level data; read via ExtraLevelInfo().
@@ -244,6 +245,7 @@ end
 --- @field persistentAbilities? Persistence[] Persistent abilities this creature is maintaining.
 --- @field damageEntries? table<string, {id: string, damage: number, heal: nil|number, attackerid: nil|string, damage_type: nil|string, sound: nil|string, timestamp: number|string, seq: nil|integer}> Recent damage records keyed by id.
 --- @field concentrationList? Concentration[] Active concentration entries.
+--- @field activeReactions? {guid: string, ability: string, targets: table, timestamp: number|string}[] Recently activated reactions (creature:ActivateReaction); entries older than 60s are pruned on the next activation.
 --- @field temporary_hitpoints_effect? string Ongoing effect id that granted the current temporary hitpoints.
 --- @field tempHitpointsEndEffect? boolean End temporary_hitpoints_effect when the temporary hitpoints run out.
 --- @field temporary_hitpoints_source? string Tokenid of whoever granted the current temporary stamina.
@@ -274,8 +276,6 @@ monster = RegisterGameType("monster", "creature")
 --- @alias Creature creature
 --- @alias Monster monster
 
-creature._tmp_aicontrol = 0
-creature._tmp_aipromptCallback = false
 creature._tmp_debug = false
 creature._tmp_concealed = false
 
@@ -702,7 +702,7 @@ function creature:PlayLandingFootstep(surfaceType)
             soundName = entry.sound
         end
     end
-    audio.FireSoundEvent(soundName, { volume = 0.4 })
+    audio.FireSoundEvent(soundName, { volume = 0.4, tokenid = dmhub.LookupTokenId(self) })
 end
 
 --- Whether this creature is a natural climber (climb speed >= walk speed).
@@ -808,8 +808,8 @@ end
 
 --- Get a list of modifications to our speed.
 --- Returns a list of descriptions of active speed modifications for the given movement type.
---- @param movementType string
---- @return {key: string, value: string}[]
+--- @param movementType? string nil (or 'walk') describes the base speed.
+--- @return {key: string, value: string, previous: number, current: number, temporal: nil|boolean}[]
 function creature.DescribeSpeedModifications(self, movementType)
 	if movementType == 'walk' or movementType == nil then
 		movementType = 'speed'
@@ -1250,7 +1250,10 @@ function creature:InflictCondition(conditionid, args)
 
 	self.inflictedConditions = inflictedConditions
 
-    audio.DispatchSoundEvent(conditionInfo:SoundEvent())
+    audio.DispatchSoundEvent(conditionInfo:SoundEvent(), {
+        tokenid = dmhub.LookupTokenId(self),
+        attackerid = args.casterInfo ~= nil and args.casterInfo.tokenid or nil,
+    })
 
     self:DispatchEvent("inflictcondition", {
         condition = conditionInfo.name,
@@ -1965,7 +1968,7 @@ function creature.CurrentHitpoints(self)
 		result = math.max(0, result)
 	end
 
-	return math.tointeger(result)
+	return math.floor(result)
 end
 
 --- Sets the creature's current hitpoints and records the change in stat history.
@@ -2036,7 +2039,7 @@ function creature.SetTemporaryHitpoints(self, amount, note, options)
 	else
 
 		if amount > self.temporary_hitpoints then
-			audio.FireSoundEvent("Notify.TempStamina_Gain")
+			audio.FireSoundEvent("Notify.TempStamina_Gain", { tokenid = dmhub.LookupTokenId(self) })
 		end
 
 		self.temporary_hitpoints = amount
@@ -4363,7 +4366,7 @@ function creature.ToggleLightSourceOnToken(tok)
         execute = function()
             if tok.properties.selectedLoadout == 1 then
                 tok.properties.selectedLoadout = 0
-                audio.DispatchSoundEvent("Ability.Torch_Off")
+                audio.DispatchSoundEvent("Ability.Torch_Off", { tokenid = tok.charid })
             else
                 if not tok.properties:try_get("initLight") then
                     --set to our preferred light if we've never made a different explicit choice.
@@ -4372,7 +4375,7 @@ function creature.ToggleLightSourceOnToken(tok)
                 end
 
                 tok.properties.selectedLoadout = 1
-                audio.DispatchSoundEvent("Ability.Torch_On")
+                audio.DispatchSoundEvent("Ability.Torch_On", { tokenid = tok.charid })
             end
         end,
     }
@@ -6617,7 +6620,7 @@ function creature:OnMove(path)
         return
     end
 
-    local aiActivityId = self:try_get("_tmp_aiActivityId")
+    local aiActivityId = creature.GetTokenAIActivity(ourToken.charid)
     local function MovementEventInfo(info)
         if aiActivityId ~= nil and aiActivityId ~= false then
             info.aiActivityId = aiActivityId
@@ -7412,7 +7415,10 @@ function creature:ApplyOngoingEffect(ongoingEffectid, duration, casterInfo, opti
 	if ongoingEffect.condition ~= "none" and casterInfo ~= nil then
         local conditionInfo = GetTableCached(CharacterCondition.tableName)[ongoingEffect.condition]
         if conditionInfo ~= nil then
-            audio.DispatchSoundEvent(conditionInfo:SoundEvent())
+            audio.DispatchSoundEvent(conditionInfo:SoundEvent(), {
+                tokenid = dmhub.LookupTokenId(self),
+                attackerid = casterInfo.tokenid,
+            })
         end
         if conditionInfo ~= nil and conditionInfo.trackCaster and ongoingEffect.countsTowardInstanceLimit then
             local limitFormula = conditionInfo:try_get("maxInstancesFormula", "")
@@ -10363,6 +10369,116 @@ function creature.GetAIActivityInProgress()
     return g_aiActivityInProgress
 end
 
+--Monster AI control of individual tokens, keyed by charid. It lives here, not
+--in _tmp_ fields on the token's properties, because the engine nils every _tmp_
+--field on every token whenever it rebuilds the aura index (a markup zone edit,
+--dmhub.RefreshMapAuras, an object finishing loading) -- which can land in the
+--middle of an AI action, and once made a Malice cast's later prompts and rolls
+--fall back to the Director. Only the client running the AI writes these; the
+--AI thread clears them on start and stop.
+--charid -> {count = integer, promptCallback = function|false}
+local g_aiTokenControl = {}
+--charid -> the AI activity this token's own movement and casts belong to.
+local g_aiTokenActivity = {}
+
+--- Raises the Monster AI's control of a token (it nests) and makes
+--- promptCallback answer the prompts its invokes raise. Pair with
+--- creature.EndAIControl.
+--- @param charid string
+--- @param promptCallback function
+--- @return function|false previousCallback
+function creature.BeginAIControl(charid, promptCallback)
+    local control = g_aiTokenControl[charid]
+    if control == nil then
+        control = {count = 0, promptCallback = false}
+        g_aiTokenControl[charid] = control
+    end
+    local previousCallback = control.promptCallback
+    control.count = control.count + 1
+    control.promptCallback = promptCallback
+    return previousCallback
+end
+
+--- Releases one level of creature.BeginAIControl, handing prompts back to
+--- previousCallback if promptCallback is still the one answering them.
+--- @param charid string
+--- @param promptCallback function
+--- @param previousCallback function|false
+function creature.EndAIControl(charid, promptCallback, previousCallback)
+    local control = g_aiTokenControl[charid]
+    if control == nil then
+        return
+    end
+    control.count = control.count - 1
+    if control.count <= 0 then
+        g_aiTokenControl[charid] = nil
+    elseif control.promptCallback == promptCallback then
+        control.promptCallback = previousCallback
+    end
+end
+
+--- True while the Monster AI controls the token with this charid.
+--- @param charid string|nil
+--- @return boolean
+function creature.IsTokenAIControlled(charid)
+    return charid ~= nil and g_aiTokenControl[charid] ~= nil
+end
+
+--- The Monster AI's prompt handler for the token with this charid, or false
+--- when the AI does not control it.
+--- @param charid string|nil
+--- @return function|false
+function creature.GetTokenAIPromptCallback(charid)
+    local control = charid ~= nil and g_aiTokenControl[charid] or nil
+    if control == nil then
+        return false
+    end
+    return control.promptCallback
+end
+
+--- True while the Monster AI controls this creature's token.
+--- @return boolean
+function creature:IsAIControlled()
+    --the common case, the AI controlling nothing, skips the token lookup.
+    if next(g_aiTokenControl) == nil then
+        return false
+    end
+    return creature.IsTokenAIControlled(dmhub.LookupTokenId(self))
+end
+
+--- The AI activity the movement and casts of the token with this charid
+--- belong to, or nil.
+--- @param charid string|nil
+--- @return string|nil
+function creature.GetTokenAIActivity(charid)
+    if charid == nil then
+        return nil
+    end
+    return g_aiTokenActivity[charid]
+end
+
+--- Sets (nil clears) the AI activity the movement and casts of the token with
+--- this charid belong to, returning the previous one so a caller can restore it.
+--- @param charid string
+--- @param activityId string|nil
+--- @return string|nil previousActivityId
+function creature.SetTokenAIActivity(charid, activityId)
+    if charid == nil then
+        return nil
+    end
+    local previousActivityId = g_aiTokenActivity[charid]
+    g_aiTokenActivity[charid] = activityId
+    return previousActivityId
+end
+
+--- Drops all Monster AI token control and token activities. The AI thread
+--- calls it on start and stop, so an action abandoned part-way (the AI stopped
+--- mid-turn) cannot leave a token looking AI-driven.
+function creature.ClearAIControl()
+    g_aiTokenControl = {}
+    g_aiTokenActivity = {}
+end
+
 --Serialization helpers for event payloads that cross the network (the
 --triggeredEvents and remoteInvokes queues written via ModifyProperties).
 --Event info can hold live objects nested inside tables: e.g. info.cast is an
@@ -10551,59 +10667,75 @@ end
 --wrote still carries the "__serverTimestamp" placeholder until the server
 --echo -- it is live, not malformed (see EventTimestampAge). Every decision is
 --logged with a TRIGGERRELAY:: prefix so a lost prompt can be traced end to end.
+--
+--Each event has its own random key, and events are only ever added or deleted
+--one at a time. Numbering them made events from different players collide,
+--and trigger prompts went missing.
+
+--This key stays in the queue so it is never empty. Emptying it rewrites the
+--whole queue, which can erase an event another player just added.
+local g_triggeredEventsVersionKey = "version"
+
 function creature:PumpTriggeredEvents()
     local token = dmhub.LookupToken(self)
     local events = self:try_get("triggeredEvents")
     if token == nil or events == nil or self:try_get("_tmp_pumpingTriggeredEvents", false) then return end
     self._tmp_pumpingTriggeredEvents = true
+    --The events we handled, by key.
     local consumed = {}
-    for _,event in pairs(events) do
-        local age = type(event) == "table" and EventTimestampAge(event.timestamp) or nil
-        local valid = type(event) == "table" and type(event.userid) == "string"
-            and type(event.eventName) == "string" and age ~= nil
-        local mine = valid and event.userid == dmhub.userid
-        if not valid then
-            --Junk we cannot even address. Old clients wrote records of the same
-            --shape, so this only fires for genuinely damaged data.
-            consumed[event] = "malformed relay record"
-            print("TRIGGERRELAY:: DROP malformed on", token.name, token.charid, DescribeRelayEvent(event))
-        elseif age >= 30 then
-            consumed[event] = "relay record expired before evaluation"
-            if mine then
-                print("TRIGGERRELAY:: DROP expired on", token.name, token.charid, DescribeRelayEvent(event))
+    for key,event in pairs(events) do
+        if key ~= g_triggeredEventsVersionKey then
+            local age = type(event) == "table" and EventTimestampAge(event.timestamp) or nil
+            local valid = type(event) == "table" and type(event.userid) == "string"
+                and type(event.eventName) == "string" and age ~= nil
+            local mine = valid and event.userid == dmhub.userid
+            if not valid then
+                --Junk we cannot even address. Old clients wrote records of the same
+                --shape, so this only fires for genuinely damaged data.
+                consumed[key] = {event = event, result = "malformed relay record"}
+                print("TRIGGERRELAY:: DROP malformed on", token.name, token.charid, DescribeRelayEvent(event))
+            elseif age >= 30 then
+                consumed[key] = {event = event, result = "relay record expired before evaluation"}
+                if mine then
+                    print("TRIGGERRELAY:: DROP expired on", token.name, token.charid, DescribeRelayEvent(event))
+                end
+            elseif mine then
+                consumed[key] = {event = event, result = true}
+                print("TRIGGERRELAY:: RECV on", token.name, token.charid, DescribeRelayEvent(event))
+                local ok, err = pcall(function()
+                    local info = DeserializeEventValue(event.info or {})
+                    info.remote = true
+                    self:TriggerEvent(event.eventName, info, true, "skipLocal")
+                end)
+                if not ok then
+                    consumed[key].result = tostring(err)
+                    print("TRIGGERRELAY:: EVAL ERROR on", token.name, token.charid, event.eventName, tostring(err))
+                end
             end
-        elseif mine then
-            consumed[event] = true
-            print("TRIGGERRELAY:: RECV on", token.name, token.charid, DescribeRelayEvent(event))
-            local ok, err = pcall(function()
-                local info = DeserializeEventValue(event.info or {})
-                info.remote = true
-                self:TriggerEvent(event.eventName, info, true, "skipLocal")
-            end)
-            if not ok then
-                consumed[event] = tostring(err)
-                print("TRIGGERRELAY:: EVAL ERROR on", token.name, token.charid, event.eventName, tostring(err))
-            end
+            --else: addressed to another user; leave it for them.
         end
-        --else: addressed to another user; leave it for them.
     end
     if next(consumed) ~= nil then
         token:ModifyProperties{
             description = "Clear Processed Triggers", undoable = false,
             execute = function()
-                local remaining = {}
-                for _,event in ipairs(self:try_get("triggeredEvents", {})) do
-                    if not consumed[event] then remaining[#remaining+1] = event end
+                --Delete only the events we handled. Clearing the whole queue
+                --would also erase events another player just added.
+                local queue = self:try_get("triggeredEvents")
+                if queue ~= nil then
+                    for key,_ in pairs(consumed) do
+                        queue[key] = nil
+                    end
                 end
-                self.triggeredEvents = #remaining > 0 and remaining or nil
-                for event,result in pairs(consumed) do
+                for _,entry in pairs(consumed) do
+                    local event, result = entry.event, entry.result
                     local info = type(event) == "table" and event.info
                     if type(info) == "table" and type(info.aiReactionDispatchId) == "string" then
                         if result == true then
                             self:CompletePendingAIActivityReaction(info.aiActivityId, info.aiReactionDispatchId)
                         else
-                            local entry = self:try_get("pendingAIActivityReactions", {})[info.aiReactionDispatchId]
-                            if entry ~= nil then entry.state = "failed"; entry.reason = result end
+                            local pending = self:try_get("pendingAIActivityReactions", {})[info.aiReactionDispatchId]
+                            if pending ~= nil then pending.state = "failed"; pending.reason = result end
                         end
                     end
                 end
@@ -10833,13 +10965,22 @@ function creature:DispatchEvent(eventName, info)
 		undoable = false,
 		execute = function()
 			local triggeredEvents = self:get_or_add("triggeredEvents", {})
+			triggeredEvents[g_triggeredEventsVersionKey] = 2
 
-            --clear out any old or invalid events.
-            while #triggeredEvents > 0 and (triggeredEvents[1] == nil or EventTimestampAge(triggeredEvents[1].timestamp) == nil or EventTimestampAge(triggeredEvents[1].timestamp) > 30) do
-                table.remove(triggeredEvents, 1)
+            --Drop old or broken events, including ones an older version left behind.
+            local queued = 0
+            for key,event in pairs(triggeredEvents) do
+                if key ~= g_triggeredEventsVersionKey then
+                    local age = type(event) == "table" and EventTimestampAge(event.timestamp) or nil
+                    if age == nil or age > 30 then
+                        triggeredEvents[key] = nil
+                    else
+                        queued = queued + 1
+                    end
+                end
             end
 
-			triggeredEvents[#triggeredEvents+1] = {
+			triggeredEvents[dmhub.GenerateGuid()] = {
 				userid = activecontroller,
 				timestamp = ServerTimestamp(),
 				eventName = eventName,
@@ -10847,7 +10988,7 @@ function creature:DispatchEvent(eventName, info)
 			}
 
             print("TRIGGERRELAY:: SEND", eventName, "for", token.name, token.charid, "to", activecontroller,
-                "abilities=" .. table.concat(abilityNames, ", "), "queued=" .. #triggeredEvents)
+                "abilities=" .. table.concat(abilityNames, ", "), "queued=" .. (queued + 1))
 		end,
 	}
 end
@@ -10873,8 +11014,8 @@ end
 
 --- @class ActiveTrigger: GameType
 --- @field new fun(o?: table): ActiveTrigger
---- @field timestamp number
---- @field expiryTimestamp number
+--- @field timestamp number|string Server time once resolved; the ServerTimestamp() placeholder string until then.
+--- @field expiryTimestamp number|string As timestamp; 0 on entries made before the field existed.
 --- @field id string
 --- @field charid string
 --- @field free boolean
@@ -10896,7 +11037,7 @@ end
 --- @field activateText string The name of mode 1 of a multi-mode trigger.
 --- @field activateRules string The rules text of mode 1 of a multi-mode trigger.
 --- @field activateModeIndex number The modeList index the trigger's own card runs: 1, unless mode 1's condition failed and a later mode took the card.
---- @field modes {text: string, rules: string, modeIndex: number|nil, unavailable: boolean|nil, conditionReason: string|nil, injectedBy: string|nil}[] modeIndex is the entry's position in the ability's modeList (see ModeIndexForTriggered). unavailable/conditionReason mark a mode whose condition is not met but which is offered anyway, greyed out, with that reason shown. injectedBy is the TriggerModeMarker of a trigger modifier that added the mode (MCDMModifyTriggers).
+--- @field modes {text: string, rules: string, modeIndex: number|nil, unavailable: boolean|nil, conditionReason: string|nil, injectedBy: string|nil, targets: string[]|nil}[] modeIndex is the entry's position in the ability's modeList (see ModeIndexForTriggered). unavailable/conditionReason mark a mode whose condition is not met but which is offered anyway, greyed out, with that reason shown. injectedBy is the TriggerModeMarker of a trigger modifier that added the mode (MCDMModifyTriggers). targets (merged prompts only) are the charids of the subjects whose own prompt offers the mode.
 --- @field casterid false|string The id of the caster of the ability that caused the trigger.
 --- @field originalAbilityRange number the range of the original ability that caused the trigger.
 --- @field abilityGuid false|string The guid of the TriggeredAbility that created this prompt.
@@ -11074,12 +11215,16 @@ function creature:SetAIActivityReactionResolving(activityId, reactionId)
     end
 end
 
+--The 4th return is the reaction id the description names. It is also the key
+--of the prompt in availableTriggers, so the AI's banner can offer Dismiss on it.
 function creature:GetAIActivityReactionStatus(activityId)
     local pending, description, failure = self:GetAIReactionDeliveryStatus(activityId)
+    local reactionId = nil
     local triggers = self:try_get("availableTriggers", {})
     for id,entry in pairs(self:try_get("pendingAIActivityReactions", {})) do
         if type(entry) == "table" and entry.activityId == activityId and entry.state ~= "completed" then
             pending = pending + 1
+            reactionId = id
             description = entry.state == "resolving" and "reaction to finish: " .. (entry.ability or "reaction")
                 or "player to answer " .. (entry.ability or "reaction")
             --The marker is a plain table leaf, so the writer's own copy holds the
@@ -11095,7 +11240,7 @@ function creature:GetAIActivityReactionStatus(activityId)
             end
         end
     end
-    return pending, description, failure
+    return pending, description, failure, reactionId
 end
 
 function creature:CountPendingAIActivityReactions(activityId)
@@ -11323,6 +11468,9 @@ function ActiveTrigger:IsFreeTriggeredAbility()
     return self.free
 end
 
+--- The trigger's pressable options: extra resource spends (priced by cost) for a power roll modifier, else its modes.
+--- @param token CharacterToken
+--- @return {text: string, rules: string, cost: number|nil, modeIndex: number|nil, unavailable: boolean|nil, conditionReason: string|nil, targets: string[]|nil}[]
 function ActiveTrigger:EnhancementOptions(token)
 
 	if self.powerRollModifier then
@@ -13540,11 +13688,8 @@ function creature:IsValid()
         end
     end
 
-	local triggeredEvents = self:try_get("triggeredEvents")
-    if triggeredEvents ~= nil and #triggeredEvents > 0 and triggeredEvents[1] == nil then
-        --this has happened sometimes, so we repair it in this case.
-        return false
-    end
+    --The trigger queue is not checked here. Repairing it used to delete
+    --prompts players were still waiting for.
 
 	if self:try_get("complicationid") ~= nil then
 		return false
@@ -13727,11 +13872,6 @@ function creature:Repair(localOnly)
 
     for _,key in ipairs(deleteList) do
         self.availableTriggers[key] = nil
-    end
-
-	local triggeredEvents = self:try_get("triggeredEvents")
-    if triggeredEvents ~= nil and #triggeredEvents > 0 and triggeredEvents[1] == nil then
-        self.triggeredEvents = nil
     end
 
 	if self:try_get("complicationid") ~= nil then

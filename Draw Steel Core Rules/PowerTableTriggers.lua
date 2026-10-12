@@ -1270,7 +1270,7 @@ end
 
 --- After a roll dialog activates one row of a shared prompt, clears the
 --- prompt's other rows: a target-choosing triggered action applies to one target.
---- @param multitargets table The roll dialog's per-target entries.
+--- @param multitargets table|nil The roll dialog's per-target entries.
 --- @param row table The row just changed.
 function ActiveTrigger.ClearOtherSharedPowerRollRows(multitargets, row)
     if (not row.triggered) or (not CharacterModifier.PowerRollTriggerChoosesTarget(row.modifier)) then

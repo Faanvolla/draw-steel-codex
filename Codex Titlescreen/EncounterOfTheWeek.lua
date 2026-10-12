@@ -23,6 +23,17 @@ local mod = dmhub.GetModLoading()
 
 EncounterOfTheWeek = {}
 
+--Launch-timing marker: grep Player.log for "[EOTWPROF]". server= is
+--dmhub.serverTime, which every client shares, so the host's and the members'
+--logs line up on one clock. The game-side codemod logs the same way. Never
+--throws: it runs inside the arrival callback, which must not fail.
+local function EotwProf(fmt, ...)
+    local args = table.pack(...)
+    pcall(function()
+        printf("[EOTWPROF] server=%.3f app=%.3f " .. fmt, dmhub.serverTimeMilliseconds * 0.001, dmhub.Time(), table.unpack(args, 1, args.n))
+    end)
+end
+
 --Dev gate. No editor entry, so it never appears in the settings UI;
 --toggle from chat with: /toggle dev:encounteroftheweek
 EncounterOfTheWeek.enabledSetting = setting{
@@ -30,6 +41,21 @@ EncounterOfTheWeek.enabledSetting = setting{
     default = false,
     storage = "preference",
 }
+
+--Fast launch: members enter the game on "launched", loading alongside the
+--host, and wait behind the loading screen for the host's setup stamp; every
+--client starts directly on the encounter map. Off = the old order (members
+--enter on "ready", after the host has loaded and set up). No editor entry;
+--kept for timing the two against each other: /toggle eotw:fastlaunch
+EncounterOfTheWeek.fastLaunchSetting = setting{
+    id = "eotw:fastlaunch",
+    default = true,
+    storage = "preference",
+}
+
+function EncounterOfTheWeek.FastLaunch()
+    return dmhub.GetSettingValue("eotw:fastlaunch") ~= false
+end
 
 --True if the Encounter of the Week mode is available to this user at all.
 function EncounterOfTheWeek.Enabled()
@@ -71,6 +97,26 @@ setting{
     storage = "preference",
 }
 
+--Set by the game-side EotW codemod when the player abandons a game: JSON
+--{ gameid }. The resume refresh abandons that game (AbandonGame: deleted
+--when nobody else still holds it, otherwise left to the others) and resets
+--this. Same setting id as the game codemod's declaration.
+setting{
+    id = "eotw:abandonedgame",
+    default = "",
+    storage = "preference",
+}
+
+--Set by the game-side EotW codemod after a Danger Rooms game: the debrief
+--this player owes, { [userid] = {gameid, encounter, result} } as JSON. The
+--town asks for it (ShowDebriefDialog) and clears it. Same id as the game
+--codemod's declaration.
+setting{
+    id = "eotw:pendingDebrief",
+    default = "",
+    storage = "preference",
+}
+
 --The town's city (see EotwRoster.lua), on staging until EotW nears release.
 local LOBBY_ID = EotwRoster.CITY_ID
 local LOBBY_OPTIONS = EotwRoster.CITY_OPTIONS
@@ -91,9 +137,32 @@ local GATE_ART = "db5bcf88-00fc-4e0b-89c9-5ddb98d1a772" --Market Streets, Origin
 CreatorCredit.RegisterArt(GUILD_ART, "czepeku")
 CreatorCredit.RegisterArt(GATE_ART, "czepeku")
 
+--The Danger Rooms' art: the front cover of Draw Steel: Monsters, rendered
+--from the cover PSD with its title text, spine and text shadow hidden, and
+--cropped to a 16:9 band (3840x2160) around the beholder. MCDM's own art, so
+--no creator credit. Sources in C:/dev/eotw/art/ (danger-rooms-*).
+local DANGER_ART = "92f3f806-327b-498c-9705-49972311c3e3"
+
+--The Blue Fish Inn: Czepeku Scenes' "Ages of the Vale Pt. 3" (Original Day),
+--a 30s looping 1080p video of a tavern's hearth, over its first frame as the
+--still. Sources in C:/dev/eotw/art/ (blue-fish-inn-*).
+local INN_VIDEO = "07d3b304-792c-4b5c-8340-814c9da9f864"
+local INN_ART = "e9f0c6ae-2041-476b-ba46-e945b374fa6b"
+CreatorCredit.RegisterArt(INN_VIDEO, "czepeku")
+CreatorCredit.RegisterArt(INN_ART, "czepeku")
+
+--The Arcane Market: Czepeku Scenes' "Black Market Streets" (Original Day), a
+--30s looping 1080p video, over its first frame as the still. Sources in
+--C:/dev/eotw/art/ (arcane-market-*).
+local MARKET_VIDEO = "2d82c3b6-de21-47f0-bfd2-f17708bf4c85"
+local MARKET_ART = "a2a30693-a725-48fc-90cd-dfd028e58dc8"
+CreatorCredit.RegisterArt(MARKET_VIDEO, "czepeku")
+CreatorCredit.RegisterArt(MARKET_ART, "czepeku")
+
 --The town's locations, as fractions of the map image (so they survive a
 --re-export at another size). open(ctx) runs on click; locked(ctx) returns
---the reason the location is closed, or nil. A location with a scene opens
+--the reason the location is closed, or nil; hidden(ctx), if given, takes the
+--location off the map entirely while it returns true. A location with a scene opens
 --full screen over its art instead of as a dialog over the map; focusX is
 --where to crop the art on screens that are not 16:9.
 local CITY_LOCATIONS = {
@@ -123,7 +192,7 @@ local CITY_LOCATIONS = {
             aspect = 16 / 9,
             focusX = 0.35,
             title = "The Town Gate",
-            tagline = "Parties muster in the market below the old tower before they set out. Join one that is forming, or gather your own.",
+            tagline = "Parties muster in the market below the old tower before they set out to face the Encounter of the Week. Join one that is forming, or gather your own.",
         },
         locked = function(ctx)
             if EotwRoster.GetHeroes() == nil then
@@ -135,6 +204,103 @@ local CITY_LOCATIONS = {
             return nil
         end,
         open = function(ctx) ctx.OpenGate() end,
+    },
+    --Downtime (EotwDowntime.lua): a respite turns Victories into XP and
+    --Downtime Activities and heals every hero at home.
+    {
+        id = "inn",
+        label = "Blue Fish Inn",
+        icon = "phosphor/beer-stein-fill.png",
+        --the canal-side building west of the Guild: level with it, so the
+        --hero cards along the bottom of the screen do not cover it (it was
+        --at the "Drunken Fool" tavern, (0.335, 0.575), until 2026-10-11).
+        x = 0.235,
+        y = 0.455,
+        scene = {
+            art = INN_ART,
+            video = INN_VIDEO,
+            aspect = 16 / 9,
+            focusX = 0.65,
+            title = "The Blue Fish Inn",
+            tagline = "A warm hearth, a hot meal and a bed that does not sway. Rest here to turn your Victories into experience, or just catch your breath before the next fight.",
+        },
+        --not on the map at all until heroes first come home from the Town
+        --Gate; the town then plays its reveal (PlayInnReveal).
+        hidden = function(ctx) return not ctx.InnShown() end,
+        locked = function(ctx)
+            if EotwRoster.GetHeroes() == nil then
+                return "The guild is still checking your roster..."
+            end
+            if EotwRoster.LivingCount() == 0 then
+                return "You need a hero before you can rest. Visit the Hero's Guild."
+            end
+            return nil
+        end,
+        open = function(ctx) ctx.OpenInn() end,
+    },
+    --Consumable treasures (EotwMarket.lua): each hero makes a Presence test
+    --to find what is on offer and buys up to their Wealth, once between
+    --encounters. Not on the map until the player finds it: a lead heard
+    --carousing at the inn, then the Find the Arcane Market project
+    --(EotwLeads.lua); RevealFoundLocations shows it the moment it is found.
+    {
+        id = "market",
+        label = "Arcane Market",
+        icon = "phosphor/storefront-fill.png",
+        --the shop the map's own "Front and Back" label points at.
+        x = 0.695,
+        y = 0.18,
+        scene = {
+            art = MARKET_ART,
+            video = MARKET_VIDEO,
+            aspect = 16 / 9,
+            focusX = 0.5,
+            title = "The Arcane Market",
+            tagline = "Behind the honest shopfronts, carts and back rooms deal in potions, powders and stranger things. Ask the right questions and the right stall finds you.",
+        },
+        hidden = function(ctx) return not EotwRoster.MarketUnlocked() end,
+        locked = function(ctx)
+            if EotwRoster.GetHeroes() == nil then
+                return "The guild is still checking your roster..."
+            end
+            if EotwRoster.LivingCount() == 0 then
+                return "You need a hero before you can shop. Visit the Hero's Guild."
+            end
+            return nil
+        end,
+        open = function(ctx) ctx.OpenMarket() end,
+    },
+    --Where new, untried encounters made by the town's own players are run:
+    --practice, with nothing kept. Opens for good once the account has won an
+    --Encounter of the Week (the city decides; see EotwRoster.DangerRoomsUnlocked).
+    {
+        id = "danger",
+        label = "Danger Rooms",
+        icon = "phosphor/skull-fill.png",
+        --level with the Guild: anything much lower sits under the hero
+        --cards along the bottom of the screen.
+        x = 0.74,
+        y = 0.42,
+        scene = {
+            art = DANGER_ART,
+            aspect = 16 / 9,
+            focusX = 0.3,
+            title = "The Danger Rooms",
+            tagline = "Untried horrors dreamed up by the town's own, loosed on whoever dares. It is only practice: no Victories, no treasure, nothing kept. Survive, then tell the makers what you thought.",
+        },
+        locked = function(ctx)
+            if EotwRoster.GetHeroes() == nil then
+                return "The guild is still checking your roster..."
+            end
+            if EotwRoster.DangerRoomsUnlocked() ~= true then
+                return "Defeat the Encounter of the Week to unlock the Danger Rooms."
+            end
+            if EotwRoster.LivingCount() == 0 then
+                return "You need a hero before you can venture out. Visit the Hero's Guild."
+            end
+            return nil
+        end,
+        open = function(ctx) ctx.OpenDangerRooms() end,
     },
     {
         id = "graveyard",
@@ -386,7 +552,12 @@ function EncounterOfTheWeek.EncounterDisplayName(key)
     if entry ~= nil and entry.moduleName ~= nil and entry.moduleName ~= "" then
         moduleName = entry.moduleName
     end
-    return string.format("%s (%s)", EncounterOfTheWeek.MapTitle(mapName), moduleName)
+    local title = EncounterOfTheWeek.MapTitle(mapName)
+    --a module named after its one encounter would read "X (X)".
+    if moduleName == title then
+        return title
+    end
+    return string.format("%s (%s)", title, moduleName)
 end
 
 --The pool entries one module record offers, default map first, then by title.
@@ -397,6 +568,9 @@ local function ModuleEncounters(info, moduleid)
     pcall(function() published = info.publishingProperties.eotwEncounters end)
     pcall(function() name = info.name end)
     pcall(function() author = info.authorid end)
+    --published from this account: its creator reads the Danger Rooms feedback.
+    local ours = false
+    pcall(function() ours = info.ourModule == true end)
 
     local result = {}
     local seen = {}
@@ -420,6 +594,7 @@ local function ModuleEncounters(info, moduleid)
                         moduleName = name,
                         author = author,
                         townGate = townGate,
+                        ours = ours,
                     }
                 end
             end
@@ -640,6 +815,187 @@ function EncounterOfTheWeek.GetTownGateText(key)
     return entry.townGate
 end
 
+--- the week's schedule ------------------------------------------------
+--One encounter at a time is THE Encounter of the Week. The Town Gate offers
+--it, and the past ones, and nothing else. Every other community encounter in
+--the pool plays in the Danger Rooms, for practice. Official-module maps that
+--are not on the schedule (Angry Dwarves) are retired: offered nowhere. The
+--schedule lives in the City (/city/week = {week, current, past, since}, keys
+--as above); an admin rotates it with EncounterOfTheWeek.SetWeek, from the
+--Codex menu's "Encounter of the Week..." dialog, or with the city's
+--/admin/city/blackbottom/week route.
+
+--A key as the schedule stores it: "" / nil is the official default map.
+local function NormalizeKey(key)
+    if key == nil or key == "" then
+        return ENCOUNTER_MAP_NAME
+    end
+    return key
+end
+
+--The schedule, or nil before the city has one (or before the town connected).
+function EncounterOfTheWeek.GetWeek()
+    local conn = EotwRoster.Connection()
+    if conn == nil then
+        return nil
+    end
+    local week = conn:GetPath("/city/week")
+    if type(week) ~= "table" or type(week.current) ~= "string" or week.current == "" then
+        return nil
+    end
+    return week
+end
+
+--This week's encounter key, or nil.
+function EncounterOfTheWeek.CurrentEncounterKey()
+    local week = EncounterOfTheWeek.GetWeek()
+    if week == nil then
+        return nil
+    end
+    return week.current
+end
+
+--The earlier Encounters of the Week, newest first.
+function EncounterOfTheWeek.PastEncounterKeys()
+    local week = EncounterOfTheWeek.GetWeek()
+    local result = {}
+    if week ~= nil and type(week.past) == "table" then
+        for _,key in ipairs(week.past) do
+            if type(key) == "string" and key ~= week.current then
+                result[#result+1] = key
+            end
+        end
+    end
+    return result
+end
+
+--Is this the Encounter of the Week, or a past one?
+function EncounterOfTheWeek.IsScheduledEncounter(key)
+    key = NormalizeKey(key)
+    if key == EncounterOfTheWeek.CurrentEncounterKey() then
+        return true
+    end
+    for _,past in ipairs(EncounterOfTheWeek.PastEncounterKeys()) do
+        if past == key then
+            return true
+        end
+    end
+    return false
+end
+
+--Does this encounter play in the Danger Rooms (a community encounter that
+--has never been an Encounter of the Week)?
+function EncounterOfTheWeek.IsDangerRoomEncounter(key)
+    local moduleid = EncounterOfTheWeek.ParseEncounterKey(key)
+    return moduleid ~= STARTING_MODULE and not EncounterOfTheWeek.IsScheduledEncounter(key)
+end
+
+--The pool's Danger Room encounters, grouped by module as the pool lists them.
+function EncounterOfTheWeek.GetDangerRoomEncounters()
+    local result = {}
+    for _,entry in ipairs(EncounterOfTheWeek.GetEncounters() or {}) do
+        if EncounterOfTheWeek.IsDangerRoomEncounter(entry.key) then
+            result[#result+1] = entry
+        end
+    end
+    return result
+end
+
+--An encounter's title ("Goblin Ambush"), whether or not the pool lists it.
+function EncounterOfTheWeek.EncounterTitle(key)
+    local entry = EncounterOfTheWeek.GetEncounter(key)
+    if entry ~= nil then
+        return entry.title
+    end
+    local _, mapName = EncounterOfTheWeek.ParseEncounterKey(key)
+    return EncounterOfTheWeek.MapTitle(mapName)
+end
+
+--"From the module <name> by <author>" for a community encounter, else nil.
+function EncounterOfTheWeek.EncounterCredit(key)
+    local entry = EncounterOfTheWeek.GetEncounter(key)
+    if entry == nil or entry.official then
+        return nil
+    end
+    local credit = string.format("From the module %s", entry.moduleName or entry.moduleid)
+    if entry.author ~= nil and entry.author ~= "" then
+        credit = credit .. " by " .. entry.author
+    end
+    return credit
+end
+
+--One request to the city: over the town's connection while the town is
+--open, otherwise over a short-lived connection of its own (so the admin
+--calls below also work from a game, or over MCP from a script or skill).
+--callback(ok, resultOrMessage).
+local function CityRequest(action, args, callback)
+    local conn = EotwRoster.Connection()
+    if conn ~= nil and conn.connected then
+        conn:Request{
+            action = action,
+            args = args,
+            success = function(result) callback(true, result) end,
+            error = function(message) callback(false, message) end,
+        }
+        return
+    end
+    local lobbiesApi = rawget(_G, "lobbies")
+    if lobbiesApi == nil then
+        callback(false, "this build has no lobbies API")
+        return
+    end
+    local own = lobbiesApi:Connect(LOBBY_ID, LOBBY_OPTIONS)
+    dmhub.Coroutine(function()
+        --requests fail while the connection is still opening; give it ~30s.
+        for _ = 1, 300 do
+            if mod.unloaded or own.connected then
+                break
+            end
+            coroutine.yield(0.1)
+        end
+        if mod.unloaded or not own.connected then
+            own:Disconnect()
+            callback(false, "could not reach the city")
+            return
+        end
+        own:Request{
+            action = action,
+            args = args,
+            success = function(result)
+                own:Disconnect()
+                callback(true, result)
+            end,
+            error = function(message)
+                own:Disconnect()
+                callback(false, message)
+            end,
+        }
+    end)
+end
+
+--Admin: make `key` the Encounter of the Week. The current one moves to the
+--past and the week's nominations start over (the city's set-week, which
+--checks the caller is a city admin). callback(ok, resultOrMessage), optional.
+function EncounterOfTheWeek.SetWeek(key, callback)
+    CityRequest("set-week", { current = NormalizeKey(key) }, function(ok, result)
+        if ok then
+            printf("EotW: the Encounter of the Week is now %s", NormalizeKey(key))
+        else
+            printf("EotW: could not set the Encounter of the Week: %s", tostring(result))
+        end
+        if callback ~= nil then
+            callback(ok, result)
+        end
+    end)
+end
+
+--Admin: the weekly assessment from the city: { week, encounters = {
+--{encounter, up, down, plays, feedback = {{name, userid, vote, feedback, at}}} },
+--nominations = { {encounter, count, userids} } }. callback(ok, reportOrMessage).
+function EncounterOfTheWeek.DangerReport(callback)
+    CityRequest("danger-report", nil, callback)
+end
+
 --Admin: take a community module out of the pool (pulled = true) or put it
 --back. Flips publishingProperties.eotwPulled on the module's own record; the
 --database rules let an admin write any module record, and the author's next
@@ -691,6 +1047,17 @@ local m_pregens = nil
 --tokens from the snapshot keyed by id, for later use (portraits, launch).
 local m_pregenTokens = nil
 local m_pregensFetching = false
+
+--Pregens from the player's Hero modules (see "Hero module pregens" below).
+--nil until loaded; then a sorted list of {id, name, className, ancestry, level, source}.
+local m_heroPregens = nil
+local m_heroPregenTokens = {}
+--moduleid -> {token, version}: one of its pregens, to tell when its art needs registering again.
+local m_heroPregenArtSample = {}
+--the installed Hero modules the cache was built from (InstalledHeroModulesKey).
+local m_heroPregensKey = nil
+local m_heroPregensFetching = false
+local CacheHeroModulePregens
 
 --Best-effort class name for display; works for lobby hero tokens and for
 --detached module-snapshot tokens alike. pcall because token.properties
@@ -869,18 +1236,133 @@ function EncounterOfTheWeek.CachePregens()
     }
 end
 
---nil while unavailable/loading; otherwise the {id, name, className} list.
+--nil while unavailable/loading; otherwise the {id, name, className, ...}
+--list: the week's official pregens, then those from the player's Hero
+--modules (which carry source = the module's name).
 function EncounterOfTheWeek.GetPregens()
     EncounterOfTheWeek.CachePregens()
-    return m_pregens
-end
-
---The snapshot token for a pregen id (nil until the cache is loaded).
-function EncounterOfTheWeek.GetPregenToken(id)
-    if m_pregenTokens == nil then
+    CacheHeroModulePregens()
+    if m_pregens == nil then
         return nil
     end
-    return m_pregenTokens[id]
+    if m_heroPregens == nil or #m_heroPregens == 0 then
+        return m_pregens
+    end
+    local result = {}
+    for _, entry in ipairs(m_pregens) do
+        result[#result+1] = entry
+    end
+    for _, entry in ipairs(m_heroPregens) do
+        result[#result+1] = entry
+    end
+    return result
+end
+
+--── Hero module pregens ──────────────────────────────────────────────
+--Heroes shipped inside the player's Hero modules (classes and ancestries
+--from their inventory, see HeroModules.lua) are pregens too. Only modules
+--actually installed in the lobby count: that is every switched-on module the
+--player may use, and only once its code (if any) is approved -- so a pregen's
+--class is always there to recruit it with. Each comes from the snapshot of the
+--INSTALLED version (a newer one may still await review), and the list is
+--rebuilt whenever that set changes.
+
+--"fullid@version" of every Hero module installed in the lobby, sorted.
+local function InstalledHeroModulesKey()
+    local parts = {}
+    for _, info in ipairs(module.GetLoadedModules()) do
+        if info.isHeroModule and info.installedVersion ~= nil then
+            parts[#parts+1] = string.format("%s@%s", info.fullid, info.installedVersion)
+        end
+    end
+    table.sort(parts)
+    return table.concat(parts, ",")
+end
+
+CacheHeroModulePregens = function()
+    if not dmhub.isLobbyGame or module.DownloadModuleSnapshot == nil then
+        return
+    end
+
+    local key = InstalledHeroModulesKey()
+    if m_heroPregensFetching or key == m_heroPregensKey then
+        --built from this set: just check the art is still registered
+        --(entering a game clears module art; the snapshot download redoes it).
+        for moduleid, sample in pairs(m_heroPregenArtSample) do
+            local portrait = nil
+            pcall(function() portrait = sample.token.offTokenPortrait end)
+            if IsUnresolvableAssetId(portrait) then
+                m_heroPregenArtSample[moduleid] = nil
+                module.DownloadModuleSnapshot{ moduleid = moduleid, version = sample.version, success = function() end, failure = function() end }
+            end
+        end
+        return
+    end
+
+    m_heroPregensFetching = true
+    local result = {}
+    local tokens = {}
+    local artSamples = {}
+    local pending = 0
+    local Finish = function()
+        if pending > 0 then
+            return
+        end
+        table.sort(result, function(a,b) return a.name < b.name end)
+        m_heroPregens = result
+        m_heroPregenTokens = tokens
+        m_heroPregenArtSample = artSamples
+        m_heroPregensKey = key
+        m_heroPregensFetching = false
+    end
+
+    for _, info in ipairs(module.GetLoadedModules()) do
+        if info.isHeroModule and info.installedVersion ~= nil then
+            pending = pending + 1
+            local fullid = info.fullid
+            local version = info.installedVersion
+            local source = info.name or fullid
+            module.DownloadModuleSnapshot{
+                moduleid = fullid,
+                version = version,
+                success = function(snapshot)
+                    for charid, tok in pairs(snapshot.characters or {}) do
+                        local isHero = false
+                        pcall(function() isHero = tok.properties:IsHero() == true end)
+                        if isHero then
+                            tokens[charid] = tok
+                            artSamples[fullid] = { token = tok, version = version }
+                            result[#result+1] = {
+                                id = charid,
+                                name = tok.name or "Hero",
+                                className = GetHeroClassName(tok),
+                                ancestry = GetHeroAncestry(tok),
+                                level = GetHeroLevel(tok),
+                                source = source,
+                            }
+                        end
+                    end
+                    pending = pending - 1
+                    Finish()
+                end,
+                failure = function(msg)
+                    printf("EotW: could not fetch Hero module %s for its pregens: %s", fullid, tostring(msg))
+                    pending = pending - 1
+                    Finish()
+                end,
+            }
+        end
+    end
+    Finish()
+end
+
+--The snapshot token for a pregen id, official or from a Hero module (nil
+--until its cache is loaded).
+function EncounterOfTheWeek.GetPregenToken(id)
+    if m_pregenTokens ~= nil and m_pregenTokens[id] ~= nil then
+        return m_pregenTokens[id]
+    end
+    return m_heroPregenTokens[id]
 end
 
 --== portrait warm-up ==================================================
@@ -949,6 +1431,9 @@ local function EligiblePortraitImageIds()
         AddToken(tok)
     end
     for _,tok in pairs(m_pregenTokens or {}) do
+        AddToken(tok)
+    end
+    for _,tok in pairs(m_heroPregenTokens) do
         AddToken(tok)
     end
 
@@ -1333,6 +1818,16 @@ function EncounterOfTheWeek.IsScreenOpen()
     return m_screen ~= nil and m_screen.valid and not m_screen:HasClass("hidden")
 end
 
+--The town screen, for panels that mount over the whole town (the EotW hero
+--sheet), or nil while it is not up.
+---@return Panel|nil
+function EncounterOfTheWeek.TownScreen()
+    if EncounterOfTheWeek.IsScreenOpen() then
+        return m_screen
+    end
+    return nil
+end
+
 --Extra rows for the titlescreen's Codex menu (CodexTitleBar appends them).
 --Admins get "New Player Window" while the town is open: a second app window
 --logged in as the secondary account, which opens straight into this screen
@@ -1359,6 +1854,13 @@ function EncounterOfTheWeek.CodexMenuItems()
             icon = "phosphor/sword-fill.png",
             click = function()
                 EncounterOfTheWeek.ShowPoolDialog()
+            end,
+        },
+        {
+            text = "Encounter of the Week...",
+            icon = "phosphor/trophy-fill.png",
+            click = function()
+                EncounterOfTheWeek.ShowWeekDialog()
             end,
         },
     }
@@ -1490,7 +1992,7 @@ function EncounterOfTheWeek.ShowPoolDialog()
             vmargin = 8,
         },
         gui.Label{
-            text = "Community modules published Public or Unlisted as Encounter of the Week. A pulled module's encounters are not offered at the Town Gate; games already formed keep playing it.",
+            text = "Community modules published Public or Unlisted as Encounter of the Week. A pulled module's encounters are not offered in the Danger Rooms (or at the Gate, if one was an Encounter of the Week); games already formed keep playing it.",
             fontSize = 15,
             color = "#b8ad96",
             width = "100%",
@@ -1542,6 +2044,273 @@ function EncounterOfTheWeek.ShowPoolDialog()
     end)
 end
 
+--Admin: the weekly assessment and the rotation. Lists every encounter in the
+--pool that is not this week's, Danger Room votes, plays, nominations and
+--feedback beside each, most nominated first, each with "Make Encounter of the
+--Week" (a second click confirms). Mounted over the town screen.
+function EncounterOfTheWeek.ShowWeekDialog()
+    if m_screen == nil or not m_screen.valid then
+        return
+    end
+
+    local dlg
+    local listPanel
+    local headerLabel
+    local statusLabel
+
+    local SetStatus = function(text, isError)
+        if statusLabel ~= nil and statusLabel.valid then
+            statusLabel.text = text or ""
+            statusLabel.selfStyle.color = cond(isError, "#ff8888", Styles.textColor)
+        end
+    end
+
+    local Small = function(text, color)
+        return gui.Label{
+            text = text,
+            fontSize = 14,
+            color = color or "#b8ad96",
+            width = "100%",
+            height = "auto",
+            textWrap = true,
+        }
+    end
+
+    local Rebuild
+    Rebuild = function(report)
+        if listPanel == nil or not listPanel.valid then
+            return
+        end
+        local current = EncounterOfTheWeek.CurrentEncounterKey()
+        local past = EncounterOfTheWeek.PastEncounterKeys()
+        local pastTitles = {}
+        for _,key in ipairs(past) do
+            pastTitles[#pastTitles+1] = EncounterOfTheWeek.EncounterTitle(key)
+        end
+        if headerLabel ~= nil and headerLabel.valid then
+            local week = EncounterOfTheWeek.GetWeek()
+            if current == nil then
+                headerLabel.text = "No Encounter of the Week is set yet. Choose one below."
+            else
+                headerLabel.text = string.format("Week %s: <b>%s</b>\nPast: %s", tostring(week ~= nil and week.week or "?"),
+                    EncounterOfTheWeek.EncounterTitle(current), cond(#pastTitles > 0, table.concat(pastTitles, ", "), "none"))
+            end
+        end
+
+        local byKey = {}
+        for _,e in ipairs(report ~= nil and report.encounters or {}) do
+            byKey[e.encounter] = e
+        end
+        local nominated = {}
+        for _,n in ipairs(report ~= nil and report.nominations or {}) do
+            nominated[n.encounter] = n.count or 0
+        end
+
+        local entries = {}
+        for _,entry in ipairs(EncounterOfTheWeek.GetEncounters() or {}) do
+            if entry.key ~= current then
+                entries[#entries+1] = entry
+            end
+        end
+        table.sort(entries, function(a, b)
+            local na, nb = nominated[a.key] or 0, nominated[b.key] or 0
+            if na ~= nb then
+                return na > nb
+            end
+            local ea, eb = byKey[a.key], byKey[b.key]
+            local va = ea ~= nil and ((ea.up or 0) - (ea.down or 0)) or 0
+            local vb = eb ~= nil and ((eb.up or 0) - (eb.down or 0)) or 0
+            if va ~= vb then
+                return va > vb
+            end
+            return a.title < b.title
+        end)
+
+        local rows = {}
+        for _,entry in ipairs(entries) do
+            local stats = byKey[entry.key]
+            local kind = "Danger Room"
+            if EncounterOfTheWeek.IsScheduledEncounter(entry.key) then
+                kind = "Past Encounter of the Week"
+            elseif entry.official then
+                kind = "Official module (retired)"
+            end
+            local details = {
+                gui.Label{
+                    text = entry.title,
+                    fontSize = 20,
+                    bold = true,
+                    color = Styles.textColor,
+                    width = "100%",
+                    height = "auto",
+                },
+                Small(string.format("%s -- %s%s", kind, entry.moduleName or entry.moduleid,
+                    cond(entry.author ~= nil and entry.author ~= "", " by " .. tostring(entry.author), ""))),
+                Small(string.format("%d up, %d down, %d play%s, %d nomination%s",
+                    stats ~= nil and stats.up or 0, stats ~= nil and stats.down or 0,
+                    stats ~= nil and stats.plays or 0, cond(stats ~= nil and stats.plays == 1, "", "s"),
+                    nominated[entry.key] or 0, cond(nominated[entry.key] == 1, "", "s")), "#e6dcc6"),
+            }
+            for _,f in ipairs(stats ~= nil and stats.feedback or {}) do
+                if f.feedback ~= nil and f.feedback ~= "" or (f.vote or 0) ~= 0 then
+                    local vote = cond((f.vote or 0) > 0, "up", cond((f.vote or 0) < 0, "down", "no vote"))
+                    details[#details+1] = Small(string.format("  %s (%s): %s", f.name or "?", vote, f.feedback or ""), "#d9d0bd")
+                end
+            end
+            rows[#rows+1] = gui.Panel{
+                width = "100%",
+                height = "auto",
+                flow = "horizontal",
+                vmargin = 6,
+                gui.Panel{
+                    width = "100%-230",
+                    height = "auto",
+                    flow = "vertical",
+                    valign = "center",
+                    children = details,
+                },
+                gui.Button{
+                    text = "Make Encounter of the Week",
+                    fontSize = 15,
+                    width = 220,
+                    height = 38,
+                    valign = "center",
+                    data = { confirming = false },
+                    resetConfirm = function(element)
+                        element.data.confirming = false
+                        element.text = "Make Encounter of the Week"
+                    end,
+                    click = function(element)
+                        if not element.data.confirming then
+                            element.data.confirming = true
+                            element.text = "Click again to confirm"
+                            element:ScheduleEvent("resetConfirm", 4)
+                            return
+                        end
+                        SetStatus("Rotating the week...")
+                        EncounterOfTheWeek.SetWeek(entry.key, function(ok, result)
+                            if not ok then
+                                SetStatus("Could not set the week: " .. tostring(result), true)
+                                return
+                            end
+                            SetStatus(entry.title .. " is now the Encounter of the Week.")
+                            dmhub.Schedule(0.5, function()
+                                if dlg ~= nil and dlg.valid then
+                                    EncounterOfTheWeek.DangerReport(function(okReport, newReport)
+                                        Rebuild(cond(okReport, newReport, nil))
+                                    end)
+                                end
+                            end)
+                        end)
+                    end,
+                },
+            }
+        end
+        if #rows == 0 then
+            rows[1] = Small("The pool holds no other encounters.")
+        end
+        listPanel.children = rows
+    end
+
+    dlg = gui.Panel{
+        floating = true,
+        width = 860,
+        height = "auto",
+        halign = "center",
+        valign = "center",
+        bgimage = "panels/square.png",
+        bgcolor = "#111111ff",
+        borderWidth = 2,
+        borderColor = Styles.textColor,
+        flow = "vertical",
+        pad = 16,
+        borderBox = true,
+        styles = { Styles.Default },
+
+        captureEscape = true,
+        escapePriority = EscapePriority.EXIT_MODAL_DIALOG,
+        escape = function(element)
+            element:DestroySelf()
+        end,
+
+        gui.Label{
+            text = "Encounter of the Week",
+            fontSize = 32,
+            bold = true,
+            color = Styles.textColor,
+            width = "auto",
+            height = "auto",
+            halign = "center",
+            vmargin = 8,
+        },
+        gui.Label{
+            text = "",
+            fontSize = 17,
+            color = Styles.textColor,
+            width = "100%",
+            height = "auto",
+            textAlignment = "center",
+            textWrap = true,
+            vmargin = 4,
+            create = function(element)
+                headerLabel = element
+            end,
+        },
+        gui.Panel{
+            width = "100%",
+            height = "auto",
+            maxHeight = 600,
+            vscroll = true,
+            flow = "vertical",
+            vmargin = 8,
+            rpad = 12,
+            borderBox = true,
+            create = function(element)
+                listPanel = element
+            end,
+        },
+        gui.Label{
+            text = "Loading the week's report...",
+            fontSize = 16,
+            color = Styles.textColor,
+            width = "100%",
+            height = "auto",
+            minHeight = 22,
+            textAlignment = "center",
+            create = function(element)
+                statusLabel = element
+            end,
+        },
+        gui.Button{
+            text = "Close",
+            fontSize = 20,
+            width = 140,
+            height = 42,
+            halign = "center",
+            vmargin = 8,
+            click = function(element)
+                dlg:DestroySelf()
+            end,
+        },
+    }
+
+    m_screen:AddChild(dlg)
+    EncounterOfTheWeek.RefreshPool(function()
+        EncounterOfTheWeek.DangerReport(function(ok, report)
+            if dlg == nil or not dlg.valid then
+                return
+            end
+            if ok then
+                SetStatus("")
+                Rebuild(report)
+            else
+                SetStatus("Could not load the report: " .. tostring(report), true)
+                Rebuild(nil)
+            end
+        end)
+    end)
+end
+
 --Builds the full-screen EotW panel: overview text, the games list driven by
 --the lobby's /state/games roster, and the lobby chat + presence column.
 CreateScreen = function(args)
@@ -1580,18 +2349,31 @@ CreateScreen = function(args)
     }
 
     --forward-declared refresh targets (assigned when the panels are built).
-    local gamesListPanel = nil
     local chatMessagesPanel = nil
     local presenceLabel = nil
     local statusLabel = nil
     local chatErrorLabel = nil
-    local gamesErrorLabel = nil
-    local gamesTitleLabel = nil
     local chatTitleLabel = nil
-    local createGameButton = nil
+
+    --The two party boards: the Town Gate's ("gate": the Encounter of the
+    --Week and the past ones) and the Danger Rooms' ("danger"). Each is the
+    --body of its location's scene; both are built once and kept, and
+    --RefreshGames renders each. Per board: { list, title, error, controls,
+    --creatorButton, pastButton, cardWidth }.
+    local PARTY_MODES = { "gate", "danger" }
+    local m_partyUI = { gate = {}, danger = {} }
 
     local resultPanel = nil
+    ---@type fun(key: string)
     local ShowCreateDialog = nil
+    ---@type fun()
+    local ShowPastEncountersDialog = nil
+    ---@type fun()
+    local ShowCreatorFeedbackDialog = nil
+    --Danger Room votes from the city's danger-stats, { [key] = {up, down,
+    --plays} }, and this account's nomination this week (a key or nil).
+    local m_dangerStats = {}
+    local m_myNomination = nil
 
     --When set, the games area shows this game's lobby view (slots + your
     --heroes) instead of the games list, and the chat column switches to
@@ -1628,8 +2410,11 @@ CreateScreen = function(args)
     local m_modalDialog = nil
 
     local ShowGamesError = function(message)
-        if gamesErrorLabel ~= nil and gamesErrorLabel.valid then
-            gamesErrorLabel:FireEvent("showError", message)
+        for _,mode in ipairs(PARTY_MODES) do
+            local label = m_partyUI[mode].error
+            if label ~= nil and label.valid then
+                label:FireEvent("showError", message)
+            end
         end
     end
 
@@ -1647,21 +2432,21 @@ CreateScreen = function(args)
         }
     end
 
-    --The Gate scene's card is narrow over the parties list, so the art (the
-    --tower) stays clear, and wide in a party view, where a full party's six
-    --hero cards need one row. The list panel sits in the Gate's body, which
-    --sits in the card.
-    local GATE_CARD_WIDTH_LIST = 1000
-    local GATE_CARD_WIDTH_PARTY = 1240
-    local m_gateCardWidth = nil
-    local SetGateCardWidth = function(width)
-        if width == m_gateCardWidth or gamesListPanel == nil or not gamesListPanel.valid then
+    --A board's scene card is narrow over its lists, so the art (the Gate's
+    --tower, the Danger Rooms' monster) stays clear, and wide in a party view,
+    --where a full party's six hero cards need one row. The list panel sits in
+    --the board, which sits in the card.
+    local CARD_WIDTH_LIST = { gate = 1000, danger = 900 }
+    local CARD_WIDTH_PARTY = 1240
+    local SetCardWidth = function(mode, width)
+        local ui = m_partyUI[mode]
+        if width == ui.cardWidth or ui.list == nil or not ui.list.valid then
             return
         end
-        local body = gamesListPanel.parent
+        local body = ui.list.parent
         local card = body ~= nil and body.parent or nil
         if card ~= nil then
-            m_gateCardWidth = width
+            ui.cardWidth = width
             card.selfStyle.width = width
         end
     end
@@ -1811,7 +2596,8 @@ CreateScreen = function(args)
             if #heroes >= space then
                 break
             end
-            if hero.status ~= "fallen" and not busy[hero.heroid] then
+            --a dying hero must rest at the inn before setting out again.
+            if hero.status ~= "fallen" and not busy[hero.heroid] and not EotwRoster.IsDying(hero.heroid) then
                 heroes[#heroes+1] = (RosterHeroSpec(hero))
             end
         end
@@ -1850,9 +2636,44 @@ CreateScreen = function(args)
     local m_resumeInfo = nil
     local RefreshResumeState = nil
 
+    --Give up an EotW game for good. The eotwAbandonGame cloud function
+    --deletes it (and releases its storage) only when no other member still
+    --holds it in their Encounter of the Week slot -- whoever we are, owner or
+    --not, since only the server may delete a game for a non-owner. Then we
+    --leave it: off its player list, account slot cleared.
+    local AbandonGame = function(gameid, gameinfo)
+        local function Leave()
+            if gameinfo ~= nil then
+                gameinfo:Leave()
+            end
+        end
+        net.Post{
+            url = dmhub.cloudFunctionsBaseUrl .. "/eotwAbandonGame",
+            data = { gameid = gameid },
+            success = function(data)
+                if type(data) == "table" and data.ok then
+                    printf("EotW: abandoned game %s is deleted (storage released: %s)", gameid, tostring(data.released))
+                else
+                    --usually "Other players still have this game": they play on.
+                    printf("EotW: abandoned game %s stays for the others: %s", gameid,
+                        tostring(type(data) == "table" and data.error or "invalid response"))
+                end
+                Leave()
+            end,
+            error = function(msg)
+                printf("EotW: could not reach eotwAbandonGame for %s: %s", gameid, tostring(msg))
+                Leave()
+            end,
+        }
+    end
+
     --Destroy/leave the EotW game we had before entering a new one, and
     --drop any lobby roster record we still hold for it.
-    local DestroyPreviousGame = function(prevGameid)
+    --opts.abandon: walking away from a game others may still be playing --
+    --AbandonGame above, rather than the owner deleting it from under them.
+    --Without it (a concluded game), the owner deletes and others leave.
+    local DestroyPreviousGame = function(prevGameid, opts)
+        opts = opts or {}
         if prevGameid == nil then
             return
         end
@@ -1872,6 +2693,10 @@ CreateScreen = function(args)
                 if lobby.ClearEotwGame ~= nil then
                     lobby:ClearEotwGame(prevGameid)
                 end
+                return
+            end
+            if opts.abandon then
+                AbandonGame(prevGameid, gameinfo)
                 return
             end
             if gameinfo.DeleteAndReleaseStorage ~= nil then
@@ -1920,7 +2745,7 @@ CreateScreen = function(args)
                 local prev = EotwSlotGameid()
                 EngineJoinEotw(gameid)
                 if prev ~= nil and prev ~= gameid then
-                    DestroyPreviousGame(prev)
+                    DestroyPreviousGame(prev, { abandon = true })
                 end
                 ClaimActiveHeroes(gameid, prev)
                 if OpenGameView ~= nil then
@@ -1938,6 +2763,32 @@ CreateScreen = function(args)
             return " -- " .. EncounterOfTheWeek.EncounterDisplayName(record.encounter)
         end
         return ""
+    end
+
+    --Which board lists a party: the Danger Rooms' for a Danger Room
+    --encounter, the Gate's for everything else.
+    local PartyMode = function(record)
+        if record ~= nil and EncounterOfTheWeek.IsDangerRoomEncounter(record.encounter) then
+            return "danger"
+        end
+        return "gate"
+    end
+
+    --What the Danger Rooms mean for the heroes, wherever a party forms there.
+    local PRACTICE_TEXT = "The Danger Rooms are practice. Heroes earn no Victories, keep no treasure and carry nothing else home. Afterwards you can vote on the encounter, leave feedback for its creator and nominate next week's Encounter of the Week."
+
+    local PracticeNote = function(width)
+        return gui.Label{
+            text = PRACTICE_TEXT,
+            fontSize = 17,
+            color = "#ffcf8a",
+            width = width,
+            height = "auto",
+            halign = "center",
+            textAlignment = "center",
+            textWrap = true,
+            vmargin = 8,
+        }
     end
 
     --Enter the actual game world. Lobby heroes exist only in the local lobby
@@ -2044,8 +2895,25 @@ CreateScreen = function(args)
             numHeroes = slotsFilled,
             members = members,
             encounterMap = encounterMap,
+            --a Danger Rooms party: the host stamps the game as practice, so
+            --no Victory or treasure is awarded and players debrief it in town.
+            practice = encounterMap ~= nil and EncounterOfTheWeek.IsDangerRoomEncounter(encounterMap),
+            --members entered alongside the host (see fastLaunchSetting): the
+            --game side waits for the host's setup stamp before placing heroes.
+            fastLaunch = EncounterOfTheWeek.FastLaunch(),
         }
         _G.EotwPendingArrival = arrival
+
+        --start directly on the encounter map rather than on the module's
+        --first map and travelling. Only for the official module's maps: a
+        --Danger Rooms module is installed by the host's setup, after load.
+        local enterOptions = nil
+        if arrival.fastLaunch and encounterMap ~= nil then
+            local moduleid, mapName = EncounterOfTheWeek.ParseEncounterKey(encounterMap)
+            if moduleid == STARTING_MODULE then
+                enterOptions = { startMap = mapName }
+            end
+        end
 
         --Hold the loading screen through arrival setup: the engine then runs
         --the callback below BEHIND the loading screen and keeps it up until
@@ -2056,10 +2924,13 @@ CreateScreen = function(args)
         --Older engines lack the call and simply show the map as before.
         pcall(function() dmhub.HoldLoadingScreen() end)
 
-        lobby:EnterGame(gameid, function()
+        EotwProf("lobby:EnterGame called game=%s", gameid)
+        local onArrive
+        onArrive = function()
             --the engine fires this only once the game has finished loading,
             --so the stamp doubles as the game side's guarantee that running
             --setup -- travelling maps, pasting tokens -- is safe now.
+            EotwProf("arrival callback (engine load finished) game=%s", gameid)
             arrival.ready = true
 
             local eotwGame = rawget(_G, "EncounterOfTheWeekGame")
@@ -2075,7 +2946,8 @@ CreateScreen = function(args)
                 _G.EotwPendingArrival = nil
                 eotwGame.SetupOnArrival(arrival)
             end
-        end)
+        end
+        lobby:EnterGame(gameid, onArrive, enterOptions)
     end
 
     --The host's Begin marks the roster record "launched" server-side. The
@@ -2113,8 +2985,10 @@ CreateScreen = function(args)
         for gameid,record in pairs(games) do
             local isHost = record.hostUserid == myUserid
             local isMember = isHost or (record.players ~= nil and record.players[myUserid] ~= nil)
-            if isMember and (record.status == "ready" or (record.status == "launched" and isHost))
+            local fast = EncounterOfTheWeek.FastLaunch()
+            if isMember and (record.status == "ready" or (record.status == "launched" and (isHost or fast)))
                     and m_initialGameStatus[gameid] ~= record.status then
+                EotwProf("saw status=%s (%s); entering game=%s", tostring(record.status), isHost and "host" or "member", gameid)
                 m_enteringWorld = true
                 EnterWorld(gameid)
                 return
@@ -2661,6 +3535,15 @@ CreateScreen = function(args)
             extras = extras,
             --another player's roster hero: CreateDetachedCharacter registered its art.
             artRegistered = not mine and heroEntry.kind == "roster",
+            --a lineup card opens its Hero in the EotW hero sheet (a teammate's
+            --read-only); nothing while a teammate's Hero is still on its way
+            click = function()
+                if tok == nil then
+                    return
+                end
+                audio.FireSoundEvent("Mouse.Click")
+                EotwHeroSheet.Show{ token = tok, charid = tok.charid, context = "town" }
+            end,
         }
     end
 
@@ -2734,7 +3617,7 @@ CreateScreen = function(args)
         }
     end
 
-    --The whole game lobby view, as a child list for gamesListPanel.
+    --The whole game lobby view, as a child list for a board's list panel.
     BuildGameView = function(gameid, record)
         local myUserid = dmhub.loginUserid
         local isHost = record.hostUserid == myUserid
@@ -2786,6 +3669,9 @@ CreateScreen = function(args)
         local backstory = EncounterOfTheWeek.GetTownGateText(record.encounter)
         if backstory ~= nil then
             children[#children+1] = BackstoryLabel(backstory, "86%")
+        end
+        if PartyMode(record) == "danger" then
+            children[#children+1] = PracticeNote("86%")
         end
 
         --slot list: every claimed hero (host's first), then open slots.
@@ -2988,6 +3874,7 @@ CreateScreen = function(args)
                     if m_conn == nil then
                         return
                     end
+                    EotwProf("Begin pressed (launch-game sent) game=%s", gameid)
                     m_conn:Request{
                         action = "launch-game",
                         args = { gameid = gameid },
@@ -3131,8 +4018,10 @@ CreateScreen = function(args)
                 EnterWorld(resumeGameid)
             end),
 
-            --Abandon destroys the in-progress game (engine game deleted,
-            --storage released, account slot cleared); second click confirms.
+            --Abandon gives up the in-progress game: it is deleted (storage
+            --released) only when nobody else still holds it (AbandonGame);
+            --otherwise we just leave it to the others. Account slot cleared
+            --either way; second click confirms.
             gui.Button{
                 text = "Abandon",
                 fontSize = 20,
@@ -3153,7 +4042,7 @@ CreateScreen = function(args)
                         element:ScheduleEvent("resetConfirm", 4)
                         return
                     end
-                    DestroyPreviousGame(resumeGameid)
+                    DestroyPreviousGame(resumeGameid, { abandon = true })
                     if rowPanel ~= nil and rowPanel.valid then
                         rowPanel:DestroySelf()
                     end
@@ -3163,77 +4052,196 @@ CreateScreen = function(args)
         return rowPanel
     end
 
-    RefreshGames = function()
-        if gamesListPanel == nil or not gamesListPanel.valid then
-            return
-        end
-        if m_conn == nil then
-            gamesListPanel.children = { EmptyNote("This build of the Codex does not include the lobby engine update.") }
-            return
-        end
+    --A small cream overline ("THIS WEEK'S ENCOUNTER").
+    local Overline = function(text)
+        return gui.Label{
+            text = string.format("<cspace=0.25em>%s</cspace>", string.upper(text)),
+            fontSize = 15,
+            bold = true,
+            color = "#e6dcc6",
+            width = "auto",
+            height = "auto",
+        }
+    end
 
-        --a launched game we belong to pulls us into the world; the list
-        --still re-renders below while the game switch spins up.
-        CheckLaunchedGames()
+    --The Gate's header: this week's encounter, its backstory (the script's
+    --"# Town Gate" text, published with the module) and who made it.
+    local WeekBanner = function()
+        local key = EncounterOfTheWeek.CurrentEncounterKey()
+        local children = { Overline("This Week's Encounter") }
+        if key == nil then
+            children[#children+1] = gui.Label{
+                text = "The guild has not posted this week's encounter yet. Check back soon.",
+                fontSize = 20,
+                italics = true,
+                color = "#efe4cc",
+                width = "100%",
+                height = "auto",
+                tmargin = 8,
+            }
+        else
+            children[#children+1] = gui.Label{
+                text = EncounterOfTheWeek.EncounterTitle(key),
+                fontFace = "display",
+                fontSize = 46,
+                color = "#f6ead0",
+                width = "100%",
+                height = "auto",
+            }
+            local credit = EncounterOfTheWeek.EncounterCredit(key)
+            if credit ~= nil then
+                children[#children+1] = gui.Label{
+                    text = credit,
+                    fontSize = 15,
+                    color = "#b8ad96",
+                    width = "100%",
+                    height = "auto",
+                }
+            end
+            local backstory = EncounterOfTheWeek.GetTownGateText(key)
+            children[#children+1] = gui.Label{
+                text = backstory or "",
+                fontSize = 19,
+                italics = true,
+                color = "#efe4cc",
+                width = "100%",
+                height = "auto",
+                textWrap = true,
+                tmargin = 8,
+                classes = { cond(backstory == nil, "collapsed", nil) },
+            }
+        end
+        return gui.Panel{
+            width = "100%",
+            height = "auto",
+            flow = "vertical",
+            bgimage = "panels/square.png",
+            bgcolor = "#ffffff0c",
+            borderWidth = 1,
+            borderColor = "#e6dcc644",
+            cornerRadius = 10,
+            pad = 16,
+            borderBox = true,
+            vmargin = 4,
+            children = children,
+        }
+    end
 
-        --game lobby view mode: render the viewed game, falling back to
-        --the list if it vanished (abandoned, expired, or we left it).
-        if m_viewGameid ~= nil then
-            local record = GetGameRecord(m_viewGameid)
-            if record == nil then
-                m_viewGameid = nil
-                ShowGamesError("That game is no longer available.")
-                RefreshChat()
-            else
-                SetGateCardWidth(GATE_CARD_WIDTH_PARTY)
-                gamesListPanel.children = BuildGameView(m_viewGameid, record)
-                if gamesTitleLabel ~= nil and gamesTitleLabel.valid then
-                    gamesTitleLabel.text = "Your Party"
-                end
-                --no back button here: leaving the game (Abandon/Leave) is
-                --the only way back to the games list. The collapsed button
-                --frees its space to the list so a full 6-slot roster plus
-                --the control row fits without a scrollbar.
-                if createGameButton ~= nil and createGameButton.valid then
-                    createGameButton:SetClass("collapsed", true)
-                end
-                return
+    --One encounter on the Danger Rooms' board: its title, maker, votes so
+    --far, backstory, and a Form a Party for it.
+    local DangerEncounterRow = function(entry)
+        local stats = m_dangerStats[entry.key]
+        local statsText = "Not yet tried"
+        if stats ~= nil then
+            statsText = string.format("%d up, %d down -- played %d time%s", stats.up or 0, stats.down or 0,
+                stats.plays or 0, cond(stats.plays == 1, "", "s"))
+        end
+        if m_myNomination == entry.key then
+            statsText = statsText .. " -- your nomination this week"
+        end
+        local byline = entry.moduleName or entry.moduleid
+        if entry.author ~= nil and entry.author ~= "" then
+            byline = string.format("%s by %s", byline, entry.author)
+        end
+        return gui.Panel{
+            width = "100%",
+            height = "auto",
+            flow = "horizontal",
+            bgimage = "panels/square.png",
+            bgcolor = "#ffffff0e",
+            cornerRadius = 8,
+            pad = 12,
+            borderBox = true,
+            vmargin = 4,
+
+            gui.Panel{
+                width = "100%-190",
+                height = "auto",
+                valign = "center",
+                flow = "vertical",
+                gui.Label{
+                    text = entry.title,
+                    fontSize = 24,
+                    bold = true,
+                    color = Styles.textColor,
+                    width = "100%",
+                    height = "auto",
+                },
+                gui.Label{
+                    text = byline,
+                    fontSize = 15,
+                    color = "#b8ad96",
+                    width = "100%",
+                    height = "auto",
+                },
+                gui.Label{
+                    text = statsText,
+                    fontSize = 15,
+                    color = "#e6dcc6",
+                    width = "100%",
+                    height = "auto",
+                },
+                gui.Label{
+                    text = entry.townGate or "",
+                    fontSize = 16,
+                    italics = true,
+                    color = "#efe4cc",
+                    width = "100%",
+                    height = "auto",
+                    textWrap = true,
+                    tmargin = 4,
+                    classes = { cond(entry.townGate == nil, "collapsed", nil) },
+                },
+            },
+            gui.Button{
+                text = "Form a Party",
+                fontSize = 18,
+                width = 170,
+                height = 42,
+                halign = "right",
+                valign = "center",
+                click = function()
+                    ShowCreateDialog(entry.key)
+                end,
+            },
+        }
+    end
+
+    --This account's own encounters in the pool (it published the module),
+    --whose Danger Rooms feedback it may read.
+    local MyEncounters = function()
+        local result = {}
+        for _,entry in ipairs(EncounterOfTheWeek.GetEncounters() or {}) do
+            if entry.ours == true and not entry.official then
+                result[#result+1] = entry
             end
         end
+        return result
+    end
 
-        SetGateCardWidth(GATE_CARD_WIDTH_LIST)
-        if gamesTitleLabel ~= nil and gamesTitleLabel.valid then
-            gamesTitleLabel.text = "Adventuring Parties"
-        end
-        if createGameButton ~= nil and createGameButton.valid then
-            createGameButton:SetClass("collapsed", false)
-        end
-
-        local games = m_conn:GetPath("/state/games")
-        local ids = {}
-        if games ~= nil then
-            for gameid,_ in pairs(games) do
-                ids[#ids+1] = gameid
-            end
-        end
-        table.sort(ids)
-
+    --A board's list mode: its header, then the parties it holds (forming
+    --ones first, then those underway), then -- in the Danger Rooms -- the
+    --encounters to try.
+    local BoardChildren = function(mode, games, ids)
         local children = {}
-        --the account's in-progress game first, unless it also has a live
-        --roster record below (then the richer roster row covers it).
+        if mode == "gate" then
+            children[#children+1] = WeekBanner()
+        else
+            children[#children+1] = PracticeNote("96%")
+        end
+        --the account's in-progress game, unless it also has a live roster
+        --record below (then the richer roster row covers it).
         if m_resumeGameid ~= nil and (games == nil or games[m_resumeGameid] == nil) then
             children[#children+1] = MakeResumeRow()
         end
-        --parties still forming up (joinable) first, then the encounters
-        --already underway (shown for information).
+
         local forming = {}
         local underway = {}
         for _,gameid in ipairs(ids) do
-            --ids is empty unless games is non-nil.
             ---@cast games -nil
             local record = games[gameid]
             --private games are never listed for anyone but their host.
-            if record.public == true or record.hostUserid == dmhub.loginUserid then
+            if PartyMode(record) == mode and (record.public == true or record.hostUserid == dmhub.loginUserid) then
                 if record.status == "open" then
                     forming[#forming+1] = MakeGameRow(gameid, record)
                 else
@@ -3244,7 +4252,9 @@ CreateScreen = function(args)
 
         children[#children+1] = ListSectionTitle("Parties Forming")
         if #forming == 0 then
-            children[#children+1] = EmptyNote("No parties are forming right now. Form one and others can join you!")
+            children[#children+1] = EmptyNote(cond(mode == "gate",
+                "No parties are forming right now. Form one and others can join you!",
+                "Nobody is in the Danger Rooms right now. Pick an encounter below to form a party."))
         end
         for _,row in ipairs(forming) do
             children[#children+1] = row
@@ -3255,7 +4265,93 @@ CreateScreen = function(args)
                 children[#children+1] = row
             end
         end
-        gamesListPanel.children = children
+
+        if mode == "danger" then
+            children[#children+1] = ListSectionTitle("Encounters to Try")
+            local encounters = EncounterOfTheWeek.GetDangerRoomEncounters()
+            if EncounterOfTheWeek.GetEncounters() == nil then
+                children[#children+1] = EmptyNote("Gathering the encounters...")
+            elseif #encounters == 0 then
+                children[#children+1] = EmptyNote("No new encounters have been submitted. Publish one as an Encounter of the Week module and it will appear here.")
+            end
+            for _,entry in ipairs(encounters) do
+                children[#children+1] = DangerEncounterRow(entry)
+            end
+        end
+        return children
+    end
+
+    RefreshGames = function()
+        local any = false
+        for _,mode in ipairs(PARTY_MODES) do
+            local list = m_partyUI[mode].list
+            if list ~= nil and list.valid then
+                any = true
+                if m_conn == nil then
+                    list.children = { EmptyNote("This build of the Codex does not include the lobby engine update.") }
+                end
+            end
+        end
+        if not any or m_conn == nil then
+            return
+        end
+
+        --a launched game we belong to pulls us into the world; the lists
+        --still re-render below while the game switch spins up.
+        CheckLaunchedGames()
+
+        --game lobby view mode: the viewed party renders on its own board
+        --(the other board keeps its lists); if it vanished (abandoned,
+        --expired, or we left it) both boards show their lists.
+        local viewRecord = nil
+        if m_viewGameid ~= nil then
+            viewRecord = GetGameRecord(m_viewGameid)
+            if viewRecord == nil then
+                m_viewGameid = nil
+                ShowGamesError("That game is no longer available.")
+                RefreshChat()
+            end
+        end
+        local viewMode = viewRecord ~= nil and PartyMode(viewRecord) or nil
+
+        local games = m_conn:GetPath("/state/games")
+        local ids = {}
+        if games ~= nil then
+            for gameid,_ in pairs(games) do
+                ids[#ids+1] = gameid
+            end
+        end
+        table.sort(ids)
+
+        for _,mode in ipairs(PARTY_MODES) do
+            local ui = m_partyUI[mode]
+            if ui.list ~= nil and ui.list.valid then
+                local inView = mode == viewMode
+                if inView then
+                    ---@cast viewRecord -nil
+                    SetCardWidth(mode, CARD_WIDTH_PARTY)
+                    ui.list.children = BuildGameView(m_viewGameid, viewRecord)
+                else
+                    SetCardWidth(mode, CARD_WIDTH_LIST[mode])
+                    ui.list.children = BoardChildren(mode, games, ids)
+                end
+                if ui.title ~= nil and ui.title.valid then
+                    ui.title.text = cond(inView, "Your Party", cond(mode == "gate", "Encounter of the Week", "The Danger Rooms"))
+                end
+                --no back button in a party view: leaving the party
+                --(Abandon/Leave) is the way back to the lists. The collapsed
+                --controls free their space to the view.
+                if ui.controls ~= nil and ui.controls.valid then
+                    ui.controls:SetClass("collapsed", inView)
+                end
+                if ui.creatorButton ~= nil and ui.creatorButton.valid then
+                    ui.creatorButton:SetClass("collapsed", #MyEncounters() == 0)
+                end
+                if ui.pastButton ~= nil and ui.pastButton.valid then
+                    ui.pastButton:SetClass("collapsed", #EncounterOfTheWeek.PastEncounterKeys() == 0)
+                end
+            end
+        end
     end
 
     --Look up the account's EotW slot: a still-existing game becomes the
@@ -3267,6 +4363,25 @@ CreateScreen = function(args)
         --the host's machine deletes it and releases its storage, a member's
         --machine leaves it -- both clear the account slot and drop any
         --lingering lobby roster record.
+        --a game the player abandoned from inside (EncounterPresence.Abandon)
+        --is left behind for the others, or deleted when nobody else still
+        --holds it (AbandonGame).
+        local abandonedText = dmhub.GetSettingValue("eotw:abandonedgame")
+        if type(abandonedText) == "string" and abandonedText ~= "" then
+            dmhub.SetSettingValue("eotw:abandonedgame", "")
+            local parsed = dmhub.FromJson(abandonedText)
+            local abandoned = (type(parsed) == "table" and parsed.success) and parsed.result or nil
+            if type(abandoned) == "table" and type(abandoned.gameid) == "string" then
+                printf("EotW: cleaning up abandoned game %s", abandoned.gameid)
+                DestroyPreviousGame(abandoned.gameid, { abandon = true })
+                if EotwSlotGameid() == abandoned.gameid then
+                    m_resumeGameid = nil
+                    m_resumeInfo = nil
+                    return
+                end
+            end
+        end
+
         local concluded = dmhub.GetSettingValue("eotw:concludedgame")
         if concluded ~= nil and concluded ~= "" then
             dmhub.SetSettingValue("eotw:concludedgame", "")
@@ -3509,9 +4624,16 @@ CreateScreen = function(args)
             active[hero.heroid] = true
         end
         local heroes = {}
+        local dyingNames = {}
         for _,hero in ipairs(EotwRoster.GetHeroes() or {}) do
             if not claimed[hero.heroid] and away[hero.heroid] == nil then
-                heroes[#heroes+1] = hero
+                --a dying hero must rest at the Blue Fish Inn first (the city
+                --refuses the claim too).
+                if EotwRoster.IsDying(hero.heroid) then
+                    dyingNames[#dyingNames+1] = (hero.summary or {}).name or "A hero"
+                else
+                    heroes[#heroes+1] = hero
+                end
             end
         end
         --active heroes first: they are the ones adventuring in town.
@@ -3534,6 +4656,10 @@ CreateScreen = function(args)
             rows[#rows+1] = EmptyNote("No heroes are free to join. Visit the Hero's Guild to create or recruit one.")
         else
             rows[#rows+1] = CardGrid(myCards)
+        end
+        if #dyingNames > 0 then
+            rows[#rows+1] = EmptyNote(string.format("%s %s dying and must rest at the Blue Fish Inn before setting out again.",
+                table.concat(dyingNames, ", "), cond(#dyingNames == 1, "is", "are")))
         end
 
         dlg = gui.Panel{
@@ -3602,11 +4728,14 @@ CreateScreen = function(args)
     --engine, then confirm the gameid so the lobby publishes the roster
     --record, and claim the host's first hero slot.
 
-    ShowCreateDialog = function()
+    ShowCreateDialog = function(encounterKey)
         if m_conn == nil or resultPanel == nil or not resultPanel.valid then
             return
         end
         if m_modalDialog ~= nil and m_modalDialog.valid then
+            return
+        end
+        if encounterKey == nil or encounterKey == "" then
             return
         end
 
@@ -3619,58 +4748,16 @@ CreateScreen = function(args)
         ---@type Panel
         local dlg = nil
 
-        --the encounter pool (see "the encounter pool" above). With more than
-        --one encounter the dialog shows a dropdown, defaulting to the official
-        --module's bare "Encounter" map when it exists (else the first). With
-        --just one there is nothing to choose, but the party still records its
-        --key (the town keys who has already won an encounter by it). With none
-        --(or the pool not loaded yet) the game plays the official default map.
-        --m_encounter is an encounter KEY.
-        local encounters = EncounterOfTheWeek.GetEncounters() or {}
-        local m_encounter = nil
-        local showEncounterChoice = #encounters > 1
-        if #encounters > 0 then
-            m_encounter = encounters[1].key
-            for _,entry in ipairs(encounters) do
-                if entry.official and entry.mapName == ENCOUNTER_MAP_NAME then
-                    m_encounter = entry.key
-                end
-            end
-        end
+        --The party sets out for one encounter, chosen where it was formed:
+        --the Encounter of the Week (or a past one) at the Gate, a Danger Room
+        --encounter in the Danger Rooms. It rides the party record as its
+        --encounter KEY (the town keys who has already won an encounter by it).
+        local m_encounter = encounterKey
+        local practice = EncounterOfTheWeek.IsDangerRoomEncounter(m_encounter)
+        local credit = EncounterOfTheWeek.EncounterCredit(m_encounter)
+        local backstory = EncounterOfTheWeek.GetTownGateText(m_encounter)
 
-        --the chosen encounter's backstory, under the choice, and for a
-        --community encounter the module it comes from and its author.
-        local backstoryLabel = BackstoryLabel("", 480)
-        local creditLabel = gui.Label{
-            text = "",
-            fontSize = 15,
-            color = "#b8ad96",
-            width = 480,
-            height = "auto",
-            halign = "center",
-            textAlignment = "center",
-            textWrap = true,
-            vmargin = 2,
-        }
-        local ShowBackstory = function()
-            local text = EncounterOfTheWeek.GetTownGateText(m_encounter)
-            backstoryLabel.text = text or ""
-            backstoryLabel:SetClass("collapsed", text == nil)
-
-            local entry = EncounterOfTheWeek.GetEncounter(m_encounter)
-            local credit = nil
-            if entry ~= nil and not entry.official then
-                credit = string.format("From the module %s", entry.moduleName or entry.moduleid)
-                if entry.author ~= nil and entry.author ~= "" then
-                    credit = credit .. " by " .. entry.author
-                end
-            end
-            creditLabel.text = credit or ""
-            creditLabel:SetClass("collapsed", credit == nil)
-        end
-        ShowBackstory()
-
-        --default the game name to the creator's name ("David's Game"),
+        --default the game name to the creator's name ("David's Party"),
         --prefilled so it can be edited or cleared.
         local defaultName = "Encounter of the Week"
         local myName = dmhub.GetDisplayName(dmhub.loginUserid)
@@ -3721,7 +4808,7 @@ CreateScreen = function(args)
                         directorless = true,
                         create = function(gameid)
                             if prev ~= nil and prev ~= gameid then
-                                DestroyPreviousGame(prev)
+                                DestroyPreviousGame(prev, { abandon = true })
                             end
                             --Confirm even if the dialog was closed meanwhile:
                             --the engine game now exists, and only a confirm
@@ -3775,35 +4862,9 @@ CreateScreen = function(args)
             }
         end
 
-        --official encounters at the top level, then one flyout per community
-        --module ("<module> by <author>") holding its encounters. The pool
-        --lists each module's entries together, so a change of moduleid
-        --starts a new flyout.
-        local encounterOptions = {}
-        local currentGroup = nil
-        for _,entry in ipairs(encounters) do
-            if entry.official then
-                encounterOptions[#encounterOptions+1] = { id = entry.key, text = entry.mapName }
-            else
-                if currentGroup == nil or currentGroup.moduleid ~= entry.moduleid then
-                    local groupText = entry.moduleName or entry.moduleid
-                    if entry.author ~= nil and entry.author ~= "" then
-                        groupText = string.format("%s by %s", groupText, entry.author)
-                    end
-                    currentGroup = { moduleid = entry.moduleid, id = "module:" .. entry.moduleid, text = groupText, submenu = {} }
-                    encounterOptions[#encounterOptions+1] = currentGroup
-                end
-                currentGroup.submenu[#currentGroup.submenu+1] = {
-                    id = entry.key,
-                    text = entry.title,
-                    tooltip = entry.townGate,
-                }
-            end
-        end
-
         dlg = gui.Panel{
             floating = true,
-            width = 560,
+            width = 600,
             height = "auto",
             halign = "center",
             valign = "center",
@@ -3829,7 +4890,46 @@ CreateScreen = function(args)
                 width = "auto",
                 height = "auto",
                 halign = "center",
-                vmargin = 16,
+                tmargin = 16,
+            },
+
+            --where the party is going.
+            gui.Label{
+                text = EncounterOfTheWeek.EncounterTitle(m_encounter),
+                fontFace = "display",
+                fontSize = 30,
+                color = "#f6ead0",
+                width = 520,
+                height = "auto",
+                halign = "center",
+                textAlignment = "center",
+                vmargin = 4,
+            },
+            gui.Label{
+                classes = { cond(credit == nil, "collapsed", nil) },
+                text = credit or "",
+                fontSize = 15,
+                color = "#b8ad96",
+                width = 520,
+                height = "auto",
+                halign = "center",
+                textAlignment = "center",
+                textWrap = true,
+                vmargin = 2,
+            },
+            gui.Panel{
+                classes = { cond(backstory == nil, "collapsed", nil) },
+                width = 520,
+                height = "auto",
+                halign = "center",
+                BackstoryLabel(backstory or "", 520),
+            },
+            gui.Panel{
+                classes = { cond(not practice, "collapsed", nil) },
+                width = 520,
+                height = "auto",
+                halign = "center",
+                PracticeNote(520),
             },
 
             gui.Input{
@@ -3846,51 +4946,6 @@ CreateScreen = function(args)
                     element.text = defaultName
                 end,
             },
-
-            --which of the week's encounters to play; only when there is a choice.
-            gui.Panel{
-                classes = { cond(not showEncounterChoice, "collapsed", nil) },
-                width = 460,
-                height = "auto",
-                halign = "center",
-                vmargin = 8,
-                flow = "horizontal",
-
-                gui.Label{
-                    text = "Encounter:",
-                    fontSize = 20,
-                    color = Styles.textColor,
-                    width = "auto",
-                    height = "auto",
-                    valign = "center",
-                    hmargin = 8,
-                },
-                gui.Dropdown{
-                    width = 340,
-                    height = 36,
-                    fontSize = 18,
-                    valign = "center",
-                    --The open list (dropdownBorder/dropdownMenu/dropdownOption)
-                    --carries no styles of its own: it inherits the host's
-                    --cascade (popupsInheritStyles), and its rules live only
-                    --in the themed sheet. The titlescreen's legacy
-                    --Styles.Default styles the closed control but not the
-                    --list, so it rendered as bare labels over the dialog.
-                    --Same trap as g_CheckboxStyles above; scoped to the
-                    --dropdown so the rest of the dialog keeps its look.
-                    styles = ThemeEngine.GetStyles(),
-                    options = encounterOptions,
-                    idChosen = m_encounter or ENCOUNTER_MAP_NAME,
-                    change = function(element)
-                        ---@cast element Dropdown
-                        m_encounter = element.idChosen
-                        ShowBackstory()
-                    end,
-                },
-            },
-
-            creditLabel,
-            backstoryLabel,
 
             gui.Check{
                 text = "Public party (anyone can join)",
@@ -3960,6 +5015,776 @@ CreateScreen = function(args)
         resultPanel:AddChild(dlg)
     end
 
+    --A modal over the town with the house frame, a title and a scrolling body.
+    --Returns the dialog (already mounted) or nil when one is already up.
+    local ModalDialog = function(args)
+        if resultPanel == nil or not resultPanel.valid then
+            return nil
+        end
+        if m_modalDialog ~= nil and m_modalDialog.valid then
+            return nil
+        end
+        local dlg
+        dlg = gui.Panel{
+            floating = true,
+            width = args.width or 860,
+            height = "auto",
+            halign = "center",
+            valign = "center",
+            bgimage = "panels/square.png",
+            bgcolor = "#111111ff",
+            borderWidth = 2,
+            borderColor = Styles.textColor,
+            flow = "vertical",
+            pad = 16,
+            borderBox = true,
+            styles = { Styles.Default },
+
+            captureEscape = true,
+            escapePriority = EscapePriority.EXIT_MODAL_DIALOG,
+            escape = function(element)
+                if args.escape ~= nil then
+                    args.escape(element)
+                else
+                    element:DestroySelf()
+                end
+            end,
+
+            gui.Label{
+                text = args.title,
+                fontSize = 32,
+                bold = true,
+                color = Styles.textColor,
+                width = "auto",
+                height = "auto",
+                halign = "center",
+                vmargin = 8,
+            },
+            gui.Panel{
+                width = "100%",
+                height = "auto",
+                maxHeight = args.maxBodyHeight or 640,
+                vscroll = true,
+                flow = "vertical",
+                rpad = 12,
+                borderBox = true,
+                vmargin = 8,
+                children = args.children,
+            },
+            gui.Panel{
+                width = "auto",
+                height = "auto",
+                halign = "center",
+                flow = "horizontal",
+                vmargin = 8,
+                children = args.buttons or {
+                    gui.Button{
+                        text = "Close",
+                        fontSize = 20,
+                        width = 140,
+                        height = 42,
+                        click = function(element)
+                            dlg:DestroySelf()
+                        end,
+                    },
+                },
+            },
+        }
+        m_modalDialog = dlg
+        resultPanel:AddChild(dlg)
+        return dlg
+    end
+
+    --The Gate's Past Encounters: every earlier Encounter of the Week, newest
+    --first, each still playable (and still worth its Victory, once a hero).
+    ShowPastEncountersDialog = function()
+        local rows = {}
+        local dlg = nil
+        local past = EncounterOfTheWeek.PastEncounterKeys()
+        if #past == 0 then
+            rows[1] = EmptyNote("There are no past Encounters of the Week yet.")
+        end
+        for _,key in ipairs(past) do
+            local credit = EncounterOfTheWeek.EncounterCredit(key)
+            local backstory = EncounterOfTheWeek.GetTownGateText(key)
+            rows[#rows+1] = gui.Panel{
+                width = "100%",
+                height = "auto",
+                flow = "horizontal",
+                bgimage = "panels/square.png",
+                bgcolor = "#ffffff0e",
+                cornerRadius = 8,
+                pad = 12,
+                borderBox = true,
+                vmargin = 4,
+                gui.Panel{
+                    width = "100%-190",
+                    height = "auto",
+                    valign = "center",
+                    flow = "vertical",
+                    gui.Label{
+                        text = EncounterOfTheWeek.EncounterTitle(key),
+                        fontSize = 24,
+                        bold = true,
+                        color = Styles.textColor,
+                        width = "100%",
+                        height = "auto",
+                    },
+                    gui.Label{
+                        classes = { cond(credit == nil, "collapsed", nil) },
+                        text = credit or "",
+                        fontSize = 15,
+                        color = "#b8ad96",
+                        width = "100%",
+                        height = "auto",
+                    },
+                    gui.Label{
+                        classes = { cond(backstory == nil, "collapsed", nil) },
+                        text = backstory or "",
+                        fontSize = 16,
+                        italics = true,
+                        color = "#efe4cc",
+                        width = "100%",
+                        height = "auto",
+                        textWrap = true,
+                        tmargin = 4,
+                    },
+                },
+                gui.Button{
+                    text = "Form a Party",
+                    fontSize = 18,
+                    width = 170,
+                    height = 42,
+                    halign = "right",
+                    valign = "center",
+                    click = function()
+                        if dlg ~= nil and dlg.valid then
+                            dlg:DestroySelf()
+                        end
+                        m_modalDialog = nil
+                        ShowCreateDialog(key)
+                    end,
+                },
+            }
+        end
+        dlg = ModalDialog{ title = "Past Encounters", children = rows }
+    end
+
+    --A creator's view of what Danger Rooms players said about their
+    --encounters: the votes so far and every piece of feedback, newest first.
+    ShowCreatorFeedbackDialog = function()
+        local mine = MyEncounters()
+        if #mine == 0 or m_conn == nil then
+            return
+        end
+        local keys = {}
+        local titles = {}
+        for _,entry in ipairs(mine) do
+            keys[#keys+1] = entry.key
+            titles[entry.key] = entry.title
+        end
+        local body = nil
+        local dlg = ModalDialog{
+            title = "Feedback on Your Encounters",
+            children = {
+                gui.Panel{
+                    width = "100%",
+                    height = "auto",
+                    flow = "vertical",
+                    create = function(element)
+                        body = element
+                    end,
+                    EmptyNote("Asking the Danger Rooms..."),
+                },
+            },
+        }
+        if dlg == nil then
+            return
+        end
+        m_conn:Request{
+            action = "danger-feedback-for",
+            args = { encounters = keys },
+            success = function(result)
+                if body == nil or not body.valid then
+                    return
+                end
+                local rows = {}
+                for _,key in ipairs(keys) do
+                    local stats = (result.stats or {})[key]
+                    rows[#rows+1] = ListSectionTitle(titles[key])
+                    rows[#rows+1] = gui.Label{
+                        text = cond(stats == nil, "Nobody has tried it yet.",
+                            string.format("%d up, %d down -- played %d time%s", stats ~= nil and stats.up or 0,
+                                stats ~= nil and stats.down or 0, stats ~= nil and stats.plays or 0,
+                                cond(stats ~= nil and stats.plays == 1, "", "s"))),
+                        fontSize = 16,
+                        color = "#e6dcc6",
+                        width = "100%",
+                        height = "auto",
+                    }
+                    for _,f in ipairs(result.feedback or {}) do
+                        if f.encounter == key then
+                            local vote = cond((f.vote or 0) > 0, "voted up", cond((f.vote or 0) < 0, "voted down", "no vote"))
+                            rows[#rows+1] = gui.Label{
+                                text = string.format("<b>%s</b> (%s)%s", f.name or "?", vote,
+                                    cond(f.feedback ~= nil and f.feedback ~= "", ": " .. tostring(f.feedback), "")),
+                                fontSize = 16,
+                                color = Styles.textColor,
+                                width = "100%",
+                                height = "auto",
+                                textWrap = true,
+                                vmargin = 3,
+                            }
+                        end
+                    end
+                end
+                body.children = rows
+            end,
+            error = function(message)
+                if body ~= nil and body.valid then
+                    body.children = { EmptyNote("Could not load the feedback: " .. tostring(message)) }
+                end
+            end,
+        }
+    end
+
+    --The Danger Rooms' votes so far (and our nomination), for the board.
+    local FetchDangerStats = function()
+        if m_conn == nil or not m_conn.connected then
+            return
+        end
+        m_conn:Request{
+            action = "danger-stats",
+            success = function(result)
+                if mod.unloaded then
+                    return
+                end
+                m_dangerStats = result.stats or {}
+                m_myNomination = result.nomination
+                RefreshGames()
+            end,
+            error = function(message)
+                printf("EotW: could not read the Danger Rooms' votes: %s", tostring(message))
+            end,
+        }
+    end
+
+    --- the Danger Rooms debrief -------------------------------------------
+    --After a Danger Rooms game the game side leaves eotw:pendingDebrief; back
+    --in town the player is asked to vote, give the creator feedback and
+    --nominate next week's Encounter of the Week. Sending or skipping clears it.
+
+    local ReadPendingDebrief = function()
+        local text = dmhub.GetSettingValue("eotw:pendingDebrief")
+        if type(text) ~= "string" or text == "" then
+            return nil
+        end
+        --FromJson answers {success, result}, not the decoded value.
+        local parsed = dmhub.FromJson(text)
+        if type(parsed) ~= "table" or not parsed.success or type(parsed.result) ~= "table" then
+            return nil
+        end
+        local entry = parsed.result[dmhub.loginUserid]
+        if type(entry) ~= "table" or type(entry.encounter) ~= "string" or type(entry.gameid) ~= "string" then
+            return nil
+        end
+        return entry
+    end
+
+    local ClearPendingDebrief = function(gameid)
+        local text = dmhub.GetSettingValue("eotw:pendingDebrief")
+        local parsed = type(text) == "string" and text ~= "" and dmhub.FromJson(text) or nil
+        if type(parsed) ~= "table" or not parsed.success or type(parsed.result) ~= "table" then
+            dmhub.SetSettingValue("eotw:pendingDebrief", "")
+            return
+        end
+        local all = parsed.result
+        local entry = all[dmhub.loginUserid]
+        if type(entry) == "table" and entry.gameid == gameid then
+            all[dmhub.loginUserid] = nil
+            dmhub.SetSettingValue("eotw:pendingDebrief", dmhub.ToJson(all))
+        end
+    end
+
+    local m_debriefOpen = false
+
+    local ShowDebriefDialog = function(entry)
+        local m_vote = 0
+        local m_feedback = ""
+        local m_nominate = ""
+        local m_sending = false
+        local voteButtons = {}
+        ---@type Label
+        local debriefStatus = nil
+        local dlg = nil
+
+        local SetDebriefStatus = function(text, isError)
+            if debriefStatus ~= nil and debriefStatus.valid then
+                debriefStatus.text = text or ""
+                debriefStatus.selfStyle.color = cond(isError, "#ff8888", Styles.textColor)
+            end
+        end
+
+        local Close = function()
+            m_debriefOpen = false
+            if dlg ~= nil and dlg.valid then
+                dlg:DestroySelf()
+            end
+        end
+
+        local VoteButton = function(vote, icon, text)
+            local button
+            button = gui.Panel{
+                classes = { "debriefVote" },
+                width = 200,
+                height = 50,
+                hmargin = 10,
+                flow = "horizontal",
+                bgimage = "panels/square.png",
+                styles = {
+                    {
+                        selectors = { "debriefVote" },
+                        bgcolor = "#ffffff0e",
+                        borderWidth = 2,
+                        borderColor = "#8f8a7f88",
+                        cornerRadius = 8,
+                        transitionTime = 0.12,
+                    },
+                    {
+                        selectors = { "debriefVote", "hover" },
+                        borderColor = "#e6dcc6",
+                    },
+                    {
+                        selectors = { "debriefVote", "selected" },
+                        bgcolor = cond(vote > 0, "#3f6b3acc", "#7a3434cc"),
+                        borderColor = "#f6ead0",
+                    },
+                },
+                press = function(element)
+                    audio.FireSoundEvent("Mouse.Click")
+                    m_vote = cond(m_vote == vote, 0, vote)
+                    for v,b in pairs(voteButtons) do
+                        if b.valid then
+                            b:SetClass("selected", v == m_vote)
+                        end
+                    end
+                end,
+                gui.Panel{
+                    interactable = false,
+                    bgimage = icon,
+                    bgcolor = "#f6ead0",
+                    width = 26,
+                    height = 26,
+                    valign = "center",
+                    lmargin = 34,
+                    rmargin = 10,
+                },
+                gui.Label{
+                    interactable = false,
+                    text = text,
+                    fontSize = 20,
+                    bold = true,
+                    color = "#f6ead0",
+                    width = "auto",
+                    height = "auto",
+                    valign = "center",
+                },
+            }
+            voteButtons[vote] = button
+            return button
+        end
+
+        --next week's candidates: every Danger Room encounter (this one too).
+        local options = { { id = "", text = "No nomination" } }
+        for _,e in ipairs(EncounterOfTheWeek.GetDangerRoomEncounters()) do
+            options[#options+1] = { id = e.key, text = EncounterOfTheWeek.EncounterDisplayName(e.key) }
+        end
+        ---@type Dropdown
+        local nominateDropdown = nil
+
+        local resultText = cond(entry.result == "victory", "Your party survived the Danger Room.",
+            cond(entry.result == "defeat", "The Danger Room got the better of your party.", "Your party left the Danger Room."))
+
+        local Label = function(text, size, color)
+            return gui.Label{
+                text = text,
+                fontSize = size,
+                color = color or Styles.textColor,
+                width = "100%",
+                height = "auto",
+                textAlignment = "center",
+                textWrap = true,
+                vmargin = 4,
+            }
+        end
+
+        dlg = ModalDialog{
+            title = "Danger Rooms Debrief",
+            width = 720,
+            maxBodyHeight = 720,
+            --closing with Escape counts as Skip.
+            escape = function(element)
+                ClearPendingDebrief(entry.gameid)
+                Close()
+            end,
+            children = {
+                gui.Label{
+                    text = EncounterOfTheWeek.EncounterTitle(entry.encounter),
+                    fontFace = "display",
+                    fontSize = 34,
+                    color = "#f6ead0",
+                    width = "100%",
+                    height = "auto",
+                    textAlignment = "center",
+                },
+                Label(string.format("%s It was practice: nothing was awarded.", resultText), 17, "#ffcf8a"),
+                Label("How was it?", 20),
+                gui.Panel{
+                    width = "auto",
+                    height = "auto",
+                    halign = "center",
+                    flow = "horizontal",
+                    vmargin = 6,
+                    VoteButton(1, "phosphor/thumbs-up-fill.png", "Upvote"),
+                    VoteButton(-1, "phosphor/thumbs-down-fill.png", "Downvote"),
+                },
+                Label("Feedback for its creator (optional)", 18),
+                gui.Input{
+                    width = "94%",
+                    height = 110,
+                    halign = "center",
+                    fontSize = 17,
+                    multiline = true,
+                    textAlignment = "topleft",
+                    characterLimit = 2000,
+                    placeholderText = "What worked? What would make it better?",
+                    change = function(element)
+                        m_feedback = element.text or ""
+                    end,
+                },
+                Label("Your pick for next week's Encounter of the Week", 18),
+                gui.Dropdown{
+                    width = 520,
+                    height = 36,
+                    fontSize = 18,
+                    halign = "center",
+                    --The open list (dropdownBorder/dropdownMenu/dropdownOption)
+                    --inherits the host's cascade, and the titlescreen's
+                    --legacy Styles.Default does not style it: without the
+                    --themed sheet it renders as bare labels over the dialog.
+                    styles = ThemeEngine.GetStyles(),
+                    options = options,
+                    idChosen = "",
+                    create = function(element)
+                        ---@cast element Dropdown
+                        nominateDropdown = element
+                    end,
+                    change = function(element)
+                        ---@cast element Dropdown
+                        m_nominate = tostring(element.idChosen or "")
+                    end,
+                },
+                gui.Label{
+                    text = "",
+                    fontSize = 16,
+                    color = Styles.textColor,
+                    width = "100%",
+                    height = "auto",
+                    minHeight = 22,
+                    textAlignment = "center",
+                    vmargin = 4,
+                    create = function(element)
+                        ---@cast element Label
+                        debriefStatus = element
+                    end,
+                },
+            },
+            buttons = {
+                gui.Button{
+                    text = "Send",
+                    fontSize = 20,
+                    width = 160,
+                    height = 44,
+                    hmargin = 8,
+                    click = function(element)
+                        if m_sending or m_conn == nil then
+                            return
+                        end
+                        m_sending = true
+                        SetDebriefStatus("Sending...")
+                        m_conn:Request{
+                            action = "danger-feedback",
+                            args = {
+                                encounter = entry.encounter,
+                                gameid = entry.gameid,
+                                vote = m_vote,
+                                feedback = m_feedback,
+                                nominate = cond(m_nominate ~= "", m_nominate, nil),
+                            },
+                            success = function()
+                                ClearPendingDebrief(entry.gameid)
+                                Close()
+                                FetchDangerStats()
+                            end,
+                            error = function(message)
+                                m_sending = false
+                                SetDebriefStatus("Could not send: " .. tostring(message), true)
+                            end,
+                        }
+                    end,
+                },
+                gui.Button{
+                    text = "Skip",
+                    fontSize = 20,
+                    width = 160,
+                    height = 44,
+                    hmargin = 8,
+                    click = function(element)
+                        ClearPendingDebrief(entry.gameid)
+                        Close()
+                    end,
+                },
+            },
+        }
+        if dlg == nil or m_conn == nil then
+            m_debriefOpen = dlg ~= nil
+            return
+        end
+
+        --pre-select this week's nomination, if the player already made one.
+        m_conn:Request{
+            action = "danger-stats",
+            args = { encounters = {} },
+            success = function(result)
+                if nominateDropdown == nil or not nominateDropdown.valid or type(result.nomination) ~= "string" then
+                    return
+                end
+                for _,option in ipairs(options) do
+                    if option.id == result.nomination and m_nominate == "" then
+                        m_nominate = result.nomination
+                        nominateDropdown.idChosen = result.nomination
+                    end
+                end
+            end,
+        }
+    end
+
+    --Ask for a Danger Rooms debrief owed from the last game, once the town is
+    --connected and the pool (the nomination choices) has loaded.
+    local MaybeShowDebrief = function()
+        if m_debriefOpen or m_conn == nil or not m_conn.connected then
+            return
+        end
+        local entry = ReadPendingDebrief()
+        if entry == nil then
+            return
+        end
+        if m_modalDialog ~= nil and m_modalDialog.valid then
+            return
+        end
+        m_debriefOpen = true
+        EncounterOfTheWeek.RefreshPool(function()
+            if mod.unloaded or resultPanel == nil or not resultPanel.valid then
+                m_debriefOpen = false
+                return
+            end
+            ShowDebriefDialog(entry)
+        end)
+    end
+
+    ---- results left while we were away ------------------------------------
+
+    --A game this player left WITHOUT abandoning went on with their heroes as
+    --free agents; when it was won or lost, its host left the heroes' results
+    --with the city (offer-outcomes). Back in town the player chooses: accept
+    --them (the usual pending-outcome queue brings the Victories home and
+    --buries the heroes who fell) or count the game as abandoned and drop
+    --them. One game at a time; asked once a connection.
+    local m_offersAsked = false
+    local m_offersOpen = false
+
+    local function ShowOfferedOutcomes(games, index)
+        local game = games[index]
+        if game == nil or resultPanel == nil or not resultPanel.valid then
+            m_offersOpen = false
+            return
+        end
+
+        local encounter = nil
+        local defeat = false
+        local anyFell = false
+        local lines = {}
+        for _, hero in ipairs(game.heroes or {}) do
+            local outcome = type(hero.outcome) == "table" and hero.outcome or {}
+            encounter = encounter or outcome.encounter
+            if outcome.result == "defeat" then
+                defeat = true
+            end
+            local parts = {}
+            local victories = tonumber(outcome.victories) or 0
+            if outcome.died == true then
+                anyFell = true
+                parts[#parts + 1] = "fell in battle"
+            elseif victories > 0 then
+                parts[#parts + 1] = string.format("%d %s", victories, cond(victories == 1, "Victory", "Victories"))
+            elseif outcome.completed then
+                parts[#parts + 1] = "no Victory (already completed)"
+            end
+            local found = {}
+            for _, t in ipairs(type(outcome.treasures) == "table" and outcome.treasures or {}) do
+                found[#found + 1] = tostring(t.name or "an item")
+            end
+            if #found > 0 then
+                parts[#parts + 1] = "found " .. table.concat(found, ", ")
+            end
+            local wounds = type(outcome.wounds) == "table" and outcome.wounds or {}
+            if (tonumber(wounds.damage) or 0) > 0 or (tonumber(wounds.recoveriesUsed) or 0) > 0 then
+                parts[#parts + 1] = "came back wounded"
+            end
+            local name = (hero.name ~= nil and hero.name ~= "") and hero.name or "Your hero"
+            lines[#lines + 1] = string.format("<b>%s</b>%s", name, cond(#parts > 0, ": " .. table.concat(parts, "; "), ""))
+        end
+        local title = encounter ~= nil and EncounterOfTheWeek.EncounterTitle(encounter) or "your Encounter of the Week"
+
+        local hint = "Claim the victory for your heroes, or count the game as abandoned and leave it be."
+        if defeat then
+            hint = "Accept the defeat, and your fallen heroes are laid to rest in the Graveyard; or count the game as abandoned and leave it be."
+        elseif anyFell then
+            hint = "Claim the victory for your heroes, and your fallen heroes are laid to rest in the Graveyard; or count the game as abandoned and leave it be."
+        end
+
+        local dlg = nil
+        local busy = false
+        local function Done(claim)
+            if busy then
+                return
+            end
+            busy = true
+            if claim then
+                local entries = {}
+                for _, hero in ipairs(game.heroes or {}) do
+                    entries[#entries + 1] = { gameid = game.gameid, heroid = hero.heroid, outcome = hero.outcome }
+                end
+                EotwRoster.AddPendingOutcomes(entries)
+            end
+            local function Next()
+                if dlg ~= nil and dlg.valid then
+                    dlg:DestroySelf()
+                end
+                ShowOfferedOutcomes(games, index + 1)
+            end
+            if m_conn == nil then
+                Next()
+                return
+            end
+            m_conn:Request{
+                action = "resolve-offered-outcomes",
+                args = { gameid = game.gameid },
+                success = function() Next() end,
+                --the offer stays for next time; a claim already queued is
+                --not doubled by a second one (one outcome per hero a game).
+                error = function(err)
+                    printf("EotW town: could not settle the results of %s: %s", tostring(game.gameid), tostring(err))
+                    Next()
+                end,
+            }
+        end
+
+        dlg = ModalDialog{
+            title = "While You Were Away",
+            width = 760,
+            escape = function() end,
+            children = {
+                gui.Label{
+                    text = string.format("Your party finished <b>%s</b> after you left, with your heroes fighting on as free agents, and %s.", title, cond(defeat, "was defeated", "won")),
+                    fontSize = 20,
+                    color = Styles.textColor,
+                    width = "100%",
+                    height = "auto",
+                    textWrap = true,
+                    vmargin = 6,
+                },
+                gui.Label{
+                    text = table.concat(lines, "\n"),
+                    fontSize = 18,
+                    color = Styles.textColor,
+                    width = "100%",
+                    height = "auto",
+                    textWrap = true,
+                    vmargin = 6,
+                },
+                gui.Label{
+                    text = hint,
+                    fontSize = 16,
+                    color = Styles.textColor,
+                    opacity = 0.7,
+                    width = "100%",
+                    height = "auto",
+                    textWrap = true,
+                    vmargin = 6,
+                },
+            },
+            buttons = {
+                gui.Button{
+                    text = cond(defeat, "Accept the Defeat", "Claim the Victory"),
+                    fontSize = 20,
+                    width = 240,
+                    height = 44,
+                    hmargin = 8,
+                    click = function()
+                        Done(true)
+                    end,
+                },
+                gui.Button{
+                    text = "Count as Abandoned",
+                    fontSize = 20,
+                    width = 240,
+                    height = 44,
+                    hmargin = 8,
+                    click = function()
+                        Done(false)
+                    end,
+                },
+            },
+        }
+        if dlg == nil then
+            --another dialog is up: ask again on the next refresh.
+            m_offersOpen = false
+            m_offersAsked = false
+        end
+    end
+
+    local MaybeShowOfferedOutcomes = function()
+        if m_offersAsked or m_offersOpen or m_debriefOpen or m_conn == nil or not m_conn.connected then
+            return
+        end
+        if m_modalDialog ~= nil and m_modalDialog.valid then
+            return
+        end
+        m_offersAsked = true
+        m_offersOpen = true
+        m_conn:Request{
+            action = "list-offered-outcomes",
+            args = {},
+            success = function(result)
+                if mod.unloaded or resultPanel == nil or not resultPanel.valid then
+                    m_offersOpen = false
+                    return
+                end
+                local games = type(result) == "table" and result.games or nil
+                if type(games) ~= "table" or #games == 0 then
+                    m_offersOpen = false
+                    return
+                end
+                ShowOfferedOutcomes(games, 1)
+            end,
+            error = function(err)
+                m_offersOpen = false
+                printf("EotW town: could not list results left while away: %s", tostring(err))
+            end,
+        }
+    end
+
     --── the town ──────────────────────────────────────────────────────────
 
     --The map covers the screen (it is wider than tall but not as wide as
@@ -3975,8 +5800,6 @@ CreateScreen = function(args)
     local mapPanel = nil
     local nodeLayer = nil
     --- @type Panel
-    local gatePanel = nil
-    --- @type Panel
     local chatPanel = nil
 
     --The location open full screen over the map ("guild", "gate"), or nil
@@ -3985,8 +5808,19 @@ CreateScreen = function(args)
     --games list must stay live (RefreshGames is what notices a launched
     --game and takes us into it); the Guild's is built on each visit.
     local m_locationId = nil
+    --true from the moment the Blue Fish Inn's reveal shows its node until the
+    --reveal is recorded (see PlayInnReveal).
+    local m_innRevealing = false
+    --true for the whole reveal, dialog included; the guild holds its own
+    --beckon meanwhile so the only thing pulsing is the inn.
+    local m_innRevealActive = false
+    --the map's location nodes, by location id.
+    local m_nodePanels = {}
     local m_guildScene = nil
+    local m_innScene = nil
+    local m_marketScene = nil
     local gateScene = nil
+    local dangerScene = nil
     local locationHost = nil
     local townViewport = nil
     local townPlaque = nil
@@ -4014,6 +5848,18 @@ CreateScreen = function(args)
         OpenGate = function()
             OpenLocation("gate")
         end,
+        OpenDangerRooms = function()
+            OpenLocation("danger")
+        end,
+        OpenInn = function()
+            OpenLocation("inn")
+        end,
+        OpenMarket = function()
+            OpenLocation("market")
+        end,
+        InnShown = function()
+            return m_innRevealing or EotwRoster.InnRevealed()
+        end,
         OpenGraveyard = function()
             EotwRoster.ShowGraveyard(resultPanel)
         end,
@@ -4040,6 +5886,9 @@ CreateScreen = function(args)
             data = { lockedReason = nil, nextBeckon = 0 },
             thinkTime = 0.5,
             think = function(element)
+                if loc.hidden ~= nil then
+                    element:SetClass("collapsed", loc.hidden(townContext) == true)
+                end
                 local reason = nil
                 if loc.locked ~= nil then
                     reason = loc.locked(townContext)
@@ -4049,7 +5898,7 @@ CreateScreen = function(args)
 
                 --while the hero strip says no hero is active, the guild
                 --icon pulses to point the player at it.
-                if loc.id == "guild" and EotwRoster.GetHeroes() ~= nil then
+                if loc.id == "guild" and EotwRoster.GetHeroes() ~= nil and not m_innRevealActive then
                     local anyActive = false
                     for _,hero in ipairs(EotwRoster.ActiveHeroes()) do
                         if dmhub.GetCharacterById(hero.heroid) ~= nil then
@@ -4059,7 +5908,7 @@ CreateScreen = function(args)
                     local now = dmhub.Time()
                     if not anyActive and now >= element.data.nextBeckon then
                         element.data.nextBeckon = now + 1.5
-                        local halo = element:Get("eotwTownHalo")
+                        local halo = element:Get("eotwTownHalo-" .. loc.id)
                         if halo ~= nil then
                             halo:PulseClass("beckon")
                         end
@@ -4067,6 +5916,7 @@ CreateScreen = function(args)
                 end
             end,
             create = function(element)
+                m_nodePanels[loc.id] = element
                 element:FireEvent("think")
             end,
             hover = function(element)
@@ -4094,7 +5944,7 @@ CreateScreen = function(args)
                 --(only the guild's does). First child, so the glyph draws
                 --over it.
                 gui.Panel{
-                    id = "eotwTownHalo",
+                    id = "eotwTownHalo-" .. loc.id,
                     classes = { "eotwTownNodeHalo" },
                     floating = true,
                     interactable = false,
@@ -4203,6 +6053,475 @@ CreateScreen = function(args)
         },
     }
 
+    ---- the Blue Fish Inn's reveal ----
+
+    --A new player's town has no inn (EotwRoster.InnUnlocked). The first time
+    --the town finds it unlocked -- heroes just came home from the Town Gate --
+    --the map pans to the tavern, a returning hero says, in the montage's
+    --dialog box, that it is time to rest, and the inn's node drops onto the
+    --map from large. Played once per account on this machine.
+    local INN_PAN_SECONDS = 0.9
+    local INN_TYPE_CPS = 45
+    --the node starts this many times its size, fades in over the first part
+    --of the drop and lands with a small bounce and a jolt of the map.
+    local INN_DROP_SCALE = 5
+    local INN_DROP_SECONDS = 0.85
+    local INN_DROP_FADE = 0.35
+    local INN_SETTLE_SECONDS = 0.4
+    local INN_SETTLE_BOUNCE = 0.14
+    local INN_SHAKE_PX = 6
+    --the speaker's figure on the dialog box (the montage stage's sizes).
+    local INN_PORTRAIT_WIDTH = 230
+    local INN_PORTRAIT_HEIGHT = 300
+    local INN_PORTRAIT_FADE = 0.15
+    local INN_LINE = "That was a tough challenge! We should head to the Blue Fish Inn to rest before continuing on more adventures."
+
+    local m_innRevealQueuedAt = nil
+
+    --Who announces the inn: of the heroes who came home this session, the
+    --one who lost the most Stamina. With none (an account that adventured
+    --before the inn was hidden), the most wounded hero at home, active first.
+    local PickInnSpeaker = function()
+        local best = nil
+        for _,h in ipairs(EotwRoster.Homecomings()) do
+            if EotwRoster.FindHero(h.heroid) ~= nil and dmhub.GetCharacterById(h.heroid) ~= nil then
+                if best == nil or h.damage > best.damage then
+                    best = h
+                end
+            end
+        end
+        if best ~= nil then
+            return best.heroid
+        end
+        local bestid, bestScore = nil, nil
+        for _,hero in ipairs(EotwRoster.GetHeroes() or {}) do
+            local tok = dmhub.GetCharacterById(hero.heroid)
+            if tok ~= nil then
+                local damage = 0
+                pcall(function() damage = tonumber(tok.properties.damage_taken) or 0 end)
+                local score = damage + cond(hero.active == true, 100000, 0)
+                if bestScore == nil or score > bestScore then
+                    bestid, bestScore = hero.heroid, score
+                end
+            end
+        end
+        return bestid
+    end
+
+    --Set opacity on a panel and everything inside it (opacity is not inherited).
+    local function SetTreeOpacity(element, opacity)
+        element.selfStyle.opacity = opacity
+        for _,child in ipairs(element.children or {}) do
+            SetTreeOpacity(child, opacity)
+        end
+    end
+
+    --The hero's off-token portrait cropped to the figure's shape, its bottom
+    --band trimmed so the foot stays crisp under the edge fade (the montage
+    --stage's SetPortraitFrom).
+    local function InnSpeakerPortrait(tok)
+        local aspect = INN_PORTRAIT_WIDTH / INN_PORTRAIT_HEIGHT
+        return gui.Panel{
+            width = INN_PORTRAIT_WIDTH,
+            height = INN_PORTRAIT_HEIGHT,
+            hmargin = 40,
+            halign = "left",
+            bgimage = "panels/square.png",
+            bgcolor = "#00000000",
+            --set on the panel itself: edgeFade from a class rule is not applied.
+            edgeFade = INN_PORTRAIT_FADE,
+            interactable = false,
+            create = function(element)
+                local portrait = nil
+                pcall(function() portrait = tok.offTokenPortrait end)
+                if portrait == nil or portrait == "" then
+                    return
+                end
+                element.bgimage = portrait
+                element.selfStyle.bgcolor = "white"
+                local rect = nil
+                pcall(function() rect = tok:GetPortraitRectForAspect(aspect * (1 - INN_PORTRAIT_FADE), portrait) end)
+                if rect ~= nil then
+                    local y1 = math.max(INN_PORTRAIT_FADE, rect.y1 + (rect.y2 - rect.y1) * INN_PORTRAIT_FADE)
+                    rect = { x1 = rect.x1, y1 = y1, x2 = rect.x2, y2 = rect.y2 }
+                end
+                element.selfStyle.imageRect = rect
+            end,
+        }
+    end
+
+    local PlayInnReveal = function(heroid)
+        local tok = dmhub.GetCharacterById(heroid)
+        local node = m_nodePanels["inn"]
+        if tok == nil or node == nil or not node.valid or resultPanel == nil or not resultPanel.valid then
+            return
+        end
+        local inn = CityLocation("inn")
+        m_innRevealActive = true
+        --the hero strip would sit under the dialog box: hide it meanwhile.
+        --"hidden", not "collapsed" (that one belongs to ApplyLocationMode).
+        local strip = resultPanel:Get("eotwTownHeroStrip")
+        if strip ~= nil then
+            strip:SetClass("hidden", true)
+        end
+
+        --pan so the inn sits in the upper part of the screen, clear of the
+        --dialog box.
+        local fromX, fromY = m_panX, m_panY
+        local toX = math.max(0, math.min(mapW - panelWidth, inn.x * mapW - panelWidth / 2))
+        local toY = math.max(0, math.min(mapH - panelHeight, inn.y * mapH - panelHeight * 0.32))
+
+        --"pan" -> "type" -> "drop" -> "settle" -> "wait" (for a click) -> "closing"
+        local phase = "pan"
+        local phaseStart = dmhub.Time()
+        --- @type Panel
+        local overlay
+        --- @type Panel
+        local textLabel
+        --- @type Panel
+        local prompt
+        --- @type Panel
+        local stage
+
+        local function Enter(newPhase)
+            phase = newPhase
+            phaseStart = dmhub.Time()
+        end
+
+        local function StartDrop()
+            textLabel.text = INN_LINE
+            m_innRevealing = true
+            node:SetClass("collapsed", false)
+            node.selfStyle.scale = INN_DROP_SCALE
+            SetTreeOpacity(node, 0)
+            audio.FireSoundEvent("DiceImp.Whoosh_MetalBlade")
+            Enter("drop")
+        end
+
+        local function Close()
+            if phase == "closing" then
+                return
+            end
+            Enter("closing")
+            if strip ~= nil and strip.valid then
+                strip:SetClass("hidden", false)
+            end
+            EotwRoster.MarkInnRevealed()
+            m_innRevealing = false
+            audio.FireSoundEvent("Mouse.Click")
+            stage:SetClassTree("innSpeechOff", true)
+            overlay:SetClass("innSpeechOff", true)
+            dmhub.Schedule(0.4, function()
+                if mod.unloaded then
+                    return
+                end
+                if overlay ~= nil and overlay.valid then
+                    overlay:DestroySelf()
+                end
+                if m_modalDialog == overlay then
+                    m_modalDialog = nil
+                end
+            end)
+            --a few beckoning pulses point the player at their new destination.
+            for i = 0, 2 do
+                dmhub.Schedule(0.5 + i * 1.5, function()
+                    if mod.unloaded or node == nil or not node.valid then
+                        return
+                    end
+                    local halo = node:Get("eotwTownHalo-inn")
+                    if halo ~= nil then
+                        halo:PulseClass("beckon")
+                    end
+                end)
+            end
+            --the guild may beckon again once the inn's last pulse has faded.
+            dmhub.Schedule(5, function()
+                m_innRevealActive = false
+            end)
+        end
+
+        --a click (or Escape) hurries the line along, and once the inn has
+        --landed, closes the dialog.
+        local function Advance()
+            if phase == "pan" or phase == "type" then
+                ApplyPan()
+                StartDrop()
+            elseif phase == "wait" then
+                Close()
+            end
+        end
+
+        textLabel = gui.Label{
+            classes = { "innSpeechText" },
+            text = "",
+            interactable = false,
+        }
+        prompt = gui.Panel{
+            classes = { "innSpeechPrompt", "collapsed" },
+            floating = true,
+            width = 18,
+            height = 18,
+            halign = "right",
+            valign = "bottom",
+            bgimage = "phosphor/caret-down-fill.png",
+            interactable = false,
+            thinkTime = 0.6,
+            think = function(element)
+                element:SetClass("dimmed", not element:HasClass("dimmed"))
+            end,
+        }
+
+        stage = gui.Panel{
+            classes = { "innSpeechStage" },
+            floating = true,
+            width = 1000,
+            height = "auto",
+            halign = "center",
+            valign = "bottom",
+            bmargin = 30,
+            flow = "vertical",
+            interactable = false,
+            InnSpeakerPortrait(tok),
+            gui.Panel{
+                classes = { "innSpeechBox" },
+                width = "100%",
+                height = 150,
+                bgimage = "panels/square.png",
+                pad = 18,
+                borderBox = true,
+                flow = "vertical",
+                interactable = false,
+                gui.Label{
+                    classes = { "innSpeechSpeaker" },
+                    text = tok.name or "",
+                    interactable = false,
+                },
+                textLabel,
+                prompt,
+            },
+        }
+
+        overlay = gui.Panel{
+            classes = { "innSpeechOverlay" },
+            floating = true,
+            width = "100%",
+            height = "100%",
+            --a clear background still catches clicks, so the map and its
+            --nodes cannot be used until the dialog is done.
+            bgimage = "panels/square.png",
+            bgcolor = "clear",
+            styles = {
+                --born with "innSpeechOff" (on the whole stage subtree), so the
+                --figure and box fade and rise in; Close puts it back.
+                {
+                    selectors = { "innSpeechOff" },
+                    opacity = 0,
+                    transitionTime = 0.35,
+                },
+                {
+                    selectors = { "innSpeechStage", "innSpeechOff" },
+                    y = 30,
+                    transitionTime = 0.35,
+                    easing = "easeOutCubic",
+                },
+                --the montage stage's dialog box (EncounterMontageStage.lua).
+                {
+                    selectors = { "innSpeechBox" },
+                    --opaque, unlike the montage's: the town map is busy behind it.
+                    bgcolor = "#06080cff",
+                    border = 2,
+                    borderColor = "#ffffff60",
+                    cornerRadius = 8,
+                },
+                {
+                    selectors = { "innSpeechSpeaker" },
+                    fontSize = 16,
+                    bold = true,
+                    color = "#ffd66b",
+                    width = "100%",
+                    height = "auto",
+                    textAlignment = "left",
+                    bmargin = 4,
+                },
+                {
+                    selectors = { "innSpeechText" },
+                    fontSize = 19,
+                    color = "#ffffff",
+                    width = "100%",
+                    height = "auto",
+                    textAlignment = "left",
+                },
+                {
+                    selectors = { "innSpeechPrompt" },
+                    bgcolor = "#ffd66b",
+                },
+                {
+                    selectors = { "innSpeechPrompt", "dimmed" },
+                    opacity = 0.25,
+                },
+            },
+            captureEscape = true,
+            escapePriority = EscapePriority.EXIT_MODAL_DIALOG,
+            escape = function(element)
+                Advance()
+            end,
+            press = function(element)
+                Advance()
+            end,
+
+            stage,
+
+            thinkTime = 0.02,
+            think = function(element)
+                local t = dmhub.Time() - phaseStart
+                if phase == "pan" then
+                    local p = math.min(1, t / INN_PAN_SECONDS)
+                    --ease in and out.
+                    local e = cond(p < 0.5, 4 * p * p * p, 1 - ((-2 * p + 2) ^ 3) / 2)
+                    m_panX = fromX + (toX - fromX) * e
+                    m_panY = fromY + (toY - fromY) * e
+                    ApplyPan()
+                    if p >= 1 then
+                        Enter("type")
+                    end
+                elseif phase == "type" then
+                    local n = math.floor(t * INN_TYPE_CPS)
+                    if n >= #INN_LINE then
+                        StartDrop()
+                    else
+                        textLabel.text = string.sub(INN_LINE, 1, n)
+                    end
+                elseif phase == "drop" then
+                    local p = math.min(1, t / INN_DROP_SECONDS)
+                    --hangs large, then accelerates down onto the map.
+                    node.selfStyle.scale = 1 + (INN_DROP_SCALE - 1) * (1 - p * p)
+                    SetTreeOpacity(node, math.min(1, p / INN_DROP_FADE))
+                    if p >= 1 then
+                        node.selfStyle.scale = 1
+                        local halo = node:Get("eotwTownHalo-inn")
+                        if halo ~= nil then
+                            halo:PulseClass("beckon")
+                        end
+                        audio.FireSoundEvent("Foot.Generic_Stone")
+                        Enter("settle")
+                    end
+                elseif phase == "settle" then
+                    local q = math.min(1, t / INN_SETTLE_SECONDS)
+                    node.selfStyle.scale = 1 + INN_SETTLE_BOUNCE * math.sin(math.pi * q)
+                    --the map jolts as it lands, dying away.
+                    local shake = INN_SHAKE_PX * (1 - q)
+                    for _,layer in ipairs({ mapPanel, nodeLayer }) do
+                        if layer ~= nil and layer.valid then
+                            layer.selfStyle.x = -m_panX + math.random(-100, 100) / 100 * shake
+                            layer.selfStyle.y = -m_panY + math.random(-100, 100) / 100 * shake
+                        end
+                    end
+                    if q >= 1 then
+                        node.selfStyle.scale = 1
+                        ApplyPan()
+                        prompt:SetClass("collapsed", false)
+                        Enter("wait")
+                    end
+                end
+            end,
+        }
+
+        --the overlay counts as the town's modal, so no other dialog stacks on it.
+        m_modalDialog = overlay
+        resultPanel:AddChild(overlay)
+        stage:SetClassTreeImmediate("innSpeechOff", true)
+        dmhub.Schedule(0.03, function()
+            if mod.unloaded or stage == nil or not stage.valid then
+                return
+            end
+            stage:SetClassTree("innSpeechOff", false)
+        end)
+    end
+
+    --Start the reveal once the inn is unlocked and the town is quiet: on the
+    --map, nothing else up, every returning hero's outcome carried home, and
+    --that state held for a moment so the last homecoming can land.
+    local MaybePlayInnReveal = function()
+        --what the reveal is waiting on, kept in EncounterOfTheWeek.innRevealWaitingOn
+        --for debugging over MCP (nil once it has played or is playing).
+        local waiting = nil
+        if resultPanel == nil or not resultPanel.valid or resultPanel:HasClass("hidden") or resultPanel:HasClass("eotwOpening") then
+            waiting = "screen"
+        elseif EotwRoster.InnRevealed() or m_innRevealing then
+            waiting = nil
+        elseif EotwRoster.InnUnlocked() ~= true then
+            waiting = "unlock"
+        elseif m_locationId ~= nil then
+            waiting = "location"
+        elseif m_debriefOpen or m_offersOpen or (m_modalDialog ~= nil and m_modalDialog.valid) then
+            waiting = "dialog"
+        elseif EotwRoster.OutcomesInFlight() then
+            waiting = "outcomes"
+        end
+        EncounterOfTheWeek.innRevealWaitingOn = waiting
+        local ready = waiting == nil and not m_innRevealing and not EotwRoster.InnRevealed()
+        if not ready then
+            m_innRevealQueuedAt = nil
+            return
+        end
+        local now = dmhub.Time()
+        if m_innRevealQueuedAt == nil then
+            m_innRevealQueuedAt = now
+            return
+        end
+        if now - m_innRevealQueuedAt < 1.5 then
+            return
+        end
+        m_innRevealQueuedAt = nil
+        local heroid = PickInnSpeaker()
+        if heroid == nil then
+            EncounterOfTheWeek.innRevealWaitingOn = "speaker"
+            return
+        end
+        printf("EotW town: the Blue Fish Inn reveal starts (speaker %s)", heroid)
+        PlayInnReveal(heroid)
+    end
+
+    --Was the Arcane Market found when the roster was last listed? nil until
+    --then. A hidden node is collapsed, and a collapsed panel stops thinking,
+    --so it cannot show itself again: this watcher does it.
+    local m_marketFound = nil
+
+    --Put the Arcane Market on the map once the player finds it (the Find
+    --the Arcane Market project completes). Found while the town is open, it
+    --beckons a few times; already found when the town opened, it just shows.
+    local RevealFoundLocations = function()
+        local node = m_nodePanels["market"]
+        if node == nil or not node.valid then
+            return
+        end
+        local found = EotwRoster.MarketUnlocked()
+        if found and node:HasClass("collapsed") then
+            node:SetClass("collapsed", false)
+        end
+        if EotwRoster.GetHeroes() == nil then
+            return
+        end
+        if found and m_marketFound == false then
+            --usually found at the inn: beckon once the player is back on the map.
+            if m_locationId ~= nil then
+                return
+            end
+            for i = 0, 2 do
+                dmhub.Schedule(0.5 + i * 1.5, function()
+                    if mod.unloaded or node == nil or not node.valid then
+                        return
+                    end
+                    local halo = node:Get("eotwTownHalo-market")
+                    if halo ~= nil then
+                        halo:PulseClass("beckon")
+                    end
+                end)
+            end
+        end
+        m_marketFound = found
+    end
+
     ---- locations: full-screen scenes over the map ----
 
     --The card holding a location's controls sits on the right, clear of the
@@ -4210,9 +6529,9 @@ CreateScreen = function(args)
     local SCENE_CARD_TOP = 76
     local SCENE_CARD_BOTTOM = 104
     local SCENE_CARD_MARGIN = 40
-    --The chat button moves left of the creator's logo while a scene is up
-    --(the badge is 170 wide, 28 in from the edge).
-    local SCENE_CHAT_BUTTON_MARGIN = 28 + 170 + 24
+    --The creator badge's inset from a scene's right edge; the chat button
+    --moves left of the badge while a scene is up (see ApplyLocationMode).
+    local SCENE_BADGE_HMARGIN = 28
 
     local sceneStyles = {
         {
@@ -4291,10 +6610,10 @@ CreateScreen = function(args)
 
     --The top-left of a scene: the way back to the map, then the place's
     --name over a cream rule and a line about it.
-    local SceneHeader = function(scene)
+    local SceneHeader = function(scene, side)
         return gui.Panel{
             floating = true,
-            halign = "left",
+            halign = side or "left",
             valign = "top",
             hmargin = 56,
             vmargin = 40,
@@ -4353,22 +6672,34 @@ CreateScreen = function(args)
     end
 
     --A location's full-screen scene: its art (credited to its creator by
-    --CreatorCredit.Backdrop), a shade down the left for the header to read
-    --on, the header, and a card on the right holding content. The scene is
-    --opaque, so the map behind it takes no clicks.
-    local LocationScene = function(loc, cardWidth, content)
+    --CreatorCredit.Backdrop; scene.video loops over the still), a shade down
+    --the header's side for it to read on, the header, and a card holding
+    --content -- on the right, or on the left when scene.cardSide = "left"
+    --(the header then moves right). `side` (optional) goes in the free space
+    --under the header, at the bottom of the header's side (the Guild's
+    --project under way). The scene is opaque, so the map behind it takes no
+    --clicks.
+    local LocationScene = function(loc, cardWidth, content, side)
         local scene = loc.scene
+        local cardLeft = scene.cardSide == "left"
+        local headerSide = cond(cardLeft, "right", "left")
+        local fadeFrom, fadeTo = 0, 1
+        if cardLeft then
+            fadeFrom, fadeTo = 1, 0
+        end
         return CreatorCredit.Backdrop{
             width = panelWidth,
             height = panelHeight,
             image = scene.art,
+            video = scene.video,
             aspect = scene.aspect,
             focusX = scene.focusX,
-            badge = { hmargin = 28, vmargin = 24 },
+            --the Town Gate's art is dark, so its credit shows the logo white.
+            badge = { hmargin = SCENE_BADGE_HMARGIN, vmargin = 24, light = loc.id == "gate" },
             children = {
                 gui.Panel{
                     floating = true,
-                    halign = "left",
+                    halign = headerSide,
                     valign = "top",
                     width = 1000,
                     height = panelHeight,
@@ -4376,8 +6707,8 @@ CreateScreen = function(args)
                     bgimage = "panels/square.png",
                     bgcolor = "black",
                     gradient = gui.Gradient{
-                        point_a = { x = 0, y = 0.5 },
-                        point_b = { x = 1, y = 0.5 },
+                        point_a = { x = fadeFrom, y = 0.5 },
+                        point_b = { x = fadeTo, y = 0.5 },
                         stops = {
                             { position = 0, color = core.Color{ r = 1, g = 1, b = 1, a = 0.78 } },
                             { position = 0.4, color = core.Color{ r = 1, g = 1, b = 1, a = 0.45 } },
@@ -4391,11 +6722,21 @@ CreateScreen = function(args)
                     width = "100%",
                     height = "100%",
                     flow = "none",
-                    SceneHeader(scene),
+                    SceneHeader(scene, headerSide),
+                    gui.Panel{
+                        floating = true,
+                        halign = headerSide,
+                        valign = "bottom",
+                        hmargin = 56,
+                        bmargin = 90,
+                        width = "auto",
+                        height = "auto",
+                        children = { side },
+                    },
                     gui.Panel{
                         classes = { "eotwSceneCard" },
                         floating = true,
-                        halign = "right",
+                        halign = cond(cardLeft, "left", "right"),
                         valign = "top",
                         hmargin = SCENE_CARD_MARGIN,
                         tmargin = SCENE_CARD_TOP,
@@ -4417,6 +6758,7 @@ CreateScreen = function(args)
     local m_stripSignature = nil
     local m_stripRefreshAt = 0
     local heroStrip = gui.Panel{
+        id = "eotwTownHeroStrip",
         floating = true,
         halign = "center",
         valign = "bottom",
@@ -4456,12 +6798,20 @@ CreateScreen = function(args)
                                 --recoveries, but no skills or heroic resource.
                                 showSkills = false,
                                 showResources = false,
+                                --the hammer chip: Downtime Activities to spend.
+                                showDowntime = true,
                                 subtitle = function(tok)
                                     local className, ancestry, level = EotwRoster.HeroDetails(tok)
-                                    return EotwRoster.FormatDetails(level, ancestry, className)
+                                    local text = EotwRoster.FormatDetails(level, ancestry, className)
+                                    if EotwRoster.TokenIsDying(tok) then
+                                        text = "<color=#ff8f7a>Dying: needs a respite</color>"
+                                    end
+                                    return text
                                 end,
+                                --the town's cards open the EotW hero sheet
                                 click = function()
-                                    EotwRoster.EditHero(heroid)
+                                    audio.FireSoundEvent("Mouse.Click")
+                                    EotwHeroSheet.Show{ charid = heroid, context = "town" }
                                 end,
                                 --back to the guild: inactive, not deleted.
                                 dismiss = {
@@ -4500,82 +6850,140 @@ CreateScreen = function(args)
         end,
     }
 
-    --The Town Gate's controls, the body of its scene: parties forming up and
-    --encounters underway (the roster records of the city's games list),
-    --forming a party, and a party's own view while you are in it.
-    gatePanel = gui.Panel{
-        width = "100%",
-        height = "100%",
-        flow = "vertical",
+    --A party board, the body of the Gate's or the Danger Rooms' scene: its
+    --title, the list RefreshGames renders (the week's encounter or the
+    --Danger Room encounters, parties forming and underway, or a party's own
+    --view while you are in it), an error line and the board's controls.
+    local PartyBoard = function(mode)
+        local ui = m_partyUI[mode]
+        local controls
+        if mode == "gate" then
+            controls = {
+                gui.Button{
+                    text = "Form a Party",
+                    fontSize = 22,
+                    width = 240,
+                    height = 48,
+                    hmargin = 8,
+                    click = function(element)
+                        local key = EncounterOfTheWeek.CurrentEncounterKey()
+                        if key == nil then
+                            ShowGamesError("This week's encounter has not been posted yet.")
+                            return
+                        end
+                        ShowCreateDialog(key)
+                    end,
+                },
+                gui.Button{
+                    --shown by RefreshGames once the week has past encounters.
+                    classes = { "collapsed" },
+                    text = "Past Encounters",
+                    fontSize = 22,
+                    width = 240,
+                    height = 48,
+                    hmargin = 8,
+                    create = function(element)
+                        ui.pastButton = element
+                    end,
+                    click = function(element)
+                        ShowPastEncountersDialog()
+                    end,
+                },
+            }
+        else
+            controls = {
+                gui.Button{
+                    classes = { "collapsed" },
+                    text = "Feedback on Your Encounters",
+                    fontSize = 20,
+                    width = 340,
+                    height = 48,
+                    hmargin = 8,
+                    create = function(element)
+                        ui.creatorButton = element
+                    end,
+                    click = function(element)
+                        ShowCreatorFeedbackDialog()
+                    end,
+                },
+            }
+        end
 
-        gui.Label{
-            text = "Adventuring Parties",
-            fontSize = 26,
-            bold = true,
-            color = "#efe4cc",
+        return gui.Panel{
             width = "100%",
-            height = "auto",
-            bmargin = 4,
-            create = function(element)
-                gamesTitleLabel = element
-            end,
-        },
-
-        gui.Panel{
-            width = "100%",
-            height = "100%-110",
+            height = "100%",
             flow = "vertical",
-            vscroll = true,
-            rpad = 12,
-            borderBox = true,
-            create = function(element)
-                gamesListPanel = element
-                RefreshGames()
-                RefreshResumeState()
-            end,
-        },
 
-        --error line for rejected roster requests (join on a full game, a
-        --hero already in another party, etc).
-        gui.Label{
-            fontSize = 16,
-            color = "#ff8888",
-            width = "100%",
-            height = 22,
-            textAlignment = "center",
-            text = "",
-            create = function(element)
-                gamesErrorLabel = element
-            end,
-            clearError = function(element)
-                element.text = ""
-            end,
-            showError = function(element, message)
-                element.text = tostring(message)
-                element:ScheduleEvent("clearError", 5)
-            end,
-        },
+            gui.Label{
+                text = "",
+                fontSize = 26,
+                bold = true,
+                color = "#efe4cc",
+                width = "100%",
+                height = "auto",
+                bmargin = 4,
+                create = function(element)
+                    ui.title = element
+                end,
+            },
 
-        --hidden while a party view is open (RefreshGames collapses it);
-        --leaving the party is the way back to the list.
-        gui.Button{
-            text = "Form a Party",
-            fontSize = 22,
-            width = 240,
-            height = 48,
-            halign = "center",
-            valign = "bottom",
-            create = function(element)
-                createGameButton = element
-            end,
-            click = function(element)
-                ShowCreateDialog()
-            end,
-        },
-    }
+            gui.Panel{
+                width = "100%",
+                height = "100%-110",
+                flow = "vertical",
+                vscroll = true,
+                rpad = 12,
+                borderBox = true,
+                create = function(element)
+                    ui.list = element
+                    RefreshGames()
+                    if mode == "gate" then
+                        RefreshResumeState()
+                    end
+                end,
+            },
 
-    gateScene = LocationScene(CityLocation("gate"), GATE_CARD_WIDTH_LIST, gatePanel)
+            --error line for rejected roster requests (join on a full game, a
+            --hero already in another party, etc).
+            gui.Label{
+                fontSize = 16,
+                color = "#ff8888",
+                width = "100%",
+                height = 22,
+                textAlignment = "center",
+                text = "",
+                create = function(element)
+                    ui.error = element
+                end,
+                clearError = function(element)
+                    element.text = ""
+                end,
+                showError = function(element, message)
+                    element.text = tostring(message)
+                    element:ScheduleEvent("clearError", 5)
+                end,
+            },
+
+            --hidden while a party view is open (RefreshGames collapses it);
+            --leaving the party is the way back to the lists.
+            gui.Panel{
+                width = "auto",
+                height = "auto",
+                halign = "center",
+                valign = "bottom",
+                flow = "horizontal",
+                create = function(element)
+                    ui.controls = element
+                end,
+                children = controls,
+            },
+        }
+    end
+
+    gateScene = LocationScene(CityLocation("gate"), CARD_WIDTH_LIST.gate, PartyBoard("gate"))
     gateScene:SetClass("collapsed", true)
+    dangerScene = LocationScene(CityLocation("danger"), CARD_WIDTH_LIST.danger, PartyBoard("danger"))
+    dangerScene:SetClass("collapsed", true)
 
     --Hides the town's own furniture while a scene is up, and moves the chat
     --button clear of the scene's creator credit.
@@ -4587,7 +6995,16 @@ CreateScreen = function(args)
             end
         end
         if chatButton ~= nil and chatButton.valid then
-            chatButton.selfStyle.hmargin = cond(inLocation, SCENE_CHAT_BUTTON_MARGIN, 20)
+            --the badge's width depends on the creator: a licence watermark
+            --spans a share of the screen (Czepeku's is a quarter of it).
+            local hmargin = 20
+            if m_locationId ~= nil then
+                local info = CreatorCredit.ForArt(CityLocation(m_locationId).scene.art)
+                if info ~= nil then
+                    hmargin = SCENE_BADGE_HMARGIN + CreatorCredit.BadgeWidth(info.id, panelWidth) + 24
+                end
+            end
+            chatButton.selfStyle.hmargin = hmargin
         end
     end
 
@@ -4595,13 +7012,23 @@ CreateScreen = function(args)
         if m_locationId == nil then
             return
         end
-        if gateScene ~= nil and gateScene.valid then
-            gateScene:SetClass("collapsed", true)
+        for _,scene in ipairs({ gateScene, dangerScene }) do
+            if scene ~= nil and scene.valid then
+                scene:SetClass("collapsed", true)
+            end
         end
         if m_guildScene ~= nil and m_guildScene.valid then
             m_guildScene:DestroySelf()
         end
         m_guildScene = nil
+        if m_innScene ~= nil and m_innScene.valid then
+            m_innScene:DestroySelf()
+        end
+        m_innScene = nil
+        if m_marketScene ~= nil and m_marketScene.valid then
+            m_marketScene:DestroySelf()
+        end
+        m_marketScene = nil
         m_locationId = nil
         ApplyLocationMode()
     end
@@ -4619,11 +7046,41 @@ CreateScreen = function(args)
             --was built can come back empty if the lobby was not ready yet.
             RefreshResumeState()
             RefreshGames()
-            --pick up encounter modules published since the town opened.
-            EncounterOfTheWeek.RefreshPool()
+            --pick up encounter modules published since the town opened (a
+            --community Encounter of the Week needs its backstory from it).
+            EncounterOfTheWeek.RefreshPool(function()
+                if not mod.unloaded and resultPanel ~= nil and resultPanel.valid then
+                    RefreshGames()
+                end
+            end)
+        elseif id == "danger" then
+            dangerScene:SetClass("collapsed", false)
+            CreatorCredit.ReplayFade(dangerScene)
+            RefreshGames()
+            FetchDangerStats()
+            --the encounters on offer come from the pool: catch new ones.
+            EncounterOfTheWeek.RefreshPool(function()
+                if not mod.unloaded and resultPanel ~= nil and resultPanel.valid then
+                    RefreshGames()
+                end
+            end)
         elseif id == "guild" then
-            m_guildScene = LocationScene(CityLocation("guild"), 860, EotwRoster.GuildPanel(resultPanel))
+            m_guildScene = LocationScene(CityLocation("guild"), 860, EotwRoster.GuildPanel(resultPanel),
+                --the guild's project under way, if any, in the space on the left.
+                EotwDowntime.ProjectSidePanel(resultPanel, "expand-guild", 620))
             locationHost:AddChild(m_guildScene)
+        elseif id == "inn" then
+            m_innScene = LocationScene(CityLocation("inn"), 820, EotwDowntime.InnPanel(resultPanel, function(where)
+                OpenLocation(where)
+            end),
+                --the hunt for the Arcane Market, while it is under way.
+                EotwDowntime.ProjectSidePanel(resultPanel, "find-arcane-market", 620))
+            locationHost:AddChild(m_innScene)
+            EotwRoster.Refresh()
+        elseif id == "market" then
+            m_marketScene = LocationScene(CityLocation("market"), 820, EotwMarket.MarketPanel(resultPanel))
+            locationHost:AddChild(m_marketScene)
+            EotwRoster.Refresh()
         end
         ApplyLocationMode()
     end
@@ -4992,6 +7449,12 @@ CreateScreen = function(args)
                         for _,_ in pairs(presence or {}) do
                             n = n + 1
                         end
+                        --we are always present ourselves, so 0 means the
+                        --snapshot has not arrived yet: stay blank until it does.
+                        if n == 0 then
+                            element.text = ""
+                            return
+                        end
                         element.text = string.format("%d adventurer%s in town", n, cond(n == 1, "", "s"))
                     end,
                 },
@@ -5022,6 +7485,7 @@ CreateScreen = function(args)
                 locationHost = element
             end,
             gateScene,
+            dangerScene,
         },
 
         --chat drawer toggle, bottom-right (left of a scene's creator credit).
@@ -5045,6 +7509,19 @@ CreateScreen = function(args)
         },
 
         chatPanel,
+
+        --watches for the moment to play the Blue Fish Inn's reveal.
+        gui.Panel{
+            floating = true,
+            width = 1,
+            height = 1,
+            interactable = false,
+            thinkTime = 0.5,
+            think = function(element)
+                MaybePlayInnReveal()
+                RevealFoundLocations()
+            end,
+        },
     }
 
     --Watch the lobby document + connection state. Handlers are dropped by
@@ -5062,6 +7539,14 @@ CreateScreen = function(args)
             end
             if path == "/" then
                 RefreshAll()
+                EotwRoster.Refresh()
+                MaybeShowDebrief()
+                MaybeShowOfferedOutcomes()
+            elseif string.starts_with(path, "/city/week") then
+                --the week rotated: the boards re-sort the encounters, and
+                --the Danger Rooms may have opened (an earlier win of the
+                --new past encounter counts).
+                RefreshGames()
                 EotwRoster.Refresh()
             elseif path == "/presence/" .. dmhub.loginUserid then
                 --our presence entry carries our roster revision: a change
@@ -5088,6 +7573,14 @@ CreateScreen = function(args)
             if status == "connected" then
                 RefreshAll()
                 EotwRoster.Refresh()
+                MaybeShowDebrief()
+                MaybeShowOfferedOutcomes()
+                --a respite or project roll the last connection did not finish.
+                dmhub.Schedule(2, function()
+                    if not mod.unloaded then
+                        EotwDowntime.ResumePending()
+                    end
+                end)
             end
         end)
     end

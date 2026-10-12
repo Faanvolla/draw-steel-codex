@@ -1212,8 +1212,7 @@ end
 --Count the non-minion monsters across the WHOLE encounter (start groups + every
 --reinforcement wave) at the given hero count. Uses CloneForNumberOfHeroes so the
 --count reflects what actually spawns (minHeroes filtering + per-hero balancing).
---Minions are deliberately excluded. This is the total the victory checks measure
---against (e.g. the denominator for "Half Monsters Defeated").
+--Minions are left out.
 -- Counts the non-minion monsters in the encounter for a given number of heroes
 -- (including reinforcement waves). If org is given (a lowercase organization keyword
 -- such as "leader"), only monsters of that organization are counted.
@@ -1230,6 +1229,49 @@ function Encounter.CountNonMinionMonsters(self, numHeroes, org)
         end
     end
     return count
+end
+
+--How many minion squads this group is placed as. Fewer than 8 minions make one
+--squad; 8 or more are split into squads of the group's squad size.
+function Encounter.GroupMinionSquadCount(group)
+    for monsterid, quantity in pairs(group.monsters or {}) do
+        local monster = assets.monsters[monsterid]
+        if monster ~= nil and monster.properties.minion and quantity ~= nil and quantity > 0 then
+            if quantity >= 8 then
+                return math.ceil(quantity / (group.squadSize or 4))
+            end
+            return 1
+        end
+    end
+    return 0
+end
+
+--How many monsters the heroes face, including reinforcements. Each minion squad
+--counts as one monster (KFG3P24T).
+function Encounter.CountVictoryUnits(self, numHeroes)
+    local count = self:CountNonMinionMonsters(numHeroes)
+    local clone = self:CloneForNumberOfHeroes(numHeroes)
+    for _, group in ipairs(clone.groups) do
+        count = count + Encounter.GroupMinionSquadCount(group)
+    end
+    return count
+end
+
+--Which monster this token counts as when checking for victory, or nil if it
+--doesn't count. Every minion in a squad returns the same answer, so the squad
+--counts once. Summoned minions don't count.
+function Encounter.VictoryUnitKey(token)
+    local props = token.properties
+    if props == nil or not props:IsMonster() then
+        return nil
+    end
+    if not props.minion then
+        return token.charid
+    end
+    if token.summonerid ~= nil and token.summonerid ~= "" then
+        return nil
+    end
+    return "squad:" .. tostring(props:MinionSquad())
 end
 
 function Encounter.Describe(self)
@@ -1535,9 +1577,10 @@ LiveEncounter = RegisterGameType("LiveEncounter", "Encounter")
 -- Its own table name so it is distinguished from authored encounters.
 LiveEncounter.tableName = "liveencounters"
 
--- The non-minion monster count captured at the onset of combat (start groups + all
--- reinforcement waves). Used as the denominator for the "Half Monsters Defeated"
--- victory check so it stays stable as monsters die / reinforcements arrive.
+-- The monster count captured at the onset of combat (start groups + all
+-- reinforcement waves), with each minion squad counted as one monster. Used as the
+-- denominator for the "Half Monsters Defeated" victory check so it stays stable as
+-- monsters die / reinforcements arrive.
 LiveEncounter.onsetMonsterCount = 0
 
 -- For the "Destroy the Thing!" victory condition: the number of Targetable objects on
@@ -1631,9 +1674,9 @@ function LiveEncounter.Create(encounter)
     result.typeName = "LiveEncounter"
     result.tableName = LiveEncounter.tableName
     setmetatable(result, LiveEncounter.mt)
-    --record the full non-minion monster count (including reinforcements that will
-    --arrive) at the onset of combat.
-    result.onsetMonsterCount = result:CountNonMinionMonsters()
+    --record the full monster count (including reinforcements that will arrive) at
+    --the onset of combat. Each minion squad counts as one monster.
+    result.onsetMonsterCount = result:CountVictoryUnits()
     --for "Destroy the Thing!", record how many matching Targetable objects are on the
     --map at the onset of combat (the denominator / boss-bar trigger for that objective).
     if result:try_get("victoryCondition") == "destroy_thing" then
@@ -3815,12 +3858,12 @@ function LiveEncounter:DeployWave(waveid, initiativeQueue)
     return spawnedCount
 end
 
--- Count the non-minion reinforcement monsters that have NOT yet been deployed (their
--- wave is not in deployedWaves). These are monsters that "will arrive" -- they count
--- toward the monsters the heroes still have to deal with even though they're not yet
--- on the map.
+-- Count the reinforcement monsters that have NOT yet been deployed (their wave is
+-- not in deployedWaves). These are monsters that "will arrive" -- they count toward
+-- the monsters the heroes still have to deal with even though they're not yet on
+-- the map. Each minion squad counts as one monster.
 -- If org is given (a lowercase organization keyword such as "leader"), only pending
--- reinforcement monsters of that organization are counted.
+-- non-minion monsters of that organization are counted.
 function LiveEncounter:CountPendingReinforcements(numHeroes, org)
     numHeroes = numHeroes or dmhub.GetSettingValue("numheroes")
     local clone = self:CloneForNumberOfHeroes(numHeroes)
@@ -3834,6 +3877,9 @@ function LiveEncounter:CountPendingReinforcements(numHeroes, org)
                     count = count + quantity
                 end
             end
+            if org == nil then
+                count = count + Encounter.GroupMinionSquadCount(group)
+            end
         end
     end
     return count
@@ -3841,9 +3887,9 @@ end
 
 -- Walk the active initiative queue and count the live combatants on each side:
 --   heroes  : hero/player tokens with Stamina (hitpoints) > 0
---   monsters: non-minion monster tokens with Stamina > 0 (minions are ignored)
--- Returns heroes, monsters. A combatant counts as "live"/standing while its current
--- Stamina is above 0.
+--   monsters: non-minion monster tokens with Stamina > 0, plus one for each minion
+--             squad that still has a minion standing
+-- Returns heroes, monsters.
 function LiveEncounter:CountLiveCombatants()
     local q = dmhub.initiativeQueue
     local heroes, monsters = 0, 0
@@ -3852,17 +3898,32 @@ function LiveEncounter:CountLiveCombatants()
     end
 
     local seen = {}
+    local countedUnits = {}
     for initiativeid, _ in pairs(q.entries) do
         local tokens = InitiativeQueue.GetTokensForInitiativeId(initiativeid)
         for _, token in ipairs(tokens or {}) do
             if token ~= nil and not seen[token.charid] then
                 seen[token.charid] = true
                 local props = token.properties
-                if props ~= nil and props:CurrentHitpoints() > 0 then
+                if props ~= nil then
                     if props:IsHero() then
-                        heroes = heroes + 1
-                    elseif props:IsMonster() and not props.minion then
-                        monsters = monsters + 1
+                        if props:CurrentHitpoints() > 0 then
+                            heroes = heroes + 1
+                        end
+                    else
+                        --a minion's Stamina is the whole squad's, so ask
+                        --whether this minion is dead instead.
+                        local standing
+                        if props.minion then
+                            standing = not props:IsDead()
+                        else
+                            standing = props:CurrentHitpoints() > 0
+                        end
+                        local unit = Encounter.VictoryUnitKey(token)
+                        if standing and unit ~= nil and not countedUnits[unit] then
+                            countedUnits[unit] = true
+                            monsters = monsters + 1
+                        end
                     end
                 end
             end
@@ -4067,7 +4128,7 @@ function LiveEncounter:GetBossToken()
 end
 
 -- Returns true when this encounter's configured victory condition has been met.
--- Minions are never counted. "Monsters remaining" = live non-minion monsters on the
+-- Each minion squad counts as one monster. "Monsters remaining" = live monsters on the
 -- field PLUS reinforcements that have not yet arrived, so victory is not declared
 -- while a wave is still pending. See Encounter.GetVictoryConditions for the ids.
 function LiveEncounter:CheckVictory()
@@ -4131,7 +4192,7 @@ function LiveEncounter:CheckVictory()
 end
 
 -- Progress toward victory expressed purely as monster defeats: returns
---   defeated : how many non-minion monsters have been defeated so far
+--   defeated : how many monsters (minion squads count as one) have been defeated so far
 --   needed   : how many must be defeated for victory
 -- For the count conditions this is direct; for the "outnumber" conditions we convert
 -- the threshold into a number of kills (how many monsters must be removed so the
@@ -4228,9 +4289,9 @@ function LiveEncounter:GetObjectiveTooltip()
 
     local lines = {}
     if condition == "all_defeated" then
-        lines[#lines + 1] = "Victory when every non-minion monster is defeated."
+        lines[#lines + 1] = "Victory when every monster is defeated. Each minion squad counts as one monster."
     elseif condition == "half_defeated" then
-        lines[#lines + 1] = "Victory when at least half of the encounter's non-minion monsters are defeated."
+        lines[#lines + 1] = "Victory when at least half of the encounter's monsters are defeated. Each minion squad counts as one monster."
     elseif condition == "heroes_outnumber" then
         lines[#lines + 1] = "Victory when the living heroes outnumber the remaining monsters, so the monsters lose their nerve and flee. The kill count shows how many monsters must fall to reach that point."
     elseif condition == "heroes_outnumber_two_to_one" then
@@ -4267,7 +4328,7 @@ function LiveEncounter:GetObjectiveTooltip()
     end
 
     lines[#lines + 1] = ""
-    lines[#lines + 1] = string.format("Total monsters (minions excluded): %d", onset)
+    lines[#lines + 1] = string.format("Total monsters (each minion squad counts as one): %d", onset)
     lines[#lines + 1] = string.format("Living on the field: %d", monstersOnField)
     if pending > 0 then
         lines[#lines + 1] = string.format("Reinforcements still to arrive: %d", pending)
@@ -4752,7 +4813,8 @@ local g_definitionCache = {}
 --- Follows the AbilityScript.lua precedent: load(code, name, "t", env) with an
 --- environment that reads globals but keeps writes local to the chunk.
 --- @param code string
---- @return table|nil, string|nil definition, error
+--- @return table|nil definition
+--- @return string|nil error
 function EncounterScript.CompileDefinition(code)
     if code == nil or code == "" then
         return nil, "The script is empty"
@@ -4899,7 +4961,8 @@ function EncounterScriptInstance:GetCode()
 end
 
 --- Resolve + compile this instance's definition.
---- @return table|nil, string|nil definition, error
+--- @return table|nil definition
+--- @return string|nil error
 function EncounterScriptInstance:GetDefinition()
     local code, err = self:GetCode()
     if code == nil then
@@ -5046,7 +5109,8 @@ end
 --- The cached victory text of the first attached script that declares a
 --- victory condition, or nil. This is the CACHED string (safe on player
 --- clients); the live check is GetScriptVictory/EvaluateVictoryCheck.
---- @return string|nil, table|nil text, instance
+--- @return string|nil text
+--- @return table|nil instance
 function Encounter:ScriptVictoryText()
     for _, instance in ipairs(self:try_get("scripts", {})) do
         local text = instance:try_get("victoryText")
@@ -5073,7 +5137,8 @@ end
 --- The cached defeat text of the first attached script that declares a defeat
 --- condition, or nil. Like ScriptVictoryText this is the CACHED string (safe
 --- on player clients); the live check is GetScriptDefeat/EvaluateDefeatCheck.
---- @return string|nil, table|nil text, instance
+--- @return string|nil text
+--- @return table|nil instance
 function Encounter:ScriptDefeatText()
     for _, instance in ipairs(self:try_get("scripts", {})) do
         local text = instance:try_get("defeatText")
@@ -5408,10 +5473,9 @@ local function RunInstanceTick(liveEncounter, instance, q, isLive)
     if st.state == nil then
         st.state = {}
     end
-    local ok, before = pcall(dmhub.ToJson, st)
-    if not ok then
-        before = nil
-    end
+    local ok, json = pcall(dmhub.ToJson, st)
+    --nil when the state could not be serialized.
+    local before = ok and json or nil
 
     local ctx = g_runtime.contexts[guid]
     if ctx == nil then

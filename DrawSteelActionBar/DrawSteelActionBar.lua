@@ -1651,6 +1651,18 @@ local g_resources
 local g_abilities
 local g_initiative
 
+--Writes a line to the log when the action bar hides, shows, or ignores a click.
+--A player once could not act for the rest of their turn and the log could not say why.
+function DrawSteelActionBar._diag(event, detail)
+    local tokenName = "nil"
+    if g_token ~= nil and g_token.valid then
+        tokenName = g_token.name or g_token.charid
+    end
+    print(string.format("ACTIONBARDIAG:: %s %s token=%s abilities=%d casting=%s stack=%d T=%.2f",
+        event, detail or "", tostring(tokenName), g_abilities ~= nil and #g_abilities or -1,
+        g_currentAbility ~= nil and g_currentAbility.name or "nil", #g_casterTokenStack, dmhub.Time()))
+end
+
 local g_newActionBar = setting {
     id = "newactionbar",
     description = "Use New Action Bar",
@@ -3892,6 +3904,10 @@ local function CreateActionBar()
             if g_token == nil or not g_token.valid then
                 g_abilities = {}
                 g_prevCharid = nil
+                if element.data.diagState ~= "notoken" then
+                    element.data.diagState = "notoken"
+                    DrawSteelActionBar._diag("hidden", "reason=no-token")
+                end
                 element:SetClass("hidden", true)
                 element:HaltEventPropagation()
                 element:FireEventTree("closemenu")
@@ -3913,6 +3929,10 @@ local function CreateActionBar()
             --while an invoked cast is driving us (g_casterTokenStack non-empty)
             --or a creature is operating it.
             if g_creature:try_get("treatAsObject", false) and #g_casterTokenStack == 0 and not DrawSteelActionBar._operate.IsOperatingBound() then
+                if element.data.diagState ~= "object" then
+                    element.data.diagState = "object"
+                    DrawSteelActionBar._diag("hidden", "reason=object")
+                end
                 element:SetClass("hidden", true)
                 element:HaltEventPropagation()
                 element:FireEventTree("closemenu")
@@ -3981,6 +4001,13 @@ local function CreateActionBar()
             end
 
             g_abilities = abilities
+
+            --Only log when this changes, not on every refresh.
+            local shownState = "shown:" .. tostring(g_token.charid) .. ":" .. tostring(#g_abilities == 0)
+            if element.data.diagState ~= shownState then
+                element.data.diagState = shownState
+                DrawSteelActionBar._diag("shown")
+            end
 
             --Diff the freshly generated list against what this creature had
             --last time we looked, so newly gained abilities can announce
@@ -4503,6 +4530,7 @@ local function AbilityHeading(args)
             -- While the Director has the game frozen, players cannot act at
             -- all; the FROZEN banner on screen explains why. Directors bypass.
             if (not dmhub.isDM) and dmhub.frozen then
+                DrawSteelActionBar._diag("press-refused", "reason=frozen")
                 return
             end
 
@@ -4513,13 +4541,18 @@ local function AbilityHeading(args)
             -- still demo or override the rules.
             if (not dmhub.isDM) and dmhub.GetSettingValue("strict:resources") then
                 if m_cannotAfford or m_expended or m_suppressed or m_offTurn then
+                    DrawSteelActionBar._diag("press-refused", string.format("reason=strict ability=%s cannotAfford=%s expended=%s suppressed=%s offTurn=%s",
+                        m_ability ~= nil and m_ability.name or "nil", tostring(m_cannotAfford), tostring(m_expended), tostring(m_suppressed), tostring(m_offTurn)))
                     return
                 end
             end
 
             audio.FireSoundEvent("Mouse.Click")
             --this will be adopted by the ability controller
-            if g_abilityController == nil then return end
+            if g_abilityController == nil then
+                DrawSteelActionBar._diag("press-refused", "reason=no-controller")
+                return
+            end
             local menu = element:FindParentWithClass("actionMenu")
             if menu ~= nil then
                 print("MENU:: ONCAST")
@@ -8494,6 +8527,7 @@ ActionMenu = function()
 
         menu = function(element, args)
             if element.data.shownMenuTime == dmhub.Time() or g_token == nil then
+                DrawSteelActionBar._diag("menu-refused", string.format("drawer=%s sameFrame=%s", tostring(args.type), tostring(element.data.shownMenuTime == dmhub.Time())))
                 return
             end
 
@@ -8530,6 +8564,7 @@ ActionMenu = function()
             element.data.shownMenuTime = dmhub.Time()
 
             if (not element:HasClass("hidden")) and m_args ~= nil and m_args.drawer == args.drawer then
+                DrawSteelActionBar._diag("menu-closed", "drawer=" .. tostring(args.type))
                 element:SetClass("hidden", true)
                 element:HaltEventPropagation()
                 element:FindParentWithClass("actionBar"):FireEventTree("menuStatus")
@@ -8679,12 +8714,14 @@ ActionMenu = function()
             end
 
             if #abilities == 0 and #triggers == 0 then
+                DrawSteelActionBar._diag("menu-empty", "drawer=" .. tostring(args.type))
                 element:SetClass("hidden", true)
                 element:HaltEventPropagation()
                 element:FindParentWithClass("actionBar"):FireEventTree("menuStatus")
                 return
             end
 
+            DrawSteelActionBar._diag("menu-opened", string.format("drawer=%s shown=%d triggers=%d", tostring(args.type), #abilities, #triggers))
             element:SetClass("hidden", false)
 
             --This drawer is opening, so its corner marker has done its job.
@@ -11905,11 +11942,10 @@ CreateAbilityController = function()
                 end
             end
 
-            -- _tmp_aicontrol is a counter (incremented while AI is in control),
-            -- so the falsy/truthy check must be against `> 0` -- a plain truthy
-            -- check matches `0` and silently auto-picks every prompt target,
-            -- defeating the "Prompt When Resolving" option on PowerRollBehavior.
-            if options.sourceToken ~= nil and options.sourceToken.properties._tmp_aicontrol > 0 then
+            -- Only while the Monster AI controls the source: auto-picking for
+            -- anyone else would defeat the "Prompt When Resolving" option on
+            -- PowerRollBehavior.
+            if options.sourceToken ~= nil and creature.IsTokenAIControlled(options.sourceToken.charid) then
                 --auto-pick the first target that isn't filtered out with a reason.
                 local pick = options.targets[1]
                 for _,t in ipairs(options.targets or {}) do

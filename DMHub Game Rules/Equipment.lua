@@ -346,7 +346,8 @@ function equipment.OnDeserialize(self)
 			local i,j = string.find(self.weight, "%d+")
 			if i ~= nil then
 				local str = string.sub(self.weight, i, j)
-				self.weight = tonumber(str)
+				--str is the "%d+" match, so it always parses.
+				self.weight = tonumber(str) --[[@as number]]
 			else
 				self.weight = nil
 			end
@@ -448,8 +449,10 @@ function equipment:AmmoModifyAbility(creature, ability)
 end
 
 function equipment:WeaponModifyAbility(creature, ability)
-	if self:has_key("weaponBehavior") then
-		CharacterModifier.TypeInfo.modifyability.modifyAbility(self.weaponBehavior, creature, ability)
+	--Set by the item editor on weapons; can linger on an item retyped away from Weapon.
+	local weaponBehavior = self:try_get("weaponBehavior") --[[@as CharacterModifier?]]
+	if weaponBehavior ~= nil then
+		CharacterModifier.TypeInfo.modifyability.modifyAbility(weaponBehavior, creature, ability)
 	end
 
 	--see if any of the weapon's properties have modifiers on them.
@@ -871,14 +874,15 @@ function equipment:RenderToMarkdown(options)
             characteristics = {"-"}
         end
 
+        local characteristicsText
         if #characteristics <= 2 then
-            characteristics = table.concat(characteristics, " or ")
+            characteristicsText = table.concat(characteristics, " or ")
         else
             characteristics[#characteristics] = "or " .. characteristics[#characteristics]
-            characteristics = table.concat(characteristics, ", ")
+            characteristicsText = table.concat(characteristics, ", ")
         end
 
-        tokens[#tokens+1] = string.format("**Project Roll Characteristic:** %s\n", characteristics)
+        tokens[#tokens+1] = string.format("**Project Roll Characteristic:** %s\n", characteristicsText)
         tokens[#tokens+1] = string.format("**Project Goal:** %s\n", self:try_get("projectGoal", "-"))
 
         if EquipmentCategory.IsLeveledTreasure(self) then
@@ -952,7 +956,9 @@ function equipment:RenderOld(options, token)
 		itemType = cat.name
 	end
 
+	--isWeapon/isArmor/isShield are prototype flags, true only on those subtypes.
 	if item.isWeapon then
+		---@cast item weapon
 
 		if item:try_get('hitbonus') then
 			infoItems[#infoItems+1] = gui.Label{
@@ -1007,7 +1013,7 @@ function equipment:RenderOld(options, token)
 					keywords = keywords .. ', '
 				end
 
-				keywords = keywords .. property.name
+				keywords = keywords .. propertyInfo.name
 			end
 		end
 
@@ -1018,6 +1024,7 @@ function equipment:RenderOld(options, token)
 		end
 
 	elseif item.isArmor then
+		---@cast item armor
 
 		infoItems[#infoItems+1] = gui.Label{
 			text = string.format("%d Armor Class", math.tointeger(item.armorClass)),
@@ -1041,6 +1048,7 @@ function equipment:RenderOld(options, token)
 			}
 		end
 	elseif item.isShield then
+		---@cast item shield
 		infoItems[#infoItems+1] = gui.Label{
 			text = string.format("+%d Armor Class", math.tointeger(item.armorClassModifier)),
 		}
@@ -1198,6 +1206,7 @@ function equipment:RenderOld(options, token)
 
 	local ammoInfoPanel = nil
 	if token ~= nil and token.properties ~= nil and item.isWeapon and item:HasProperty("ammo") and item:has_key("ammunitionType") then
+		---@cast item weapon
 		local ammunitionQuantity = 0
 		local gearTable = dmhub.GetTable('tbl_Gear')
 		local ammoName = nil

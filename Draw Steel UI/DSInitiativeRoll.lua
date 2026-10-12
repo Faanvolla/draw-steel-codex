@@ -76,16 +76,20 @@ local function CreateCombatQueue(heroesWin)
         info.initiativeQueue.liveEncounter = LiveEncounter.Create(g_selectedEncounterOpenInitiative)
     else
         local live = LiveEncounter.Create(Encounter.new())
-        --CountNonMinionMonsters (called in Create) reads the authored monster
+        --CountVictoryUnits (called in Create) reads the authored monster
         --list, which is empty for Custom, so seed onsetMonsterCount from the
-        --actual non-minion monster tokens entering combat. Without this,
-        --CheckVictory short-circuits ("no monsters -> nothing to win").
+        --actual monster tokens entering combat, one per minion squad. Without
+        --this, CheckVictory short-circuits ("no monsters -> nothing to win").
         local onsetMonsters = 0
+        local countedUnits = {}
         for charid,_ in pairs(g_monsterTokensOpenInitiative or {}) do
             local tok = dmhub.GetCharacterById(charid)
-            if tok ~= nil and tok.valid and tok.properties ~= nil
-                and tok.properties:IsMonster() and not tok.properties.minion then
-                onsetMonsters = onsetMonsters + 1
+            if tok ~= nil and tok.valid then
+                local unit = Encounter.VictoryUnitKey(tok)
+                if unit ~= nil and not countedUnits[unit] then
+                    countedUnits[unit] = true
+                    onsetMonsters = onsetMonsters + 1
+                end
             end
         end
         live.onsetMonsterCount = onsetMonsters

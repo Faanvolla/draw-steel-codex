@@ -39,7 +39,7 @@ assets = {}
 function assets:GetMonsterNode(id) end
 
 --- Creates and uploads a new artist entry with the given ID.
---- @param id string The artist ID.
+--- @param id? string The artist ID; a new id is generated when nil.
 function assets:AddAndUploadArtist(id) end
 
 --- Searches the built-in phosphor icon set by filename substring (case-insensitive), returning up to maxResults icon ids of the form "phosphor/<name>.png" in sorted order. Only the name index is consulted -- no icon textures are loaded. Pass an empty filter to page from the start of the set.

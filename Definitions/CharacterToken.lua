@@ -8,6 +8,7 @@
 --- @field isCorpse boolean If this token is a corpse
 --- @field isObject boolean If this token is an object, not a creature
 --- @field isAttackableObject boolean If this token is an attackable object, as opposed to e.g. a corpse.
+--- @field objectInvisibleToPlayers boolean If this token is an object whose sprite is invisible to players (e.g. a hidden trap). The object still exists and works for everyone, but players cannot see it. Always false for creatures; use invisibleToPlayers for those.
 --- @field objectComponent any
 --- @field hasTokenOnThisMap boolean If this token is deployed on the current map.
 --- @field hasTokenOnAnyMap boolean If this token is deployed on a map somewhere.
@@ -38,6 +39,7 @@
 --- @field playerName string (Read-only) The name of the player controling this token. Will result in 'NPC Ally' or 'NPC/Monster' if not controlled by a player.
 --- @field ownerId nil|string The userid of the player who owns this token, 'PARTY' if the token is owned by a party, nil if the token is GM-controlled. If 'PARTY' then @see partyId to get the partyid of the controlling party.
 --- @field partyId nil|string The id of the party that controls this token, if they are controlled by a party.
+--- @field partyid nil|string The id of the party that controls this token, or nil (an empty id reads as nil). Setting it only has an effect when the token is already party-owned, and only changes the local token: upload it afterwards. Use @see partyId to make a token party-owned. (Undocumented: engine-internal, not part of the modding API.)
 --- @field playerColor Color (Read-only) the color of the player who owns this token. White if not controlled by a player.
 --- @field playerControlled boolean (Read-only) True if this token is controlled by a player, or by the player's party.
 --- @field playerControlledNotShared boolean (Read-only) True if this token is controlled directly by a player.
@@ -234,7 +236,7 @@ function CharacterToken:GetNameMaxLength(maxLen) end
 function CharacterToken:DescribeRollAgainst(rollStr) end
 
 --- Where the token should be positioned if it's standing at the given location.
---- @param loc Loc
+--- @param loc? Loc Defaults to the token's current location.
 --- @return Vector3
 function CharacterToken:PosAtLoc(loc) end
 
@@ -288,7 +290,7 @@ function CharacterToken:Move(loc, options) end
 
 --- Teleport the token to the target location. A token riding in a saddle dismounts as part of the teleport (unless teleportMount is true, which brings the mount along instead).
 --- @param loc Loc
---- @param teleportMount boolean Teleport the mount also if this creature is mounted.
+--- @param teleportMount? boolean Teleport the mount also if this creature is mounted.
 function CharacterToken:Teleport(loc, teleportMount) end
 
 --- Immediately relocate creature to target location
@@ -445,6 +447,15 @@ function CharacterToken:MarkMovementArrow(targetLoc, options) end
 --- @param options {chargeJumpDistance: number, chargeJumpHeight: number, chargeDistance: number, chargeJumpTierDistances: nil|number[], chargeJumpTierHeights: nil|number[], chargeJumpGuaranteedTier: nil|number}
 --- @return nil|table
 function CharacterToken:PlanCharge(targetLoc, options) end
+
+--- Plans a straight charge with no jump from this token's location to every square around the enemy that is within range of it -- what PlanCharge would find for each of those squares -- and returns the routes that work, cheapest first, ties in Loc:LocsInRadius order. dest is where a route ends, with its ground altitude. With a cache, a route already planned (from the same spot, perhaps toward another enemy beside the same square) is not planned again; the cache must not outlive the board state it was filled from. Does not move the token.
+--- @param enemy CharacterToken The creature being charged.
+--- @param radius integer How far around the enemy to look for landing squares, in tiles (as Loc:LocsInRadius).
+--- @param range number The strike's reach in native units: a landing square must be this close to the enemy (as CharacterToken:Distance).
+--- @param distance number The charge distance in tiles.
+--- @param cache nil|LuaChargeRouteCache Routes remembered between calls (dmhub.CreateChargeRouteCache).
+--- @return {dest: Loc, cost: integer}[]
+function CharacterToken:FindChargeRoutes(enemy, radius, range, distance, cache) end
 
 --- Preview one charge jump from a fixed takeoff toward its original landing with the rolled distance and height. Returns native target, projected landing and fall, preserving the original straight line even on a shortfall. Does not move the token or resolve reactions.
 --- @param sourceLoc Loc

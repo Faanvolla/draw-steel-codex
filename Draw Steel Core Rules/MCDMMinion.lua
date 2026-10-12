@@ -1024,6 +1024,9 @@ DrawSteelMinion.SetSquadCaptain = function(tokens, squadid, isMakeCaptain)
                 execute = function()
                     tok.properties.initiativeGrouping = initiativeGrouping
                     if isMakeCaptain then
+                        --Both callers only offer the action when EvaluateCaptainSelection's
+                        --show is set, which requires squadid to be a squad name.
+                        ---@cast squadid string
                         tok.properties.minionSquad = squadid
                     else
                         tok.properties.minionSquad = nil

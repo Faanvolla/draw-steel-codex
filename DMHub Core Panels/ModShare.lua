@@ -1790,6 +1790,20 @@ local CheckEncounterModule = function(ctx)
 	return result
 end
 
+--Hero options a Hero module must include at least one of, by table name.
+local g_heroOptionTables = {
+	classes = true,
+	subclasses = true,
+	races = true,
+	subraces = true,
+	careers = true,
+	kits = true,
+	cultures = true,
+	cultureAspects = true,
+	complications = true,
+	titles = true,
+}
+
 --Module types. Each entry is an option in the Module Type dropdown at the top
 --of the publish dialog; the chosen id is stored on the module record as
 --moduleInstance.moduleType so the rest of the app can tell packs apart.
@@ -1907,7 +1921,118 @@ local g_moduleTypes = {
 			return { eotwEncounters = CheckEncounterModule(ctx).encounters }
 		end,
 	},
+	{
+		--Hero options players add to their inventory on the titlescreen; the
+		--module follows their heroes into games. Code is allowed, but a version
+		--with code is only usable as a Hero module once an admin approves it
+		--(see HeroModuleReviewAfterPublish below).
+		id = "hero",
+		text = "Hero Module",
+		description = "Options for building heroes, such as classes, ancestries and kits. Players add a Hero module to their inventory from the titlescreen, and it is added automatically to any game a hero using it enters. Heroes included in it become pregens: they are added to games unclaimed, and offered wherever pregens are, such as Encounter of the Week. A Hero module can't contain maps. If it contains code, an admin must approve each version before players can add it to their inventory; Directors can still install it into a game like any module.",
+		validate = function(ctx)
+			local errors = {}
+			local warnings = {}
+			local nheroOptions = 0
+			local hasCode = false
+			local maps = {}
+			local nonHeroes = {}
+			local Consider = function(guid)
+				local info = ctx.assetInfo[guid]
+				if info == nil then
+					return
+				end
+				local tableName = string.match(info.type or "", "^object:(.+)$")
+				if tableName ~= nil and g_heroOptionTables[tableName] then
+					nheroOptions = nheroOptions + 1
+				elseif info.type == "map" then
+					maps[#maps+1] = info.displayName
+				elseif info.type == "character" then
+					--heroes ship as pregens; anything else would land in
+					--every game as an unclaimed party member.
+					local isHero = false
+					pcall(function()
+						local token = dmhub.GetCharacterById(guid)
+						isHero = token ~= nil and token.properties:IsHero() == true
+					end)
+					if not isHero then
+						nonHeroes[#nonHeroes+1] = info.displayName
+					end
+				elseif info.type == "code" then
+					hasCode = true
+				end
+			end
+			for guid,_ in pairs(ctx.includedAssets) do
+				Consider(guid)
+			end
+			for guid,_ in pairs(ctx.dependencyAssets) do
+				if not ctx.includedAssets[guid] then
+					Consider(guid)
+				end
+			end
+
+			if nheroOptions == 0 then
+				errors[#errors+1] = "A Hero module must contain at least one hero option: a class, subclass, ancestry, career, kit, culture, complication or title."
+			end
+			if #maps > 0 then
+				table.sort(maps)
+				errors[#errors+1] = string.format("A Hero module can't contain maps: %s", table.concat(maps, ", "))
+			end
+			if #nonHeroes > 0 then
+				table.sort(nonHeroes)
+				errors[#errors+1] = string.format("A Hero module's characters must be heroes, which become pregens: %s", table.concat(nonHeroes, ", "))
+			end
+			if hasCode and not dmhub.isAdminAccount then
+				warnings[#warnings+1] = "This module contains code. Each version with code is sent to an admin for review, and players can only add it to their inventory once it is approved. Directors can install it into a game straight away."
+			end
+			return errors, warnings
+		end,
+	},
 }
+
+--After a Hero module version is uploaded: a version carrying code needs an
+--admin's approval before it can be used as a Hero module. An admin's own
+--version is approved on the spot; anyone else's is sent for review, which
+--emails the admins (heroModuleReviewRequest cloud function). Calls
+--report(message) with a sentence for the publish dialog; does nothing when the
+--version has no code.
+local HeroModuleReviewAfterPublish = function(moduleInstance, versionid, codeModNames, report)
+	if #codeModNames == 0 then
+		return
+	end
+
+	if dmhub.isAdminAccount then
+		moduleInstance:SetHeroReview{
+			versionid = versionid,
+			status = "approved",
+			success = function()
+				report("Its code is approved for use as a Hero module.")
+			end,
+			error = function(msg)
+				report(string.format("Approving its code failed: %s", msg))
+			end,
+		}
+		return
+	end
+
+	net.Post{
+		url = dmhub.cloudFunctionsBaseUrl .. "/heroModuleReviewRequest",
+		data = {
+			moduleid = moduleInstance.fullid,
+			dataid = versionid,
+			codemods = codeModNames,
+		},
+		success = function(data)
+			if type(data) ~= "table" or data.error then
+				report(string.format("Sending it for review failed: %s", type(data) == "table" and data.error or "invalid response"))
+				return
+			end
+			report("Its code has been sent to an admin for review. Players can add it to their inventory once it is approved; Directors can install it now.")
+		end,
+		error = function(msg)
+			report(string.format("Sending it for review failed: %s", msg))
+		end,
+	}
+end
 
 --Looks up a module type by id, falling back to the first (General Content)
 --for nil or an id this build does not know.
@@ -2238,6 +2363,20 @@ local showShareModuleDialog = function(options)
 										statusLabel.text = statusLabel.text .. cond(moduleInstance.published,
 											". Its encounters are now in the Encounter of the Week pool.",
 											". It is not Public, so its encounters are not in the Encounter of the Week pool.")
+									end
+									if moduleInstance.moduleType == "hero" then
+										local codeModNames = {}
+										for assetid,_ in pairs(assetsIncludingDependencies) do
+											local info = assetInfo[assetid]
+											if info ~= nil and info.type == "code" then
+												codeModNames[#codeModNames+1] = info.displayName
+											end
+										end
+										table.sort(codeModNames)
+										local uploadedText = statusLabel.text
+										HeroModuleReviewAfterPublish(moduleInstance, guid, codeModNames, function(message)
+											statusLabel.text = string.format("%s. %s", uploadedText, message)
+										end)
 									end
 									moduleCodePanel:FireEventTree("moduleUploaded")
 
@@ -5426,6 +5565,15 @@ mod.shared.ShowDownloadShareDialog = function(options)
 					return
 				end
 
+				--on the titlescreen a Hero module goes into the player's
+				--inventory (the panel above), which installs it here itself.
+				if dmhub.isLobbyGame and mod.isHeroModule then
+					installButton:SetClass("collapsed", true)
+					uninstallButton:SetClass("collapsed", true)
+					element.text = ""
+					return
+				end
+
 				if mod.premium and (not mod.owned) then
 					installButton:SetClass("collapsed", true)
 					uninstallButton:SetClass("collapsed", true)
@@ -5470,6 +5618,192 @@ mod.shared.ShowDownloadShareDialog = function(options)
 			end,
 		}
 
+	--Admin only: approve or reject the code in the displayed Hero module's
+	--newest version (see HeroModuleReviewAfterPublish). Players can add a Hero
+	--module version with code to their inventory only once it is approved.
+	local heroReviewStatus
+	local heroReviewPanel
+	local m_heroReviewVersionId = nil
+
+	local SetHeroReview = function(status)
+		local mod = moduleDetailedDisplay.data.moduleInfo
+		local versionid = m_heroReviewVersionId
+		if mod == nil or versionid == nil then
+			return
+		end
+		heroReviewStatus.text = "Saving..."
+		mod:SetHeroReview{
+			versionid = versionid,
+			status = status,
+			success = function()
+				if heroReviewPanel.valid then
+					heroReviewPanel:FireEvent("newModule")
+				end
+			end,
+			error = function(msg)
+				if heroReviewStatus.valid then
+					heroReviewStatus.text = string.format("Saving the review failed: %s", msg)
+				end
+			end,
+		}
+	end
+
+	heroReviewStatus = gui.Label{
+		text = "",
+		fontSize = 16,
+		halign = "right",
+	}
+
+	heroReviewPanel = gui.Panel{
+		classes = {"collapsed"},
+		width = "auto",
+		height = "auto",
+		flow = "vertical",
+		halign = "right",
+		vmargin = 4,
+		newModule = function(element)
+			local mod = moduleDetailedDisplay.data.moduleInfo
+			m_heroReviewVersionId = nil
+			local versions = mod ~= nil and mod.versions or {}
+			local latest = versions[#versions]
+			local show = dmhub.isAdminAccount and mod ~= nil and mod.isHeroModule and latest ~= nil
+			element:SetClass("collapsed", not show)
+			if not show then
+				return
+			end
+
+			local fullid = mod.fullid
+			m_heroReviewVersionId = latest.dataid
+			heroReviewStatus.text = "Checking the Hero module review..."
+			mod:QueryHeroReviews{
+				success = function(reviews)
+					local shown = moduleDetailedDisplay.data.moduleInfo
+					if not element.valid or shown == nil or shown.fullid ~= fullid then
+						return
+					end
+					local review = reviews[latest.dataid]
+					if review == nil then
+						heroReviewStatus.text = string.format("Hero review of v%s: none (no code, or never sent for review)", latest.version)
+					else
+						heroReviewStatus.text = string.format("Hero review of v%s: %s", latest.version, review.status)
+					end
+				end,
+			}
+		end,
+
+		heroReviewStatus,
+		gui.Panel{
+			width = "auto",
+			height = "auto",
+			flow = "horizontal",
+			halign = "right",
+			gui.Button{
+				text = "Approve Code",
+				width = 140,
+				height = 32,
+				fontSize = 16,
+				hmargin = 4,
+				click = function(element)
+					SetHeroReview("approved")
+				end,
+			},
+			gui.Button{
+				text = "Reject Code",
+				width = 140,
+				height = 32,
+				fontSize = 16,
+				click = function(element)
+					SetHeroReview("rejected")
+				end,
+			},
+		},
+	}
+
+	--Hero modules: add to / remove from the player's inventory (HeroModules.lua),
+	--which makes the module's classes and ancestries available to their heroes
+	--on the titlescreen and in every game those heroes enter.
+	local heroInventoryLabel = gui.Label{
+		text = "",
+		fontSize = 16,
+		width = "auto",
+		height = "auto",
+		halign = "right",
+		valign = "center",
+		hmargin = 8,
+	}
+
+	local heroInventoryButton = gui.Button{
+		classes = {"sizeXxl"},
+		text = "Add to my Inventory",
+		width = 240,
+		height = 52,
+		halign = "right",
+		click = function(element)
+			local mod = moduleDetailedDisplay.data.moduleInfo
+			if mod == nil then
+				return
+			end
+			if HeroModules.IsAdded(mod.fullid) then
+				HeroModules.Remove(mod.fullid)
+			else
+				HeroModules.Add(mod.fullid)
+			end
+			element:FireEventOnParents("refreshHeroInventory")
+		end,
+	}
+
+	local heroInventoryPanel = gui.Panel{
+		classes = {"collapsed"},
+		width = "auto",
+		height = "auto",
+		flow = "horizontal",
+		halign = "right",
+		vmargin = 4,
+		create = function(element)
+			HeroModules.Listen(element)
+		end,
+		heroModulesChanged = function(element)
+			element:FireEvent("refreshHeroInventory")
+		end,
+		newModule = function(element)
+			element:FireEvent("refreshHeroInventory")
+		end,
+		refreshHeroInventory = function(element)
+			local mod = moduleDetailedDisplay.data.moduleInfo
+			local show = mod ~= nil and mod.isHeroModule
+				and not (mod.deprecated and not mod.deprecationOverridden)
+			element:SetClass("collapsed", not show)
+			if not show then
+				return
+			end
+
+			--an owned premium Hero module is always in the inventory.
+			if mod.premium then
+				heroInventoryButton:SetClass("collapsed", true)
+				heroInventoryLabel.text = cond(mod.owned, "In your Inventory", "")
+				return
+			end
+
+			heroInventoryButton:SetClass("collapsed", false)
+			if HeroModules.IsAdded(mod.fullid) then
+				heroInventoryButton.text = "Remove from Inventory"
+				local err = HeroModules.GetError(mod.fullid)
+				if err ~= nil then
+					heroInventoryLabel.text = string.format("<color=#ff8888>%s</color>", err)
+				elseif HeroModules.IsEnabled(mod.fullid) then
+					heroInventoryLabel.text = "In your Inventory"
+				else
+					heroInventoryLabel.text = "In your Inventory (switched off)"
+				end
+			else
+				heroInventoryButton.text = "Add to my Inventory"
+				heroInventoryLabel.text = ""
+			end
+		end,
+		heroInventoryLabel,
+		heroInventoryButton,
+	}
+
 	local installPanel = gui.Panel{
 		height = "auto",
 		width = "auto",
@@ -5478,6 +5812,8 @@ mod.shared.ShowDownloadShareDialog = function(options)
 		halign = "right",
 		valign = "bottom",
 		margin = 8,
+		heroReviewPanel,
+		heroInventoryPanel,
 		patreonOfferPanel,
 		gui.Panel{
 			width = "auto",

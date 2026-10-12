@@ -110,12 +110,16 @@ check(negotiate.name == "Negotiate with her for some aid", "option name")
 check(negotiate.roll ~= nil, "option has a roll")
 check(negotiate.roll.name == "Negotiation Test", "roll name")
 check(negotiate.roll.attr == "Presence (Empathize, Lie, Flirt)", "roll attr")
-check(#negotiate.roll.tiers == 3, "three tiers")
+check(#negotiate.roll.tiers == 4 and negotiate.roll.critAuto == true, "three tiers written, a fourth (critical) built")
 check(negotiate.roll.effects[1][1].kind == "narrative" and not negotiate.roll.effects[1][1].unrecognized, "fail clause is recognized narrative")
 local t2 = negotiate.roll.effects[2]
 check(#t2 == 1 and t2[1].kind == "item" and t2[1].target == "self" and t2[1].qty == 1 and t2[1].name == "Healing Potion", "tier 2: you gain one Healing Potion")
 local t3 = negotiate.roll.effects[3]
 check(#t3 == 1 and t3[1].kind == "item" and t3[1].target == "party" and t3[1].qty == 1 and t3[1].name == "Healing Potion", "tier 3: each party member gains one Healing Potion")
+local t4 = negotiate.roll.effects[4]
+check(negotiate.roll.tiers[4] == "Each party member gains one Healing Potion. The party gains an additional hero token.", "automatic critical text: " .. tostring(negotiate.roll.tiers[4]))
+check(#t4 == 2 and t4[1].kind == "item" and t4[1].target == "party" and t4[2].kind == "herotoken" and t4[2].qty == 1, "automatic critical = tier 3 + one hero token")
+check(negotiate.roll.teasers[4] == nil, "automatic critical has no teaser")
 
 local steal = cottage.options[2]
 local s2 = steal.roll.effects[2]
@@ -207,7 +211,7 @@ check(eb.intro == "Some intro prose.", "intro captured")
 check(#eb.rounds == 1 and eb.rounds[1].implicit and eb.rounds[1].number == 1, "implicit round")
 local rock = eb.rounds[1].entries[1]
 check(rock.id == "r1-threat-rockfall", "rock id")
-check(#rock.options[1].roll.tiers == 4, "four tiers")
+check(#rock.options[1].roll.tiers == 4 and not rock.options[1].roll.critAuto, "four tiers, the critical written")
 check(rock.options[1].roll.effects[4][2].kind == "item" and rock.options[1].roll.effects[4][2].qty == 2, "critical tier item x2")
 check(rock.options[1].roll.effects[1][1].unrecognized == true, "unknown clause flagged")
 local sawUnrecognized, sawNoConsequence = false, false
@@ -586,7 +590,7 @@ local RIDERS = table.concat({
     "# Encounter", "[[encounter]]" }, "\n")
 local rp = EncounterScript.Parse(RIDERS)
 local arcane = rp.beats[1].rounds[1].entries[1].options[1].roll
-check(#arcane.tiers == 3 and #arcane.riders == 4, "riders are not tiers: 3 tiers, 4 riders")
+check(#arcane.tiers == 4 and arcane.critAuto and #arcane.riders == 4, "riders are not tiers: 3 tiers (+ automatic critical), 4 riders")
 check(arcane.riders[1].effect == "allow" and arcane.riders[2].effect == "edge" and arcane.riders[3].effect == "doublebane" and arcane.riders[4].effect == "allow", "rider effects, Requires = Allow")
 local alts = arcane.riders[1].requirement.alternatives
 check(#alts == 4 and alts[1].kind == "skill" and alts[1].name == "magic" and alts[2].name == "alchemy" and alts[3].name == "psionics", "comma list inherits the skill kind")
@@ -1174,7 +1178,7 @@ check(cottage.scene[6].kind == "narrate", "narration that starts with 'If' is no
 check(cottage.scene[7].kind == "narrate", "'Beware:' is not a speaker")
 local negotiate = cottage.options[1]
 check(negotiate.text == "" and #negotiate.preScene == 1 and negotiate.preScene[1].kind == "say", "the option's line above the roll is its pre-roll scene")
-check(negotiate.roll ~= nil and #negotiate.roll.tiers == 3, "the roll still parses under a pre-roll scene")
+check(negotiate.roll ~= nil and #negotiate.roll.tiers == 4, "the roll still parses under a pre-roll scene")
 check(#negotiate.postScene == 1 and #negotiate.postScene[1].branches == 2, "the if/elseif/else after the roll is the outcome scene")
 
 --flattening for one hero
@@ -1267,7 +1271,7 @@ assert(tomb ~= nil) --narrows the type; check above already failed if nil
 check(tomb.chestEvery[1] == 1 and tomb.chestEvery[2] == 2, "Chest: every 1-2 obstacles")
 check(#tomb.obstacles == 2 and tomb.obstacles[1].id == "d-forbidden-tomb-the-restless-dead", "obstacles with ids")
 check(tomb.obstacles[1].scripted and #tomb.obstacles[1].scene == 2 and tomb.obstacles[1].actors["skeleton"] ~= nil, "an obstacle's scene and cast")
-check(#tomb.obstacles[1].options == 1 and #tomb.obstacles[1].options[1].roll.tiers == 3, "an obstacle's test")
+check(#tomb.obstacles[1].options == 1 and #tomb.obstacles[1].options[1].roll.tiers == 4, "an obstacle's test")
 check(tomb.obstacles[2].scripted == nil and tomb.obstacles[2].description == "A pit.", "an unscripted obstacle keeps its card text")
 local chestSec = tomb.sections.chest
 check(chestSec ~= nil and chestSec.scene ~= nil and #chestSec.scene == 1, "the chest scene")
@@ -1666,7 +1670,7 @@ do
     local tinkerer = montage.rounds[1].entries[1]
     local wares = tinkerer.tables["tinkerer's wares"]
     check(wares ~= nil and wares.dice == "1d6" and #wares.rows == 2, "an entry's own dice table")
-    check(#tinkerer.options[1].roll.tiers == 3 and #tinkerer.options[1].roll.riders == 1, "the table header ends the roll block")
+    check(#tinkerer.options[1].roll.tiers == 4 and #tinkerer.options[1].roll.riders == 1, "the table header ends the roll block")
     check(script.beats[2].setup[1].kind == "bystanders", "bystander instruction on the encounter beat")
 
     local bad = EncounterScript.Parse("# Montage\n\n## Opportunity: X\n\n### Y\n\n|Test: Might (Lift)\n|a\n|Roll on Nothing\n|c\n")
@@ -1729,7 +1733,7 @@ end
     check(fly.requirementText == "you can fly" and fly.requirement.alternatives[1].kind == "capability", "#### If you can fly is a capability knack")
     check(fly.roll == nil and fly.free ~= nil and fly.free.effects[#fly.free.effects].kind == "vanquish", "a free knack applies its clauses")
     check(fly.preScene ~= nil and #fly.preScene == 1 and fly.postScene ~= nil and #fly.postScene == 1, "a knack's lines split around its rules")
-    check(dwarf.requirementText == "you are a Dwarf" and dwarf.roll ~= nil and #dwarf.roll.tiers == 3, "'Instead, if ...:' knack with its own table")
+    check(dwarf.requirementText == "you are a Dwarf" and dwarf.roll ~= nil and #dwarf.roll.tiers == 4, "'Instead, if ...:' knack with its own table")
     check(climb.postScene ~= nil and #climb.postScene == 1, "the option's own outcome lines end at the knack heading")
     check(not EncounterScript.OptionIsSecret(climb), "an option with only edge riders is not secret")
     check(teleport.roll == nil and teleport.free ~= nil and #teleport.riders == 1 and teleport.riders[1].effect == "allow", "a free option with an Allow line")
@@ -1945,6 +1949,81 @@ Arrive: round 4
     check(warned.zone and not warned.island, "a section with no zone warns; a complete one does not")
     local dump = EncounterScript.Describe and EncounterScript.Describe(parse) or nil
     check(dump == nil or string.find(dump, "Golden Hand", 1, true) ~= nil, "the dump lists reinforcements")
+end)()
+
+--every test has a critical: one the author left out is tier 3 + a hero token,
+--a hidden tier-3 clause stays hidden, and the icons never count the critical.
+;(function()
+    local NL = "\n"
+    local p = EncounterScript.Parse(table.concat({
+        "# Montage",
+        "## Opportunity: Ford",
+        "### Wade",
+        "|Wade: Might",
+        "|You lose 2 stamina.",
+        "|Nothing.",
+        "|A dry crossing => You heal 3 stamina. {+1 Intelligence}",
+        "### Swim",
+        "|Swim: Agility",
+        "|You lose 4 stamina.",
+        "|Nothing.",
+        "|",
+        "### Leap",
+        "|Leap: Might",
+        "|Nothing.",
+        "|Nothing.",
+        "|You gain one Healing Potion.",
+        "|You gain two Healing Potions.",
+    }, NL))
+    local ford = EncounterScript.MontageEntries(p.beats[1])[1]
+    local wade = ford.options[1].roll
+    check(wade.critAuto and wade.tiers[4] == "You heal 3 stamina. {+1 Intelligence}. The party gains an additional hero token.",
+        "auto critical copies tier 3's full text (not its teaser): " .. tostring(wade.tiers[4]))
+    check(wade.teasers[3] == "A dry crossing" and wade.teasers[4] == nil, "the teaser stays on tier 3")
+    local kinds = {}
+    for _, e in ipairs(wade.effects[4]) do kinds[#kinds + 1] = e.kind .. (e.hidden and "(h)" or "") end
+    check(table.concat(kinds, ",") == "heal,intelligence(h),herotoken", "auto critical effects: " .. table.concat(kinds, ","))
+    check(string.find(EncounterScript.VisibleText(wade.tiers[4]), "{", 1, true) == nil, "the hidden clause is not shown")
+    local swim = ford.options[2].roll
+    check(swim == nil or (swim.critAuto and swim.tiers[4] == EncounterScript.AUTO_CRITICAL_BONUS), "an empty tier 3 gives just the bonus")
+    local leap = ford.options[3].roll
+    check(not leap.critAuto and leap.tiers[4] == "You gain two Healing Potions.", "a written critical is kept")
+    for _, o in ipairs(EncounterScript.OptionOutcomes(ford.options[1], p)) do
+        check(o.kind ~= "herotoken", "the critical's hero token is not an outcome icon")
+    end
+    local lists = EncounterScript.OptionEffectLists(ford.options[3])
+    check(#lists == 4, "reference checks still see the critical")
+    check(#EncounterScript.OptionEffectLists(ford.options[3], true, false) == 3, "includeCritical false drops it")
+    check(EncounterScript.ParseEffects("You gain an extra hero token")[1].kind == "herotoken", "'an extra hero token'")
+end)()
+
+--assisting a test: each listed skill once, and never the last one the hero
+--making the test is trained in.
+;(function()
+    local listed = { "persuade", "lie", "flirt" }
+    local function set(...)
+        local s = {}
+        for _, v in ipairs({ ... }) do s[v] = true end
+        return s
+    end
+    local function ids(list) return table.concat(list, ",") end
+    local choices = EncounterScript.AssistSkillChoices
+    check(ids(choices(listed, set("persuade"), {}, set("lie"))) == "lie", "a skill the hero lacks is free")
+    check(ids(choices(listed, set("persuade"), {}, set("persuade"))) == "", "the hero's only skill is protected")
+    check(ids(choices(listed, set("persuade", "lie"), {}, set("persuade", "lie"))) == "persuade,lie",
+        "with two, either may go")
+    check(ids(choices(listed, set("persuade", "lie"), set("lie"), set("persuade"))) == "",
+        "once one is used the other is the hero's last")
+    check(ids(choices(listed, {}, {}, set("persuade", "flirt"))) == "persuade,flirt",
+        "a hero with no listed skill reserves nothing")
+    check(ids(choices({ "sneak" }, {}, {}, set("sneak"))) == "sneak", "a one-skill test the hero lacks can be assisted")
+    check(ids(choices(listed, {}, set("persuade"), set("persuade"))) == "", "a used skill is gone")
+    check(ids(choices(listed, set("flirt"), set("persuade"), set("persuade", "lie", "flirt"))) == "lie",
+        "used and protected skills are both skipped")
+    check(EncounterScript.MainTestSkill(listed, set("persuade", "lie"), set("persuade")) == "lie",
+        "the hero rolls with a skill nobody used")
+    check(EncounterScript.MainTestSkill(listed, set("persuade"), {}) == "persuade", "the hero's first skill")
+    check(EncounterScript.MainTestSkill(listed, {}, {}) == nil, "no skill, no Skilled bonus")
 end)()
 
 print(string.format("encounter_script_test: %d checks passed", passed))

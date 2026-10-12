@@ -21,6 +21,7 @@ local mod = dmhub.GetModLoading()
 --- @field tags nil|table<string,boolean> Set of tags from GameSystem.featureTags (e.g. "Combat", "Hidden"). Absent/empty = untagged.
 --- @field id? string Set on features that are, or are copied from, a data-table row (e.g. a deity domain's feature).
 --- @field importMatch? string Importer tables only: pattern that recognizes this trait in imported monster text.
+--- @field imported? string Import guid stamped by the rules importer on the class features it creates.
 --- @field _tmp_echelon? integer Echelon a kit's generated stats feature was built for.
 CharacterFeature = RegisterGameType("CharacterFeature")
 
@@ -148,6 +149,9 @@ end
 
 CharacterFeature._tmp_ensured_domain = false
 
+--- Stamps this feature's own domain onto it and its modifiers, once. equipment shares
+--- this function and SetDomain (Equipment.lua).
+--- @param self CharacterFeature|equipment
 function CharacterFeature.EnsureDomains(self)
 	if self._tmp_ensured_domain then
 		return
@@ -158,6 +162,7 @@ function CharacterFeature.EnsureDomains(self)
 end
 
 --- Adds a domain string to this feature and propagates it to all its modifiers.
+--- @param self CharacterFeature|equipment
 --- @param domainid string
 function CharacterFeature.SetDomain(self, domainid)
 	local domains = self:get_or_add("domains", {})

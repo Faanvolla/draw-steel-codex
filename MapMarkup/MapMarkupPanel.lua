@@ -115,6 +115,22 @@ K.TOOL_SECRET = {
 --secret. Matches the engine's Director-side secret-door tint.
 K.SECRET_DOOR_COLOR = "#b88cff"
 
+--Picker ("picker"): the markup counterpart of the Building editor's
+--eyedropper. Hovering a markup wall or door highlights it and names its
+--type; clicking selects that type in the palette (adding it first if the
+--palette lacks it) and drops back to drawing. Same inert-sentinel machinery
+--as Delete Wall: input arrives via map focus (maphover/mappress) and the
+--wall is found by MM.FindWallTypeAtPoint. Thin strips only - solid blocks
+--are not in the floor's wall list, so there is nothing to look them up by.
+K.TOOL_PICKER = {
+    id = "picker",
+    text = "Pick",
+    icon = "panels/hud/icon-eyedropper.png",
+    mapTool = "markuppicker",
+    mapToolClosed = false,
+    help = "Picker: hover a markup wall or door to see its wall type, then click to select that type for drawing. A type missing from the palette is added to it.",
+}
+
 --`shape` pairs a tool with its counterpart in the other draw mode, so switching
 --Thin <-> Solid keeps the shape the user picked instead of resetting the strip.
 --Both strips lead with the rectangle so the two modes read the same.
@@ -150,6 +166,7 @@ K.TOOLS = {
         tool = "points",
         help = "Edit Points: drag a wall vertex to move it. Right-click a vertex to delete it, click on a wall line to add a vertex, and click a one-way wall's direction marker to flip its facing.",
     },
+    K.TOOL_PICKER,
     K.TOOL_RETYPE,
     K.TOOL_ERASE,
     K.TOOL_DELETE,
@@ -609,11 +626,12 @@ local function DistancePointToSegment(px, py, ax, ay, bx, by)
     return math.sqrt(ex*ex + ey*ey)
 end
 
---Returns { a = {x,y}, b = {x,y} } for the nearest invisible-wall edge to the
---cursor world point - or, when a markup DOOR's segment is nearer, that
---segment with its object in the `door` field - or nil if nothing is within
---reach / the point is off-map.
-local function FindNearestDeleteSegment(point)
+--Returns { a = {x,y}, b = {x,y}, points, wallid } for the nearest
+--invisible-wall edge to the cursor world point (wallid = the wall's asset
+--guid, which the Picker reads), or nil if nothing is within reach / the
+--point is off-map. anyWall = true also matches walls whose asset is not an
+--invisible one (or is missing); only the Picker passes it, and it filters.
+local function FindNearestDeleteSegment(point, anyWall)
     if point == nil then
         return nil
     end
@@ -649,7 +667,7 @@ local function FindNearestDeleteSegment(point)
             y = point.y,
             atMouse = true,
             maxDistance = 0.7,
-            invisibleOnly = true,
+            invisibleOnly = not anyWall,
         }
     end)
     if not ok then
@@ -673,6 +691,7 @@ local function FindNearestDeleteSegment(point)
             a = { x = seg.segment[1], y = seg.segment[2] },
             b = { x = seg.segment[3], y = seg.segment[4] },
             points = seg.points,
+            wallid = seg.wallid,
         }
     end
 
@@ -691,7 +710,7 @@ local function FindNearestDeleteSegment(point)
         local d = DistancePointToSegment(point.x, point.y, ax, ay, bx, by)
         if bestDist == nil or d < bestDist then
             bestDist = d
-            best = { a = { x = ax, y = ay }, b = { x = bx, y = by }, points = pts }
+            best = { a = { x = ax, y = ay }, b = { x = bx, y = by }, points = pts, wallid = seg.wallid }
         end
     end
     return best
@@ -745,6 +764,85 @@ local function FindDoorAtPoint(point)
         end
     end
     return best
+end
+
+--Picker lookup: the markup wall or door under the cursor, as { wallid =
+--<wall asset guid>, segments = {ax,ay,bx,by, ...} (every edge of the hovered
+--wall path or door, for the highlight) } or nil. Walls first, through the
+--same screen-space match Delete uses (a closed door is found here too);
+--then doors, because an OPEN door has no wall geometry for that match.
+--A field rather than a file-level local: this chunk is near the 200-local cap.
+--
+--A wall whose asset is MISSING from the game (a map imported without its
+--markup wall types) still counts when its guid is in this map's palette:
+--the engine's invisible-only match skips such walls, so they are searched
+--with anyWall and filtered here. Visible art walls are still ignored.
+MM.FindWallTypeAtPoint = function(point)
+    local IsMarkupWall = function(wallid)
+        if wallid == nil or wallid == "" then
+            return false
+        end
+        local asset = assets.walls[wallid]
+        if asset ~= nil and asset.invisible == true then
+            return true
+        end
+        for _,entry in ipairs(m.paletteEntries or {}) do
+            if entry.guid == wallid then
+                return true
+            end
+        end
+        return false
+    end
+
+    local seg = FindNearestDeleteSegment(point, true)
+    if seg ~= nil and not IsMarkupWall(seg.wallid) then
+        --the nearest wall is an art wall; a markup wall may still be in reach.
+        seg = FindNearestDeleteSegment(point)
+    end
+    if seg ~= nil and IsMarkupWall(seg.wallid) then
+        local segments = {}
+        local pts = seg.points
+        if pts ~= nil and #pts >= 4 then
+            for i = 1, #pts - 3, 2 do
+                segments[#segments+1] = pts[i]
+                segments[#segments+1] = pts[i+1]
+                segments[#segments+1] = pts[i+2]
+                segments[#segments+1] = pts[i+3]
+            end
+        else
+            segments = { seg.a.x, seg.a.y, seg.b.x, seg.b.y }
+        end
+        return { wallid = seg.wallid, segments = segments }
+    end
+
+    local hit = FindDoorAtPoint(point)
+    if hit ~= nil and IsMarkupWall(hit.door.wallid) then
+        return { wallid = hit.door.wallid, segments = hit.segments }
+    end
+    return nil
+end
+
+--Picker hover label: the hovered wall's type name floated beside the cursor
+--through the game HUD's map tooltip. pickerTooltipShown makes sure we only
+--ever clear a tooltip this tool put up, never someone else's.
+m.mapScope.pickerTooltipShown = false
+m.mapScope.ShowPickerTooltip = function(point, text)
+    local hud = GameHud.instance
+    if not hud or point == nil then
+        return
+    end
+    hud:ShowTooltipNearLoc(core.Vector2(point.x, point.y), text)
+    m.mapScope.pickerTooltipShown = true
+end
+m.mapScope.ClearPickerTooltip = function()
+    if not m.mapScope.pickerTooltipShown then
+        return
+    end
+    m.mapScope.pickerTooltipShown = false
+    local hud = GameHud.instance
+    if hud then
+        hud:ClearMapTooltip()
+    end
 end
 
 --A hair-thin open-path erase EXACTLY along the wall centerline is unreliable on

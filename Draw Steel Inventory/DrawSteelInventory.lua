@@ -3959,6 +3959,9 @@ CharSheet.RegisterTab{
 	id = "Inventory",
 	text = "Inventory",
 	panel = CreateCharSheetInventory,
+	--its three inventory dialogs are the most expensive part of the sheet, which
+	--is built with every game's hud; the tab opens its token on charsheetActivate.
+	lazy = true,
 }
 
 dmhub.RefreshCharacterSheet()

@@ -388,6 +388,8 @@ function MM.BuildZonesMode()
         local visualsOn = true
         if hasVisuals then
             pcall(function()
+                --hasVisuals is false for a nil keyword.
+                ---@cast kw -nil
                 visualsOn = kw:try_get("appearanceDefaultOff", false) ~= true
             end)
         end

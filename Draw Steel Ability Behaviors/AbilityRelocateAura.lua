@@ -997,9 +997,9 @@ local function FitGrownFootprint(tok)
     return best.loc
 end
 
---- @field floatText string Label floated over each pulled creature ("" for none).
 --- @class ActivatedAbilityPullIntoCasterBehavior: ActivatedAbilityBehavior
 --- @field new fun(o?: table): ActivatedAbilityPullIntoCasterBehavior
+--- @field floatText string Label floated over each pulled creature ("" for none).
 ActivatedAbilityPullIntoCasterBehavior = RegisterGameType("ActivatedAbilityPullIntoCasterBehavior", "ActivatedAbilityBehavior")
 
 ActivatedAbility.RegisterType{
@@ -1066,6 +1066,8 @@ end
 --- Grows the caster (optional size effect applied here, so the growth and the
 --- re-anchor land in the same frame), then moves every other creature in its
 --- footprint to the nearest free square and makes them the cast's targets.
+--- @class ActivatedAbilityDisplaceOverlappingBehavior: ActivatedAbilityBehavior
+--- @field new fun(o?: table): ActivatedAbilityDisplaceOverlappingBehavior
 --- @field growEffect string Ongoing effect id applied to the caster before displacing ("" = none).
 --- @field growEffectAlt string Applied instead of growEffect when growAltCondition is true.
 --- @field growAltCondition string GoblinScript on the caster (cast symbols available).
@@ -1074,8 +1076,6 @@ end
 --- @field addAsTarget boolean Replace the cast's targets with the displaced creatures.
 --- @field promptText string Prompt shown when several squares are equally near.
 --- @field floatText string Label floated over each displaced creature ("" for none).
---- @class ActivatedAbilityDisplaceOverlappingBehavior: ActivatedAbilityBehavior
---- @field new fun(o?: table): ActivatedAbilityDisplaceOverlappingBehavior
 ActivatedAbilityDisplaceOverlappingBehavior = RegisterGameType("ActivatedAbilityDisplaceOverlappingBehavior", "ActivatedAbilityBehavior")
 
 ActivatedAbility.RegisterType{
@@ -1487,10 +1487,11 @@ function ActivatedAbilityHurlGrabbedBehavior:Cast(ability, casterToken, targets,
 
     local hurled = candidates[1]
     if #candidates > 1 then
-        hurled = ChooseHurledCreature(casterToken, candidates, symbols)
-        if hurled == nil then
+        local chosen = ChooseHurledCreature(casterToken, candidates, symbols)
+        if chosen == nil then
             return
         end
+        hurled = chosen
     end
 
     local endLoc = FindLineEnd(casterToken, options.targetArea)
@@ -1507,13 +1508,14 @@ function ActivatedAbilityHurlGrabbedBehavior:Cast(ability, casterToken, targets,
 
     local dest = landing[1]
     if #landing > 1 then
-        dest = ChooseTransitDestination(hurled, landing, symbols, casterToken, {
+        local chosenDest = ChooseTransitDestination(hurled, landing, symbols, casterToken, {
             name = "Hurl Landing Square",
             prompt = self:try_get("promptText", ""),
         })
-        if dest == nil then
+        if chosenDest == nil then
             return
         end
+        dest = chosenDest
     end
 
     local origLoc = hurled.loc

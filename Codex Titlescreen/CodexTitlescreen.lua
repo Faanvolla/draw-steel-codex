@@ -574,6 +574,9 @@ local function MakeStoreBannerRollDie()
             },
 
             create = function(element)
+                --Built by gui.DicePreview; the gui.Panel fallback (older binary)
+                --lacks these members, which is why every use is pcall-guarded.
+                ---@cast element DicePreview
                 pcall(function() element:SetAsDicePreviewPanel(true) end)
                 --Thrown dice roll out to the real screen edges rather than a
                 --tight box around the cage (panel-scoped, unlike the shop's
@@ -774,6 +777,7 @@ local function MakeStoreBannerRollDie()
                 pcall(function() element:DicePreviewMouseLeave() end)
             end,
             click = function(element)
+                ---@cast element DicePreview
                 pcall(function() element:DicePreviewClick() end)
             end,
             dragging = function(element)
@@ -1122,6 +1126,25 @@ local function ImportForgeSteel(element)
     end)
 end
 
+--Imports a hero from a Codex JSON file (the character sheet's Export -> Codex JSON).
+local function ImportCodexJson(element)
+    CharSheetPDFExport.ImportCharacterFromFile(function(c)
+        c:ModifyProperties {
+            description = "Create Character",
+            execute = function()
+                c.properties.mtime = ServerTimestamp()
+                c.properties.creatorid = dmhub.userid
+                --The file carries the source hero's id; this copy has a new one.
+                c.properties.originalid = c.charid
+                --A file exported from an Encounter of the Week hero keeps these
+                --flags, which would hide it from the lobby list.
+                c.properties.eotwHero = nil
+                c.properties.eotwDraft = nil
+            end,
+        }
+    end)
+end
+
 --onCreated (optional) runs once the builder closes on a hero that was kept
 --(not discarded as unstarted), with the character.
 local function CreateHero(element, onCreated)
@@ -1185,6 +1208,24 @@ local function ParseDevJoinCode(text)
     return gameid, reportId
 end
 
+--Wraps the function that pastes a hero into the game being entered so it runs
+--once the player's Hero modules (HeroModules.lua) are installed there too, and
+--the hero's class and ancestry exist when it lands. The wrapper runs in the
+--destination game, after this file may have unloaded, so HeroModules is looked
+--up there rather than captured here.
+--- @param paste fun()
+--- @return fun()
+local function AfterHeroModulesInstalled(paste)
+    return function()
+        local heroModules = rawget(_G, "HeroModules")
+        if heroModules ~= nil and heroModules.InstallIntoGame ~= nil then
+            heroModules.InstallIntoGame(paste)
+        else
+            paste()
+        end
+    end
+end
+
 local function CreateJoinGameModal(tokenToImport)
     local resultPanel
 
@@ -1203,6 +1244,7 @@ local function CreateJoinGameModal(tokenToImport)
 
     -- Set while the invite code box holds a developer join code: {reportId = ...}.
     -- Skips the game password and posts a chat notice on entry.
+    ---@type {reportId: string}|nil
     local m_devJoin = nil
 
     -- Dialog-internal layout rules: every label is 80%-wide, left-aligned,
@@ -1491,7 +1533,7 @@ local function CreateJoinGameModal(tokenToImport)
                 lookupGame = function(element, gameInfo)
                     local show = m_devJoin ~= nil and gameInfo ~= nil and not gameInfo.deleted
                     element:SetClass("collapsed", not show)
-                    if show then
+                    if show and m_devJoin ~= nil then
                         element.text = string.format(
                             "Developer join for bug report %s. The game password is skipped, and a notice is posted in the game's chat when you enter. Use Leave Game on the game card when you are done.",
                             m_devJoin.reportId)
@@ -1567,9 +1609,9 @@ local function CreateJoinGameModal(tokenToImport)
                                         local callback
                                         if tokenToImport ~= nil then
                                             dmhub.CopyTokenToClipboard(tokenToImport)
-                                            callback = function()
+                                            callback = AfterHeroModulesInstalled(function()
                                                 dmhub.PasteTokenFromClipboard(core.Loc { x = 0, y = 0 })
-                                            end
+                                            end)
                                         end
                                         if devJoin ~= nil then
                                             -- Tell the table why a stranger just walked in.
@@ -1647,7 +1689,7 @@ local function CreateJoinGameModal(tokenToImport)
 
                     dmhub.CopyTokenToClipboard(tokenToImport)
                     local root = element.root
-                    local callback = function()
+                    local callback = AfterHeroModulesInstalled(function()
                         local newCharId = dmhub.PasteTokenFromClipboard(core.Loc { x = 0, y = 0 })
                         print("AddCharacterToGame:: pasted charid =", tostring(newCharId), "addingAsDM =", tostring(addingAsDM))
                         if not addingAsDM or newCharId == nil then
@@ -1672,7 +1714,7 @@ local function CreateJoinGameModal(tokenToImport)
                             end
                             print("AddCharacterToGame:: gave up waiting for token/party to settle")
                         end)
-                    end
+                    end)
 
                     if root ~= nil and root.valid then
                         root:FireEventTree("overrideLoadingScreenArt", gameInfo.coverart, gameid)
@@ -2570,6 +2612,7 @@ function RunRestoreOldVersionDialog(root, game)
     }
     local MAX_AGE_SECONDS = 30 * 86400
 
+    ---@type string|nil nil while a bookmark row is selected instead
     local m_selectedDurationId = "5m"
     local m_customDate = nil           -- table {year, month, day, hour, min} when "custom" picked
     local m_selectedBookmarkId = nil   -- numeric id from the bookmarks list (overrides duration)
@@ -3373,6 +3416,10 @@ end
 
 
 local function MakeGamePanel(gameIndex)
+    --Typed non-optional: it is nil only while the card is hidden, when the card's
+    --refreshGames halts propagation to its children and hidden panels take no
+    --input. The few readers that can run before that check for nil themselves.
+    ---@type LuaGameInfo
     local m_game = nil
 
     local addGameButton = gui.Panel {
@@ -5478,6 +5525,7 @@ end
 local function MakeHeroPanel(heroIndex)
     local resultPanel
 
+    ---@type CharacterToken|nil
     local m_character = nil
 
 
@@ -5742,6 +5790,8 @@ local function MakeHeroPanel(heroIndex)
         rmargin = 2,
         tmargin = 2,
         press = function(element)
+            --The button is hiddenWithNoCharacter, so a press means a hero is shown.
+            ---@cast m_character -nil
             local modal
             modal = gui.Panel {
                 classes = { "framedPanel" },
@@ -5790,9 +5840,14 @@ local function MakeHeroPanel(heroIndex)
                         fontSize = 24,
                         halign = "center",
                         click = function(element)
+                            -- The roster can refresh while this dialog is open and empty the slot.
+                            if m_character == nil then
+                                modal:DestroySelf()
+                                return
+                            end
                             -- Monster-typed heroes have creature properties, which have no GetClass.
                             local props = m_character.properties
-                            local classInfo = props.typeName == "character" and props:GetClass() or nil
+                            local classInfo = props.typeName == "character" and (props --[[@as character]]):GetClass() or nil
                             track("character_delete", {
                                 class = classInfo and classInfo.name or "",
                                 ancestry = m_character.properties:RaceOrMonsterType() or "",
@@ -8491,6 +8546,55 @@ function CreateTitlescreen(dialog, options)
                         height = "85%",
                         width = "100%",
 
+                        --How many players are in Blackbottom right now, read over
+                        --HTTP so being on the titlescreen does not count you as in
+                        --town. Collapsed until the first answer, and while nobody is there.
+                        gui.Label {
+                            classes = { "collapsed" },
+                            bgimage = true,
+                            bgcolor = "#000000aa",
+                            cornerRadius = 4,
+                            fontSize = 20,
+                            fontFace = "newzald",
+                            color = "white",
+                            width = "auto",
+                            height = "auto",
+                            hpad = 12,
+                            vpad = 4,
+                            borderBox = true,
+                            halign = "center",
+                            valign = "bottom",
+                            bmargin = 10,
+                            text = "",
+
+                            data = { fetching = false },
+
+                            create = function(element)
+                                element:FireEvent("think")
+                            end,
+
+                            thinkTime = 60,
+                            think = function(element)
+                                local roster = rawget(_G, "EotwRoster")
+                                if element.data.fetching or roster == nil or not EotwCardEnabled() then
+                                    return
+                                end
+                                element.data.fetching = true
+                                roster.FetchHeadcount(function(count)
+                                    if mod.unloaded or not element.valid then
+                                        return
+                                    end
+                                    element.data.fetching = false
+                                    if count == nil then
+                                        --keep the last good count through a failed poll.
+                                        return
+                                    end
+                                    element:SetClass("collapsed", count < 1)
+                                    element.text = string.format("%d adventurer%s in Blackbottom", count, cond(count == 1, "", "s"))
+                                end)
+                            end,
+                        },
+
                     },
 
                     gui.Panel {
@@ -9034,6 +9138,38 @@ function CreateTitlescreen(dialog, options)
 
                                     press = ImportForgeSteel,
                                 },
+
+                                --Codex JSON import button.
+                                gui.Button {
+                                    width = 48,
+                                    height = 48,
+                                    halign = "right",
+                                    valign = "center",
+                                    beveledcorners = true,
+                                    cornerRadius = 8,
+                                    y = -10,
+
+                                    hover = function(element)
+                                        gui.Tooltip("Import a Hero from a Codex JSON file")(element)
+                                    end,
+
+                                    monitorGame = "/characters",
+                                    refreshGame = function(element)
+                                        local _, nheroes = LobbyHeroes()
+                                        element:SetClass("hidden", nheroes >= 8)
+                                    end,
+
+                                    press = ImportCodexJson,
+
+                                    gui.Panel {
+                                        classes = { "headerActionIcon" },
+                                        width = "70%",
+                                        height = "70%",
+                                        halign = "center",
+                                        valign = "center",
+                                        bgimage = "game-icons/cloud-upload.png",
+                                    },
+                                },
                             }
                         },
 
@@ -9096,6 +9232,8 @@ function CreateTitlescreen(dialog, options)
                                 lobby:EnterLobbyGame(function()
                                     print("LOBBYGAME:: ENTERED!")
                                     g_titlescreen:FireEventTree("returnFromGameComplete")
+                                    --Hero modules may have been added or switched off elsewhere.
+                                    HeroModules.SyncLobby()
                                 end)
                             end,
 
@@ -9794,6 +9932,7 @@ if rawget(_G, "TitlescreenVersion") ~= 2 then
         lobby:EnterLobbyGame(function()
             dmhub.TermsOfServiceAccepted()
             g_titlescreen:FireEventTree("lobbyGameLoaded")
+            HeroModules.SyncLobby()
         end)
     else
         ShowTermsOfService(g_titlescreen, {
@@ -9802,6 +9941,7 @@ if rawget(_G, "TitlescreenVersion") ~= 2 then
                 lobby:EnterLobbyGame(function()
                     dmhub.TermsOfServiceAccepted()
                     g_titlescreen:FireEventTree("lobbyGameLoaded")
+                    HeroModules.SyncLobby()
                 end)
             end,
         })
@@ -9825,5 +9965,18 @@ TitlescreenHeroes = {
             end
             return false
         end)
+    end,
+    --The heroes in the titlescreen's HEROES slots, in slot order: the first
+    --8 of LobbyHeroes() (one per hard-coded MakeHeroPanel slot), minus
+    --abandoned empty shells. The EotW Guild offers these to copy into town.
+    List = function()
+        local result = {}
+        local chars = LobbyHeroes()
+        for i = 1, math.min(8, #chars) do
+            if not HeroIsUnstarted(chars[i]) then
+                result[#result+1] = chars[i]
+            end
+        end
+        return result
     end,
 }
