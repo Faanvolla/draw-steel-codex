@@ -240,7 +240,7 @@ TokenHud.RegisterPanel{
                 end
 
                 if m_haveTrigger == false and notrigger == false and token.canControl and token.activeControllerId == nil then
-                    audio.FireSoundEvent("Notify.Trigger")
+                    audio.FireSoundEvent("Notify.Trigger", { tokenid = token.charid })
                 end
                 
                 m_haveTrigger = not notrigger
@@ -928,7 +928,7 @@ TokenHud.RegisterPanel{
                 local m_local = islocal
 
                 if element.data.currentlyDisplayed == nil then
-                    audio.FireSoundEvent("Notify.OpportunityAttackWarn")
+                    audio.FireSoundEvent("Notify.OpportunityAttackWarn", { tokenid = token.charid })
                 end
 
                 element.data.currentlyDisplayed = DeepCopy(info)

@@ -676,6 +676,40 @@ local function ShowRollPrompt(check, dialogParams)
     return LegacyPromptHandle(gamehud.rollDialog.data.ShowDialog(dialogParams))
 end
 
+--Whether this client puts up the roll a request asks of `tok`. A plain player
+--rolls for what they control; the Director or host rolls for non-player tokens
+--(or for anything when no players are online); a player host also rolls for its
+--OWN heroes -- ownership is the discriminator there.
+--
+--tok.canControl is elevation-aware: on a player host (Encounter of the Week) it
+--is false for the monsters the machine hosts unless host automation is running.
+--This listener runs from a plain UI refresh, so the host test reads
+--IsDMOrPlayerHost() directly. Without it nobody rolled a monster's half of a
+--roll a hero started (the Hide test against Search for Hidden Creatures) and the
+--hero's cast waited on it until the request timed out.
+--- @param tok CharacterToken|nil
+--- @param info table the request's entry for this token
+--- @param havePlayersOnline boolean
+--- @return boolean
+local function ShouldPromptForToken(tok, info, havePlayersOnline)
+	if tok == nil or not tok.properties then
+		return false
+	end
+
+	if info.forceuserid ~= nil then
+		return info.forceuserid == dmhub.loginUserid
+	end
+
+	local hostRollsForMonster = IsDMOrPlayerHost() and tok.playerControlled == false
+	if not (tok.canControl or hostRollsForMonster) then
+		return false
+	end
+
+	--(playerHostMode reads nil on engine builds without it, keeping the old behavior exactly.)
+	return IsDMOrPlayerHost() == false or tok.playerControlled == false or not havePlayersOnline
+		or (dmhub.playerHostMode == true and tok.ownerId == dmhub.loginUserid)
+end
+
 --this is a hidden panel which just listens for required rolls.
 function GameHud:RequireRollListenerPanel()
 
@@ -767,12 +801,7 @@ function GameHud:RequireRollListenerPanel()
 						if info.status == nil then
 							local tok = dmhub.GetTokenById(tokid)
 							local rollid = k .. tokid
-							--who does this client prompt for: a plain player, anything they control;
-							--a DM/host, non-player tokens (or anything with no players online); a
-							--player host additionally their OWN tokens -- canControl is host-wide
-							--for them, so ownership is the discriminator. (playerHostMode reads
-							--nil on engine builds without it, keeping the old behavior exactly.)
-							if tok ~= nil and tok.properties and ((info.forceuserid == nil and tok.canControl and (IsDMOrPlayerHost() == false or tok.playerControlled == false or not havePlayersOnline or (dmhub.playerHostMode == true and tok.ownerId == dmhub.loginUserid))) or info.forceuserid == dmhub.loginUserid) and not currentRolls[rollid] then
+							if ShouldPromptForToken(tok, info, havePlayersOnline) and not currentRolls[rollid] then
 								numPrompts = numPrompts+1
 							end
 						end
@@ -785,12 +814,8 @@ function GameHud:RequireRollListenerPanel()
 						if info.status == nil then
 							local tok = dmhub.GetTokenById(tokid)
 							local rollid = k .. tokid
-							--who does this client prompt for: a plain player, anything they control;
-							--a DM/host, non-player tokens (or anything with no players online); a
-							--player host additionally their OWN tokens -- canControl is host-wide
-							--for them, so ownership is the discriminator. (playerHostMode reads
-							--nil on engine builds without it, keeping the old behavior exactly.)
-							if tok ~= nil and tok.properties and ((info.forceuserid == nil and tok.canControl and (IsDMOrPlayerHost() == false or tok.playerControlled == false or not havePlayersOnline or (dmhub.playerHostMode == true and tok.ownerId == dmhub.loginUserid))) or info.forceuserid == dmhub.loginUserid) and not currentRolls[rollid] then
+							if ShouldPromptForToken(tok, info, havePlayersOnline) and not currentRolls[rollid] then
+								---@cast tok -nil
 
 								local checks = {}
 
@@ -847,10 +872,12 @@ function GameHud:RequireRollListenerPanel()
 									--hidden monster makes against Search for Hidden Creatures)
 									--should not stop on a prompt: roll it and proceed as the AI
 									--would. rawget: the Monster AI module may not be loaded.
+									--A player host (no Director) has no one to hand a monster's
+									--roll to, so it rolls it automatically even with the AI stopped.
 									local aiRoll = false
 									if IsDMOrPlayerHost() and tok.playerControlled == false then
 										local monsterAI = rawget(_G, "MonsterAI")
-										if monsterAI ~= nil and monsterAI.IsAIRunning ~= nil and monsterAI.IsAIRunning() then
+										if (monsterAI ~= nil and monsterAI.IsAIRunning ~= nil and monsterAI.IsAIRunning()) or dmhub.playerHostMode == true then
 											aiRoll = true
 										end
 									end

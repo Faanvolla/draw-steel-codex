@@ -1710,6 +1710,7 @@ function CreateTokenHud(token)
                                     audio.FireSoundEvent(resourceInfo:SoundEventName() .. cond(anim.animType == "refreshResource", "_Gain", "_Spend"), {
                                         sequence = i,
                                         total = quantity,
+                                        tokenid = token.charid,
                                     })
 								end,
 								disappear = function(element)
@@ -2168,7 +2169,8 @@ function CreateTokenHud(token)
                         eventName = string.format("%s_%s", eventName, entry.damage_type)
                     end
 
-					audio.FireSoundEvent(eventName, { tokenid = token.charid, volume = volume })
+					--attackerid lets the sound play its "controlled" variant for the hitter too.
+					audio.FireSoundEvent(eventName, { tokenid = token.charid, attackerid = entry.attackerid, volume = volume })
 
                     --every client gets here once per entry, so this is how the blood networks.
                     BloodSpatter.Emit(token, entry)

@@ -38,17 +38,18 @@ local function FindPendingPlayerSave(queue)
         if MonsterAI.TokenIsLiveCombatant(token) and token.playerControlled then
             local initiativeid = InitiativeQueue.GetInitiativeId(token)
             if initiativeid ~= nil and queue.entries[initiativeid] ~= nil then
-                for _,entry in pairs(token.properties:try_get("pendingAIActivityReactions", {})) do
+                --The second return is the save prompt's key in availableTriggers.
+                for reactionId,entry in pairs(token.properties:try_get("pendingAIActivityReactions", {})) do
                     if type(entry) == "table" and entry.activityId == "end-turn-save" and entry.state ~= "completed" then
-                        return token
+                        return token, reactionId
                     end
                 end
                 --Also recognize cards posted before these clients were updated.
-                for _,trigger in pairs(token.properties:GetAvailableTriggers(true) or {}) do
+                for key,trigger in pairs(token.properties:GetAvailableTriggers(true) or {}) do
                     local invocation = trigger.invocation
                     if not trigger.dismissed and invocation ~= nil and invocation ~= false
                         and invocation:try_get("standardAbility") == "End Turn Saving Throw" then
-                        return token
+                        return token, key
                     end
                 end
             end
@@ -171,10 +172,14 @@ local function MonsterAIThread(process)
         local queue = dmhub.initiativeQueue
 
         local saveProf = MonsterAI.ProfBegin("thread: pending save check")
-        local pendingSave = queue ~= nil and not queue.hidden and FindPendingPlayerSave(queue) or nil
+        local pendingSave, saveTriggerId = nil, nil
+        if queue ~= nil and not queue.hidden then
+            pendingSave, saveTriggerId = FindPendingPlayerSave(queue)
+        end
         MonsterAI.ProfEnd(saveProf)
         if pendingSave ~= nil then
-            MonsterAI.SetWaiting("save", string.format("Waiting for %s's saving throw", pendingSave.name))
+            MonsterAI.SetWaiting("save", string.format("Waiting for %s's saving throw", pendingSave.name),
+                {charid = pendingSave.charid, triggerid = saveTriggerId})
             saveWaiting = true
         elseif saveWaiting then
             saveWaiting = false
@@ -271,7 +276,8 @@ local function MonsterAIThread(process)
                     ---@cast claimToken -nil
                     --Tell the table why the monsters are not moving.
                     MonsterAI.SetWaiting("turnclaim", string.format("Waiting for %s's %s",
-                        claimToken.name, claimTrigger.abilityName))
+                        claimToken.name, claimTrigger.abilityName),
+                        {charid = claimToken.charid, triggerid = claimTrigger.id})
                     turnClaimWaiting = true
                     return
                 end

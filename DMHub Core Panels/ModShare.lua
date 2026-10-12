@@ -1928,13 +1928,14 @@ local g_moduleTypes = {
 		--(see HeroModuleReviewAfterPublish below).
 		id = "hero",
 		text = "Hero Module",
-		description = "Options for building heroes, such as classes, ancestries and kits. Players add a Hero module to their inventory from the titlescreen, and it is added automatically to any game a hero using it enters. A Hero module can't contain maps or characters. If it contains code, an admin must approve each version before players can add it to their inventory; Directors can still install it into a game like any module.",
+		description = "Options for building heroes, such as classes, ancestries and kits. Players add a Hero module to their inventory from the titlescreen, and it is added automatically to any game a hero using it enters. Heroes included in it become pregens: they are added to games unclaimed, and offered wherever pregens are, such as Encounter of the Week. A Hero module can't contain maps. If it contains code, an admin must approve each version before players can add it to their inventory; Directors can still install it into a game like any module.",
 		validate = function(ctx)
 			local errors = {}
 			local warnings = {}
 			local nheroOptions = 0
 			local hasCode = false
-			local mapsOrCharacters = {}
+			local maps = {}
+			local nonHeroes = {}
 			local Consider = function(guid)
 				local info = ctx.assetInfo[guid]
 				if info == nil then
@@ -1943,8 +1944,19 @@ local g_moduleTypes = {
 				local tableName = string.match(info.type or "", "^object:(.+)$")
 				if tableName ~= nil and g_heroOptionTables[tableName] then
 					nheroOptions = nheroOptions + 1
-				elseif info.type == "map" or info.type == "character" then
-					mapsOrCharacters[#mapsOrCharacters+1] = info.displayName
+				elseif info.type == "map" then
+					maps[#maps+1] = info.displayName
+				elseif info.type == "character" then
+					--heroes ship as pregens; anything else would land in
+					--every game as an unclaimed party member.
+					local isHero = false
+					pcall(function()
+						local token = dmhub.GetCharacterById(guid)
+						isHero = token ~= nil and token.properties:IsHero() == true
+					end)
+					if not isHero then
+						nonHeroes[#nonHeroes+1] = info.displayName
+					end
 				elseif info.type == "code" then
 					hasCode = true
 				end
@@ -1961,9 +1973,13 @@ local g_moduleTypes = {
 			if nheroOptions == 0 then
 				errors[#errors+1] = "A Hero module must contain at least one hero option: a class, subclass, ancestry, career, kit, culture, complication or title."
 			end
-			if #mapsOrCharacters > 0 then
-				table.sort(mapsOrCharacters)
-				errors[#errors+1] = string.format("A Hero module can't contain maps or characters: %s", table.concat(mapsOrCharacters, ", "))
+			if #maps > 0 then
+				table.sort(maps)
+				errors[#errors+1] = string.format("A Hero module can't contain maps: %s", table.concat(maps, ", "))
+			end
+			if #nonHeroes > 0 then
+				table.sort(nonHeroes)
+				errors[#errors+1] = string.format("A Hero module's characters must be heroes, which become pregens: %s", table.concat(nonHeroes, ", "))
 			end
 			if hasCode and not dmhub.isAdminAccount then
 				warnings[#warnings+1] = "This module contains code. Each version with code is sent to an admin for review, and players can only add it to their inventory once it is approved. Directors can install it into a game straight away."
@@ -5549,6 +5565,15 @@ mod.shared.ShowDownloadShareDialog = function(options)
 					return
 				end
 
+				--on the titlescreen a Hero module goes into the player's
+				--inventory (the panel above), which installs it here itself.
+				if dmhub.isLobbyGame and mod.isHeroModule then
+					installButton:SetClass("collapsed", true)
+					uninstallButton:SetClass("collapsed", true)
+					element.text = ""
+					return
+				end
+
 				if mod.premium and (not mod.owned) then
 					installButton:SetClass("collapsed", true)
 					uninstallButton:SetClass("collapsed", true)
@@ -5694,6 +5719,91 @@ mod.shared.ShowDownloadShareDialog = function(options)
 		},
 	}
 
+	--Hero modules: add to / remove from the player's inventory (HeroModules.lua),
+	--which makes the module's classes and ancestries available to their heroes
+	--on the titlescreen and in every game those heroes enter.
+	local heroInventoryLabel = gui.Label{
+		text = "",
+		fontSize = 16,
+		width = "auto",
+		height = "auto",
+		halign = "right",
+		valign = "center",
+		hmargin = 8,
+	}
+
+	local heroInventoryButton = gui.Button{
+		classes = {"sizeXxl"},
+		text = "Add to my Inventory",
+		width = 240,
+		height = 52,
+		halign = "right",
+		click = function(element)
+			local mod = moduleDetailedDisplay.data.moduleInfo
+			if mod == nil then
+				return
+			end
+			if HeroModules.IsAdded(mod.fullid) then
+				HeroModules.Remove(mod.fullid)
+			else
+				HeroModules.Add(mod.fullid)
+			end
+			element:FireEventOnParents("refreshHeroInventory")
+		end,
+	}
+
+	local heroInventoryPanel = gui.Panel{
+		classes = {"collapsed"},
+		width = "auto",
+		height = "auto",
+		flow = "horizontal",
+		halign = "right",
+		vmargin = 4,
+		create = function(element)
+			HeroModules.Listen(element)
+		end,
+		heroModulesChanged = function(element)
+			element:FireEvent("refreshHeroInventory")
+		end,
+		newModule = function(element)
+			element:FireEvent("refreshHeroInventory")
+		end,
+		refreshHeroInventory = function(element)
+			local mod = moduleDetailedDisplay.data.moduleInfo
+			local show = mod ~= nil and mod.isHeroModule
+				and not (mod.deprecated and not mod.deprecationOverridden)
+			element:SetClass("collapsed", not show)
+			if not show then
+				return
+			end
+
+			--an owned premium Hero module is always in the inventory.
+			if mod.premium then
+				heroInventoryButton:SetClass("collapsed", true)
+				heroInventoryLabel.text = cond(mod.owned, "In your Inventory", "")
+				return
+			end
+
+			heroInventoryButton:SetClass("collapsed", false)
+			if HeroModules.IsAdded(mod.fullid) then
+				heroInventoryButton.text = "Remove from Inventory"
+				local err = HeroModules.GetError(mod.fullid)
+				if err ~= nil then
+					heroInventoryLabel.text = string.format("<color=#ff8888>%s</color>", err)
+				elseif HeroModules.IsEnabled(mod.fullid) then
+					heroInventoryLabel.text = "In your Inventory"
+				else
+					heroInventoryLabel.text = "In your Inventory (switched off)"
+				end
+			else
+				heroInventoryButton.text = "Add to my Inventory"
+				heroInventoryLabel.text = ""
+			end
+		end,
+		heroInventoryLabel,
+		heroInventoryButton,
+	}
+
 	local installPanel = gui.Panel{
 		height = "auto",
 		width = "auto",
@@ -5703,6 +5813,7 @@ mod.shared.ShowDownloadShareDialog = function(options)
 		valign = "bottom",
 		margin = 8,
 		heroReviewPanel,
+		heroInventoryPanel,
 		patreonOfferPanel,
 		gui.Panel{
 			width = "auto",

@@ -1208,6 +1208,24 @@ local function ParseDevJoinCode(text)
     return gameid, reportId
 end
 
+--Wraps the function that pastes a hero into the game being entered so it runs
+--once the player's Hero modules (HeroModules.lua) are installed there too, and
+--the hero's class and ancestry exist when it lands. The wrapper runs in the
+--destination game, after this file may have unloaded, so HeroModules is looked
+--up there rather than captured here.
+--- @param paste fun()
+--- @return fun()
+local function AfterHeroModulesInstalled(paste)
+    return function()
+        local heroModules = rawget(_G, "HeroModules")
+        if heroModules ~= nil and heroModules.InstallIntoGame ~= nil then
+            heroModules.InstallIntoGame(paste)
+        else
+            paste()
+        end
+    end
+end
+
 local function CreateJoinGameModal(tokenToImport)
     local resultPanel
 
@@ -1591,9 +1609,9 @@ local function CreateJoinGameModal(tokenToImport)
                                         local callback
                                         if tokenToImport ~= nil then
                                             dmhub.CopyTokenToClipboard(tokenToImport)
-                                            callback = function()
+                                            callback = AfterHeroModulesInstalled(function()
                                                 dmhub.PasteTokenFromClipboard(core.Loc { x = 0, y = 0 })
-                                            end
+                                            end)
                                         end
                                         if devJoin ~= nil then
                                             -- Tell the table why a stranger just walked in.
@@ -1671,7 +1689,7 @@ local function CreateJoinGameModal(tokenToImport)
 
                     dmhub.CopyTokenToClipboard(tokenToImport)
                     local root = element.root
-                    local callback = function()
+                    local callback = AfterHeroModulesInstalled(function()
                         local newCharId = dmhub.PasteTokenFromClipboard(core.Loc { x = 0, y = 0 })
                         print("AddCharacterToGame:: pasted charid =", tostring(newCharId), "addingAsDM =", tostring(addingAsDM))
                         if not addingAsDM or newCharId == nil then
@@ -1696,7 +1714,7 @@ local function CreateJoinGameModal(tokenToImport)
                             end
                             print("AddCharacterToGame:: gave up waiting for token/party to settle")
                         end)
-                    end
+                    end)
 
                     if root ~= nil and root.valid then
                         root:FireEventTree("overrideLoadingScreenArt", gameInfo.coverart, gameid)

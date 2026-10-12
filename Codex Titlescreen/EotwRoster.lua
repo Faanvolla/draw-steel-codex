@@ -1789,7 +1789,8 @@ local function CardGrid(cards)
 end
 
 --The recruit picker: the player's own titlescreen heroes (copied in at
---level 1 with no items), then every pregenerated hero of the week's module.
+--level 1 with no items), then every pregenerated hero of the week's module,
+--then the pregens of the player's Hero modules, one section per module.
 local function ShowRecruitPicker(host, onDone)
     local pregens = EncounterOfTheWeek.GetPregens()
     local dlg
@@ -1821,9 +1822,21 @@ local function ShowRecruitPicker(host, onDone)
     end
 
     local pregenCards = {}
+    --Hero module name -> its pregens' cards, and the names in first-seen order.
+    local heroModuleCards = {}
+    local heroModuleNames = {}
     for _,pregen in ipairs(pregens or {}) do
         local tok = EncounterOfTheWeek.GetPregenToken(pregen.id)
-        pregenCards[#pregenCards+1] = RecruitCard(PortraitOf(tok), pregen.name, EotwRoster.FormatDetails(pregen.level, pregen.ancestry, pregen.className), function()
+        local cards = pregenCards
+        if pregen.source ~= nil then
+            cards = heroModuleCards[pregen.source]
+            if cards == nil then
+                cards = {}
+                heroModuleCards[pregen.source] = cards
+                heroModuleNames[#heroModuleNames+1] = pregen.source
+            end
+        end
+        cards[#cards+1] = RecruitCard(PortraitOf(tok), pregen.name, EotwRoster.FormatDetails(pregen.level, pregen.ancestry, pregen.className), function()
             dlg:DestroySelf()
             ShowRecruitNamePrompt(host, {
                 initialName = RecruitName(pregen),
@@ -1848,6 +1861,10 @@ local function ShowRecruitPicker(host, onDone)
         sections[#sections+1] = gui.Label{ text = "The pregenerated heroes are still loading. Try again in a moment.", fontSize = 18, color = DIM, width = "90%", height = "auto", halign = "center", textAlignment = "center", vmargin = 40 }
     else
         sections[#sections+1] = CardGrid(pregenCards)
+    end
+    for _,source in ipairs(heroModuleNames) do
+        sections[#sections+1] = PickerHeading(source, "Pregenerated heroes from a Hero module in your inventory.")
+        sections[#sections+1] = CardGrid(heroModuleCards[source])
     end
 
     local body = gui.Panel{

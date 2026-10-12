@@ -2238,6 +2238,7 @@ end
 --an item in the details list is the form { cost = string resourceid, quantity = (optional) number, canAfford = bool, paymentOptions = {{resourceid = string, quantity = number}}, expendedOptions = {{resourceid = string, quantity = number}}, refreshType (optional) = string resource refresh frequency, description = optional string describing resource available/max, maxCharges (optional) = int, availableCharges (optional) = int, payerTokenId (optional) = charid of a token other than the caster that pays this entry }
 --the cost gives the listed resource id cost, but paymentOptions is a list of resources the token has which it could use, in preferred order.
 --expendedOptions is a list of resources the token has expended which could normally be used to pay.
+--- @return table
 function ActivatedAbility:GetCost(casterToken, options)
 	options = options or {}
 
@@ -3076,6 +3077,16 @@ function ActivatedAbility.RecordTokenMessage(targetToken, options, message)
     chat.UpdateCustom(options.chatMessageKey, options.chatMessage)
 end
 
+local g_castStartHandlers = {}
+
+--- Registers fn(ability, casterToken, options) to run synchronously at the start of every
+--- ActivatedAbility:Cast, before any cost is paid or the cast's coroutine starts. It must
+--- not yield. Turn Rewind uses it to checkpoint the board before an ability.
+--- @param fn fun(ability: ActivatedAbility, casterToken: CharacterToken, options: table|nil)
+function ActivatedAbility.RegisterCastStartHandler(fn)
+	g_castStartHandlers[#g_castStartHandlers+1] = fn
+end
+
 --casterToken: a token representing the caster.
 --targets: a list of { loc = (loc object), token = (optional)token }
 --- @param casterToken CharacterToken
@@ -3089,6 +3100,14 @@ function ActivatedAbility:Cast(casterToken, targets, options)
 	if dmhub.frozen and not IsDMOrPlayerHost() then
 		print("Cast:: refused; the game is frozen")
 		return
+	end
+
+	--a broken handler must never stop the cast itself.
+	for _,handler in ipairs(g_castStartHandlers) do
+		local ok, err = pcall(handler, self, casterToken, options)
+		if not ok then
+			print("Cast:: cast start handler failed:", err)
+		end
 	end
 
 	options = options or {}

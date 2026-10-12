@@ -696,7 +696,7 @@ ActivatedAbilityPowerRollBehavior.GetPowerTablePopulateCustom = function(rollPro
                         eventName = "UI.PowerRoll_Crit"
                     end
 
-                    audio.DispatchSoundEvent(eventName)
+                    audio.DispatchSoundEvent(eventName, { tokenid = caster ~= nil and dmhub.LookupTokenId(caster) or nil })
                 end
             end,
 

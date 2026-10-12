@@ -3945,6 +3945,31 @@ end
 --host has stamped setupReady. The engine's loading screen hold times out
 --after 20s unless renewed, so renew it while waiting. Gives up after
 --HOST_SETUP_TIMEOUT_SECONDS and carries on, as a late joiner would.
+--Installs this player's switched-on Hero modules (HeroModules.lua) into the
+--game, from inside the arrival coroutine. Each client installs its own, so a
+--member's modules arrive with the member. Renews the loading screen hold while
+--it waits; HeroModules gives up after HERO_MODULES_TIMEOUT_SECONDS.
+local HERO_MODULES_TIMEOUT_SECONDS = 20
+local function InstallMyHeroModules()
+    local heroModules = rawget(_G, "HeroModules")
+    if heroModules == nil or heroModules.InstallIntoGame == nil then
+        return
+    end
+    local done = false
+    heroModules.InstallIntoGame(function()
+        done = true
+    end, HERO_MODULES_TIMEOUT_SECONDS)
+    local sinceRenew = 0
+    while not done and not mod.unloaded do
+        if sinceRenew >= 5 then
+            sinceRenew = 0
+            pcall(function() dmhub.HoldLoadingScreen() end)
+        end
+        coroutine.yield(0.1)
+        sinceRenew = sinceRenew + 0.1
+    end
+end
+
 local HOST_SETUP_TIMEOUT_SECONDS = 120
 local function WaitForHostSetup()
     local waited = 0
@@ -4235,6 +4260,11 @@ function EncounterOfTheWeekGame.SetupOnArrival(args)
             --end of this client's own setup.
             AttachMapScript()
         end
+
+        --a hero built with a class or ancestry from one of this player's Hero
+        --modules needs the module in this game before it lands.
+        InstallMyHeroModules()
+        EotwProf("hero modules installed")
 
         local myPasted, anchor = PlaceMyHeroes(args.heroes, args.clipboardIds)
         RecordCompletedHeroes(args.heroes)

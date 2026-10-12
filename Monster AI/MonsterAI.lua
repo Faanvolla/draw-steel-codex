@@ -51,29 +51,41 @@ local WAITING_DOC = "monsterAIWaiting"
 --resolves instantly (a prompt answered at once) never flashes the banner.
 local NOTICE_GRACE_SECONDS = 1
 
-function MonsterAI.SetWaiting(key, text)
+--subject (optional) names the hero being waited on: {charid, triggerid}.
+--triggerid is the key of the hero's prompt in availableTriggers, when the
+--wait is on one. The banner uses it to offer that hero's player Select and
+--Dismiss buttons.
+---@param subject nil|{charid: string, triggerid: nil|string}
+function MonsterAI.SetWaiting(key, text, subject)
     if type(text) ~= "string" or text == "" then
         MonsterAI.ClearWaiting()
         return
     end
+    local charid = subject ~= nil and subject.charid or nil
+    local triggerid = subject ~= nil and subject.triggerid or nil
     local doc = mod:GetDocumentSnapshot(WAITING_DOC)
-    if doc.data.key == key and doc.data.text == text then
+    if doc.data.key == key and doc.data.text == text
+        and doc.data.charid == charid and doc.data.triggerid == triggerid then
         return
     end
     doc:BeginChange()
     doc.data.key = key
     doc.data.text = text
+    doc.data.charid = charid
+    doc.data.triggerid = triggerid
     doc:CompleteChange("Monster AI waiting: " .. text, {undoable = false})
 end
 
 function MonsterAI.ClearWaiting()
     local doc = mod:GetDocumentSnapshot(WAITING_DOC)
-    if doc.data.key == nil and doc.data.text == nil then
+    if doc.data.key == nil and doc.data.text == nil and doc.data.charid == nil then
         return
     end
     doc:BeginChange()
     doc.data.key = nil
     doc.data.text = nil
+    doc.data.charid = nil
+    doc.data.triggerid = nil
     doc:CompleteChange("Monster AI waiting cleared", {undoable = false})
 end
 
@@ -92,16 +104,17 @@ local function NoticeTextFromReactionStatus(status)
 end
 
 --Name a hero's undismissed trigger prompt while a monster's cast is held
---open by it: "Waiting for Shadow's Opportunity Attack". nil when no hero
---holds a prompt.
+--open by it: "Waiting for Shadow's Opportunity Attack", plus the notice
+--subject (see SetWaiting). nil when no hero holds a prompt.
 local function FindPlayerTriggerPromptNotice()
     for _,token in ipairs(dmhub.allTokens) do
         if token.playerControlled and token.properties ~= nil
             and MonsterAI.TokenIsLiveCombatant(token) then
-            for _,trigger in pairs(token.properties:GetAvailableTriggers(true) or {}) do
+            for key,trigger in pairs(token.properties:GetAvailableTriggers(true) or {}) do
                 if not trigger.dismissed and not trigger.triggered
                     and type(trigger.abilityName) == "string" then
-                    return string.format("Waiting for %s's %s", token.name, trigger.abilityName)
+                    return string.format("Waiting for %s's %s", token.name, trigger.abilityName),
+                        {charid = token.charid, triggerid = key}
                 end
             end
         end
@@ -117,6 +130,64 @@ Tip = rawget(_G, "Tip") or {}
 Tip.notices = Tip.notices or {}
 local m_noticeText = nil
 local m_noticeSince = 0
+
+--The banner buttons (see the notice channel in GameHud.lua). Only the player
+--who answers the waited-on hero's prompts gets any: "Select <hero>" while the
+--hero is not selected, and Dismiss when the wait is on a prompt they can
+--dismiss, which dismisses the prompt itself. Everyone else gets no buttons.
+local function WaitingNoticeControls(doc)
+    local controls = {}
+    local charid = doc.data.charid
+    if type(charid) ~= "string" then
+        return controls
+    end
+    local token = dmhub.GetTokenById(charid)
+    --activeControllerId is nil when this user is the one best suited to
+    --answer the token's prompts; canControlAsUser rules out a player host
+    --whose control comes only from hosting the game.
+    if token == nil or not token.valid or token.properties == nil
+        or not token.canControlAsUser or token.activeControllerId ~= nil then
+        return controls
+    end
+
+    local selected = false
+    for _,tok in ipairs(dmhub.selectedTokens or {}) do
+        if tok.charid == charid then
+            selected = true
+            break
+        end
+    end
+    if not selected then
+        controls.action = {
+            text = string.format("Select %s", token.name or "hero"),
+            press = function()
+                dmhub.SelectToken(charid)
+            end,
+        }
+    end
+
+    local triggerid = doc.data.triggerid
+    local trigger = type(triggerid) == "string"
+        and token.properties:try_get("availableTriggers", {})[triggerid] or nil
+    if trigger ~= nil and not trigger.dismissed and not trigger.triggered and trigger:CanDismiss() then
+        controls.dismiss = function()
+            token:ModifyProperties{
+                undoable = false,
+                description = "Trigger",
+                execute = function()
+                    local live = token.properties:try_get("availableTriggers", {})[triggerid]
+                    if live ~= nil and not live.dismissed and not live.triggered then
+                        live.triggered = false
+                        live.dismissed = true
+                        token.properties:DispatchAvailableTrigger(live)
+                    end
+                end,
+            }
+        end
+    end
+    return controls
+end
+
 Tip.notices["monster-ai-waiting"] = {
     id = "monster-ai-waiting",
     priority = 1000,
@@ -139,7 +210,7 @@ Tip.notices["monster-ai-waiting"] = {
         if dmhub.Time() - m_noticeSince < NOTICE_GRACE_SECONDS then
             return nil
         end
-        return text
+        return text, WaitingNoticeControls(doc)
     end,
 }
 MonsterAI.maliceAbilityMinimumScore = 0.65
@@ -1110,19 +1181,24 @@ function MonsterAI:CalculateRemainingMovementPaths(token, flags)
     return self:CalculateMovementPaths(token, remainingMovement*10, flags)
 end
 
+--The 4th return is the notice subject (see SetWaiting) for the hero the
+--status names.
 function MonsterAI:CountPendingActivityReactions(activityId)
     local result = 0
-    local status, failure
+    local status, failure, subject
     for _,token in ipairs(dmhub.allTokens) do
         if token.valid and token.playerControlled and token.properties ~= nil then
-            local ok, pending, description, err = pcall(token.properties.GetAIActivityReactionStatus, token.properties, activityId)
-            if not ok then err = "could not inspect reaction state: " .. tostring(pending); pending = 1 end
+            local ok, pending, description, err, reactionId = pcall(token.properties.GetAIActivityReactionStatus, token.properties, activityId)
+            if not ok then err = "could not inspect reaction state: " .. tostring(pending); pending = 1; reactionId = nil end
             result = result + pending
-            if pending > 0 then status = "Waiting for " .. token.name .. "'s " .. (description or "reaction") end
+            if pending > 0 then
+                status = "Waiting for " .. token.name .. "'s " .. (description or "reaction")
+                subject = {charid = token.charid, triggerid = reactionId}
+            end
             if err ~= nil then failure = token.name .. ": " .. tostring(err) end
         end
     end
-    return result, status, failure
+    return result, status, failure, subject
 end
 
 --Count squad deaths that still need a player confirmation. This mirrors the
@@ -1201,7 +1277,8 @@ function MonsterAI:WaitForActivityReactions(activityId)
                 or "Monster AI stop requested"
         end
 
-        pending, status, failure = self:CountPendingActivityReactions(activityId)
+        local subject
+        pending, status, failure, subject = self:CountPendingActivityReactions(activityId)
         if failure ~= nil then
             MonsterAI.reactionStatus = false
             MonsterAI.ClearWaiting()
@@ -1216,7 +1293,8 @@ function MonsterAI:WaitForActivityReactions(activityId)
         end
         pendingMinionDeaths = self:CountPendingMinionDeathConfirmations()
         MonsterAI.reactionStatus = status or (pendingMinionDeaths > 0 and "Waiting for minion death confirmations") or false
-        MonsterAI.SetWaiting("reaction", NoticeTextFromReactionStatus(MonsterAI.reactionStatus))
+        MonsterAI.SetWaiting("reaction", NoticeTextFromReactionStatus(MonsterAI.reactionStatus),
+            status ~= nil and subject or nil)
         if pending == 0 and pendingMinionDeaths == 0 then
             idleSince = idleSince or dmhub.Time()
             if dmhub.Time() - idleSince >= 0.3 then
@@ -2307,9 +2385,9 @@ function MonsterAI:WaitForAbilityIdle(timeout)
             idleSince = nil
             if dmhub.Time() - lastPromptScan >= 0.5 then
                 lastPromptScan = dmhub.Time()
-                local notice = FindPlayerTriggerPromptNotice()
+                local notice, subject = FindPlayerTriggerPromptNotice()
                 if notice ~= nil then
-                    MonsterAI.SetWaiting("cast", notice)
+                    MonsterAI.SetWaiting("cast", notice, subject)
                     waitingSet = true
                 elseif waitingSet then
                     MonsterAI.ClearWaiting()

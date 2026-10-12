@@ -13,6 +13,17 @@ setting{
     storage = "preference",
 }
 
+--Per-player variants. Any audio.SoundEvent below can add:
+--  controlledVolume = 1.5               --volume x1.5 when the sound is about a token this player controls
+--  controlledSound = "Attack.Hit_Mine"  --...or play this other sound event instead
+--  localVolume / localSound             --same, when this client fired the sound itself (not a replay
+--                                       --of another player's dispatched sound)
+--"About a token" = the args' tokenid (the token it happens to) or attackerid (who caused it).
+--Hits, heals, conditions, winded/dying/dead, power rolls, triggers, resources and footsteps
+--pass them. When both apply the higher volume wins and controlledSound beats localSound.
+--The Director controls every token, so on the Director's machine every token sound is "controlled".
+--Volume cannot go above 1.0 after all multipliers, so leave headroom in the base volume.
+
 --Mix Groups
 
 --Parent bus for the app's own feedback SFX (UI clicks, dice, gameplay, damage).
@@ -2179,6 +2190,7 @@ dmhub.TokenMovingOnPath = function(args)
             audio.FireSoundEvent(sound, {
                 volume = volumeScale,
                 pitch = pitch,
+                tokenid = args.token.charid,
             })
 
             if puddle then

@@ -321,8 +321,10 @@ function InitiativeQueue:SelectTurn(initiativeid)
 		return
 	end
 
-	--Revert Turn's snapshot must be of the board before this turn starts.
+	--Revert Turn's snapshot (and Turn Rewind's first entry) must be of the board
+	--before this turn starts.
 	TurnCheckpoint.BeforeSelectTurn(self)
+	TurnRewind.BeforeSelectTurn(self, initiativeid)
 
 	entry.turn = self.turn
 	self.turn = self.turn + 1

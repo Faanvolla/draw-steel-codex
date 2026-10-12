@@ -4393,7 +4393,10 @@ function creature:InflictCondition(conditionid, args)
             end
         end
 
-        audio.DispatchSoundEvent(conditionInfo:SoundEvent())
+        audio.DispatchSoundEvent(conditionInfo:SoundEvent(), {
+            tokenid = dmhub.LookupTokenId(self),
+            attackerid = args.casterInfo ~= nil and args.casterInfo.tokenid or nil,
+        })
     else
         --the condition gets purged if we are purging it.
         local entry = inflictedConditions[conditionid]
@@ -4418,7 +4421,7 @@ function creature:InflictCondition(conditionid, args)
             end
         end
         if inflictedConditions[conditionid] ~= nil then
-            audio.DispatchSoundEvent(conditionInfo:SoundEvent() .. "_End")
+            audio.DispatchSoundEvent(conditionInfo:SoundEvent() .. "_End", { tokenid = dmhub.LookupTokenId(self) })
         end
         inflictedConditions[conditionid] = nil
     end
@@ -6440,6 +6443,12 @@ function creature.TakeDamage(self, amount, note, info)
 
     --handle firing audio events.
     local isWindedNow = self:IsWinded()
+    --the token the sound is about plus who caused it, so sound events can play
+    --their "controlled" variant for the victim's or the attacker's controller.
+    local soundArgs = {
+        tokenid = dmhub.LookupTokenId(self),
+        attackerid = eventArg.attacker ~= nil and dmhub.LookupTokenId(eventArg.attacker) or nil,
+    }
     local isBelowZeroNow = self:CurrentHitpoints() <= 0
     local isDeadNow = self:IsDead()
 
@@ -6477,7 +6486,7 @@ function creature.TakeDamage(self, amount, note, info)
     if isDeadNow then
         if not isDeadAtStart then
             if self:IsHero() then
-                audio.DispatchSoundEvent("Notify.Status_Dead_Hero", {})
+                audio.DispatchSoundEvent("Notify.Status_Dead_Hero", soundArgs)
 
                 --IsHero is true only for character, which is where GetClass lives.
                 local heroClass = (self --[[@as character]]):GetClass()
@@ -6507,12 +6516,12 @@ function creature.TakeDamage(self, amount, note, info)
                     dailyLimit = 20,
                 })
             else
-                audio.DispatchSoundEvent("Notify.Status_Dead_Enemy", {})
+                audio.DispatchSoundEvent("Notify.Status_Dead_Enemy", soundArgs)
             end
         end
     elseif isBelowZeroNow then
         if not isBelowZeroAtStart then
-            audio.DispatchSoundEvent("Notify.Status_Dying_Hero", {})
+            audio.DispatchSoundEvent("Notify.Status_Dying_Hero", soundArgs)
 
             if self:IsHero() then
                 --IsHero is true only for character, which is where GetClass lives.
@@ -6561,7 +6570,7 @@ function creature.TakeDamage(self, amount, note, info)
         end
     elseif isWindedNow and not isWindedAtStart then
         self:DispatchEvent("winded", eventArg)
-        audio.DispatchSoundEvent("Condition.Winded", {})
+        audio.DispatchSoundEvent("Condition.Winded", soundArgs)
         print("DYING:: WINDED")
     end
 
@@ -6818,11 +6827,11 @@ function creature.SetStaminaDirect(self, amount, note)
 
     if isWindedNow and not isWindedAtStart then
         self:DispatchEvent("winded", {})
-        audio.DispatchSoundEvent("Condition.Winded", {})
+        audio.DispatchSoundEvent("Condition.Winded", { tokenid = dmhub.LookupTokenId(self) })
     end
 
     if isBelowZeroNow and not isBelowZeroAtStart then
-        audio.DispatchSoundEvent("Notify.Status_Dying_Hero", {})
+        audio.DispatchSoundEvent("Notify.Status_Dying_Hero", { tokenid = dmhub.LookupTokenId(self) })
         self:DispatchEvent("dying", {})
     end
 

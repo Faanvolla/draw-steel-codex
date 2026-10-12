@@ -702,7 +702,7 @@ function creature:PlayLandingFootstep(surfaceType)
             soundName = entry.sound
         end
     end
-    audio.FireSoundEvent(soundName, { volume = 0.4 })
+    audio.FireSoundEvent(soundName, { volume = 0.4, tokenid = dmhub.LookupTokenId(self) })
 end
 
 --- Whether this creature is a natural climber (climb speed >= walk speed).
@@ -1250,7 +1250,10 @@ function creature:InflictCondition(conditionid, args)
 
 	self.inflictedConditions = inflictedConditions
 
-    audio.DispatchSoundEvent(conditionInfo:SoundEvent())
+    audio.DispatchSoundEvent(conditionInfo:SoundEvent(), {
+        tokenid = dmhub.LookupTokenId(self),
+        attackerid = args.casterInfo ~= nil and args.casterInfo.tokenid or nil,
+    })
 
     self:DispatchEvent("inflictcondition", {
         condition = conditionInfo.name,
@@ -2036,7 +2039,7 @@ function creature.SetTemporaryHitpoints(self, amount, note, options)
 	else
 
 		if amount > self.temporary_hitpoints then
-			audio.FireSoundEvent("Notify.TempStamina_Gain")
+			audio.FireSoundEvent("Notify.TempStamina_Gain", { tokenid = dmhub.LookupTokenId(self) })
 		end
 
 		self.temporary_hitpoints = amount
@@ -4363,7 +4366,7 @@ function creature.ToggleLightSourceOnToken(tok)
         execute = function()
             if tok.properties.selectedLoadout == 1 then
                 tok.properties.selectedLoadout = 0
-                audio.DispatchSoundEvent("Ability.Torch_Off")
+                audio.DispatchSoundEvent("Ability.Torch_Off", { tokenid = tok.charid })
             else
                 if not tok.properties:try_get("initLight") then
                     --set to our preferred light if we've never made a different explicit choice.
@@ -4372,7 +4375,7 @@ function creature.ToggleLightSourceOnToken(tok)
                 end
 
                 tok.properties.selectedLoadout = 1
-                audio.DispatchSoundEvent("Ability.Torch_On")
+                audio.DispatchSoundEvent("Ability.Torch_On", { tokenid = tok.charid })
             end
         end,
     }
@@ -7412,7 +7415,10 @@ function creature:ApplyOngoingEffect(ongoingEffectid, duration, casterInfo, opti
 	if ongoingEffect.condition ~= "none" and casterInfo ~= nil then
         local conditionInfo = GetTableCached(CharacterCondition.tableName)[ongoingEffect.condition]
         if conditionInfo ~= nil then
-            audio.DispatchSoundEvent(conditionInfo:SoundEvent())
+            audio.DispatchSoundEvent(conditionInfo:SoundEvent(), {
+                tokenid = dmhub.LookupTokenId(self),
+                attackerid = casterInfo.tokenid,
+            })
         end
         if conditionInfo ~= nil and conditionInfo.trackCaster and ongoingEffect.countsTowardInstanceLimit then
             local limitFormula = conditionInfo:try_get("maxInstancesFormula", "")
@@ -11209,12 +11215,16 @@ function creature:SetAIActivityReactionResolving(activityId, reactionId)
     end
 end
 
+--The 4th return is the reaction id the description names. It is also the key
+--of the prompt in availableTriggers, so the AI's banner can offer Dismiss on it.
 function creature:GetAIActivityReactionStatus(activityId)
     local pending, description, failure = self:GetAIReactionDeliveryStatus(activityId)
+    local reactionId = nil
     local triggers = self:try_get("availableTriggers", {})
     for id,entry in pairs(self:try_get("pendingAIActivityReactions", {})) do
         if type(entry) == "table" and entry.activityId == activityId and entry.state ~= "completed" then
             pending = pending + 1
+            reactionId = id
             description = entry.state == "resolving" and "reaction to finish: " .. (entry.ability or "reaction")
                 or "player to answer " .. (entry.ability or "reaction")
             --The marker is a plain table leaf, so the writer's own copy holds the
@@ -11230,7 +11240,7 @@ function creature:GetAIActivityReactionStatus(activityId)
             end
         end
     end
-    return pending, description, failure
+    return pending, description, failure, reactionId
 end
 
 function creature:CountPendingAIActivityReactions(activityId)

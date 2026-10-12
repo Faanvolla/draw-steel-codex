@@ -1048,6 +1048,17 @@ local m_pregens = nil
 local m_pregenTokens = nil
 local m_pregensFetching = false
 
+--Pregens from the player's Hero modules (see "Hero module pregens" below).
+--nil until loaded; then a sorted list of {id, name, className, ancestry, level, source}.
+local m_heroPregens = nil
+local m_heroPregenTokens = {}
+--moduleid -> {token, version}: one of its pregens, to tell when its art needs registering again.
+local m_heroPregenArtSample = {}
+--the installed Hero modules the cache was built from (InstalledHeroModulesKey).
+local m_heroPregensKey = nil
+local m_heroPregensFetching = false
+local CacheHeroModulePregens
+
 --Best-effort class name for display; works for lobby hero tokens and for
 --detached module-snapshot tokens alike. pcall because token.properties
 --shapes vary (and game-typed instances raise on unknown members).
@@ -1225,18 +1236,133 @@ function EncounterOfTheWeek.CachePregens()
     }
 end
 
---nil while unavailable/loading; otherwise the {id, name, className} list.
+--nil while unavailable/loading; otherwise the {id, name, className, ...}
+--list: the week's official pregens, then those from the player's Hero
+--modules (which carry source = the module's name).
 function EncounterOfTheWeek.GetPregens()
     EncounterOfTheWeek.CachePregens()
-    return m_pregens
-end
-
---The snapshot token for a pregen id (nil until the cache is loaded).
-function EncounterOfTheWeek.GetPregenToken(id)
-    if m_pregenTokens == nil then
+    CacheHeroModulePregens()
+    if m_pregens == nil then
         return nil
     end
-    return m_pregenTokens[id]
+    if m_heroPregens == nil or #m_heroPregens == 0 then
+        return m_pregens
+    end
+    local result = {}
+    for _, entry in ipairs(m_pregens) do
+        result[#result+1] = entry
+    end
+    for _, entry in ipairs(m_heroPregens) do
+        result[#result+1] = entry
+    end
+    return result
+end
+
+--── Hero module pregens ──────────────────────────────────────────────
+--Heroes shipped inside the player's Hero modules (classes and ancestries
+--from their inventory, see HeroModules.lua) are pregens too. Only modules
+--actually installed in the lobby count: that is every switched-on module the
+--player may use, and only once its code (if any) is approved -- so a pregen's
+--class is always there to recruit it with. Each comes from the snapshot of the
+--INSTALLED version (a newer one may still await review), and the list is
+--rebuilt whenever that set changes.
+
+--"fullid@version" of every Hero module installed in the lobby, sorted.
+local function InstalledHeroModulesKey()
+    local parts = {}
+    for _, info in ipairs(module.GetLoadedModules()) do
+        if info.isHeroModule and info.installedVersion ~= nil then
+            parts[#parts+1] = string.format("%s@%s", info.fullid, info.installedVersion)
+        end
+    end
+    table.sort(parts)
+    return table.concat(parts, ",")
+end
+
+CacheHeroModulePregens = function()
+    if not dmhub.isLobbyGame or module.DownloadModuleSnapshot == nil then
+        return
+    end
+
+    local key = InstalledHeroModulesKey()
+    if m_heroPregensFetching or key == m_heroPregensKey then
+        --built from this set: just check the art is still registered
+        --(entering a game clears module art; the snapshot download redoes it).
+        for moduleid, sample in pairs(m_heroPregenArtSample) do
+            local portrait = nil
+            pcall(function() portrait = sample.token.offTokenPortrait end)
+            if IsUnresolvableAssetId(portrait) then
+                m_heroPregenArtSample[moduleid] = nil
+                module.DownloadModuleSnapshot{ moduleid = moduleid, version = sample.version, success = function() end, failure = function() end }
+            end
+        end
+        return
+    end
+
+    m_heroPregensFetching = true
+    local result = {}
+    local tokens = {}
+    local artSamples = {}
+    local pending = 0
+    local Finish = function()
+        if pending > 0 then
+            return
+        end
+        table.sort(result, function(a,b) return a.name < b.name end)
+        m_heroPregens = result
+        m_heroPregenTokens = tokens
+        m_heroPregenArtSample = artSamples
+        m_heroPregensKey = key
+        m_heroPregensFetching = false
+    end
+
+    for _, info in ipairs(module.GetLoadedModules()) do
+        if info.isHeroModule and info.installedVersion ~= nil then
+            pending = pending + 1
+            local fullid = info.fullid
+            local version = info.installedVersion
+            local source = info.name or fullid
+            module.DownloadModuleSnapshot{
+                moduleid = fullid,
+                version = version,
+                success = function(snapshot)
+                    for charid, tok in pairs(snapshot.characters or {}) do
+                        local isHero = false
+                        pcall(function() isHero = tok.properties:IsHero() == true end)
+                        if isHero then
+                            tokens[charid] = tok
+                            artSamples[fullid] = { token = tok, version = version }
+                            result[#result+1] = {
+                                id = charid,
+                                name = tok.name or "Hero",
+                                className = GetHeroClassName(tok),
+                                ancestry = GetHeroAncestry(tok),
+                                level = GetHeroLevel(tok),
+                                source = source,
+                            }
+                        end
+                    end
+                    pending = pending - 1
+                    Finish()
+                end,
+                failure = function(msg)
+                    printf("EotW: could not fetch Hero module %s for its pregens: %s", fullid, tostring(msg))
+                    pending = pending - 1
+                    Finish()
+                end,
+            }
+        end
+    end
+    Finish()
+end
+
+--The snapshot token for a pregen id, official or from a Hero module (nil
+--until its cache is loaded).
+function EncounterOfTheWeek.GetPregenToken(id)
+    if m_pregenTokens ~= nil and m_pregenTokens[id] ~= nil then
+        return m_pregenTokens[id]
+    end
+    return m_heroPregenTokens[id]
 end
 
 --== portrait warm-up ==================================================
@@ -1305,6 +1431,9 @@ local function EligiblePortraitImageIds()
         AddToken(tok)
     end
     for _,tok in pairs(m_pregenTokens or {}) do
+        AddToken(tok)
+    end
+    for _,tok in pairs(m_heroPregenTokens) do
         AddToken(tok)
     end
 
