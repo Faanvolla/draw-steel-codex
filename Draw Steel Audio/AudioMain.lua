@@ -199,6 +199,15 @@ audio.SoundEvent{
     ignoreDuplicates = 1,
 }
 
+audio.SoundEvent{
+    name = "Notify.Victory_Card",
+    mixgroup = "ui",
+    sounds = {"Notify_Victory_Card_v1_01.wav"},
+    volume = 0.05,
+    pitchRand = 0.2,
+    ignoreDuplicates = 0.01,
+}
+
 
 
 
