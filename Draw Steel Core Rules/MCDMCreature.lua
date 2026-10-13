@@ -1590,6 +1590,26 @@ creature.RegisterSymbol {
     },
 }
 
+--True only on the very first turn of combat, for the creature taking it.
+--The Troubadour's introduction used to be offered on every turn of round 1.
+creature.RegisterSymbol {
+    symbol = "firstturnofencounter",
+    lookup = function(c)
+        local q = dmhub.initiativeQueue
+        if q == nil or q.hidden or q.round ~= 1 then
+            return false
+        end
+        local entry = q:GetFirstInitiativeEntry()
+        return entry ~= nil and entry.turn == 1 and c:IsOurTurn()
+    end,
+    help = {
+        name = "First Turn Of Encounter",
+        type = "boolean",
+        desc = "True if it is this creature's turn and it is the first turn of the combat encounter.",
+        seealso = {"Combat Round"},
+    },
+}
+
 --Winded isn't a condition, so register it separately to make "Winded" usable as a
 --criteria string in Count Nearby Creatures and friends.
 creature.RegisterMatchString{
@@ -4231,6 +4251,8 @@ local g_conditionImmunitySpeech = {
     ["dazed"] = "You can't daze me!",
     ["frightened"] = "Nothing frightens me!",
     ["grabbed"] = "You can't grab me!",
+    --a list picks one line at random each time.
+    ["hidden"] = {"I can't hide right now", "I cannot hide currently"},
     ["prone"] = "I'll never be knocked down",
     ["restrained"] = "You can't tie me down!",
     ["slowed"] = "I won't be Slowed",
@@ -4267,8 +4289,12 @@ function creature:InflictCondition(conditionid, args)
                     --the creature can speak: use its custom immunity line, a
                     --flavorful per-condition variation, or a generic first-person
                     --fallback, rendered as an in-character speech bubble.
+                    local variation = g_conditionImmunitySpeech[string.lower(conditionInfo.name)]
+                    if type(variation) == "table" then
+                        variation = variation[math.random(#variation)]
+                    end
                     local text = self:GetConditionImmunityMessage(conditionid)
-                        or g_conditionImmunitySpeech[string.lower(conditionInfo.name)]
+                        or variation
                         or string.format("I can't be %s!", conditionInfo.name)
                     self:CharacterSpeech{
                         text = text,

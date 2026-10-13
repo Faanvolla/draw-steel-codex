@@ -233,9 +233,11 @@ function CharacterModifier:CheckRollRequirement(rollInfo, enabledModifiers, roll
     elseif requirement == "doubleedge" then
         return edges >= 2 and banes <= 0
     elseif requirement == "nobane" then
-        return banes <= 0
+        --Edges and banes cancel one for one, so "no bane" means the NET result is not a bane
+        --(1 edge + 1 bane is a normal roll). Same cancellation as the "bane" case above.
+        return not (banes > edges and edges < 2)
     elseif requirement == "noedge" then
-        return edges <= 0
+        return not (edges > banes and banes < 2)
     elseif requirement == "skilled" or requirement == "unskilled" then
         local hasSkill = false
         for _,mod in ipairs(enabledModifiers) do

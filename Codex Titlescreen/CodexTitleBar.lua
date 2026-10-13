@@ -4708,7 +4708,7 @@ local function CreateTopBar()
         local m_submitting = false
         local m_submitted = false
         --The ticket id assigned to this report, captured once Submit completes.
-        --Surfaced to the user in statusLabel and copyable by clicking it.
+        --Shown to the user in the confirmation panel and copyable by clicking it.
         local m_reportid = nil
 
         local m_includeLog = isBugReport
@@ -4925,17 +4925,97 @@ local function CreateTopBar()
             textWrap = true,
             tmargin = 8,
             text = "",
-
-            --After submitting, this label shows the ticket id; clicking copies
-            --it to the clipboard so the user can quote it back to us. No-ops
-            --until a report has actually been submitted (m_reportid is nil).
-            click = function(element)
-                if m_reportid ~= nil and m_reportid ~= "" then
-                    gui.Tooltip{ text = "Copied to Clipboard", valign = "top", borderWidth = 0 }(element)
-                    dmhub.CopyToClipboard(m_reportid)
-                end
-            end,
         }
+
+        --The form. Hidden once the report is sent.
+        local formPanel = gui.Panel{
+            width = "100%",
+            height = 640,
+            vscroll = true,
+            flow = "vertical",
+            halign = "center",
+        }
+
+        --Shown in place of the form once the report is sent, so the user
+        --can't miss that it worked. Filled in by ShowConfirmation.
+        local confirmationPanel = gui.Panel{
+            classes = {"collapsed"},
+            width = "100%",
+            height = 640,
+            flow = "vertical",
+            halign = "center",
+        }
+
+        local SUCCESS_COLOR = "#5cb85c"
+
+        local function ShowConfirmation(reportid)
+            local children = {
+                gui.Panel{
+                    width = 96,
+                    height = 96,
+                    halign = "center",
+                    tmargin = 60,
+                    bgimage = "ui-icons/module-checkmark.png",
+                    bgcolor = SUCCESS_COLOR,
+                    interactable = false,
+                },
+
+                gui.Label{
+                    fontSize = 32,
+                    bold = true,
+                    width = "auto",
+                    height = "auto",
+                    halign = "center",
+                    tmargin = 16,
+                    color = SUCCESS_COLOR,
+                    text = "Sent!",
+                },
+
+                gui.Label{
+                    fontSize = 18,
+                    width = 760,
+                    height = "auto",
+                    halign = "center",
+                    textAlignment = "center",
+                    textWrap = true,
+                    tmargin = 16,
+                    text = kindInfo.thanks,
+                },
+            }
+
+            if kindInfo.ticketInfo ~= nil and TicketBridgeAvailable() then
+                children[#children + 1] = gui.Label{
+                    fontSize = 16,
+                    width = 760,
+                    height = "auto",
+                    halign = "center",
+                    textAlignment = "center",
+                    textWrap = true,
+                    tmargin = 12,
+                    text = kindInfo.ticketInfo,
+                }
+            end
+
+            if reportid ~= nil and reportid ~= "" then
+                --Click to copy, so the user can quote the id back to us.
+                children[#children + 1] = gui.Label{
+                    fontSize = 20,
+                    width = "auto",
+                    height = "auto",
+                    halign = "center",
+                    tmargin = 20,
+                    text = string.format("Your ticket ID is <b>%s</b> (click to copy)", reportid),
+                    click = function(element)
+                        gui.Tooltip{ text = "Copied to Clipboard", valign = "top", borderWidth = 0 }(element)
+                        dmhub.CopyToClipboard(reportid)
+                    end,
+                }
+            end
+
+            confirmationPanel.children = children
+            formPanel:SetClass("collapsed", true)
+            confirmationPanel:SetClass("collapsed", false)
+        end
 
         local submitButton
 
@@ -4945,7 +5025,12 @@ local function CreateTopBar()
             halign = "right",
             hmargin = 8,
             click = function(element)
-                if m_submitting or m_submitted then
+                --After a successful send this is the Close button.
+                if m_submitted then
+                    CloseDialog()
+                    return
+                end
+                if m_submitting then
                     return
                 end
 
@@ -4969,7 +5054,14 @@ local function CreateTopBar()
                     attachments = m_attachments,
                     progress = function(ratio)
                         if statusLabel.valid and not m_submitted then
-                            statusLabel.text = string.format("Submitting... %d%%", math.floor(ratio * 100 + 0.5))
+                            --Uploads stop at 95%. The rest is saving the report,
+                            --which sends no progress, so say so instead of
+                            --sitting on a number that looks stuck.
+                            if ratio >= 0.95 then
+                                statusLabel.text = "Upload complete. Saving your report..."
+                            else
+                                statusLabel.text = string.format("Submitting... %d%%", math.floor(ratio * 100 + 0.5))
+                            end
                         end
                     end,
                     complete = function(reportid)
@@ -4977,15 +5069,9 @@ local function CreateTopBar()
                         m_submitted = true
                         m_reportid = reportid
                         if statusLabel.valid then
-                            local text = kindInfo.thanks
-                            if kindInfo.ticketInfo ~= nil and TicketBridgeAvailable() then
-                                text = text .. "\n\n" .. kindInfo.ticketInfo
-                            end
-                            if reportid ~= nil and reportid ~= "" then
-                                text = text .. string.format("\n\nYour ticket ID is %s (click to copy).", reportid)
-                            end
-                            statusLabel.text = text
-                            submitButton:SetClass("hidden", true)
+                            statusLabel.text = ""
+                            ShowConfirmation(reportid)
+                            submitButton.text = "Close"
                         end
 
                         --pick up the freshly created ticket so Your Tickets
@@ -5123,6 +5209,8 @@ local function CreateTopBar()
         formChildren[#formChildren + 1] = attachButton
         formChildren[#formChildren + 1] = m_attachmentsList
 
+        formPanel.children = formChildren
+
         --sized so the whole form is visible without scrolling (the tallest
         --variant is a bug report with a screenshot section); vscroll remains
         --as a safety net for long attachment lists. Below the scroll region
@@ -5136,15 +5224,8 @@ local function CreateTopBar()
                 flow = "vertical",
                 halign = "center",
 
-                gui.Panel{
-                    width = "100%",
-                    height = 640,
-                    vscroll = true,
-                    flow = "vertical",
-                    halign = "center",
-
-                    children = formChildren,
-                },
+                formPanel,
+                confirmationPanel,
 
                 statusLabel,
 
