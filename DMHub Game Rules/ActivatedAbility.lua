@@ -2886,8 +2886,11 @@ function CastActivatedAbilityChatMessage.Render(self, message)
         }
     end
 
+    --Builds the little target portraits. A function so that targets added mid-cast (e.g. by
+    --Chain Reaction) can be shown when the message refreshes.
+    local function BuildTargetTokenPanels(message)
     local targetTokenPanels = {}
-    for _,tok in ipairs(self:GetTargetTokens()) do
+    for _,tok in ipairs(message:GetTargetTokens()) do
         targetTokenPanels[#targetTokenPanels+1] = gui.CreateTokenImage(tok, {
             width = 28,
             height = 28,
@@ -2908,6 +2911,10 @@ function CastActivatedAbilityChatMessage.Render(self, message)
             end
         })
     end
+    return targetTokenPanels
+    end
+
+    local targetTokenPanels = BuildTargetTokenPanels(self)
 
     local m_statusCount = 0
     local statusLabel = gui.Label{
@@ -3021,6 +3028,10 @@ function CastActivatedAbilityChatMessage.Render(self, message)
         refreshMessage = function(element, message)
             self = message.properties
             m_status = message.properties.status
+            --Targets can be added while the ability is casting; redraw the portraits.
+            if targetsPanel ~= nil and targetsPanel.valid and #self.targetids ~= #targetsPanel.children then
+                targetsPanel.children = BuildTargetTokenPanels(self)
+            end
             --statusLabel may have been recycled/destroyed out from under this closure
             --during teardown (its panel reads as nil once recycled), while the parent
             --resultPanel that fires refreshMessage is still alive. Setting .thinkTime on
@@ -3852,6 +3863,20 @@ end
 --- @return boolean
 function ActivatedAbility:ShowChatMessageOnCast()
     return self.countsAsCast and self.categorization ~= "Hidden"
+end
+
+--Token id an action log card should credit as the actor: normally the caster, but a
+--trigger that sits on a victim because someone else applied it (Thorn Cage damage,
+--Pillar of Holy Fire) carries that applier in symbols.logsourceid.
+function ActivatedAbility.GetLogActorId(casterToken, options)
+	local symbols = options ~= nil and options.symbols or nil
+	if type(symbols) == "table" then
+		local sourceid = rawget(symbols, "logsourceid")
+		if sourceid ~= nil and dmhub.GetCharacterById(sourceid) ~= nil then
+			return sourceid
+		end
+	end
+	return casterToken.charid
 end
 
 function ActivatedAbility.GetTokenIds(targets)
