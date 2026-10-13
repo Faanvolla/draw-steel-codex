@@ -853,7 +853,7 @@ function TurnRewind.GoTo(index)
 	if resolving then
 		print(string.format("TurnRewind:: rewinding to %d cancels %d resolving cast(s)", index, ActivatedAbility.CountActiveCasts()))
 	end
-	audio.DispatchSoundEvent("Notify.Turn_Rewind")
+	audio.DispatchSoundEvent("Notify.Director_Undo")
 	return nil
 end
 

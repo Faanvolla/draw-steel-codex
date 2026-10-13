@@ -174,16 +174,6 @@ audio.SoundEvent{
     ignoreDuplicates = 1,
 }
 
---Turn Rewind rolling the board back (or forward) to a checkpoint, played on every client
---with the VCR screen effect. No sound yet: add one by dropping Notify_Turn_Rewind_v1_01.wav
---into the audiodev folder, listing it in `sounds` here, and uploading.
-audio.SoundEvent{
-    name = "Notify.Turn_Rewind",
-    mixgroup = "ui",
-    volume = 0.5,
-    ignoreDuplicates = 1,
-}
-
 
 audio.SoundEvent{
     name = "Notify.Malice_Use",
