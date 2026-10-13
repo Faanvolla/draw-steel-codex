@@ -394,7 +394,7 @@ function TurnCheckpoint.Revert(checkpoint)
 	audio.DispatchSoundEvent("Notify.Director_Undo")
 end
 
---Turn Rewind (prototype), behind the hidden dev:rewind preference (/toggle dev:rewind).
+--Turn Rewind (prototype), on by default; the hidden dev:rewind preference turns it off (/toggle dev:rewind).
 --While this client plays the current turn it keeps a history of combat checkpoints --
 --before the turn, then before and after each ability and each move -- and the Turn
 --History dialog (/rewind) rolls the board back or forward to any of them. No checkpoint
@@ -402,7 +402,7 @@ end
 local g_rewindSetting = setting{
 	id = "dev:rewind",
 	description = "Turn Rewind prototype: checkpoint your turn and roll it back with /rewind.",
-	default = false,
+	default = true,
 	storage = "preference",
 }
 
@@ -1293,7 +1293,7 @@ end
 Commands.RegisterMacro{
 	name = "rewind",
 	summary = "turn history",
-	doc = "Usage: /rewind\nOpens the Turn History dialog (needs /toggle dev:rewind): roll your turn back or forward to any checkpoint.",
+	doc = "Usage: /rewind\nOpens the Turn History dialog (unless turned off with /toggle dev:rewind): roll your turn back or forward to any checkpoint.",
 	command = function(str)
 		TurnRewind.ShowDialog()
 	end,
