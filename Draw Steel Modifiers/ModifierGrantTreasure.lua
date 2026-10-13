@@ -467,10 +467,23 @@ function CharacterTreasureGrantChoice.CreateNew(hero, feature, modifier)
     for _,entry in ipairs(MatchingItems(modifier)) do
         local item = entry.item
         local renderFn = function()
-            local content = item.description
+            --Render through the item's document so its annotations resolve
+            --(the image:main tag becomes the item icon); a bare markdown label
+            --only has the text and shows the tag literally.
+            local card = nil
             pcall(function()
-                content = item:RenderToMarkdown{ noninteractive = true }.content
+                card = item:Render{ noninteractive = true, width = "100%" }
             end)
+            if card ~= nil then
+                return gui.Panel{
+                    width = "98%",
+                    height = "auto",
+                    halign = "left",
+                    vmargin = 12,
+                    card,
+                }
+            end
+
             return gui.Label{
                 classes = {"builder-base", "label", "info"},
                 width = "98%",
@@ -479,7 +492,7 @@ function CharacterTreasureGrantChoice.CreateNew(hero, feature, modifier)
                 vmargin = 12,
                 textAlignment = "topleft",
                 markdown = true,
-                text = content,
+                text = item.description,
             }
         end
         options[#options+1] = {

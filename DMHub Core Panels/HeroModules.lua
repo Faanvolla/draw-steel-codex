@@ -1,7 +1,9 @@
 local mod = dmhub.GetModLoading()
 
 --Hero modules: modules of hero options (classes, ancestries, kits) that a
---player keeps in their inventory and switches on or off from the titlescreen.
+--player builds heroes with. A free one is used once the player adds it (Browse
+--Free Items) and stops being used when they remove it. A premium one the player
+--owns is used unless they switch it off on its store item's details page.
 --An enabled one is installed into the lobby game, where heroes are built,
 --through ModuleLua:InstallAsHeroModule, which only uses versions whose code an
 --admin approved. A disabled one is uninstalled from the lobby so its code stops
@@ -10,8 +12,8 @@ local mod = dmhub.GetModLoading()
 --The inventory is an account setting, so it follows the player between
 --machines (the lobby game itself is stored locally on each machine):
 --  { [moduleid] = { enabled = boolean, added = unix time } }
---A free module is in the inventory once added. A premium Hero module the player
---owns is always in it, enabled unless its entry says otherwise.
+--A free module has an entry while added (added > 0) and is always enabled. An
+--owned premium module needs no entry; SetEnabled writes one with added = 0.
 local g_heroModulesSetting = setting{
 	id = "heromodules",
 	description = "Hero Modules",
@@ -26,7 +28,7 @@ local g_heroModulesSetting = setting{
 --- @class HeroModuleItem
 --- @field module ModuleLua
 --- @field enabled boolean
---- @field added boolean True if the player added it; false for an owned premium module.
+--- @field added boolean True for a free module the player added; false for an owned premium module.
 
 --- @return table<string, HeroModuleEntry>
 local function GetEntries()
@@ -78,31 +80,22 @@ local function SetEntries(entries)
 	NotifyChanged()
 end
 
---- True if the player added this module to their inventory.
+--- True if the player added this (free) module.
 --- @param moduleid string
 --- @return boolean
 function HeroModules.IsAdded(moduleid)
-	return GetEntries()[moduleid] ~= nil
+	local entry = GetEntries()[moduleid]
+	return entry ~= nil and entry.added > 0
 end
 
---- How many modules the player has added to the inventory (owned premium
---- ones not counted). Lets a list tell an add/remove from an on/off switch.
---- @return number
-function HeroModules.AddedCount()
-	local count = 0
-	for _ in pairs(GetEntries()) do
-		count = count + 1
-	end
-	return count
-end
-
---- True unless the player switched this module off. Only meaningful for a
---- module in the inventory.
+--- True unless the player switched this module off. An added module is always
+--- on: removing it is how it stops applying. Only meaningful for a module in
+--- the inventory.
 --- @param moduleid string
 --- @return boolean
 function HeroModules.IsEnabled(moduleid)
 	local entry = GetEntries()[moduleid]
-	return entry == nil or entry.enabled
+	return entry == nil or entry.enabled or entry.added > 0
 end
 
 --- Adds a module to the inventory, enabled, and brings it into the lobby.
@@ -114,8 +107,8 @@ function HeroModules.Add(moduleid)
 	HeroModules.SyncLobby()
 end
 
---- Removes a module the player added. An owned premium module stays in the
---- inventory; use SetEnabled to switch it off.
+--- Removes a module the player added, so it no longer applies. An owned
+--- premium module stays in the inventory; use SetEnabled to switch it off.
 --- @param moduleid string
 function HeroModules.Remove(moduleid)
 	local entries = GetEntries()
@@ -124,12 +117,12 @@ function HeroModules.Remove(moduleid)
 	HeroModules.SyncLobby()
 end
 
+--- Switches an owned premium module on or off for the player's heroes.
 --- @param moduleid string
 --- @param enabled boolean
 function HeroModules.SetEnabled(moduleid, enabled)
 	local entries = GetEntries()
-	local existing = entries[moduleid]
-	entries[moduleid] = { enabled = enabled, added = existing ~= nil and existing.added or os.time() }
+	entries[moduleid] = { enabled = enabled, added = 0 }
 	SetEntries(entries)
 	HeroModules.SyncLobby()
 end
@@ -144,8 +137,10 @@ function HeroModules.CollectInventory(callback)
 
 	--moduleid -> true if the player added it.
 	local ids = {}
-	for id, _ in pairs(entries) do
-		ids[id] = true
+	for id, entry in pairs(entries) do
+		if entry.added > 0 then
+			ids[id] = true
+		end
 	end
 	for _, list in ipairs({ module.GetOurPurchasedModules(), module.GetOurPatreonModules() }) do
 		for _, id in ipairs(list) do
@@ -176,14 +171,15 @@ function HeroModules.CollectInventory(callback)
 			moduleid = id,
 			success = function(info)
 				--a purchased module counts only if it is a Hero module the player
-				--may use; a module they added is listed even if it can't be used
-				--yet, so the inventory can say why.
-				if info.isHeroModule and (added or info.owned) then
+				--owns. An added free module is always on; premium ones are never
+				--"added" (an older entry may still carry an added time).
+				local playerAdded = added and not info.premium
+				if info.isHeroModule and (playerAdded or info.owned) then
 					local entry = entries[id]
 					items[#items+1] = {
 						module = info,
-						enabled = entry == nil or entry.enabled,
-						added = added,
+						enabled = playerAdded or entry == nil or entry.enabled,
+						added = playerAdded,
 					}
 				end
 				pending = pending - 1

@@ -525,8 +525,8 @@ function creature:MovementMultiplier()
 	return self:CalculateAttribute("movementMultiplier", 1)
 end
 
---- The creature's base movement speed with the given movement type.
---- @param movementType string
+--- The creature's base movement speed with the given movement type (nil means walking).
+--- @param movementType string|nil
 --- @return number
 function creature:GetBaseSpeed(movementType)
 	if movementType == 'speed' or movementType == 'walk' or movementType == nil then

@@ -3218,7 +3218,7 @@ CreateImportAssetsDialog = function(args)
             end
 
             local host = frame ~= nil and frame.parent or nil
-            if host == nil or host.renderedWidth <= 0 or host.renderedHeight <= 0 then
+            if frame == nil or host == nil or host.renderedWidth <= 0 or host.renderedHeight <= 0 then
                 return
             end
 

@@ -3793,6 +3793,119 @@ local ShowItemDetailsInternal = function(args)
 		}
 	end
 
+	--Hero module switch (inventory only): when the viewed item sells a premium
+	--Hero module the player owns (bought, or granted by Patreon), a button turning its classes, ancestries and
+	--other options on or off for their heroes (HeroModules.SetEnabled). The
+	--item only names the module, so its record is downloaded to learn whether
+	--it is a Hero module; the panel stays collapsed until then.
+	local m_heroModuleToggle = nil
+	if not args.gift then
+		local heroToggleLabel = gui.Label{
+			text = "",
+			fontSize = 14,
+			width = 600,
+			height = "auto",
+			halign = "left",
+			textAlignment = "left",
+			vmargin = 4,
+		}
+
+		local heroToggleButton
+		heroToggleButton = gui.Label{
+			classes = {"itemButton"},
+			text = "",
+			width = 300,
+			halign = "left",
+			data = { fullid = nil, enabled = true },
+			press = function(element)
+				if element.data.fullid ~= nil then
+					--the change notification refreshes the panel.
+					HeroModules.SetEnabled(element.data.fullid, not element.data.enabled)
+				end
+			end,
+		}
+
+		m_heroModuleToggle = gui.Panel{
+			classes = {"collapsedUnlessInventory", "collapsed"},
+			flow = "vertical",
+			width = "auto",
+			height = "auto",
+			halign = "left",
+			vmargin = 8,
+			data = { requestId = 0, info = nil },
+
+			create = function(element)
+				HeroModules.Listen(element)
+			end,
+
+			heroModulesChanged = function(element)
+				element:FireEvent("refreshHeroToggle")
+			end,
+
+			showProductDetails = function(element, item)
+				local requestId = element.data.requestId + 1
+				element.data.requestId = requestId
+				element.data.info = nil
+				element:FireEvent("refreshHeroToggle")
+
+				if item == nil or item.itemType ~= "Module" or item.assetid == nil or item.assetid == "" then
+					return
+				end
+
+				module.DownloadModuleInfo{
+					moduleid = item.assetid,
+					success = function(info)
+						if not element.valid or element.data.requestId ~= requestId then
+							return
+						end
+						--owned covers a purchase and a Patreon membership alike.
+						if info.isHeroModule and info.premium and info.owned then
+							element.data.info = info
+							element:FireEvent("refreshHeroToggle")
+						end
+					end,
+					failure = function(message)
+						print(string.format("Shop: could not download module %s: %s", item.assetid, tostring(message)))
+					end,
+				}
+			end,
+
+			hideProductDetails = function(element)
+				element.data.requestId = element.data.requestId + 1
+				element.data.info = nil
+				element:FireEvent("refreshHeroToggle")
+			end,
+
+			refreshHeroToggle = function(element)
+				local info = element.data.info
+				element:SetClass("collapsed", info == nil)
+				if info == nil then
+					heroToggleButton.data.fullid = nil
+					return
+				end
+
+				local fullid = info.fullid
+				local enabled = HeroModules.IsEnabled(fullid)
+				heroToggleButton.data.fullid = fullid
+				heroToggleButton.data.enabled = enabled
+				heroToggleButton.text = cond(enabled, "Used with my Heroes", "Use with my Heroes")
+				heroToggleButton:SetClass("equipped", enabled)
+
+				local err = HeroModules.GetError(fullid)
+				if not enabled then
+					heroToggleLabel.text = "Switched off: its classes, ancestries and other options are not used with your heroes."
+				elseif err ~= nil then
+					heroToggleLabel.text = string.format("<color=#ff8888>%s</color>", err)
+				else
+					heroToggleLabel.text = "Its classes, ancestries and other options are available when you build heroes, and come with your heroes into the games they join. Press to switch it off."
+				end
+			end,
+
+			heroToggleLabel,
+			heroToggleButton,
+		}
+	end
+
 	return gui.Panel{
 		classes = {"shopDetailsMainPanel"},
 
@@ -4409,6 +4522,8 @@ local ShowItemDetailsInternal = function(args)
 				halign = "left",
 				m_shopItemText,
 			}),
+
+			m_heroModuleToggle,
 		},
 
 		--The adventure store page (hero, media viewer, about/cast, buy box).
@@ -4477,19 +4592,15 @@ function ShowShopItemDetails(args)
 	return gui.Panel(params)
 end
 
---One Hero module (a module of classes, ancestries and other hero options, see
---HeroModules.lua) as a card: the module browser's own card over a row of
---controls. The card doesn't open the module's page: the browser is a modal,
---and the store sits above the modal layer, so it would open out of sight.
---  mode "free": an Add to my Inventory button, or "In your Inventory".
---  mode "inventory": an on/off switch, a Remove button for a module the player
---  added, and why the module can't be used yet, if it can't.
---item is the HeroModuleItem in inventory mode.
+--One free Hero module (a module of classes, ancestries and other hero options,
+--see HeroModules.lua) as a card in Browse Free Items: the module browser's own
+--card over an Add / Remove button. An added module is used with the player's
+--heroes; removing it stops that. The card doesn't open the module's page: the
+--browser is a modal, and the store sits above the modal layer, so it would
+--open out of sight.
 --- @param info ModuleLua
---- @param mode "free"|"inventory"
---- @param item nil|HeroModuleItem
 --- @return Panel
-local MakeHeroModuleCard = function(info, mode, item)
+local MakeHeroModuleCard = function(info)
 	local slot = ModuleBrowser.CreateModuleSlot{}
 
 	local statusLabel = gui.Label{
@@ -4513,69 +4624,19 @@ local MakeHeroModuleCard = function(info, mode, item)
 	local Refresh = function()
 		local fullid = info.fullid
 		local added = HeroModules.IsAdded(fullid)
-		local err = HeroModules.GetError(fullid)
 		statusLabel.text = ""
 
-		if mode == "free" then
-			if added then
-				controls.children = {
-					gui.Label{
-						text = "In your Inventory",
-						fontSize = 16,
-						width = "auto",
-						height = "auto",
-						valign = "center",
-						hmargin = 8,
-					},
-					gui.Button{
-						text = "Remove",
-						width = 100,
-						height = 30,
-						fontSize = 14,
-						valign = "center",
-						click = function()
-							HeroModules.Remove(fullid)
-						end,
-					},
-				}
-			else
-				controls.children = {
-					gui.Button{
-						text = "Add to my Inventory",
-						width = 200,
-						height = 34,
-						fontSize = 16,
-						click = function()
-							HeroModules.Add(fullid)
-						end,
-					},
-				}
-			end
-		else
-			--the store's styles have no checkbox art, so the switch is a
-			--button. A switched-off module stays out of new games; its content
-			--leaves the titlescreen the next time the lobby loads.
-			local enabled = HeroModules.IsEnabled(fullid)
-			if not enabled then
-				statusLabel.text = "Switched off: not used with your heroes."
-				err = nil
-			end
-			local children = {
-				gui.Button{
-					text = cond(enabled, "Switch Off", "Switch On"),
-					width = 110,
-					height = 30,
-					fontSize = 14,
+		if added then
+			controls.children = {
+				gui.Label{
+					text = "Added",
+					fontSize = 16,
+					width = "auto",
+					height = "auto",
 					valign = "center",
-					hmargin = 4,
-					click = function()
-						--the change notification refreshes this card.
-						HeroModules.SetEnabled(fullid, not enabled)
-					end,
+					hmargin = 8,
 				},
-			}
-			if item ~= nil and item.added then
-				children[#children+1] = gui.Button{
+				gui.Button{
 					text = "Remove",
 					width = 100,
 					height = 30,
@@ -4584,17 +4645,25 @@ local MakeHeroModuleCard = function(info, mode, item)
 					click = function()
 						HeroModules.Remove(fullid)
 					end,
-				}
-			end
-			controls.children = children
+				},
+			}
 
-			if info.premium and not info.owned then
-				statusLabel.text = "<color=#ff8888>You no longer own this module.</color>"
+			local err = HeroModules.GetError(fullid)
+			if err ~= nil then
+				statusLabel.text = string.format("<color=#ff8888>%s</color>", err)
 			end
-		end
-
-		if err ~= nil and (mode == "inventory" or added) then
-			statusLabel.text = string.format("<color=#ff8888>%s</color>", err)
+		else
+			controls.children = {
+				gui.Button{
+					text = "Add to my Inventory",
+					width = 200,
+					height = 34,
+					fontSize = 16,
+					click = function()
+						HeroModules.Add(fullid)
+					end,
+				},
+			}
 		end
 	end
 
@@ -4631,6 +4700,33 @@ local MakeHeroModuleGrid = function()
 		halign = "center",
 		styles = ThemeEngine.MergeTokens(ModuleBrowser.moduleStyles),
 	}
+end
+
+--An inventory entry for a Hero module no store item sells (one a Patreon
+--membership grants): a plain table with the ShopItemLua fields the grid and
+--the details page read, so it shows and opens like a real item.
+--- @param info ModuleLua
+--- @return ShopItemLua
+local MakeHeroModuleShopEntry = function(info)
+	local images = {}
+	if type(info.coverart) == "string" and info.coverart ~= "" then
+		images[1] = info.coverart
+	end
+	local entry = {
+		id = "heromodule:" .. info.fullid,
+		name = info.name or "",
+		details = info.details or "",
+		itemType = "Module",
+		assetid = info.fullid,
+		price = 0,
+		images = images,
+		keywords = "",
+		onsale = false,
+		hasBundle = false,
+		bundle = {},
+		ctime = 0,
+	}
+	return entry --[[@as ShopItemLua]]
 end
 
 --Builds one row displaying a gift code the user owns: item name, purchase
@@ -4841,7 +4937,14 @@ local function CreateShopScreenInternal(arguments)
 
 		end
 
+		--the last search, so a list that grows later can be searched again.
+		local m_searchText = ""
+
+		--bumped by each showInventory, so a stale Patreon lookup is dropped.
+		local m_patreonRequest = 0
+
 		local ExecuteSearch = function(str)
+			m_searchText = str or ""
 			local words = {}
 
 			if str ~= nil then
@@ -5196,7 +5299,6 @@ local function CreateShopScreenInternal(arguments)
 				end
 
 				resultPanel:SetClassTree("browsingFreeItems", false)
-				resultPanel:FireEventTree("refreshHeroInventory")
 
 				local productIndex = {}
 				for _,item in ipairs(fullProductDatabase) do
@@ -5256,6 +5358,45 @@ local function CreateShopScreenInternal(arguments)
 				element:SetClassTree("inventory", true)
 
 				ExecuteSearch("")
+
+				--Hero modules a Patreon membership grants have no purchase, so
+				--they join the list once their records arrive: as the store item
+				--selling the module, or a generated entry if none does. Their
+				--details page carries the switch that turns them on or off.
+				m_patreonRequest = m_patreonRequest + 1
+				local requestId = m_patreonRequest
+				HeroModules.CollectInventory(function(heroItems)
+					if requestId ~= m_patreonRequest or not resultPanel.valid or not resultPanel:HasClass("inventory") then
+						return
+					end
+
+					local purchased = {}
+					for _, id in ipairs(module.GetOurPurchasedModules()) do
+						purchased[id] = true
+					end
+
+					local listed = {}
+					for _, product in ipairs(m_allProducts) do
+						listed[product.id] = true
+					end
+
+					local addedAny = false
+					for _, heroItem in ipairs(heroItems) do
+						local info = heroItem.module
+						if not heroItem.added and info.premium and info.owned and not purchased[info.fullid] then
+							local product = CodexShop.ItemForModule(info.fullid) or MakeHeroModuleShopEntry(info)
+							if not listed[product.id] then
+								listed[product.id] = true
+								m_allProducts[#m_allProducts+1] = product
+								addedAny = true
+							end
+						end
+					end
+
+					if addedAny then
+						ExecuteSearch(m_searchText)
+					end
+				end)
 			end,
 
 			hideInventory = function(element)
@@ -5378,78 +5519,6 @@ local function CreateShopScreenInternal(arguments)
 							classes = {"shopDescription"},
 							text = "All the items you own!",
 						},
-					},
-
-					--Hero modules in the inventory: the classes, ancestries and
-					--other hero options this player builds heroes with. Switched-on
-					--ones are installed on the titlescreen and brought into every
-					--game the player's heroes enter (HeroModules.lua).
-					gui.Panel{
-						classes = {"collapsedUnlessInventory", "heroInventorySection"},
-						flow = "vertical",
-						width = "100%",
-						height = "auto",
-						vmargin = 20,
-
-						styles = {
-							{
-								selectors = {"heroInventorySection", "showingCouponInventory"},
-								collapsed = 1,
-							},
-						},
-
-						create = function(element)
-							HeroModules.Listen(element)
-						end,
-
-						--rebuild the list when a module was added or removed; an
-						--on/off switch only changes the card that was clicked.
-						heroModulesChanged = function(element)
-							if element.data.addedCount ~= nil and element.data.addedCount ~= HeroModules.AddedCount() then
-								element:FireEvent("refreshHeroInventory")
-							end
-						end,
-
-						refreshHeroInventory = function(element)
-							local requestId = (element.data.requestId or 0) + 1
-							element.data.requestId = requestId
-							element.data.addedCount = HeroModules.AddedCount()
-							HeroModules.CollectInventory(function(items)
-								if not element.valid or element.data.requestId ~= requestId then
-									return
-								end
-
-								local cards = {}
-								for _, item in ipairs(items) do
-									cards[#cards+1] = MakeHeroModuleCard(item.module, "inventory", item)
-								end
-
-								local grid = MakeHeroModuleGrid()
-								grid.children = cards
-
-								local message = "Switched-on modules are available when you build heroes, and are brought into the games your heroes join."
-								if #items == 0 then
-									message = "Hero modules add classes, ancestries and other options for your heroes. Find free ones under Browse Free Items."
-								end
-
-								element.children = {
-									gui.Label{
-										classes = {"shopDescription"},
-										halign = "center",
-										fontSize = 28,
-										bold = true,
-										color = "white",
-										text = "Hero Modules",
-									},
-									gui.Label{
-										classes = {"noresultsLabel"},
-										maxWidth = 800,
-										text = message,
-									},
-									grid,
-								}
-							end)
-						end,
 					},
 
 					gui.Panel{
@@ -6066,7 +6135,7 @@ local function CreateShopScreenInternal(arguments)
 							statusLabel:SetClass("collapsed", true)
 							local cards = {}
 							for _, info in ipairs(items) do
-								cards[#cards+1] = MakeHeroModuleCard(info, "free")
+								cards[#cards+1] = MakeHeroModuleCard(info)
 							end
 							grid.children = cards
 						end)

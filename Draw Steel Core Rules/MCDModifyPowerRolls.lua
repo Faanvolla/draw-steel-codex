@@ -343,6 +343,7 @@ CharacterModifier.TypeInfo.power = {
 			--Duration 0 expires instantly outside combat (see
 			--CharacterOngoingEffectInstance:Expired). armEffectIndefinite applies the
 			--marker with no duration instead; the marker must then purge itself.
+			---@type number|nil
 			local armDuration = 0
 			if modifier:try_get("armEffectIndefinite", false) then
 				armDuration = nil

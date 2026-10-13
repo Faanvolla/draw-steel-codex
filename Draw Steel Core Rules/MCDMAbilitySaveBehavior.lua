@@ -1050,13 +1050,14 @@ function ActivatedAbilitySaveEndsToEotBehavior:Cast(ability, casterToken, target
 
             local chosen = items
             if #items > 1 then
-                chosen = ChooseSaveEndsItems(ability.name, targetToken, items, self.allowMultiple)
-                if chosen == nil then
+                local picked = ChooseSaveEndsItems(ability.name, targetToken, items, self.allowMultiple)
+                if picked == nil then
                     --Declining the menu cancels the whole cast, so nothing is spent.
                     options.abort = true
                     options.stopProcessing = true
                     return
                 end
+                chosen = picked
             end
 
             if #chosen > 0 then
