@@ -126,6 +126,7 @@
 --- @field tablesUpdateId number A number which increases by 1 every time the compendium assets are updated. Can save this value and then compare to it later to see if the compendium has changed at all since we last checked.
 --- @field ngameupdate integer (read-only) A sequential integer that is unique to the game being updated from the cloud. Anytime this value changes we have new data from the cloud and the game is in a different state.
 --- @field gameContentUpdateSeq integer (read-only) Like ngameupdate, but not advanced by session pings (the periodic /usersToSessions writes every connected client makes). It changes whenever game data that matters to play changes -- characters, initiative, shared documents, map objects -- so poll it to tell whether anything has happened since a value was last seen.
+--- @field checkpointContentSeq integer (read-only) Like gameContentUpdateSeq, but only advanced by game updates that touch what a combat checkpoint captures: characters, map objects, initiative, and the documents registered with RegisterDocumentForCheckpointBackups. Background writes to other shared documents (presence heartbeats, settings) leave it alone, so poll it to tell whether the board has changed since a checkpoint was taken.
 --- @field gameupdateid string (read-only) A guid that is unique to the game being updated from the cloud. Anytime this value changes we have new data from the cloud and the game is in a different state.
 --- @field tooltipsSuppressed boolean Tooltip Suppression Mode: while true, no tooltip is displayed anywhere on this client -- panel hover tooltips, map/tile tooltips, and the token-drag movement tooltip (and with it the movement cross-section diagram it carries). Any tooltip already on screen is dismissed the moment this is set. Client-only and session-scoped: it lives on the game session, so leaving the game always restores tooltips even if a mod forgets to clear it. Intended for a mod that needs an uncluttered phase of play; prefer the core codex wrapper GameHud.SetTooltipsSuppressed(key, value), which also stops the movement cross-section diagram from being rendered at all and lets several mods hold the suppression independently.
 --- @field currentRollGuid nil|string (Read-only) The guid that has been assigned to the current roll that is being previewed.
@@ -1589,6 +1590,12 @@ function dmhub.GenerateGuid() end
 --- @param vibrato? any
 --- @param randomness? any
 function dmhub.ScreenShake(duration, strength, vibrato, randomness) end
+
+--- Plays a brief full-screen effect over everything on this machine (map and UI), fading in and out over `duration` seconds (default 1). Only one plays at a time; a new one replaces it. Returns false if the effect is unknown or its shader is unavailable. Effects: 'vcrRewind' (a tape-rewind distortion).
+--- @param effectId string
+--- @param duration nil|number
+--- @return boolean
+function dmhub.PlayScreenEffect(effectId, duration) end
 
 --- Format a timestamp as an attractive display and returns it.
 --- @param timestamp number

@@ -297,12 +297,12 @@ end
 --- @field turn number q.turn when taken; SelectTurn moves it on by one as the turn starts.
 --- @field round number
 --- @field guid string The combat (initiative queue) the snapshot belongs to.
---- @field seq number dmhub.gameContentUpdateSeq when taken.
+--- @field seq number dmhub.checkpointContentSeq when taken.
 TurnCheckpoint = {
 	--- @type TurnCheckpointRecord|nil
 	current = nil,
 
-	--dmhub.gameContentUpdateSeq as last seen, and dmhub.Time() when it last changed.
+	--dmhub.checkpointContentSeq as last seen, and dmhub.Time() when it last changed.
 	seenSeq = -1,
 	seenTime = 0,
 }
@@ -318,7 +318,7 @@ function TurnCheckpoint.Capture(q)
 		turn = q.turn,
 		round = q.round,
 		guid = q.guid,
-		seq = dmhub.gameContentUpdateSeq,
+		seq = dmhub.checkpointContentSeq,
 	}
 end
 
@@ -329,7 +329,7 @@ end
 --- @param q InitiativeQueue
 function TurnCheckpoint.TrackBetweenTurns(q)
 	local now = dmhub.Time()
-	local seq = dmhub.gameContentUpdateSeq
+	local seq = dmhub.checkpointContentSeq
 	if seq ~= TurnCheckpoint.seenSeq then
 		TurnCheckpoint.seenSeq = seq
 		TurnCheckpoint.seenTime = now
@@ -356,7 +356,7 @@ function TurnCheckpoint.BeforeSelectTurn(q)
 
 	local cur = TurnCheckpoint.current
 	if cur ~= nil and cur.turn == q.turn and cur.round == q.round and cur.guid == q.guid
-		and cur.seq == dmhub.gameContentUpdateSeq then
+		and cur.seq == dmhub.checkpointContentSeq then
 		return
 	end
 
@@ -406,11 +406,18 @@ local g_rewindSetting = setting{
 	storage = "preference",
 }
 
+--Something that happened during the turn. The Turn History dialog lists these as plain
+--text between the checkpoint buttons; rolls show in red, since rewinding past one and
+--rolling again is a re-roll.
+--- @class TurnRewindAction
+--- @field text string
+--- @field roll boolean|nil
+
 --- @class TurnRewindEntry
---- @field label string What had just happened (or was about to), as the dialog shows it.
+--- @field label string What had just happened (or was about to), e.g. "After Move"; the button's tooltip.
 --- @field checkpoint CombatCheckpoint
---- @field seq number dmhub.gameContentUpdateSeq while the board matched this entry.
---- @field rolls number Dice rolls seen this turn when it was taken.
+--- @field seq number dmhub.checkpointContentSeq while the board matched this entry.
+--- @field actions TurnRewindAction[] What happened between the previous entry and this one.
 
 TurnRewind = {
 	--initiative guid:round:turn of the turn the history belongs to.
@@ -421,18 +428,25 @@ TurnRewind = {
 	--The entry the board currently matches. Entries after it were rewound past and can be
 	--rolled forward to, until the player does something new.
 	position = 0,
-	--Dice rolls seen on any client while this turn's history was kept.
-	rollCount = 0,
+	--Actions since the current entry, waiting for the next entry to take them.
+	--- @type TurnRewindAction[]
+	pendingActions = {},
 	--Label of the checkpoint to take once the current action settles, e.g. "After Move".
 	--- @type string|nil
 	pendingAfter = nil,
 	--True from a restore until the board settles, so the restored state's seq is learned.
 	restoring = false,
-	--dmhub.gameContentUpdateSeq and dmhub.Time() when the restore was sent. The restore
+	--dmhub.checkpointContentSeq and dmhub.Time() when the restore was sent. The restore
 	--reaches this client as a game update, later than the call when it travels over the
 	--network, and the board only matches the entry once it has arrived.
 	restoreFromSeq = -1,
 	restoreTime = 0,
+	--Set when a restore cancelled abilities that were still resolving. A cancelled cast
+	--keeps running until its next step and writes as it unwinds (refunds, costs, the end
+	--of a half-applied effect), all after the restore. Once those casts are gone, the
+	--checkpoint is restored a second time to undo whatever they wrote.
+	--- @type {index: integer}|nil
+	cancelPass = nil,
 	--True when this client started the turn (InitiativeQueue:SelectTurn ran here).
 	selectedHere = false,
 	--charid of the token whose move is waiting for its "after" checkpoint. A move's new
@@ -440,6 +454,9 @@ TurnRewind = {
 	--settled while it is still moving.
 	--- @type string|nil
 	movingTokenId = nil,
+	--The Turn History dialog while it is open.
+	--- @type Panel|nil
+	dialog = nil,
 	--The Turn History dialog's list while it is open, so Ctrl+Z/Ctrl+Y can refresh it.
 	--- @type Panel|nil
 	dialogList = nil,
@@ -455,6 +472,12 @@ TurnRewind = {
 --How long game data must be unchanged, with nothing resolving here, before an action
 --counts as finished and its "after" checkpoint is taken.
 local g_rewindQuietSeconds = 0.75
+
+--How long the cancel pass waits for cancelled casts to unwind before restoring again
+--anyway. Every client withdraws its cancelled casts' roll requests and force-closes any
+--still stuck after 8s (the restoreFromBackup handler in ActivatedAbility.lua), so this
+--leaves time for those closes, and the writes their FinishCast makes, to arrive.
+local g_rewindCancelPassTimeout = 10
 
 --Roll guids already counted this turn (see the DiceRoll handler).
 local g_rewindRollsSeen = {}
@@ -504,9 +527,10 @@ function TurnRewind.Reset(turnKey)
 	TurnRewind.turnKey = turnKey
 	TurnRewind.entries = {}
 	TurnRewind.position = 0
-	TurnRewind.rollCount = 0
+	TurnRewind.pendingActions = {}
 	TurnRewind.pendingAfter = nil
 	TurnRewind.restoring = false
+	TurnRewind.cancelPass = nil
 	TurnRewind.selectedHere = false
 	TurnRewind.movingTokenId = nil
 	g_rewindRollsSeen = {}
@@ -535,7 +559,7 @@ end
 --- @param checkpoint CombatCheckpoint|nil a snapshot already taken of exactly this state
 local function RewindAddEntry(label, checkpoint)
 	RewindTruncateForward()
-	local seq = dmhub.gameContentUpdateSeq
+	local seq = dmhub.checkpointContentSeq
 	local cur = TurnRewind.entries[TurnRewind.position]
 	if cur ~= nil and cur.seq == seq then
 		return
@@ -544,17 +568,28 @@ local function RewindAddEntry(label, checkpoint)
 		label = label,
 		checkpoint = checkpoint or backup.CreateCombatCheckpoint(),
 		seq = seq,
-		rolls = TurnRewind.rollCount,
+		actions = TurnRewind.pendingActions,
 	}
+	TurnRewind.pendingActions = {}
 	TurnRewind.position = #TurnRewind.entries
+end
+
+--Notes something that happened, for the dialog. It goes before the next checkpoint.
+--- @param text string
+--- @param roll boolean|nil
+local function RewindNoteAction(text, roll)
+	local actions = TurnRewind.pendingActions
+	actions[#actions+1] = {text = text, roll = roll}
 end
 
 --Checkpoint at the start of an action. If the previous action's "after" checkpoint is
 --still waiting for the board to settle, this state is that one, so it takes that label.
 --- @param beforeLabel string
 --- @param afterLabel string
-local function RewindBeginAction(beforeLabel, afterLabel)
+--- @param actionText string the action as the dialog lists it, e.g. "Shadow moved"
+local function RewindBeginAction(beforeLabel, afterLabel, actionText)
 	RewindAddEntry(TurnRewind.pendingAfter or beforeLabel)
+	RewindNoteAction(actionText)
 	TurnRewind.pendingAfter = afterLabel
 	--The action's own changes have not arrived yet: measure the quiet period from now,
 	--or the next poll would take the "after" checkpoint before anything happened.
@@ -579,11 +614,12 @@ function TurnRewind.BeforeSelectTurn(q, initiativeid)
 	--Revert Turn has usually just snapshotted this exact state; reuse it.
 	local reuse = nil
 	local tc = TurnCheckpoint.current
-	if tc ~= nil and tc.seq == dmhub.gameContentUpdateSeq and tc.guid == q.guid and tc.round == q.round and tc.turn == q.turn then
+	if tc ~= nil and tc.seq == dmhub.checkpointContentSeq and tc.guid == q.guid and tc.round == q.round and tc.turn == q.turn then
 		reuse = tc.checkpoint
 	end
 
 	RewindAddEntry("Before the turn started", reuse)
+	RewindNoteAction("Turn started")
 	TurnRewind.pendingAfter = "Start of turn"
 	TurnRewind.seenTime = dmhub.Time()
 end
@@ -602,11 +638,13 @@ ActivatedAbility.RegisterCastStartHandler(function(ability, casterToken, options
 	if not ability:CountsAsRegularAbilityCast() then
 		--Triggered and hidden casts (start-of-turn triggers, fall damage after a move)
 		--are not actions of their own: just make sure a checkpoint follows them.
+		RewindNoteAction(ability.name)
 		TurnRewind.pendingAfter = TurnRewind.pendingAfter or ("After " .. ability.name)
 		TurnRewind.seenTime = dmhub.Time()
 		return
 	end
-	RewindBeginAction("Before " .. ability.name, "After " .. ability.name)
+	RewindBeginAction("Before " .. ability.name, "After " .. ability.name,
+		string.format("%s used %s", creature.GetTokenDescription(casterToken), ability.name))
 end)
 
 --Checkpoint before a move of a token this client controls. creature:OnMove runs on the
@@ -624,7 +662,7 @@ function creature:OnMove(path)
 		end
 		RewindEnsureTurn(q)
 		local name = creature.GetTokenDescription(token)
-		RewindBeginAction(string.format("Before %s moved", name), string.format("After %s moved", name))
+		RewindBeginAction(string.format("Before %s moved", name), string.format("After %s moved", name), string.format("%s moved", name))
 		TurnRewind.movingTokenId = token.charid
 	end)
 	if not ok then
@@ -633,7 +671,7 @@ function creature:OnMove(path)
 	return g_rewindBaseOnMove(self, path)
 end
 
---Every roll seen while a history is kept; the dialog flags the gaps that contain rolls.
+--Every roll seen while a history is kept is noted for the dialog, which shows it in red.
 --Accepting a result raises DiceRoll again with no dice in it, so only events carrying
 --dice count, once per roll guid.
 dmhub.RegisterEventHandler("DiceRoll", function(info)
@@ -646,14 +684,19 @@ dmhub.RegisterEventHandler("DiceRoll", function(info)
 		return
 	end
 	g_rewindRollsSeen[first.guid] = true
-	TurnRewind.rollCount = TurnRewind.rollCount + 1
+	local description = info.description
+	if type(description) == "string" and description ~= "" then
+		RewindNoteAction("Dice roll: " .. description, true)
+	else
+		RewindNoteAction("Dice roll", true)
+	end
 end)
 
 --Polled every 0.1s: starts the history when a turn of ours begins, and takes the
 --"after" checkpoint once the current action has settled.
 function TurnRewind.Poll()
 	local now = dmhub.Time()
-	local seq = dmhub.gameContentUpdateSeq
+	local seq = dmhub.checkpointContentSeq
 	if seq ~= TurnRewind.seenSeq then
 		TurnRewind.seenSeq = seq
 		TurnRewind.seenTime = now
@@ -684,6 +727,34 @@ function TurnRewind.Poll()
 	--the restore's own update to arrive (5s at most) before trusting the quiet.
 	if TurnRewind.restoring then
 		local arrived = seq ~= TurnRewind.restoreFromSeq or now - TurnRewind.restoreTime > 5
+
+		--The restore cancelled abilities that were resolving. Once they have unwound (or
+		--the wait times out), restore again to undo what they wrote while unwinding.
+		local cancelPass = TurnRewind.cancelPass
+		if cancelPass ~= nil then
+			local timedOut = now - TurnRewind.restoreTime > g_rewindCancelPassTimeout
+			if (arrived and settled) or timedOut then
+				TurnRewind.cancelPass = nil
+				local entry = TurnRewind.entries[cancelPass.index]
+				if entry ~= nil then
+					if timedOut and not NothingResolving() then
+						print(string.format("TurnRewind:: %d cancelled cast(s) still running after %ds; restoring again anyway", ActivatedAbility.CountActiveCasts(), g_rewindCancelPassTimeout))
+					end
+					TurnRewind.restoreFromSeq = seq
+					TurnRewind.restoreTime = now
+					--quiet: the rewind's effects already played for the first restore.
+					local err = entry.checkpoint:Restore{quiet = true}
+					if err ~= nil then
+						print("TurnRewind:: cancel pass restore failed:", err)
+					end
+				end
+				--Rolls and actions noted while the casts unwound were cancelled with them.
+				TurnRewind.pendingActions = {}
+				TurnRewind.pendingAfter = nil
+			end
+			return
+		end
+
 		if arrived and settled then
 			local cur = TurnRewind.entries[TurnRewind.position]
 			if cur ~= nil then
@@ -701,6 +772,7 @@ function TurnRewind.Poll()
 	--A turn of ours began without SelectTurn running here (e.g. the Director picked it).
 	if RewindTurnKey(q) ~= TurnRewind.turnKey then
 		TurnRewind.Reset(RewindTurnKey(q))
+		RewindNoteAction("Turn started")
 		TurnRewind.pendingAfter = "Start of turn"
 	end
 
@@ -729,10 +801,12 @@ function TurnRewind.BoardMovedOn()
 		return false
 	end
 	local cur = TurnRewind.entries[TurnRewind.position]
-	return cur == nil or cur.seq ~= dmhub.gameContentUpdateSeq
+	return cur == nil or cur.seq ~= dmhub.checkpointContentSeq
 end
 
---Rolls the board back (or forward) to entry index.
+--Rolls the board back (or forward) to entry index. Abilities still resolving are
+--cancelled: the restore sets their abort flag on every client (the restoreFromBackup
+--handler in ActivatedAbility.lua), and a cancel pass restores again once they unwind.
 --- @param index integer
 --- @return string|nil error why it could not, or nil on success
 function TurnRewind.GoTo(index)
@@ -744,11 +818,9 @@ function TurnRewind.GoTo(index)
 	--If the board has moved on from the current entry, keep it as a new entry so the
 	--player can come back to it. Forward entries are no longer valid in that case.
 	local diverged = TurnRewind.BoardMovedOn()
-	if index == TurnRewind.position and not diverged then
+	local resolving = not NothingResolving()
+	if index == TurnRewind.position and not diverged and not resolving then
 		return nil
-	end
-	if not NothingResolving() then
-		return "Wait for the ability that is resolving to finish."
 	end
 
 	if diverged then
@@ -756,83 +828,189 @@ function TurnRewind.GoTo(index)
 			RewindTruncateForward()
 			return "The turn has moved on since then, so there is nothing to roll forward to."
 		end
-		RewindAddEntry(TurnRewind.pendingAfter or "Latest")
+		if resolving then
+			--A board caught mid-ability cannot be come back to (the cast cannot be
+			--restored with it), so it is not kept as an entry.
+			RewindTruncateForward()
+		else
+			RewindAddEntry(TurnRewind.pendingAfter or "Latest")
+		end
 		TurnRewind.pendingAfter = nil
 	end
 
-	local restoreFromSeq = dmhub.gameContentUpdateSeq
+	local restoreFromSeq = dmhub.checkpointContentSeq
 	local err = entry.checkpoint:Restore()
 	if err ~= nil then
 		return err
 	end
 	TurnRewind.position = index
 	TurnRewind.pendingAfter = nil
+	TurnRewind.pendingActions = {}
 	TurnRewind.restoring = true
 	TurnRewind.restoreFromSeq = restoreFromSeq
 	TurnRewind.restoreTime = dmhub.Time()
-	audio.DispatchSoundEvent("Notify.Director_Undo")
+	TurnRewind.cancelPass = cond(resolving, {index = index}, nil)
+	if resolving then
+		print(string.format("TurnRewind:: rewinding to %d cancels %d resolving cast(s)", index, ActivatedAbility.CountActiveCasts()))
+	end
+	audio.DispatchSoundEvent("Notify.Turn_Rewind")
 	return nil
 end
 
---The Turn History dialog: every checkpoint of this turn in order, the gaps where dice
---were rolled flagged in red (going back past a roll and re-rolling is cheating), and a
---click on any entry rolls the board back or forward to it.
+--How long the rewind's full-screen VCR effect and "REWIND" label last. The tokens it moves
+--slide back over 0.6s (CharacterToken.RewindSlideSeconds), inside this.
+local g_rewindEffectSeconds = 1.1
+
+--The on-screen "<< REWIND" label shown with the effect, while it is up.
+--- @type Panel|nil
+local g_rewindOsd = nil
+
+--A VCR-style on-screen display in the top-left corner for the length of the effect.
+local function ShowRewindOsd()
+	if g_rewindOsd ~= nil and g_rewindOsd.valid then
+		g_rewindOsd:DestroySelf()
+	end
+
+	local osd
+	osd = gui.Label{
+		floating = true,
+		interactable = false,
+		halign = "left",
+		valign = "top",
+		x = 48,
+		y = 96,
+		width = "auto",
+		height = "auto",
+		fontSize = 40,
+		bold = true,
+		color = "white",
+		textAlignment = "left",
+		text = "<< REWIND",
+		create = function(element)
+			element:ScheduleEvent("expire", g_rewindEffectSeconds)
+		end,
+		expire = function(element)
+			element:DestroySelf()
+		end,
+		destroy = function(element)
+			if g_rewindOsd == element then
+				g_rewindOsd = nil
+			end
+		end,
+	}
+	g_rewindOsd = osd
+	gui.ShowDialog(mod, osd)
+end
+
+--Every checkpoint restore -- Turn Rewind or Revert Turn, from any client -- plays the VCR
+--rewind effect here, except a quiet follow-up restore (the Turn Rewind cancel pass), which
+--would otherwise play it a second time a moment later.
+dmhub.RegisterEventHandler("restoreFromBackup", function(info)
+	if mod.unloaded or (type(info) == "table" and info.quiet) then
+		return
+	end
+	dmhub.PlayScreenEffect("vcrRewind", g_rewindEffectSeconds)
+	local ok, err = pcall(ShowRewindOsd)
+	if not ok then
+		print("TurnRewind:: rewind label failed:", err)
+	end
+end)
+
+--The abilities resolving on this client, oldest first, as "Caster: Ability". Rewinding
+--cancels every one of them, whoever cast it.
+--- @return string[]
+function TurnRewind.CastsUnderway()
+	local casts = {}
+	for co,info in pairs(ActivatedAbility.coroutineStorage) do
+		if coroutine.status(co) ~= "dead" and info.ability ~= nil then
+			local caster = info.casterToken
+			local text = info.ability.name
+			if caster ~= nil and caster.valid then
+				text = string.format("%s: %s", creature.GetTokenDescription(caster), info.ability.name)
+			end
+			casts[#casts+1] = {text = text, startTime = info.startTime or 0}
+		end
+	end
+	table.sort(casts, function(a, b) return a.startTime < b.startTime end)
+
+	local result = {}
+	for _,cast in ipairs(casts) do
+		result[#result+1] = cast.text
+	end
+	return result
+end
+
+--The Turn History dialog, a narrow panel at the side of the map so the board stays in
+--view. Checkpoints are buttons that roll the board back (or forward) to them; between
+--them, plain text lists what happened, with dice rolls in red (going back past a roll
+--and rolling again is a re-roll). "Now" marks where the board is.
 function TurnRewind.ShowDialog()
+	local existing = TurnRewind.dialog
+	if existing ~= nil and existing.valid then
+		local list = TurnRewind.dialogList
+		if list ~= nil and list.valid then
+			list:FireEvent("refreshRewind")
+		end
+		return
+	end
+
 	local listPanel
+	local dialog
 
 	local function BuildRows()
 		local rows = {}
 		local entries = TurnRewind.entries
+		local position = TurnRewind.position
+		local pending = TurnRewind.pendingActions
+		local movedOn = TurnRewind.BoardMovedOn()
+		local underway = TurnRewind.CastsUnderway()
+		--Rewinding now would cancel the abilities underway, so even an unchanged board's
+		--checkpoint is worth a button. Not while a restore is already cancelling them.
+		local canCancel = #underway > 0 and not TurnRewind.restoring
 
-		local function RollRow(count, text)
-			rows[#rows+1] = gui.Panel{
-				classes = {"panel", "bgDanger"},
+		--- @param action TurnRewindAction
+		--- @param undone boolean
+		local function ActionRow(action, undone)
+			local classes = {"label", "sizeS"}
+			if action.roll then
+				classes[#classes+1] = "danger"
+			elseif undone then
+				classes[#classes+1] = "fgMuted"
+			end
+			rows[#rows+1] = gui.Label{
+				classes = classes,
 				width = "100%",
 				height = "auto",
-				valign = "top",
-				vmargin = 2,
-				hpad = 10,
-				vpad = 4,
+				hpad = 12,
+				vmargin = 1,
 				borderBox = true,
-				gui.Label{
-					classes = {"label", "sizeS", "bold"},
-					width = "100%",
-					height = "auto",
-					text = string.format("%d dice roll%s %s", count, cond(count == 1, "", "s"), text),
-				},
+				text = action.text,
+				linger = action.roll and gui.Tooltip("Rewinding to a checkpoint above this undoes the roll.") or nil,
 			}
 		end
 
-		if not g_rewindSetting:Get() then
-			rows[#rows+1] = gui.Label{classes = {"label"}, width = "100%", height = "auto",
-				text = "Turn Rewind is off. Turn it on with /toggle dev:rewind."}
-		elseif #entries == 0 then
-			rows[#rows+1] = gui.Label{classes = {"label"}, width = "100%", height = "auto",
-				text = "No checkpoints yet. They are taken during turns you play."}
-		end
-
-		for i,entry in ipairs(entries) do
-			if i > 1 and entry.rolls > entries[i-1].rolls then
-				RollRow(entry.rolls - entries[i-1].rolls, "between these points: going back past them undoes the roll")
-			end
-
-			local status = ""
-			if i == TurnRewind.position then
-				status = "   (now)"
-			elseif i > TurnRewind.position then
-				status = "   (undone - click to roll forward)"
-			end
-
-			local index = i
-			rows[#rows+1] = gui.Panel{
-				classes = {"panel", "bordered", cond(i == TurnRewind.position, "bgAlt", "hoverable")},
+		local function NowRow()
+			rows[#rows+1] = gui.Label{
+				classes = {"label", "sizeS", "bold"},
 				width = "100%",
 				height = "auto",
-				valign = "top",
-				vmargin = 2,
-				hpad = 10,
-				vpad = 6,
+				vmargin = 4,
+				textAlignment = "center",
+				text = "Now",
+			}
+		end
+
+		--- @param index integer
+		local function CheckpointButton(index)
+			local forward = index > position
+			rows[#rows+1] = gui.Button{
+				classes = {"sizeS"},
+				width = "100%",
+				height = 26,
+				vmargin = 3,
 				borderBox = true,
+				text = cond(forward, "Redo to here", "Rewind to here"),
+				linger = gui.Tooltip(entries[index].label),
 				click = function(element)
 					local err = TurnRewind.GoTo(index)
 					if err ~= nil then
@@ -842,41 +1020,159 @@ function TurnRewind.ShowDialog()
 						listPanel:FireEvent("refreshRewind")
 					end
 				end,
-				gui.Label{
-					classes = {"label", cond(i > TurnRewind.position, "fgMuted", "fgStrong")},
-					width = "100%",
-					height = "auto",
-					text = string.format("%d. %s%s", i, entry.label, status),
-				},
 			}
 		end
 
-		local last = entries[#entries]
-		if last ~= nil and TurnRewind.position == #entries and TurnRewind.rollCount > last.rolls then
-			RollRow(TurnRewind.rollCount - last.rolls, "since the last checkpoint")
+		if not g_rewindSetting:Get() then
+			rows[#rows+1] = gui.Label{classes = {"label", "sizeS"}, width = "100%", height = "auto",
+				text = "Turn Rewind is off. Turn it on with /toggle dev:rewind."}
+		elseif #entries == 0 then
+			rows[#rows+1] = gui.Label{classes = {"label", "sizeS"}, width = "100%", height = "auto",
+				text = "No checkpoints yet. They are taken during turns you play."}
+		end
+
+		for i,entry in ipairs(entries) do
+			for _,action in ipairs(entry.actions) do
+				ActionRow(action, i > position)
+			end
+
+			if i ~= position then
+				CheckpointButton(i)
+			elseif movedOn or canCancel then
+				--The board has changed since this checkpoint, or abilities are underway
+				--that rewinding would cancel, so it can be rewound to, and "Now" comes
+				--after what happened. A change no action accounts for (the Director
+				--editing a token, say) still gets a line, so the button is not right next
+				--to "Now" with nothing to say what it undoes.
+				CheckpointButton(i)
+				for _,action in ipairs(pending) do
+					ActionRow(action, false)
+				end
+				if #pending == 0 and movedOn then
+					ActionRow({text = "Other changes"}, true)
+				end
+				NowRow()
+			else
+				--The board is exactly this checkpoint, so going to it would do nothing:
+				--no button. Anything noted since (a roll, an ability still resolving)
+				--has not changed the board yet.
+				for _,action in ipairs(pending) do
+					ActionRow(action, false)
+				end
+				NowRow()
+			end
+		end
+
+		--The abilities still resolving, so it is clear what a rewind would cancel (or,
+		--during a restore, what is being cancelled).
+		if #underway > 0 then
+			rows[#rows+1] = gui.Label{
+				classes = {"label", "sizeS", "bold", "warning"},
+				width = "100%",
+				height = "auto",
+				tmargin = 8,
+				vmargin = 1,
+				text = cond(TurnRewind.restoring, "Cancelling:", "Underway (rewinding cancels):"),
+			}
+			for _,text in ipairs(underway) do
+				rows[#rows+1] = gui.Label{
+					classes = {"label", "sizeS", "warning"},
+					width = "100%",
+					height = "auto",
+					hpad = 12,
+					vmargin = 1,
+					borderBox = true,
+					text = text,
+				}
+			end
 		end
 
 		return rows
 	end
 
+	--What the list shows depends on these; the list rebuilds when one changes.
+	local function Signature()
+		local last = TurnRewind.entries[#TurnRewind.entries]
+		return string.format("%s|%d|%d|%d|%s|%s|%s|%s|%s", tostring(TurnRewind.turnKey), #TurnRewind.entries,
+			TurnRewind.position, #TurnRewind.pendingActions, tostring(TurnRewind.BoardMovedOn()),
+			tostring(last ~= nil and last.seq), tostring(g_rewindSetting:Get()),
+			tostring(TurnRewind.restoring), table.concat(TurnRewind.CastsUnderway(), ";"))
+	end
+
 	listPanel = gui.Panel{
-		width = "90%",
-		height = "70%",
-		halign = "center",
+		width = "100%",
+		height = "auto",
+		maxHeight = 520,
 		flow = "vertical",
 		vscroll = true,
-		children = BuildRows(),
+		data = {signature = ""},
+		thinkTime = 0.25,
+		think = function(element)
+			if Signature() ~= element.data.signature then
+				element:FireEvent("refreshRewind")
+			end
+		end,
 		refreshRewind = function(element)
+			element.data.signature = Signature()
 			element.children = BuildRows()
 		end,
+		create = function(element)
+			element:FireEvent("refreshRewind")
+		end,
 	}
+
+	dialog = gui.Panel{
+		styles = ThemeEngine.GetStyles(),
+		classes = {"framedPanel"},
+		halign = "right",
+		valign = "center",
+		hmargin = 16,
+		width = 240,
+		height = "auto",
+		hpad = 10,
+		vpad = 8,
+		borderBox = true,
+		flow = "vertical",
+
+		draggable = true,
+		drag = function(element)
+			element.x = element.xdrag
+			element.y = element.ydrag
+		end,
+
+		destroy = function(element)
+			if TurnRewind.dialog == element then
+				TurnRewind.dialog = nil
+				TurnRewind.dialogList = nil
+			end
+		end,
+
+		gui.Label{
+			classes = {"label", "bold"},
+			width = "100%",
+			height = "auto",
+			bmargin = 6,
+			text = "Turn History",
+		},
+
+		gui.Button{
+			classes = {"closeButton", "sizeXs"},
+			halign = "right",
+			valign = "top",
+			floating = true,
+			escapeActivates = true,
+			escapePriority = EscapePriority.EXIT_DIALOG,
+			click = function(element)
+				dialog:DestroySelf()
+			end,
+		},
+
+		listPanel,
+	}
+	TurnRewind.dialog = dialog
 	TurnRewind.dialogList = listPanel
 
-	gui.ModalMessage{
-		title = "Turn History",
-		panel = listPanel,
-		options = {{text = "Close"}},
-	}
+	gui.ShowDialogOverMap(mod, dialog)
 end
 
 --True while Ctrl+Z should open Turn History: during a turn this client plays, or while
@@ -906,9 +1202,10 @@ function TurnRewind.StepOrOpen(direction)
 		return
 	end
 
-	--Back from a board that has moved on returns to the latest entry first.
+	--Back from a board that has moved on, or with an ability underway, returns to the
+	--latest entry first (cancelling the ability).
 	local target = TurnRewind.position + direction
-	if direction < 0 and TurnRewind.BoardMovedOn() then
+	if direction < 0 and (TurnRewind.BoardMovedOn() or not NothingResolving()) then
 		target = TurnRewind.position
 	end
 	if TurnRewind.entries[target] ~= nil then

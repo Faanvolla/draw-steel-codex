@@ -3322,6 +3322,75 @@ end
 
 ActivatedAbility.coroutineStorage = {}
 
+--Cast coroutines this file started for a cast (coroutine -> true). Only these are ever
+--force-closed: a cast run inline (a trigger fired inside some other coroutine) shares
+--that coroutine, and closing it would kill its host.
+local g_castOwnedCoroutines = setmetatable({}, {__mode = "k"})
+
+--Roll requests each cast coroutine sent to other clients (coroutine -> actionid list),
+--withdrawn if the cast is cancelled so nobody is left with a prompt for it.
+local g_castActionRequests = setmetatable({}, {__mode = "k"})
+
+--How long a cancelled cast gets to unwind on its own before it is force-closed.
+local FORCE_CLOSE_CANCELLED_CAST_SECONDS = 8
+
+--- Records a roll request the running cast sent (dmhub.SendActionRequest), so it is
+--- withdrawn from whoever was asked to roll if the cast is cancelled (a checkpoint
+--- restore). Safe to call outside a cast, where it does nothing.
+--- @param actionid string|nil
+function ActivatedAbility.TrackCastActionRequest(actionid)
+    local co = coroutine.running()
+    if co == nil or actionid == nil or ActivatedAbility.coroutineStorage[co] == nil then
+        return
+    end
+    local list = g_castActionRequests[co]
+    if list == nil then
+        list = {}
+        g_castActionRequests[co] = list
+    end
+    list[#list+1] = actionid
+end
+
+--Withdraws the roll requests of every cast still resolving. The rolling client closes
+--its prompt when the request disappears, and the cast's own wait for the results ends
+--with no result (AwaitRequestedActionCoroutine and friends treat a missing request as
+--cancelled).
+local function WithdrawCastActionRequests()
+    for co,ids in pairs(g_castActionRequests) do
+        if coroutine.status(co) ~= "dead" then
+            for _,actionid in ipairs(ids) do
+                if dmhub.GetPlayerActionRequest(actionid) ~= nil then
+                    print("CASTCANCEL:: withdrawing roll request", actionid)
+                    dmhub.CancelActionRequest(actionid)
+                end
+            end
+        end
+        g_castActionRequests[co] = nil
+    end
+end
+
+--- Closes the coroutine of every cancelled (options.abort) cast still parked in a wait,
+--- for casts that never noticed the cancel -- e.g. one waiting on a prompt nothing will
+--- answer. Closing runs its <close> variables, and the coroutine scheduler then runs
+--- its atexit (FinishCast) as for any cast that ends. Only coroutines started for a
+--- cast are closed. Returns how many were closed.
+--- @return integer
+function ActivatedAbility.ForceCloseCancelledCasts()
+    local closed = 0
+    for co,_ in pairs(g_castOwnedCoroutines) do
+        local info = ActivatedAbility.coroutineStorage[co]
+        if info ~= nil and info.options ~= nil and info.options.abort and coroutine.status(co) == "suspended" then
+            local ok, err = coroutine.close(co)
+            printf("CASTCANCEL:: force-closed cancelled cast %s (caster=%s)%s",
+                tostring(info.ability ~= nil and info.ability.name or "?"),
+                tostring(info.casterToken ~= nil and info.casterToken.valid and info.casterToken.name or "?"),
+                ok and "" or (": " .. tostring(err)))
+            closed = closed + 1
+        end
+    end
+    return closed
+end
+
 function ActivatedAbility.GetActiveCastSnapshot()
     local result = {}
     for co,_ in pairs(ActivatedAbility.coroutineStorage) do
@@ -3675,9 +3744,18 @@ function ActivatedAbility.CastCoroutine(self, casterToken, targets, options)
 
 
     local co = coroutine.running()
+
+    --A cast started in a coroutine of its own (not inline in a trigger's or another
+    --cast's) may be force-closed if it is cancelled and never unwinds.
+    if co ~= nil and ActivatedAbility.coroutineStorage[co] == nil and not options.alreadyInCoroutine then
+        g_castOwnedCoroutines[co] = true
+    end
+
     coroutine.atexit(function()
         if co ~= nil then
             ActivatedAbility.coroutineStorage[co] = nil
+            g_castOwnedCoroutines[co] = nil
+            g_castActionRequests[co] = nil
         end
         options.atexit = true
 	    self:FinishCast(casterToken, options)
@@ -3953,6 +4031,7 @@ function ActivatedAbility:RequireSavingThrowsCo(behavior, casterToken, tokenids,
 		silent = self.silent,
 		tokens = tokenInfo,
 	})
+	ActivatedAbility.TrackCastActionRequest(actionid)
 
 	local dcresult = {}
 
@@ -5468,6 +5547,7 @@ function ActivatedAbilityApplyOngoingEffectBehavior:Cast(ability, casterToken, t
 						silent = false,
 						tokens = tokenInfo,
 					})
+					ActivatedAbility.TrackCastActionRequest(actionid)
 
 					local dcresult = {}
 
@@ -5879,6 +5959,7 @@ function ActivatedAbilityContestedAttackBehavior:Cast(ability, casterToken, targ
 		silent = self.silent,
 		tokens = tokenInfo,
 	})
+	ActivatedAbility.TrackCastActionRequest(actionid)
 
 	local dcresult = {}
 
@@ -6915,14 +6996,30 @@ end)
 --every live cast coroutine so CastCoroutine breaks at the next behavior
 --boundary and unwinds through FinishCast (which marks the chat message
 --"aborted"). Also clears any unsubmitted dice preview.
+--A cast waiting on another client (a roll it asked someone else for) would not reach
+--that boundary until they answered, so its roll requests are withdrawn, which ends the
+--wait on both sides. A cast still parked somewhere after FORCE_CLOSE_CANCELLED_CAST_SECONDS
+--is force-closed. Every client does this for its own casts.
 dmhub.RegisterEventHandler("restoreFromBackup", function()
+    local cancelled = 0
     for co, info in pairs(ActivatedAbility.coroutineStorage) do
         if coroutine.status(co) ~= "dead" and info.options ~= nil then
             info.options.abort = true
             info.options.stopProcessing = true
+            cancelled = cancelled + 1
         end
     end
+    WithdrawCastActionRequests()
     dmhub.CancelCurrentRoll()
+
+    if cancelled > 0 then
+        dmhub.Schedule(FORCE_CLOSE_CANCELLED_CAST_SECONDS, function()
+            if mod.unloaded then
+                return
+            end
+            ActivatedAbility.ForceCloseCancelledCasts()
+        end)
+    end
 end)
 
 --- The "Applied by ..." line recorded on an ongoing effect an ability applies. An

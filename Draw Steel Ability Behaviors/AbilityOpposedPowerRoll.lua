@@ -143,6 +143,7 @@ function ActivatedAbilityOpposedRollBehavior:Cast(ability, casterToken, targets,
 		silent = self.silent,
 		tokens = tokenInfo,
 	})
+	ActivatedAbility.TrackCastActionRequest(actionid)
 
 	local dcresult = {}
 

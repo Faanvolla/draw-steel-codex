@@ -12453,6 +12453,7 @@ function creature:CheckToMaintainConcentrationCo(saveInfo)
 		tokens = tokenInfo,
 		silent = true, --this makes it so the dialog isn't shown to the requester, since it's an automated action.
 	})
+	ActivatedAbility.TrackCastActionRequest(actionid)
 	
 	local result = AwaitRequestedActionCoroutine(actionid)
 	if result.result and result.action ~= nil then
