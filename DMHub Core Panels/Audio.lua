@@ -10,6 +10,14 @@ local audioMixDocId = "audioMix"
 --by mix-group id so each maps 1:1 to an audio.SetGroupShared call.
 local broadcastGroupIds = { "music", "ambience", "effects", "uisounds", "anthem" }
 
+--Let the engine apply these levels itself on game load, before the game's sounds start,
+--so they never play at full volume while the sync poll below catches up. pcall because
+--engines older than this call do not have it; they keep the poll-only behaviour.
+pcall(function()
+	---@diagnostic disable-next-line: undefined-field
+	mod:RegisterBroadcastMixDocument(audioMixDocId)
+end)
+
 --Game-scoped doc holding the manual order of clips within each library folder.
 --AudioAssetLua has no writable `ord` (folders do, clips don't), so the Audio
 --Studio library keeps per-folder clip order here: data.order[folderid] = { assetid,
