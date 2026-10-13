@@ -2116,7 +2116,10 @@ function CharSheet.SummonsAppearancePanel()
             swatchContainer.children = children
 
             UpdateSelectionClasses()
-            element:FireEventTree("refreshSummonLook")
+
+            --After switching characters, the summon preview used to keep
+            --showing the last character's summon look.
+            CharacterSheet.instance:FireEventTree("refreshSummonLook")
         end,
     }
 
