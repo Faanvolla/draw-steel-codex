@@ -39,6 +39,14 @@ function FSCIImporter.ImportCharacter(executeOnNewCharacter)
             local obj = dmhub.ParseJsonFile(path)
             if obj == nil then
                 writeLog("!!!! Failed to parse Forge Steel JSON file: " .. path, STATUS.WARN)
+                gui.ModalMessage{ title = "Import Failed", message = "The file is not valid JSON." }
+                return
+            end
+
+            --A Codex export (character sheet Export -> Codex JSON) has its own importer.
+            if obj.codexHero == true then
+                writeLog("!!!! Not a Forge Steel file, it is a Codex character export: " .. path, STATUS.WARN)
+                gui.ModalMessage{ title = "Import Failed", message = "This is a Codex character export, not a Forge Steel file. Import it with the Codex JSON button on the home page, or /importcodexhero in a game." }
                 return
             end
 
@@ -55,6 +63,7 @@ function FSCIImporter.ImportCharacter(executeOnNewCharacter)
             local importer = FSCIImporter:new(obj)
             if importer == nil then
                 --new has already logged why (e.g. JSON that is not a Forge Steel character).
+                gui.ModalMessage{ title = "Import Failed", message = "This file is not a valid Forge Steel character file." }
                 return
             end
             importer:Import()
