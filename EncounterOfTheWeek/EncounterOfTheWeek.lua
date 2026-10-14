@@ -3023,8 +3023,9 @@ end
 --monster on the monsters' side, and the map's authored encounter (when it
 --is discoverable) driving victory conditions and rewards.
 --options.forceHeroes: the heroes go first, no die (the arrangement's
---fallback when the banner's continuation was lost); options.noArrange: no
---arrangement hold.
+--fallback when the banner's continuation was lost); options.forceResult:
+--"heroes" | "monsters" go first, no die (a die that already landed, see
+--RecoverLostCombatStart); options.noArrange: no arrangement hold.
 local function StartEncounterCombat(sides, options)
     options = options or {}
     local encounterEntry = FindMapEncounter()
@@ -3103,6 +3104,8 @@ local function StartEncounterCombat(sides, options)
 
     if options.forceHeroes then
         immediateResult = "heroes"
+    elseif options.forceResult == "heroes" or options.forceResult == "monsters" then
+        immediateResult = options.forceResult
     end
 
     --Only a party handed the initiative with no die gets the arrangement
@@ -3168,6 +3171,57 @@ local function ArrangeHostTick()
         end
     end
     return true
+end
+
+--The encounter beat starts combat only once (a RunOnce watermark), so a Draw
+--Steel banner that never creates the initiative queue -- its controller torn
+--down mid-roll (KPM5CV7T), or killed by a Lua reload -- left the fight unable
+--to begin, even after reloading. Host, every pre-combat tick after that
+--start: once no banner has been on screen for LOST_START_GRACE seconds and
+--there is still no queue, start combat again, keeping the side the die
+--already chose when one landed.
+local LOST_START_GRACE = 6
+local LOST_START_RETRY = 20
+local m_lostStartSince = nil
+local m_lostStartTried = nil
+
+local function RecoverLostCombatStart(sides)
+    --a core without the banner queries: no way to tell a live roll from a
+    --lost one, so never restart.
+    local ok, bannerActive = pcall(function() return Encounter.DrawSteelBannerActive() end)
+    if not ok then
+        return
+    end
+    local arrange = ArrangeState()
+    if bannerActive or (arrange ~= nil and arrange.phase == "arranging") then
+        m_lostStartSince = nil
+        return
+    end
+
+    local now = dmhub.Time()
+    if m_lostStartSince == nil then
+        m_lostStartSince = now
+        return
+    end
+    if now - m_lostStartSince < LOST_START_GRACE then
+        return
+    end
+    if m_lostStartTried ~= nil and now - m_lostStartTried < LOST_START_RETRY then
+        return
+    end
+    m_lostStartTried = now
+    m_lostStartSince = nil
+
+    local outcome = nil
+    pcall(function() outcome = Encounter.DrawSteelRollOutcome(sides.playerTokens) end)
+    if outcome ~= nil then
+        --the die was rolled; no arrangement, as for any rolled initiative.
+        printf("EotW: combat never started after the Draw Steel roll; starting it now with the %s first", outcome)
+        StartEncounterCombat(sides, { forceResult = outcome, noArrange = true })
+    else
+        printf("EotW: combat never started; showing the Draw Steel banner again")
+        StartEncounterCombat(sides)
+    end
 end
 
 --- dev driver: the encounter beat in an authoring game ---------------------
@@ -3731,9 +3785,12 @@ local function RunScriptBeat(ctx)
         return
     end
 
-    ctx:RunOnce(string.format("draw-steel-%d", index), function()
+    local started = ctx:RunOnce(string.format("draw-steel-%d", index), function()
         StartEncounterCombat(sides)
     end)
+    if not started then
+        RecoverLostCombatStart(sides)
+    end
 end
 
 --- developer: skip to combat ----------------------------------------------
