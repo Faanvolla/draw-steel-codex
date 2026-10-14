@@ -1107,7 +1107,7 @@ local function CreatePresentationBar()
                 element.selfStyle.hidden = 1
             else
                 element.selfStyle.hidden = 0
-                element.children = {
+                local children = {
                     gui.Label{
                         fontSize = 16,
                         color = Styles.textColor,
@@ -1125,8 +1125,21 @@ local function CreatePresentationBar()
                         change = function(element)
                             presentationInfo.onchange(element.value)
                         end,
-                    }
+                    },
                 }
+                --optional: whether it shows under the game's UI or over it.
+                if presentationInfo.onbelowui ~= nil then
+                    children[#children+1] = gui.Check{
+                        valign = "center",
+                        lmargin = 10,
+                        text = "Below UI",
+                        value = presentationInfo.belowui == true,
+                        change = function(element)
+                            presentationInfo.onbelowui(element.value)
+                        end,
+                    }
+                end
+                element.children = children
             end
         end,
     }
@@ -1848,6 +1861,37 @@ local function CreateInitiativeStatusHost()
     return g_initiativeStatusContainer
 end
 
+--The mounted Round panel, and the tabletop map window slot showing it
+--instead of the title bar (nil = the title bar).
+local g_initiativeStatusPanel = nil
+local g_initiativeStatusWindowHost = nil
+
+--Puts the Round panel in whichever host should show it. It is moved, not
+--rebuilt: it belongs to the current GameHud, which only mounts it once.
+local function PlaceInitiativeStatusPanel()
+    local host = g_initiativeStatusContainer
+    if g_initiativeStatusWindowHost ~= nil and g_initiativeStatusWindowHost.valid then
+        host = g_initiativeStatusWindowHost
+    end
+    if host == nil or not host.valid then
+        return
+    end
+
+    local panel = g_initiativeStatusPanel
+    if panel == nil or not panel.valid then
+        g_initiativeStatusPanel = nil
+        if host == g_initiativeStatusContainer then
+            host.children = {}
+        end
+        return
+    end
+
+    if panel.parent ~= host then
+        panel:Unparent()
+        host.children = {panel}
+    end
+end
+
 --Called by GameHud.CreateInitiativeBar. Pass nil to clear.
 function CodexTitleBar.MountInitiativeStatusPanel(panel)
     if g_initiativeStatusContainer == nil or (not g_initiativeStatusContainer.valid) then
@@ -1855,10 +1899,26 @@ function CodexTitleBar.MountInitiativeStatusPanel(panel)
     end
 
     if panel == nil then
+        g_initiativeStatusPanel = nil
         g_initiativeStatusContainer.children = {}
+        return
+    end
+
+    g_initiativeStatusPanel = panel
+    if g_initiativeStatusWindowHost ~= nil and g_initiativeStatusWindowHost.valid then
+        PlaceInitiativeStatusPanel()
     else
         g_initiativeStatusContainer.children = {panel}
     end
+end
+
+--Tabletop map windows (Tabletop.lua): show the Round panel in host, a
+--slot in the focused map window's titlebar, or pass nil to put it back in
+--the title bar. Call with nil BEFORE destroying the host, or the panel goes
+--with it.
+function CodexTitleBar.SetInitiativeStatusHost(host)
+    g_initiativeStatusWindowHost = host
+    PlaceInitiativeStatusPanel()
 end
 
 ----------------------------------------------------------------------
@@ -2771,6 +2831,128 @@ function g_tileIndicator.CreatePanel()
     }
 end
 
+-- Map name + engine status. Long map descriptions used to eat the bar,
+-- so the box is capped (narrower than the old 420) and the text
+-- ellipsizes rather than wrapping or shrinking away to nothing;
+-- hovering shows the untruncated string (on the cluster's tooltip).
+-- On a narrow bar the fit pass (BarFitApply) narrows this width further,
+-- so BAR_FIT_MAPNAME_FULL must stay in step with the width below.
+local function CreateMapNameLabel(width)
+    return gui.Label{
+        --menuLabel is what flips the text to @bg when the plate fills on
+        --hover. It carries a 16px font for the main menu strip; this cluster
+        --runs at the default 14, so match the neighbours explicitly.
+        classes = {"menuLabel"},
+        fontSize = 14,
+        minFontSize = 10,
+        width = width or 380,
+        height = "100%",
+        hmargin = 0,
+        textAlignment = "left",
+        textWrap = false,
+        textOverflow = "ellipsis",
+        interactable = false,
+        text = "",
+        data = { fullText = "" },
+        thinkTime = 0.1,
+        think = function(element)
+            if (not dmhub.inGame) or dmhub.isLobbyGame then
+                element.data.fullText = ""
+                element.text = ""
+                return
+            end
+            local text
+            if dmhub.mouseOutsideMapView then
+                --Tabletop mode with the mouse off the live map window: there
+                --is no location under it to report, just the map.
+                text = game.currentMap.description
+            elseif g_tileIndicator.ShowsTileInfo() then
+                text = string.format("%s %s", game.currentMap.description, dmhub.status)
+            else
+                --The floor the player is ON, not the one under the mouse
+                --(which is what dmhub.status names), so it holds still.
+                local floor = game.currentFloor
+                local floorName = floor ~= nil and floor.description or nil
+                if type(floorName) == "string" and floorName ~= "" then
+                    text = string.format("%s, %s", game.currentMap.description, floorName)
+                else
+                    text = game.currentMap.description
+                end
+            end
+            if text == element.data.fullText then
+                return
+            end
+            element.data.fullText = text
+            element.text = text
+        end,
+    }
+end
+
+--The shared plate. Structure follows the title bar's other menu items
+--(and the initiative readout): the fill and the click live on the
+--wrapper, both children are interactable = false so the hover lands
+--here rather than on a half. hpad is inline rather than left to the
+--menuItem style so the cluster does not shift sideways on the frames
+--where the class is dropped.
+local function CreateMapClusterPanel(classes, tileChip, mapNameLabel)
+    return gui.Panel{
+        classes = classes,
+        flow = "horizontal",
+        width = "auto",
+        height = "100%",
+        valign = "center",
+        hpad = 8,
+
+        --No hover tooltip (Venla 2026-08-25: bar items are self evident).
+        --Note this also drops the untruncated-map-name hover that the
+        --narrow-bar fit pass relied on for ellipsized names, and the
+        --"tile under cursor" readout.
+
+        click = function(element)
+            g_tileIndicator.ShowOverlayMenu(element)
+        end,
+
+        tileChip,
+        mapNameLabel,
+    }
+end
+
+--A second map cluster (terrain chip + map name, opening the map overlay
+--menu) for the titlebar of a tabletop map window (Tabletop.lua). It
+--describes the live map, so only the focused window shows one; while it
+--does, the title bar's own cluster is collapsed (SetMapStatusInWindow).
+--options.nameWidth: width of the map-name label (default 220).
+function CodexTitleBar.CreateMapCluster(options)
+    options = options or {}
+    local label = CreateMapNameLabel(options.nameWidth or 220)
+    local cluster = CreateMapClusterPanel({"menuItem"}, g_tileIndicator.CreatePanel(), label)
+    return cluster, label
+end
+
+--True while a tabletop map window shows the live map's status in its own
+--titlebar; the title bar then collapses its copy (CreateStatusBar's think).
+local g_mapStatusInWindow = false
+
+function CodexTitleBar.SetMapStatusInWindow(inWindow)
+    g_mapStatusInWindow = inWindow == true
+end
+
+--Right of the map cluster: controls for a maximized tabletop map window
+--(its restore button), or empty.
+local g_mapWindowControlsHost = nil
+
+function CodexTitleBar.SetMapWindowControls(panel)
+    local host = g_mapWindowControlsHost
+    if host == nil or not host.valid then
+        return
+    end
+    if panel == nil then
+        host.children = {}
+    elseif panel.parent ~= host then
+        host.children = {panel}
+    end
+end
+
 local function CreateStatusBar()
     local resultPanel
 
@@ -2781,6 +2963,7 @@ local function CreateStatusBar()
     local m_tileChip
     local m_mapNameLabel
     local m_mapCluster
+    local m_initiativeHost
 
     local function MapClusterAvailable()
         return dmhub.inGame and (not dmhub.isLobbyGame)
@@ -2804,10 +2987,16 @@ local function CreateStatusBar()
     --Driven from the status bar's own think (see resultPanel below), NOT from
     --anything inside the cluster: a collapsed panel's think does not run, so
     --a driver inside it could collapse the cluster but never bring it back.
+    --A tabletop map window showing the live map's status (SetMapStatusInWindow)
+    --also collapses the cluster and the Round host: the window's titlebar
+    --has them instead.
     local function RefreshMapClusterAffordance()
         if m_mapCluster ~= nil and m_mapCluster.valid then
             m_mapCluster:SetClass("menuItem", MapClusterAvailable())
-            m_mapCluster:SetClass("collapsed", ScriptStageCoversMap())
+            m_mapCluster:SetClass("collapsed", ScriptStageCoversMap() or g_mapStatusInWindow)
+        end
+        if m_initiativeHost ~= nil and m_initiativeHost.valid then
+            m_initiativeHost:SetClass("collapsed", g_mapStatusInWindow)
         end
     end
 
@@ -2815,63 +3004,8 @@ local function CreateStatusBar()
     -- characterizing the tile under the mouse (see g_tileIndicator).
     m_tileChip = g_tileIndicator.CreatePanel()
 
-    -- Map name + engine status. Long map descriptions used to eat the bar,
-    -- so the box is capped (narrower than the old 420) and the text
-    -- ellipsizes rather than wrapping or shrinking away to nothing;
-    -- hovering shows the untruncated string (on the cluster's tooltip).
-    -- On a narrow bar the fit pass (BarFitApply) narrows this width further,
-    -- so BAR_FIT_MAPNAME_FULL must stay in step with the width below.
-    m_mapNameLabel = gui.Label{
-        --menuLabel is what flips the text to @bg when the plate fills on
-        --hover. It carries a 16px font for the main menu strip; this cluster
-        --runs at the default 14, so match the neighbours explicitly.
-        classes = {"menuLabel"},
-        fontSize = 14,
-        minFontSize = 10,
-        width = 380,
-        height = "100%",
-        hmargin = 0,
-        textAlignment = "left",
-        textWrap = false,
-        textOverflow = "ellipsis",
-        interactable = false,
-        text = "",
-        data = { fullText = "" },
-        thinkTime = 0.1,
-        think = function(element)
-            if (not dmhub.inGame) or dmhub.isLobbyGame then
-                element.data.fullText = ""
-                element.text = ""
-                return
-            end
-            local text
-            if g_tileIndicator.ShowsTileInfo() then
-                text = string.format("%s %s", game.currentMap.description, dmhub.status)
-            else
-                --The floor the player is ON, not the one under the mouse
-                --(which is what dmhub.status names), so it holds still.
-                local floor = game.currentFloor
-                local floorName = floor ~= nil and floor.description or nil
-                if type(floorName) == "string" and floorName ~= "" then
-                    text = string.format("%s, %s", game.currentMap.description, floorName)
-                else
-                    text = game.currentMap.description
-                end
-            end
-            if text == element.data.fullText then
-                return
-            end
-            element.data.fullText = text
-            element.text = text
-        end,
-    }
+    m_mapNameLabel = CreateMapNameLabel(BAR_FIT_MAPNAME_FULL)
 
-    --The shared plate. Structure follows the title bar's other menu items
-    --(and the initiative readout): the fill and the click live on the
-    --wrapper, both children are interactable = false so the hover lands
-    --here rather than on a half. hpad is inline rather than left to the
-    --menuItem style so the cluster does not shift sideways on the frames
-    --where the class is dropped.
     --(A nil from cond() cannot simply be listed here -- it would truncate
     --the class list -- so the list is assembled.)
     local mapClusterClasses = {}
@@ -2882,26 +3016,7 @@ local function CreateStatusBar()
         mapClusterClasses[#mapClusterClasses+1] = "collapsed"
     end
 
-    m_mapCluster = gui.Panel{
-        classes = mapClusterClasses,
-        flow = "horizontal",
-        width = "auto",
-        height = "100%",
-        valign = "center",
-        hpad = 8,
-
-        --No hover tooltip (Venla 2026-08-25: bar items are self evident).
-        --Note this also drops the untruncated-map-name hover that the
-        --narrow-bar fit pass relied on for ellipsized names, and the
-        --"tile under cursor" readout.
-
-        click = function(element)
-            g_tileIndicator.ShowOverlayMenu(element)
-        end,
-
-        m_tileChip,
-        m_mapNameLabel,
-    }
+    m_mapCluster = CreateMapClusterPanel(mapClusterClasses, m_tileChip, m_mapNameLabel)
 
     --First to go on a narrow bar: the label narrows (stage 2 of the fit
     --pass) and then the whole cluster collapses -- name first, terrain chip
@@ -2910,8 +3025,15 @@ local function CreateStatusBar()
     BarFitRegister("mapName", m_mapNameLabel)
     BarFitRegister("mapChip", m_tileChip)
 
-    local m_initiativeHost = CreateInitiativeStatusHost()
+    m_initiativeHost = CreateInitiativeStatusHost()
     BarFitRegister("initiative", m_initiativeHost)
+
+    g_mapWindowControlsHost = gui.Panel{
+        flow = "horizontal",
+        width = "auto",
+        height = "100%",
+        valign = "center",
+    }
 
     -- While a CommandBuilder session is active, a floating recorder dialog
     -- shows the steps; this zero-size host is just its mount point.
@@ -2990,6 +3112,10 @@ local function CreateStatusBar()
         -- Hovered-tile terrain chip + map name/engine status, sharing one
         -- clickable plate that opens the map overlay menu.
         m_mapCluster,
+
+        -- A maximized tabletop map window's restore button (see
+        -- SetMapWindowControls); empty otherwise.
+        g_mapWindowControlsHost,
 
         -- Zero-size mount point that opens the command-builder recorder
         -- dialog when a session begins.

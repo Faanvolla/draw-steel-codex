@@ -794,4 +794,7 @@
 --- | "DrawSteelPotencies"
 --- | "Courier"
 --- | "LiberationSans"
+--- | "DwarvishRunes"
+--- | "GoblinScratch"
+--- | "InfernalScript"
 

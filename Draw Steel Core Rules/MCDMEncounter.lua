@@ -79,6 +79,10 @@ Encounter.description = ''
 
 Encounter.tableName = 'encounters'
 
+--The id of the map in this game the encounter takes place on, or "" when
+--none is chosen. Set in the encounter builder; a record, nothing enforces it.
+Encounter.mapid = ''
+
 Encounter.monsters = {}
 
 Encounter.groups = {}

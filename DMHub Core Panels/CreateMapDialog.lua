@@ -51,7 +51,17 @@ end
 --then the game.GetOtherGameMapPreview result (or {failed = true}).
 local s_otherGamePreviews = {}
 
-mod.shared.ShowCreateMapDialog = function()
+--options (optional): { created = function(mapid) } is called once the map
+--the dialog makes exists in the game, before travelling to it. Every way of
+--making a map calls it: blank, import, map library, another game.
+mod.shared.ShowCreateMapDialog = function(options)
+
+    local m_created = options ~= nil and options.created or nil
+    local function NotifyCreated(mapid)
+        if m_created ~= nil then
+            m_created(mapid)
+        end
+    end
 
     ---@type Panel?
     local selectedMap = nil
@@ -1355,6 +1365,7 @@ mod.shared.ShowCreateMapDialog = function()
                     end
                     local map = game.GetMap(mapid)
                     if map ~= nil then
+                        NotifyCreated(mapid)
                         map:Travel()
                     end
                 end)
@@ -1384,6 +1395,7 @@ mod.shared.ShowCreateMapDialog = function()
                     end
                     local map = game.GetMap(mapid)
                     if map ~= nil then
+                        NotifyCreated(mapid)
                         map:Travel()
                     end
                 end)
@@ -1462,7 +1474,7 @@ mod.shared.ShowCreateMapDialog = function()
                     tileType = tileType,
                     nofade = true,
                     finish = function(info)
-                        mod.shared.FinishMapImport(m_mapName, info)
+                        mod.shared.FinishMapImport(m_mapName, info, m_created)
                     end,
                 }
             else
@@ -1478,6 +1490,7 @@ mod.shared.ShowCreateMapDialog = function()
                     local map = game.GetMap(guid)
                     --the loop above only exits once the map exists.
                     ---@cast map -nil
+                    NotifyCreated(guid)
                     map:Travel()
 
                     while game.currentMapId ~= guid do
@@ -2282,7 +2295,7 @@ mod.shared.ShowCreateMapDialog = function()
             nofade = true,
             paths = paths,
             finish = function(info)
-                mod.shared.FinishMapImport(name, info)
+                mod.shared.FinishMapImport(name, info, m_created)
             end,
         }
     end
@@ -3896,7 +3909,9 @@ mod.shared.ImportMapToFloorCo = function(info)
     end
 end
 
-mod.shared.FinishMapImport = function(mapName, info)
+--created (optional): called with the new map's id once it exists, before
+--travelling there (ShowCreateMapDialog's options.created).
+mod.shared.FinishMapImport = function(mapName, info, created)
     local floors = {}
 
     for i,objid in ipairs(info.objids) do
@@ -3955,6 +3970,10 @@ mod.shared.FinishMapImport = function(mapName, info)
             y2 = math.floor(h/2),
         }
         map:Upload()
+
+        if created ~= nil then
+            created(guid)
+        end
 
         map:Travel()
 
@@ -5622,4 +5641,10 @@ mod.shared.FinishFloorImport = function(info, offsetX, offsetY)
 
         printf("FLOOR_IMPORT:: ===== END FinishFloorImport =====")
     end)
+end
+
+--The create-map dialog for other modules, which cannot reach this one's
+--mod.shared. options as mod.shared.ShowCreateMapDialog: { created = function(mapid) }.
+function ShowCreateMapDialog(options)
+    mod.shared.ShowCreateMapDialog(options)
 end

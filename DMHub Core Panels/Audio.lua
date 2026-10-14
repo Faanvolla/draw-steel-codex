@@ -2281,6 +2281,10 @@ local function PlayBroadcastClip(asset, opts)
 	if asset.category == "ambience" and not m_audioLogSuppressBroadcast then g_drawSteelAudioLog.Ambience(DisplayNameForAsset(asset)) end
 end
 
+--Plays a clip for everyone the way the soundboard does (music replaces the
+--music playing). Scenes use it for their sound cues (ScenesPanel.lua).
+AudioPlayBroadcastClip = PlayBroadcastClip
+
 --=====================================================================================
 --Variant pool core (chunk K1.5-core): the pool table + the fire path. No UI (later
 --sub-chunks). A "variant pool" is a FIRST-CLASS entity living directly in the

@@ -1005,7 +1005,9 @@ end
 --holdBeforeQueue (optional): see Encounter.StartCombatWithTokens.
 function showDrawSteelBanner(result, holdBeforeQueue)
     local banner = createDrawSteelBanner{ controller = true, immediateResult = result, holdBeforeQueue = holdBeforeQueue }
-    GameHud.instance.parentPanel:AddChild(banner)
+    --combat belongs to the map: in the tabletop view the banner shows inside its map window.
+    local host = Tabletop.MapOverlayHost() or GameHud.instance.parentPanel
+    host:AddChild(banner)
 end
 
 --Show the per-round "who goes first" reroll banner (used by Crows, which rolls
@@ -1019,7 +1021,8 @@ function showDrawSteelRerollBanner()
         return
     end
     local banner = createDrawSteelBanner{ controller = true, reroll = true }
-    GameHud.instance.parentPanel:AddChild(banner)
+    local host = Tabletop.MapOverlayHost() or GameHud.instance.parentPanel
+    host:AddChild(banner)
 end
 
 --- @class Encounter: GameType

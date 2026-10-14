@@ -583,6 +583,12 @@ dmhub.GetSelectedCharacters = function()
     local result = {}
     result[#result + 1] = gui.GetFocus().data.charid
 
+    --a tabletop card being dragged onto a map places just its own character,
+    --not the rows selected in this panel (Tabletop.lua).
+    if gui.GetFocus().data.tabletopCard then
+        return result
+    end
+
     for _, p in ipairs(characterPanelsSelected) do
         if p.valid and p.data.charid then
             result[#result + 1] = p.data.charid
@@ -966,6 +972,10 @@ local function CreateMonsterEntry(nodeid, startHidden)
     ---@type Panel
     local resultPanel = nil
 
+    --a drop on a bestiary folder moves this entry into it.
+    local dropOnFolder = mod.shared.CreateDragTargetFunction(node, function(nodeid) return assets:GetMonsterNode(nodeid) end,
+        "Monsters")
+
     --novel-content pip: lit while this monster is recorded as novel
     --(added or updated by a module install). Viewing the monster --
     --focusing its row or lingering for the stat block -- dismisses the
@@ -1193,12 +1203,21 @@ local function CreateMonsterEntry(nodeid, startHidden)
             beginDrag = function(element)
                 --element:FireEvent('click')
             end,
-            drag = mod.shared.CreateDragTargetFunction(node, function(nodeid) return assets:GetMonsterNode(nodeid) end,
-                "Monsters"),
+            drag = function(element, target)
+                Tabletop.BestiaryRowDragEnded(element)
+                dropOnFolder(element, target)
+            end,
 
             dragging = function(element, target)
                 if target == nil then
                     dmhub.SetDraggingMonster()
+                end
+                --tabletop view: over the table the row turns into the cards a
+                --drop makes; over the map only the placement ghost shows. The
+                --engine places what GetSelectedMonster reports.
+                local selected = dmhub.GetSelectedMonster()
+                if selected ~= nil then
+                    Tabletop.BestiaryRowDragging(element, selected.monsterid, selected.quantity)
                 end
             end,
 
@@ -2468,9 +2487,13 @@ CharacterPanel.CreateCharacterEntry = function(charid, party)
                 if target == nil then
                     dmhub.SetDraggingMonster()
                 end
+                --tabletop view: over the table the row turns into the card a
+                --drop makes; over the map only the placement ghost shows.
+                Tabletop.CharacterRowDragging(element, dmhub.GetSelectedCharacters() or {})
             end,
 
             drag = function(element, target)
+                Tabletop.CharacterRowDragEnded(element)
                 if target ~= nil and target:HasClass("partyPanel") then
                     target = target.data.header
                 end

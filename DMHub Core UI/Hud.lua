@@ -41,6 +41,13 @@ function Hud.CreateShapesLayer(self)
 			bgimage = "#Shapes",
 			width = "100%",
 			height = "100%",
+			--tabletop view: the live map window shows the shapes cropped to
+			--itself (#ShapesView, Tabletop.lua); full-screen they would spill
+			--onto the table.
+			thinkTime = 0.2,
+			think = function(element)
+				element.selfStyle.opacity = cond(dmhub.tabletopMode, 0, 1)
+			end,
 		}
 	else
 		return nil

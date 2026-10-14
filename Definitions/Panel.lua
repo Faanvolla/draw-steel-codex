@@ -7,6 +7,8 @@
 --- @field debugBacktrace string|nil
 --- @field inworld any
 --- @field blurBackground any
+--- @field frost nil|boolean|number Frosted glass: the panel's background blurs whatever is already drawn behind it (the map, other panels, art), with its bgcolor laid over the blur as a tint. true uses the default blur radius; a number sets the radius in pixels; false or 0 turns it off. Needs a bgimage. Only applies while the Transparent UI setting is on; with it off the panel draws its plain bgcolor. Costs two screen copies and a blur per frosted panel each frame (about the same for a small panel as a large one), so use it on a few panels rather than many; see frostShared for a cheaper path for panels on the bottom layer. Unlike blurBackground, which only blurs the map underneath the whole interface.
+--- @field frostShared boolean Opts a frosted panel (see frost) into the cheaper shared frost: all shared panels blur one screen copy per frame between them, at quarter resolution, instead of each taking two copies. Only for panels on the bottom layer: nothing drawn after the first frosted panel may sit behind this one (another frosted panel, a tooltip, a sibling drawn earlier in the hierarchy), or it will be missing from the blur. The blur lags the screen by one frame, and all shared panels use the largest radius among them. Ignored (the panel uses ordinary frost) outside Direct3D, in pop-out windows, and when frost is off.
 --- @field monitorMod string The id of the mod to monitor. When this mod is reloaded the refreshMod event will be fired on the panel.
 --- @field monitorAssets boolean|AssetCategory|AssetCategory[] (write-only) A list of asset categories to monitor. true monitors every category. When the asset categories are updated, the refreshAssets event will be fired on this panel.
 --- @field constrainToScreen boolean (default=false) If true, the panel will be constrained to the screen area.
@@ -89,6 +91,7 @@
 --- @field mousePoint Vector2 The position of the mouse within this panel, or (0,0) if the mouse is not within the panel.
 --- @field bgsprite Sprite The @see Sprite object representing the bgimage for this panel.
 --- @field swallowPress boolean (Default: false) If true, if this panel receives the 'press' event its parent panel will not receive the press event. By default, a panel, and its parents, all the way up the hierarchy receive the press event.
+--- @field raiseOnPress boolean (Default: false) If true, a mouse press anywhere inside this panel -- on the panel itself or on any descendant, even one that swallows the press or takes it for the map -- first makes this panel the last child of its parent, so it draws above its siblings. Used by floating windows for click-to-front.
 --- @field hoverCursor MouseCursor|nil The style of mouse cursor that will be displayed when this panel is hovered.
 --- @field clip boolean (Default: false) If set to true, this panel's bgimage will be used to clip its children. By default child panels can appear outside the bounds of their parent. With this set to true, the child panels will instead be clipped.
 --- @field clipHidden boolean (Default: false) This is relevant only if @see clip is set. If set to true, this panel won't have its bgimage drawn. The bgimage will be used only for the purpose of clipping the child panels.
@@ -321,6 +324,8 @@ function Panel:HaltEventPropagation() end
 --- @field debugBacktrace? string|nil
 --- @field inworld? any
 --- @field blurBackground? any
+--- @field frost? nil|boolean|number Frosted glass: the panel's background blurs whatever is already drawn behind it (the map, other panels, art), with its bgcolor laid over the blur as a tint. true uses the default blur radius; a number sets the radius in pixels; false or 0 turns it off. Needs a bgimage. Only applies while the Transparent UI setting is on; with it off the panel draws its plain bgcolor. Costs two screen copies and a blur per frosted panel each frame (about the same for a small panel as a large one), so use it on a few panels rather than many; see frostShared for a cheaper path for panels on the bottom layer. Unlike blurBackground, which only blurs the map underneath the whole interface.
+--- @field frostShared? boolean Opts a frosted panel (see frost) into the cheaper shared frost: all shared panels blur one screen copy per frame between them, at quarter resolution, instead of each taking two copies. Only for panels on the bottom layer: nothing drawn after the first frosted panel may sit behind this one (another frosted panel, a tooltip, a sibling drawn earlier in the hierarchy), or it will be missing from the blur. The blur lags the screen by one frame, and all shared panels use the largest radius among them. Ignored (the panel uses ordinary frost) outside Direct3D, in pop-out windows, and when frost is off.
 --- @field monitorMod? string The id of the mod to monitor. When this mod is reloaded the refreshMod event will be fired on the panel.
 --- @field monitorAssets? boolean|AssetCategory|AssetCategory[] (write-only) A list of asset categories to monitor. true monitors every category. When the asset categories are updated, the refreshAssets event will be fired on this panel.
 --- @field constrainToScreen? boolean (default=false) If true, the panel will be constrained to the screen area.
@@ -395,6 +400,7 @@ function Panel:HaltEventPropagation() end
 --- @field mousePoint? Vector2Arg The position of the mouse within this panel, or (0,0) if the mouse is not within the panel.
 --- @field bgsprite? Sprite The @see Sprite object representing the bgimage for this panel.
 --- @field swallowPress? boolean (Default: false) If true, if this panel receives the 'press' event its parent panel will not receive the press event. By default, a panel, and its parents, all the way up the hierarchy receive the press event.
+--- @field raiseOnPress? boolean (Default: false) If true, a mouse press anywhere inside this panel -- on the panel itself or on any descendant, even one that swallows the press or takes it for the map -- first makes this panel the last child of its parent, so it draws above its siblings. Used by floating windows for click-to-front.
 --- @field hoverCursor? MouseCursor|nil The style of mouse cursor that will be displayed when this panel is hovered.
 --- @field clip? boolean (Default: false) If set to true, this panel's bgimage will be used to clip its children. By default child panels can appear outside the bounds of their parent. With this set to true, the child panels will instead be clipped.
 --- @field clipHidden? boolean (Default: false) This is relevant only if @see clip is set. If set to true, this panel won't have its bgimage drawn. The bgimage will be used only for the purpose of clipping the child panels.

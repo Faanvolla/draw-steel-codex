@@ -6207,6 +6207,9 @@ function CustomDocument.GetOrCreateTabbedViewer()
         styles = TabbedViewerStyles(),
         classes = {"framedPanel", "journalViewer", "journalTabbedViewer"},
         border = 0,
+        --click-to-front from a press anywhere in the window, even on
+        --content that swallows the press (the engine walks up to here).
+        raiseOnPress = true,
         -- bgimage = true,
         blurBackground = true,
         x = loc.x,
@@ -6893,6 +6896,9 @@ function CustomDocument:PresentDocument(args)
         styles = DocumentWindowStyles(),
         classes = { "framedPanel", "journalViewer" },
         bgimage = true,
+        --click-to-front from a press anywhere in the window, even on
+        --content that swallows the press (the engine walks up to here).
+        raiseOnPress = true,
         blurBackground = true,
         x = loc.x,
         y = loc.y,
@@ -9985,6 +9991,9 @@ end
 
 local ICON_RAIL_BUTTON = 40
 local ICON_RAIL_GAP = 8
+--the widest a rail button may be (a journal PDF's cover, sized to its
+--page shape); wider than this and it crowds the map.
+local ICON_RAIL_WIDE_MAX = 64
 local ICON_RAIL_LEFT = 12
 --The gap the rearrange-mode stop button leaves below itself (its own y
 --offset, in pre-scale rail units) AND above itself (in layer units) --
@@ -10614,6 +10623,31 @@ local function ScriptButtonCode(script)
     return script
 end
 
+--Rail entry types registered by other modules. A layout key "<type>:<id>"
+--whose type is registered here is drawn and driven by its callbacks; a
+--minimized tabletop map window ("mapwindow:<id>", Tabletop.lua) is the
+--first. A global, not a local: the main chunk sits on the 200-locals
+--ceiling, and the registrations come from other mods, which a reload of
+--this file does not re-run. Each def's callbacks take the id after the
+--prefix:
+--  available(id) -> boolean  false parks a stored entry inert (kept, not drawn)
+--  name(id) -> string        the button's name
+--  icon(id) -> string        the button's image
+--  span(id) -> integer       optional: rail slots the button spans (1-4, default 1)
+--  width(id, h) -> number    optional: button width given its height h (a little
+--                            wider than the rail, up to ICON_RAIL_WIDE_MAX); the
+--                            extra width grows away from the screen edge
+--  face(id, w, h) -> Panel   optional: draws the whole button face (w x h) in
+--                            place of the icon; nil falls back to the icon
+--  isActive(id) -> boolean   optional: lights the button (its window is open)
+--  activate(id, element)     the press
+--  hover(id, element)        optional: shows a tooltip; replaces the name label
+--  menu(id, element)         optional: context-menu entries above the move entries
+--  onRemove(id)              the entry left the rail (Remove from rail, the trash)
+--Entries of these types never group, and leaving the rail erases them
+--rather than parking them inert.
+RailEntryTypes = rawget(_G, "RailEntryTypes") or {}
+
 --The current button layout. Returns TWO values:
 --  sides: available panels partitioned onto the two rails -- each a list
 --    of {key, name, slot} sorted by slot (holes allowed = blank spots).
@@ -10675,7 +10709,34 @@ local function RailLayout()
         local toolkitid = string.match(key, "^toolkit:(.+)$")
         local sbuttonid = string.match(key, "^button:(.+)$")
         local sbuttonSpan = 1
-        if docid ~= nil then
+        --a registered entry type's own width (nil = rail width).
+        local customWidth = nil
+        local customType, customId = string.match(key, "^([%w_]+):(.+)$")
+        local customDef = customType ~= nil and RailEntryTypes[customType] or nil
+        if customDef == nil then
+            customType, customId = nil, nil
+        end
+        if customDef ~= nil then
+            local ok, result = pcall(customDef.available, customId)
+            available = ok and result == true
+            if available then
+                local okName, name = pcall(customDef.name, customId)
+                displayName = (okName and type(name) == "string") and name or customType
+                if customDef.span ~= nil then
+                    local okSpan, n = pcall(customDef.span, customId)
+                    if okSpan and type(n) == "number" then
+                        sbuttonSpan = math.max(1, math.min(4, math.floor(n)))
+                    end
+                end
+                if customDef.width ~= nil then
+                    local h = sbuttonSpan * (ICON_RAIL_BUTTON + ICON_RAIL_GAP) - ICON_RAIL_GAP
+                    local okWidth, w = pcall(customDef.width, customId, h)
+                    if okWidth and type(w) == "number" and w > ICON_RAIL_BUTTON then
+                        customWidth = math.min(ICON_RAIL_WIDE_MAX, math.floor(w))
+                    end
+                end
+            end
+        elseif docid ~= nil then
             local docs = dmhub.GetTable(CustomDocument.tableName) or {}
             local doc = docs[docid]
             available = doc ~= nil and (not doc.hidden)
@@ -10728,7 +10789,8 @@ local function RailLayout()
         local list = sides[side]
         --character entries render as a CARD spanning two slots (portrait +
         --stamina + hero resources) rather than a one-slot icon button.
-        --script buttons can ask for extra slots via the @slots directive.
+        --script buttons can ask for extra slots via the @slots directive,
+        --and registered entry types via their span callback.
         --span is derived here, never persisted: the stored layout stays
         --{side, slot} for every entry.
         --a missing character has no card to draw, so it shrinks back to a
@@ -10736,10 +10798,10 @@ local function RailLayout()
         local span = 1
         if charid ~= nil and not missing then
             span = 2
-        elseif sbuttonid ~= nil then
+        elseif sbuttonid ~= nil or customDef ~= nil then
             span = sbuttonSpan
         end
-        list[#list + 1] = { key = key, name = displayName, slot = slot, ord = ord, docid = docid, charid = charid, toolkitid = toolkitid, sbuttonid = sbuttonid, span = span, missing = missing }
+        list[#list + 1] = { key = key, name = displayName, slot = slot, ord = ord, docid = docid, charid = charid, toolkitid = toolkitid, sbuttonid = sbuttonid, span = span, width = customWidth, missing = missing, customType = customType, customId = customId }
     end
 
     --curated panels first: they carry the first-run default ordering.
@@ -14254,6 +14316,66 @@ function IconRailCharacterAdd(charid, side)
         return false
     end
     return RailAddKey("character:" .. charid, side)
+end
+
+--The same drop / add paths for any registered entry type's key
+--("<type>:<id>", see RailEntryTypes): a dragged panel's dragging handler
+--calls IconRailDocDragging(target) for the slot ghost, and its drop
+--calls IconRailKeyDrop(key, target).
+function IconRailKeyDrop(key, target)
+    HideRailGhost()
+    return RailKeyDrop(key, target)
+end
+
+function IconRailKeyAdd(key, side)
+    return RailAddKey(key, side)
+end
+
+--Takes a registered entry off the rail for good and tells its owner
+--(def.onRemove). Erasing it -- rather than parking it inert like a panel
+---- is the point: the owner put it there and decides what leaving means.
+function IconRailKeyRemove(key)
+    RailPurgeKey(key)
+    local customType, customId = string.match(key or "", "^([%w_]+):(.+)$")
+    local def = customType ~= nil and RailEntryTypes[customType] or nil
+    if def ~= nil and def.onRemove ~= nil then
+        def.onRemove(customId)
+    end
+end
+
+--Erases a registered entry without calling its onRemove (its owner is
+--already removing it).
+function IconRailKeyPurge(key)
+    RailPurgeKey(key)
+end
+
+--Whether key is on a rail now; returns its side and slot when it is.
+function IconRailKeySlot(key)
+    local sides = RailLayout()
+    for side, list in pairs(sides) do
+        for _, e in ipairs(list) do
+            if e.key == key then
+                return side, e.slot
+            end
+        end
+    end
+    return nil
+end
+
+--Rebuilds the rails on the next frame: a registered entry type's
+--availability, name or icon changed.
+function IconRailRebuildSoon()
+    if g_railRebuildPending then
+        return
+    end
+    g_railRebuildPending = true
+    dmhub.Schedule(0.01, function()
+        g_railRebuildPending = false
+        if mod.unloaded then
+            return
+        end
+        RebuildIconRails()
+    end)
 end
 
 --Closing a panel from a dock (its right-click > Close) also takes its
@@ -20688,7 +20810,12 @@ local function CreateIconRail(side, entries)
         --the @disabled condition's state at build time; refreshRail
         --keeps it live afterwards.
         local sbuttonDisabled = false
-        if toolkitid ~= nil then
+        if entry.customType ~= nil then
+            --a registered entry type (RailEntryTypes) draws its own icon.
+            pcall(function()
+                buttonIcon = RailEntryTypes[entry.customType].icon(entry.customId) or buttonIcon
+            end)
+        elseif toolkitid ~= nil then
             --the user's chosen icon, falling back to the toolbox for
             --toolkits made before icons existed (and for anyone who left
             --the picker alone).
@@ -20763,6 +20890,9 @@ local function CreateIconRail(side, entries)
             buttonMargin = buttonTop - prevBottom
         end
         prevBottom = buttonTop + buttonHeight
+        --most buttons are the rail's width; a registered type may ask for
+        --a little more (a PDF cover keeps its page shape).
+        local buttonWidth = entry.width or ICON_RAIL_BUTTON
 
         --hover labels open toward the screen centre: right of the button
         --on the left rail, left of the button on the right rail. halign is
@@ -20772,9 +20902,9 @@ local function CreateIconRail(side, entries)
         --label grow away from the rail at any length.
         local labelArgs
         if side == "left" then
-            labelArgs = { halign = "left", x = ICON_RAIL_BUTTON + 10 }
+            labelArgs = { halign = "left", x = buttonWidth + 10 }
         else
-            labelArgs = { halign = "right", x = -(ICON_RAIL_BUTTON + 10) }
+            labelArgs = { halign = "right", x = -(buttonWidth + 10) }
         end
 
         --GROUP: the panels sharing this button's window as tabs. They have
@@ -20785,7 +20915,7 @@ local function CreateIconRail(side, entries)
         --whether this button's panel can host a group at all (document,
         --character and toolkit shortcuts cannot be folder members or
         --owners, either way round).
-        local groupCapable = docid == nil and charid == nil and toolkitid == nil
+        local groupCapable = docid == nil and charid == nil and toolkitid == nil and entry.customType == nil
         --forward-declared: ToggleGroupMember below closes the strip, and
         --a local declared after it would not be in that closure's scope.
         local groupFlyout
@@ -20950,6 +21080,17 @@ local function CreateIconRail(side, entries)
             --button's only verb is "dismiss me".
             if missing then
                 return "REMOVED CHARACTER  (CLICK TO DISMISS)"
+            end
+            --a registered entry type's name is re-read live (it can change
+            --while the button is up, e.g. a map window switching maps).
+            if entry.customType ~= nil then
+                local ok, name = pcall(function()
+                    return RailEntryTypes[entry.customType].name(entry.customId)
+                end)
+                if ok and type(name) == "string" then
+                    return string.upper(name)
+                end
+                return string.upper(panelName)
             end
             --a script button's @tooltip replaces its name entirely --
             --live state text, re-read on the same refreshRail cadence
@@ -21566,6 +21707,11 @@ local function CreateIconRail(side, entries)
         local sbuttonFace = nil
         if sbuttonStyle ~= nil and sbuttonStyle.face then
             sbuttonFace = ToolkitCluster.ScriptButtonFace((dmhub.GetSettingValue("iconrailscriptbuttons") or {})[sbuttonid])
+        elseif entry.customType ~= nil and RailEntryTypes[entry.customType].face ~= nil then
+            --a registered entry type's own face (a journal PDF's cover).
+            pcall(function()
+                sbuttonFace = RailEntryTypes[entry.customType].face(entry.customId, buttonWidth, buttonHeight)
+            end)
         end
         --`not missing`: the card reads stamina and hero resources off the
         --token, so with the token gone there is nothing to draw. The
@@ -21901,7 +22047,10 @@ local function CreateIconRail(side, entries)
             --way), so a button whose author asked for @opacity drops
             --the blur -- otherwise the transparency never reads.
             blurBackground = not (sbuttonStyle ~= nil and sbuttonStyle.opacity ~= nil),
-            width = ICON_RAIL_BUTTON,
+            width = buttonWidth,
+            --a wide button keeps its edge on the rail's screen-edge line and
+            --grows toward the map, rather than centring past the rail.
+            halign = cond(buttonWidth > ICON_RAIL_BUTTON, side, nil),
             --a character card spans several slots; ordinary buttons are
             --one slot tall.
             height = buttonHeight,
@@ -21950,6 +22099,12 @@ local function CreateIconRail(side, entries)
                     element:SetClass("active", lit)
                 elseif toolkitid ~= nil then
                     element:SetClass("active", RailToolkitStripOpen(toolkitid))
+                elseif entry.customType ~= nil then
+                    local ok, lit = pcall(function()
+                        local def = RailEntryTypes[entry.customType]
+                        return def.isActive ~= nil and def.isActive(entry.customId) == true
+                    end)
+                    element:SetClass("active", ok and lit == true)
                 else
                     element:SetClass("active", PanelDocument.IsPanelShown(key))
                 end
@@ -21985,6 +22140,19 @@ local function CreateIconRail(side, entries)
             --from the button into the strip never shuts it mid-reach.
             hover = function(element)
                 RailButtonSound("hover")
+                --a registered entry type may show its own tooltip (its
+                --name label is collapsed in that case); a document
+                --shortcut shows a preview of the document.
+                if entry.customType ~= nil then
+                    pcall(function()
+                        local def = RailEntryTypes[entry.customType]
+                        if def.hover ~= nil then
+                            def.hover(entry.customId, element)
+                        end
+                    end)
+                elseif docid ~= nil and not missing then
+                    CustomDocument.ShowJournalPreview(element, docid, CustomDocument.RailPreviewPlacement(element))
+                end
                 --A popped-out panel's OS window can be buried under other
                 --windows; arriving on its rail button surfaces it: bring
                 --the window to the top (without stealing focus -- the
@@ -22212,7 +22380,9 @@ local function CreateIconRail(side, entries)
             },
 
             gui.Label{
-                classes = {"iconRailLabel", cond(groupMembers ~= nil, "collapsed")},
+                classes = {"iconRailLabel", cond(groupMembers ~= nil or docid ~= nil
+                    or (entry.customType ~= nil and RailEntryTypes[entry.customType] ~= nil
+                        and RailEntryTypes[entry.customType].hover ~= nil), "collapsed")},
                 floating = true,
                 --see the tray label: rail windows left open sit over the rail,
                 --so without this the hover label drew behind them.
@@ -22291,7 +22461,7 @@ local function CreateIconRail(side, entries)
                     return
                 end
                 local px, py = RailButtonDragPointer(side, index, element)
-                if docid == nil and charid == nil then
+                if docid == nil and charid == nil and entry.customType == nil then
                     local zone = RailGroupZoneAt(px, py, key)
                     if zone ~= nil then
                         HideRailGhost()
@@ -22313,7 +22483,9 @@ local function CreateIconRail(side, entries)
                 --context menu's "Remove from rail"). A tombstone is
                 --erased instead -- there is nothing left to restore.
                 if target ~= nil and target.valid and target:HasClass("iconRailTrash") then
-                    if missing then
+                    if entry.customType ~= nil then
+                        IconRailKeyRemove(key)
+                    elseif missing then
                         RailPurgeKey(key)
                     else
                         RailMovePanel(key, "remove")
@@ -22328,7 +22500,7 @@ local function CreateIconRail(side, entries)
                 --panel becomes a tab of that window. Its own layout
                 --entry stays behind inert, so ungrouping later returns
                 --it home.
-                if docid == nil and charid == nil then
+                if docid == nil and charid == nil and entry.customType == nil then
                     local zone = RailGroupZoneAt(px, py, key)
                     if zone ~= nil then
                         RailGroupInsert(key, zone.ownerKey, zone.beforeKey)
@@ -22483,6 +22655,17 @@ local function CreateIconRail(side, entries)
             --Open/close this button's window. Fired by the press handler
             --and by the context menu's "Open" entry.
             activateRailButton = function(element)
+                --a registered entry type (RailEntryTypes) decides what
+                --its press means.
+                if entry.customType ~= nil then
+                    local def = RailEntryTypes[entry.customType]
+                    if def ~= nil and def.activate ~= nil then
+                        def.activate(entry.customId, element)
+                    end
+                    RefreshRails()
+                    return
+                end
+
                 --standalone script button: clicking IS the action --
                 --run the stored chunk (insulated + kill-checked when it
                 --came from a pack). A pack button of type "panel" is a
@@ -22750,6 +22933,37 @@ local function CreateIconRail(side, entries)
                             end,
                         },
                     }
+                end
+
+                --registered entry types: their own entries, then the
+                --moves. Leaving the rail erases the entry (never parked
+                --inert) and tells its owner, which decides what that means.
+                if entry.customType ~= nil then
+                    local def = RailEntryTypes[entry.customType]
+                    local entries = moveEntries()
+                    for i, e in ipairs(entries) do
+                        if e.text == "Remove from rail" then
+                            entries[i] = {
+                                text = "Remove from rail",
+                                click = function()
+                                    element.popup = nil
+                                    IconRailKeyRemove(key)
+                                end,
+                            }
+                        end
+                    end
+                    if def ~= nil and def.menu ~= nil then
+                        local ok, extra = pcall(def.menu, entry.customId, element)
+                        if ok and type(extra) == "table" then
+                            for i = #extra, 1, -1 do
+                                table.insert(entries, 1, extra[i])
+                            end
+                        end
+                    end
+                    element.popup = gui.ContextMenu{
+                        entries = entries,
+                    }
+                    return
                 end
 
                 --standalone script buttons: run + edit + moves + delete.

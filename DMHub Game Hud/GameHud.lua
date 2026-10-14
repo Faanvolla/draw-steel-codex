@@ -1574,7 +1574,11 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 				end
 
 				if data.dialog ~= nil then
-                    if data.dialog.args.ttl ~= nil and TimestampAgeInSeconds(data.timestamp) > data.dialog.args.ttl then
+                    --past its ttl a dialog is dropped -- unless it is one for a map
+                    --this client never showed because no window showed the map
+                    --(the tabletop view): it waits for that map's window instead.
+                    if data.dialog.args.ttl ~= nil and TimestampAgeInSeconds(data.timestamp) > data.dialog.args.ttl
+                            and not Tabletop.ShowLateMapDialog(data) then
                         return
 					end
 
@@ -1582,19 +1586,39 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
                         return
                     end
 
+                    --A dialog presented for one map (the "Draw Steel" banner) opens
+                    --over that map. In the tabletop view that is inside its map
+                    --window; with no window showing the map, wait for one.
+                    local mapHost = nil
+                    if data.dialog.args.mapid ~= nil and Tabletop.IsActive() then
+                        mapHost = Tabletop.MapOverlayHost()
+                        if mapHost == nil then
+                            return
+                        end
+                    end
+
 					if m_presentedDialog ~= nil and m_presentedDialog.valid and dmhub.DeepEqual(m_presentedDialogArgs, data.dialog) then
 						return
 					end
 
 					m_presentedDialogArgs = DeepCopy(data.dialog)
+                    if data.dialog.args.mapid ~= nil then
+                        Tabletop.NoteMapDialogShown(data)
+                    end
                     local dialogInfo = g_presentableDialogs[m_presentedDialogArgs.dialog]
                     if dialogInfo ~= nil then
                         m_presentedDialog = dialogInfo.create(m_presentedDialogArgs.args)
                         if m_presentedDialog ~= nil then
-                            GameHud.instance.documentsPanel:AddChild(m_presentedDialog)
+                            (mapHost or GameHud.instance.documentsPanel):AddChild(m_presentedDialog)
                         end
 					elseif LaunchablePanel.LaunchPanelByName(data.dialog.dialog, data.dialog.args) then
 						m_presentedDialog = gui.GetFocus()
+						--a launched panel opens over the screen; one presented for a map
+						--(the "Draw Steel" banner) moves into that map's window.
+						if mapHost ~= nil and m_presentedDialog ~= nil and m_presentedDialog.valid then
+							m_presentedDialog:Unparent()
+							mapHost:AddChild(m_presentedDialog)
+						end
 					else
 						--panels that used to be launchable are dockable now;
 						--a remote request to present one by name still has to
@@ -1730,8 +1754,14 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 		},
 
 		children = {
+			--bottom of the stack: a maximized tabletop map window sits here,
+			--under everything else, as a full-screen map does (Tabletop.lua).
+			Tabletop.CreateLayer(),
+
             gamehud:CreateAdventureDocumentsManager(),
-		    gamehud:CreateInitiativeBar(tokenInfo),
+			--initiative is per map: in the tabletop view the bar moves into the
+			--live map window (Tabletop.MapHudSlot).
+		    Tabletop.MapHudSlot(gamehud:CreateInitiativeBar(tokenInfo)),
 			gamehud:CreateShapesLayer(),
 
 			gamehud:RequireRollListenerPanel(),
@@ -1755,6 +1785,9 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 			--while still leaving it below mainDialog / modal / popup / rollDialog,
 			--so modals and the dice dialog continue to win.
 			gamehud:CreateDocumentsPanel(),
+			--minimized tabletop map windows float on the table over the
+			--windows and journals (Tabletop.lua).
+			Tabletop.CreateButtonLayer(),
 
 			--The action bar sits ABOVE the documents layer for the same reason.
 			--Everything the bar floats out of its strip -- the drawer menus, the
@@ -1790,6 +1823,8 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 			gamehud.rollDialog,
 
 			FullscreenDisplay.Create{belowui = false},
+			--a maximized tabletop scene on show over the UI (Tabletop.lua).
+			Tabletop.CreateTopLayer(),
 
 			DramaticBanner.Create(),
 

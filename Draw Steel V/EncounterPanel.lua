@@ -826,6 +826,68 @@ local function BuilderStyles()
             selectors = { "encounterEntryRow", "gatedOff" },
             opacity = 0.55,
         },
+        --the map card in the header (CreateEncounterMapCard) and its picker.
+        {
+            selectors = { "encounterMapCard" },
+            bgimage = true,
+            bgcolor = "@bgAlt",
+            borderWidth = 1,
+            borderColor = "@border",
+            cornerRadius = 4,
+        },
+        {
+            selectors = { "encounterMapCard", "hover" },
+            borderColor = "@accent",
+        },
+        {
+            selectors = { "encounterMapCard", "drag-target-hover" },
+            borderColor = "@accent",
+            borderWidth = 2,
+        },
+        --the party bar's outcome group once it has wrapped below the party
+        --group: clears the Balance button hanging under the Heroes stepper.
+        {
+            selectors = { "partyGroupOutcome", "partyWrapped" },
+            tmargin = 30,
+        },
+        {
+            selectors = { "encounterMapName" },
+            width = "100%",
+            height = "auto",
+            valign = "bottom",
+            hpad = 6,
+            vpad = 2,
+            borderBox = true,
+            bgimage = true,
+            bgcolor = "#000000b0",
+            color = "white",
+            fontSize = 12,
+            textAlignment = "left",
+            textWrap = false,
+        },
+        {
+            selectors = { "encounterMapOption" },
+            width = "100%",
+            height = "auto",
+            hpad = 6,
+            vpad = 3,
+            borderBox = true,
+            bgimage = true,
+            bgcolor = "clear",
+            color = "@fg",
+            fontSize = 13,
+            textAlignment = "left",
+        },
+        {
+            selectors = { "encounterMapOption", "hover" },
+            bgcolor = "@bgInverse",
+            color = "@fgInverse",
+        },
+        {
+            selectors = { "encounterMapOption", "selected" },
+            color = "@accent",
+            bold = true,
+        },
     })
 end
 
@@ -1530,260 +1592,162 @@ local function CreatePartyBar(encounter, party, refresh, rebuild, budgetDial)
     --an encounter-script parameter row beneath it that only appears when an
     --attached script declares parameters.
     local partyBar
+    --wraps onto a second line when the builder window is resized narrower
+    --than the two column groups' natural width.
     local partyColumnsRow = gui.Panel {
         width = "100%",
         height = "auto",
         flow = "horizontal",
+        wrap = true,
 
-        partyColumn("Heroes", CreateStepper {
-            value = party.numHeroes,
-            min = 3,
-            max = 7,
-            sync = function() return party.numHeroes end,
-            change = function(v)
-                party.numHeroes = v
-                overrideParty()
-            end,
-        }, balanceButton),
+        --once the two groups no longer fit side by side the outcome group
+        --wraps below; it then needs clearance for the Balance button that
+        --hangs (floating) under the Heroes stepper.
+        rendered = function(element, width, height)
+            local groups = element.children
+            if #groups < 2 then
+                return
+            end
+            --the groups carry no margins of their own, so the row wraps exactly
+            --when their widths add up to more than its own.
+            local wrapped = groups[1].renderedWidth + groups[2].renderedWidth > element.renderedWidth + 0.5
+            groups[2]:SetClass("partyWrapped", wrapped)
+        end,
 
+        --party: who the encounter is balanced for.
         gui.Panel {
+            classes = { "partyGroup" },
             flow = "horizontal",
             width = "auto",
             height = "auto",
             valign = "center",
 
-            partyColumn("Level", CreateStepper {
-                value = party.level,
-                min = 1,
-                max = 10,
-                sync = function() return party.level end,
+            partyColumn("Heroes", CreateStepper {
+                value = party.numHeroes,
+                min = 3,
+                max = 7,
+                sync = function() return party.numHeroes end,
                 change = function(v)
-                    party.level = v
+                    party.numHeroes = v
                     overrideParty()
                 end,
-            }),
+            }, balanceButton),
 
-            partyColumn("Victories", CreateStepper {
-                value = party.victories,
-                min = 0,
-                max = 15,
-                sync = function() return party.victories end,
-                change = function(v)
-                    party.victories = v
-                    overrideParty()
-                end,
-            }),
-
-            autoSourceLabel,
-            autoButton,
-        },
-
-        gui.Panel {
-            flow = "vertical",
-            width = "auto",
-            height = "auto",
-            valign = "center",
-            rmargin = 18,
-
-            FieldCaption("Party Encounter Strength"),
-
-            --Fixed width, or every stepper press shifts the columns to the
-            --right as the readout changes length.
             gui.Panel {
                 flow = "horizontal",
-                width = 170,
+                width = "auto",
                 height = "auto",
-                esValueLabel,
-                esBreakdownLabel,
-            },
-        },
+                valign = "center",
 
-        gui.Panel {
-            flow = "vertical",
-            width = "auto",
-            height = "auto",
-            valign = "center",
-            rmargin = 18,
+                partyColumn("Level", CreateStepper {
+                    value = party.level,
+                    min = 1,
+                    max = 10,
+                    sync = function() return party.level end,
+                    change = function(v)
+                        party.level = v
+                        overrideParty()
+                    end,
+                }),
 
-            FieldCaption("Victory condition"),
+                partyColumn("Victories", CreateStepper {
+                    value = party.victories,
+                    min = 0,
+                    max = 15,
+                    sync = function() return party.victories end,
+                    change = function(v)
+                        party.victories = v
+                        overrideParty()
+                    end,
+                }),
 
-            gui.Dropdown {
-                classes = { "form" },
-                width = 260,
-                height = 28,
-                fontSize = 12,
-                options = Encounter.GetVictoryConditions(encounter),
-                idChosen = encounter:try_get("victoryCondition", "all_defeated"),
-
-                --The "Leader Defeated" option only exists while the encounter contains a
-                --Leader monster, and the roster is edited live in the group cards, so poll
-                --for that presence flipping and rebuild the option list (re-asserting the
-                --current selection) when it changes. Cheap: only reassigns on a change.
-                data = { hasLeader = nil },
-                thinkTime = 0.5,
-                think = function(element)
-                    ---@cast element Dropdown
-                    local hasLeader = Encounter.HasMonsterWithOrganization(encounter, "leader")
-                    if hasLeader ~= element.data.hasLeader then
-                        element.data.hasLeader = hasLeader
-                        element.options = Encounter.GetVictoryConditions(encounter)
-                        element.idChosen = encounter:try_get("victoryCondition", "all_defeated")
-                    end
-                end,
-
-                change = function(element)
-                    ---@cast element Dropdown
-                    encounter.victoryCondition = element.idChosen
-                    partyBar:FireEventTree("refreshDestroy")
-                end,
-
-                --Collapsed in favor of the script-victory label when an
-                --attached encounter script declares a victory condition.
-                refreshBuilder = function(element)
-                    element:SetClass("collapsed", encounter:ScriptVictoryText() ~= nil)
-                end,
-                create = function(element)
-                    element:FireEvent("refreshBuilder")
-                end,
+                autoSourceLabel,
+                autoButton,
             },
 
-            --Shown INSTEAD of the dropdown when an attached encounter script
-            --declares a victory condition. The stored victoryCondition field is
-            --left untouched underneath, so detaching the script restores the
-            --previously-chosen dropdown value.
-            gui.Label {
-                classes = { "fgStrong" },
-                width = 260,
-                height = "auto",
-                fontSize = 12,
-                textWrap = true,
-                text = "",
-                data = { tip = nil },
-
-                refreshBuilder = function(element)
-                    local text, scriptInstance = encounter:ScriptVictoryText()
-                    element:SetClass("collapsed", text == nil)
-                    if text ~= nil then
-                        element.text = string.format("%s (set by script)", text)
-                        local scriptName = "Encounter Script"
-                        if scriptInstance ~= nil then
-                            scriptName = scriptInstance:try_get("name", scriptName)
-                        end
-                        element.data.tip = string.format("Victory condition set by the encounter script \"%s\".", scriptName)
-                    end
-                end,
-                create = function(element)
-                    element:FireEvent("refreshBuilder")
-                end,
-                hover = function(element)
-                    if element.data.tip ~= nil then
-                        gui.Tooltip(element.data.tip)(element)
-                    end
-                end,
-            },
-
-            --Shown only when the "Destroy the Thing!" victory condition is selected. Lets the
-            --DM pick which Targetable object keyword identifies the "thing" to destroy, or
-            --explains how to add one if the map has no Targetable objects with keywords.
-            gui.Panel {
-                width = 260,
-                height = "auto",
-                flow = "vertical",
-                data = { scriptVictory = nil },
-
-                create = function(element)
-                    element:FireEvent("refreshDestroy")
-                end,
-
-                --rebuild when script-victory presence flips (attach/detach), so
-                --the keyword picker hides along with the dropdown.
-                refreshBuilder = function(element)
-                    local hasScriptVictory = encounter:ScriptVictoryText() ~= nil
-                    if hasScriptVictory ~= element.data.scriptVictory then
-                        element.data.scriptVictory = hasScriptVictory
-                        element:FireEvent("refreshDestroy")
-                    end
-                end,
-
-                refreshDestroy = function(element)
-                    local isDestroy = encounter:try_get("victoryCondition", "all_defeated") == "destroy_thing"
-                    if encounter:ScriptVictoryText() ~= nil then
-                        isDestroy = false
-                    end
-                    element:SetClass("collapsed", not isDestroy)
-                    if not isDestroy then
-                        element.children = {}
-                        return
-                    end
-
-                    local keywords = Encounter.GetTargetableObjectKeywords()
-
-                    if #keywords == 0 then
-                        element.children = {
-                            gui.Label {
-                                classes = { "fgStrong" },
-                                width = "100%",
-                                height = "auto",
-                                halign = "left",
-                                valign = "top",
-                                tmargin = 6,
-                                fontSize = 12,
-                                textWrap = true,
-                                text = "To select a thing to destroy add an object to the map with the Targetable property and a keyword",
-                            },
-                        }
-                        return
-                    end
-
-                    local keywordOptions = {}
-                    for _, keyword in ipairs(keywords) do
-                        keywordOptions[#keywordOptions + 1] = { id = keyword, text = keyword }
-                    end
-
-                    local chosen = encounter:try_get("victoryDestroyKeyword")
-                    if chosen == nil or not table.contains(keywords, chosen) then
-                        chosen = keywords[1]
-                        encounter.victoryDestroyKeyword = chosen
-                    end
-
-                    element.children = {
-                        gui.Dropdown {
-                            classes = { "form" },
-                            width = "100%",
-                            height = 26,
-                            halign = "left",
-                            valign = "center",
-                            tmargin = 6,
-                            fontSize = 12,
-                            options = keywordOptions,
-                            idChosen = chosen,
-                            change = function(dropdown)
-                                ---@cast dropdown Dropdown
-                                encounter.victoryDestroyKeyword = dropdown.idChosen
-                            end,
-                        },
-                    }
-                end,
-            },
-
-            --Shown when an attached encounter script declares a defeat
-            --condition. Defeat conditions only come from scripts, so unlike
-            --victory there is no dropdown underneath to swap out.
             gui.Panel {
                 flow = "vertical",
                 width = "auto",
                 height = "auto",
-                tmargin = 8,
+                valign = "center",
+                rmargin = 18,
 
-                create = function(element)
-                    element:FireEvent("refreshBuilder")
-                end,
-                refreshBuilder = function(element)
-                    element:SetClass("collapsed", encounter:ScriptDefeatText() == nil)
-                end,
+                FieldCaption("Party Encounter Strength"),
 
-                FieldCaption("Defeat condition"),
+                --Fixed width, or every stepper press shifts the columns to the
+                --right as the readout changes length.
+                gui.Panel {
+                    flow = "horizontal",
+                    width = 170,
+                    height = "auto",
+                    esValueLabel,
+                    esBreakdownLabel,
+                },
+            },
+        },
 
+        --the encounter: how it is won, what it awards, its budget. On its own
+        --line when the bar wraps.
+        gui.Panel {
+            classes = { "partyGroup", "partyGroupOutcome" },
+            flow = "horizontal",
+            width = "auto",
+            height = "auto",
+            valign = "center",
+
+            gui.Panel {
+                flow = "vertical",
+                width = "auto",
+                height = "auto",
+                valign = "center",
+                rmargin = 18,
+
+                FieldCaption("Victory condition"),
+
+                gui.Dropdown {
+                    classes = { "form" },
+                    width = 260,
+                    height = 28,
+                    fontSize = 12,
+                    options = Encounter.GetVictoryConditions(encounter),
+                    idChosen = encounter:try_get("victoryCondition", "all_defeated"),
+
+                    --The "Leader Defeated" option only exists while the encounter contains a
+                    --Leader monster, and the roster is edited live in the group cards, so poll
+                    --for that presence flipping and rebuild the option list (re-asserting the
+                    --current selection) when it changes. Cheap: only reassigns on a change.
+                    data = { hasLeader = nil },
+                    thinkTime = 0.5,
+                    think = function(element)
+                        ---@cast element Dropdown
+                        local hasLeader = Encounter.HasMonsterWithOrganization(encounter, "leader")
+                        if hasLeader ~= element.data.hasLeader then
+                            element.data.hasLeader = hasLeader
+                            element.options = Encounter.GetVictoryConditions(encounter)
+                            element.idChosen = encounter:try_get("victoryCondition", "all_defeated")
+                        end
+                    end,
+
+                    change = function(element)
+                        ---@cast element Dropdown
+                        encounter.victoryCondition = element.idChosen
+                        partyBar:FireEventTree("refreshDestroy")
+                    end,
+
+                    --Collapsed in favor of the script-victory label when an
+                    --attached encounter script declares a victory condition.
+                    refreshBuilder = function(element)
+                        element:SetClass("collapsed", encounter:ScriptVictoryText() ~= nil)
+                    end,
+                    create = function(element)
+                        element:FireEvent("refreshBuilder")
+                    end,
+                },
+
+                --Shown INSTEAD of the dropdown when an attached encounter script
+                --declares a victory condition. The stored victoryCondition field is
+                --left untouched underneath, so detaching the script restores the
+                --previously-chosen dropdown value.
                 gui.Label {
                     classes = { "fgStrong" },
                     width = 260,
@@ -1794,14 +1758,15 @@ local function CreatePartyBar(encounter, party, refresh, rebuild, budgetDial)
                     data = { tip = nil },
 
                     refreshBuilder = function(element)
-                        local text, scriptInstance = encounter:ScriptDefeatText()
+                        local text, scriptInstance = encounter:ScriptVictoryText()
+                        element:SetClass("collapsed", text == nil)
                         if text ~= nil then
                             element.text = string.format("%s (set by script)", text)
                             local scriptName = "Encounter Script"
                             if scriptInstance ~= nil then
                                 scriptName = scriptInstance:try_get("name", scriptName)
                             end
-                            element.data.tip = string.format("Defeat condition set by the encounter script \"%s\".", scriptName)
+                            element.data.tip = string.format("Victory condition set by the encounter script \"%s\".", scriptName)
                         end
                     end,
                     create = function(element)
@@ -1813,42 +1778,175 @@ local function CreatePartyBar(encounter, party, refresh, rebuild, budgetDial)
                         end
                     end,
                 },
+
+                --Shown only when the "Destroy the Thing!" victory condition is selected. Lets the
+                --DM pick which Targetable object keyword identifies the "thing" to destroy, or
+                --explains how to add one if the map has no Targetable objects with keywords.
+                gui.Panel {
+                    width = 260,
+                    height = "auto",
+                    flow = "vertical",
+                    data = { scriptVictory = nil },
+
+                    create = function(element)
+                        element:FireEvent("refreshDestroy")
+                    end,
+
+                    --rebuild when script-victory presence flips (attach/detach), so
+                    --the keyword picker hides along with the dropdown.
+                    refreshBuilder = function(element)
+                        local hasScriptVictory = encounter:ScriptVictoryText() ~= nil
+                        if hasScriptVictory ~= element.data.scriptVictory then
+                            element.data.scriptVictory = hasScriptVictory
+                            element:FireEvent("refreshDestroy")
+                        end
+                    end,
+
+                    refreshDestroy = function(element)
+                        local isDestroy = encounter:try_get("victoryCondition", "all_defeated") == "destroy_thing"
+                        if encounter:ScriptVictoryText() ~= nil then
+                            isDestroy = false
+                        end
+                        element:SetClass("collapsed", not isDestroy)
+                        if not isDestroy then
+                            element.children = {}
+                            return
+                        end
+
+                        local keywords = Encounter.GetTargetableObjectKeywords()
+
+                        if #keywords == 0 then
+                            element.children = {
+                                gui.Label {
+                                    classes = { "fgStrong" },
+                                    width = "100%",
+                                    height = "auto",
+                                    halign = "left",
+                                    valign = "top",
+                                    tmargin = 6,
+                                    fontSize = 12,
+                                    textWrap = true,
+                                    text = "To select a thing to destroy add an object to the map with the Targetable property and a keyword",
+                                },
+                            }
+                            return
+                        end
+
+                        local keywordOptions = {}
+                        for _, keyword in ipairs(keywords) do
+                            keywordOptions[#keywordOptions + 1] = { id = keyword, text = keyword }
+                        end
+
+                        local chosen = encounter:try_get("victoryDestroyKeyword")
+                        if chosen == nil or not table.contains(keywords, chosen) then
+                            chosen = keywords[1]
+                            encounter.victoryDestroyKeyword = chosen
+                        end
+
+                        element.children = {
+                            gui.Dropdown {
+                                classes = { "form" },
+                                width = "100%",
+                                height = 26,
+                                halign = "left",
+                                valign = "center",
+                                tmargin = 6,
+                                fontSize = 12,
+                                options = keywordOptions,
+                                idChosen = chosen,
+                                change = function(dropdown)
+                                    ---@cast dropdown Dropdown
+                                    encounter.victoryDestroyKeyword = dropdown.idChosen
+                                end,
+                            },
+                        }
+                    end,
+                },
+
+                --Shown when an attached encounter script declares a defeat
+                --condition. Defeat conditions only come from scripts, so unlike
+                --victory there is no dropdown underneath to swap out.
+                gui.Panel {
+                    flow = "vertical",
+                    width = "auto",
+                    height = "auto",
+                    tmargin = 8,
+
+                    create = function(element)
+                        element:FireEvent("refreshBuilder")
+                    end,
+                    refreshBuilder = function(element)
+                        element:SetClass("collapsed", encounter:ScriptDefeatText() == nil)
+                    end,
+
+                    FieldCaption("Defeat condition"),
+
+                    gui.Label {
+                        classes = { "fgStrong" },
+                        width = 260,
+                        height = "auto",
+                        fontSize = 12,
+                        textWrap = true,
+                        text = "",
+                        data = { tip = nil },
+
+                        refreshBuilder = function(element)
+                            local text, scriptInstance = encounter:ScriptDefeatText()
+                            if text ~= nil then
+                                element.text = string.format("%s (set by script)", text)
+                                local scriptName = "Encounter Script"
+                                if scriptInstance ~= nil then
+                                    scriptName = scriptInstance:try_get("name", scriptName)
+                                end
+                                element.data.tip = string.format("Defeat condition set by the encounter script \"%s\".", scriptName)
+                            end
+                        end,
+                        create = function(element)
+                            element:FireEvent("refreshBuilder")
+                        end,
+                        hover = function(element)
+                            if element.data.tip ~= nil then
+                                gui.Tooltip(element.data.tip)(element)
+                            end
+                        end,
+                    },
+                },
             },
-        },
 
-        gui.Panel {
-            flow = "vertical",
-            width = "auto",
-            height = "auto",
-            valign = "center",
+            gui.Panel {
+                flow = "vertical",
+                width = "auto",
+                height = "auto",
+                valign = "center",
 
-            FieldCaption("Victories awarded"),
+                FieldCaption("Victories awarded"),
 
-            gui.Input {
-                classes = { "form" },
-                width = 60,
-                height = 26,
-                fontSize = 12,
-                numeric = true,
-                characterLimit = 3,
-                text = tostring(encounter:try_get("victories", 1)),
-                change = function(element)
-                    --validate as a non-negative integer; revert to the stored value on
-                    --bad input.
-                    local n = tonumber(element.text)
-                    if n == nil then
-                        element.text = tostring(encounter:try_get("victories", 1))
-                        return
-                    end
-                    n = math.floor(n)
-                    if n < 0 then n = 0 end
-                    encounter.victories = n
-                    element.text = tostring(n)
-                end,
+                gui.Input {
+                    classes = { "form" },
+                    width = 60,
+                    height = 26,
+                    fontSize = 12,
+                    numeric = true,
+                    characterLimit = 3,
+                    text = tostring(encounter:try_get("victories", 1)),
+                    change = function(element)
+                        --validate as a non-negative integer; revert to the stored value on
+                        --bad input.
+                        local n = tonumber(element.text)
+                        if n == nil then
+                            element.text = tostring(encounter:try_get("victories", 1))
+                            return
+                        end
+                        n = math.floor(n)
+                        if n < 0 then n = 0 end
+                        encounter.victories = n
+                        element.text = tostring(n)
+                    end,
+                },
             },
-        },
 
-        budgetDial,
+            budgetDial,
+        },
     }
 
     partyBar = gui.Panel {
@@ -3843,6 +3941,261 @@ ShowStagingBanner = function(message, opts)
 end
 
 -- ===========================================================================
+-- Encounter map: which map the encounter takes place on
+-- ===========================================================================
+
+local MAP_CARD_WIDTH = 176
+local MAP_CARD_HEIGHT = 99
+
+--The encounter's map, or nil when none is chosen or it has been deleted.
+local function EncounterMap(encounter)
+    local mapid = encounter.mapid
+    if mapid == nil or mapid == "" then
+        return nil
+    end
+    local map = game.GetMap(mapid)
+    if map == nil or not map.valid then
+        return nil
+    end
+    return map
+end
+
+--The picker the map card opens: Create New Map, a searchable list of this
+--game's maps, and No Map. choose(mapid, create) gets "" for No Map and
+--create = true for Create New Map.
+local function CreateMapPickerPopup(encounter, choose)
+    local list = gui.Panel {
+        width = "100%",
+        height = "auto",
+        maxHeight = 320,
+        flow = "vertical",
+        vscroll = true,
+    }
+
+    local function Populate(search)
+        search = string.lower(search or "")
+        local maps = {}
+        for _, map in ipairs(game.maps) do
+            if search == "" or string.find(string.lower(map.description), search, 1, true) ~= nil then
+                maps[#maps + 1] = map
+            end
+        end
+        table.sort(maps, function(a, b)
+            return string.lower(a.description) < string.lower(b.description)
+        end)
+
+        local children = {}
+        for _, map in ipairs(maps) do
+            local mapid = map.id
+            children[#children + 1] = gui.Label {
+                classes = { "encounterMapOption", cond(mapid == encounter.mapid, "selected") },
+                text = map.description,
+                press = function(element)
+                    choose(mapid)
+                end,
+            }
+        end
+        if #children == 0 then
+            children[1] = gui.Label {
+                classes = { "fgMuted", "sizeXs" },
+                width = "100%",
+                height = "auto",
+                vmargin = 6,
+                textAlignment = "center",
+                text = "No maps match.",
+            }
+        end
+        list.children = children
+    end
+
+    Populate("")
+
+    return gui.Panel {
+        classes = { "bordered", "bg" },
+        width = 300,
+        height = "auto",
+        flow = "vertical",
+        hpad = 10,
+        vpad = 10,
+        borderBox = true,
+
+        gui.Button {
+            classes = { "sizeS" },
+            width = "100%",
+            text = "Create New Map...",
+            press = function(element)
+                choose(nil, true)
+            end,
+        },
+
+        gui.Input {
+            classes = { "form" },
+            width = "100%",
+            height = 26,
+            vmargin = 8,
+            placeholderText = "Search maps...",
+            editlag = 0.1,
+            edit = function(element)
+                Populate(element.text)
+            end,
+        },
+
+        list,
+
+        gui.Label {
+            classes = { "encounterMapOption", cond(encounter.mapid == "", "selected") },
+            tmargin = 6,
+            italics = true,
+            text = "No Map",
+            press = function(element)
+                choose("")
+            end,
+        },
+    }
+end
+
+--The map card in the builder's header: a picture of the encounter's map.
+--Click it to choose or create the map, drop a map on it from the Maps panel,
+--and (tabletop view) drag it onto the table to open that map in a window.
+local function CreateEncounterMapCard(encounter, refresh)
+    local card
+
+    --the map's picture (MapThumbnails.lua), cover-fit to the card.
+    --floating: the picture, the name strip and the empty-state text overlap.
+    local image = MapThumbnail.Panel {
+        floating = true,
+        mapid = encounter.mapid,
+        width = MAP_CARD_WIDTH,
+        height = MAP_CARD_HEIGHT,
+    }
+
+    local nameLabel = gui.Label {
+        classes = { "encounterMapName" },
+        floating = true,
+        text = "",
+    }
+
+    local emptyLabel = gui.Label {
+        classes = { "fgMuted", "sizeXs" },
+        width = "100%",
+        height = "auto",
+        halign = "center",
+        valign = "center",
+        textAlignment = "center",
+        text = "",
+    }
+
+    local function Refresh()
+        local map = EncounterMap(encounter)
+
+        card:SetClass("hasMap", map ~= nil)
+        card.draggable = map ~= nil and Tabletop.IsActive()
+
+        image:FireEvent("setMap", map ~= nil and map.id or nil)
+
+        --a map with no picture keeps just its name strip along the bottom.
+        nameLabel:SetClass("hidden", map == nil)
+        if map ~= nil then
+            nameLabel.text = map.description
+        end
+
+        emptyLabel:SetClass("hidden", map ~= nil)
+        if map == nil and encounter.mapid ~= "" then
+            emptyLabel.text = "Map deleted\nClick to choose"
+        else
+            emptyLabel.text = "No map\nClick to choose"
+        end
+    end
+
+    local function SetMap(mapid)
+        if not card.valid then
+            return
+        end
+        encounter.mapid = mapid
+        Refresh()
+        refresh()
+    end
+
+    card = gui.Panel {
+        classes = { "encounterMapCard", "mapDropTarget" },
+        width = MAP_CARD_WIDTH,
+        height = MAP_CARD_HEIGHT,
+        halign = "right",
+        valign = "top",
+        lmargin = 12,
+        dragTarget = true,
+
+        image,
+        emptyLabel,
+        nameLabel,
+
+        create = function(element)
+            Refresh()
+        end,
+
+        --maps renamed, deleted or added elsewhere.
+        monitorGame = "/mapManifests",
+        refreshGame = function(element)
+            Refresh()
+        end,
+
+        hover = function(element)
+            local text
+            if EncounterMap(encounter) == nil then
+                text = "The map this encounter takes place on. Click to choose or create one, or drag a map here from the Maps panel."
+            elseif Tabletop.IsActive() then
+                text = "Click to change the map, or drag it onto the table to open it in a window."
+            else
+                text = "Click to change the map, or drag a map here from the Maps panel."
+            end
+            gui.Tooltip(text)(element)
+        end,
+
+        click = function(element)
+            element.popupsInheritStyles = true
+            element.popup = CreateMapPickerPopup(encounter, function(mapid, create)
+                element.popup = nil
+                if create then
+                    ShowCreateMapDialog {
+                        created = function(newid)
+                            SetMap(newid)
+                        end,
+                    }
+                    return
+                end
+                SetMap(mapid)
+            end)
+        end,
+
+        --a map row dropped here from the Maps panel (MapsPanel.lua).
+        dropMap = function(element, mapid)
+            SetMap(mapid)
+        end,
+
+        --dragged out of the builder: only the bare table takes it (as a
+        --window on the map), so nothing in the builder is a target.
+        canDragOnto = function(element, target)
+            return false
+        end,
+        dragging = function(element, target)
+            local map = EncounterMap(encounter)
+            if map ~= nil then
+                Tabletop.MapRowDragging(element, map.id)
+            end
+        end,
+        drag = function(element, target)
+            Tabletop.MapRowDragEnded(element)
+            local map = EncounterMap(encounter)
+            if map ~= nil then
+                Tabletop.MapRowDropped(map.id)
+            end
+        end,
+    }
+
+    return card
+end
+
+-- ===========================================================================
 -- Real placement: put the encounter on the map for play
 -- ===========================================================================
 
@@ -4504,24 +4857,34 @@ function Encounter.Editor(self, options)
             },
         },
 
-        --optional description, saved with the plan alongside the name.
-        gui.Input {
-            classes = { "form" },
+        --optional description, saved with the plan alongside the name, and
+        --the map the encounter takes place on beside it.
+        gui.Panel {
             width = "100%",
             height = "auto",
-            minHeight = 30,
-            borderBox = true,
-            fontSize = 13,
-            multiline = true,
-            textAlignment = "topleft",
-            characterLimit = 2000,
+            flow = "horizontal",
             bmargin = 6,
-            placeholderText = "Add a description...",
-            text = self.description,
-            change = function(element)
-                self.description = element.text
-                refresh()
-            end,
+
+            gui.Input {
+                classes = { "form" },
+                width = string.format("100%%-%d", MAP_CARD_WIDTH + 12),
+                height = "auto",
+                minHeight = MAP_CARD_HEIGHT,
+                valign = "top",
+                borderBox = true,
+                fontSize = 13,
+                multiline = true,
+                textAlignment = "topleft",
+                characterLimit = 2000,
+                placeholderText = "Add a description...",
+                text = self.description,
+                change = function(element)
+                    self.description = element.text
+                    refresh()
+                end,
+            },
+
+            CreateEncounterMapCard(self, refresh),
         },
 
         CreatePartyBar(self, party, refresh, rebuild, CreateBudgetDial(self, party)),
@@ -4766,20 +5129,85 @@ function Encounter.Editor(self, options)
     return resultPanel
 end
 
+--Builder window size: the default it opens at, and the smallest it can be
+--resized to (below this the bestiary column and group cards stop fitting).
+local EDITOR_DEFAULT_WIDTH = 1240
+local EDITOR_DEFAULT_HEIGHT = 920
+local EDITOR_MIN_WIDTH = 860
+local EDITOR_MIN_HEIGHT = 640
+
+--Where the user last left the builder window this session. gui.WindowResizePanel
+--reads and writes _tmp_location through try_get, so this table quacks like a
+--document (same trick as CommandBuilder's dialog).
+local g_editorLocation = {
+    try_get = function(self, key)
+        return rawget(self, key)
+    end,
+}
+
 function Encounter.CreateEditorDialog(encounter, options)
     local editorPanel
 
     local editorContent = Encounter.Editor(encounter, options)
+
+    --open at the remembered size and place, else the default size centred;
+    --clamped so the window fits a screen that may have shrunk since.
+    local screen = dmhub.screenDimensionsBelowTitlebar
+    local maxWidth = math.max(EDITOR_MIN_WIDTH, screen.x)
+    local maxHeight = math.max(EDITOR_MIN_HEIGHT, screen.y)
+    local loc = g_editorLocation:try_get("_tmp_location")
+    local width = math.min(EDITOR_DEFAULT_WIDTH, maxWidth)
+    local height = math.min(EDITOR_DEFAULT_HEIGHT, maxHeight)
+    if loc ~= nil then
+        width = math.max(EDITOR_MIN_WIDTH, math.min(loc.width or width, maxWidth))
+        height = math.max(EDITOR_MIN_HEIGHT, math.min(loc.height or height, maxHeight))
+    end
+    local x = math.floor((screen.x - width) / 2)
+    local y = math.floor((screen.y - height) / 2)
+    if loc ~= nil and loc.x ~= nil and loc.y ~= nil then
+        x = math.max(0, math.min(loc.x, screen.x - width))
+        y = math.max(0, math.min(loc.y, screen.y - height))
+    end
 
     editorPanel = gui.Panel {
 
         classes = { "editorPanel" },
         styles = BuilderStyles(),
 
-        halign = "center",
-        valign = "center",
-        width = 1240,
-        height = 920,
+        --gui.WindowResizePanel's contract: anchored top-left with numeric x/y
+        --and a numeric selfStyle width/height it can rewrite while dragging.
+        --The content inside is percent-sized, so it follows the window.
+        style = {
+            width = width,
+            height = height,
+            halign = "left",
+            valign = "top",
+        },
+        x = x,
+        y = y,
+
+        --a window like the journal and table windows, in the same layer
+        --(GameHud.documentsPanel): a press anywhere brings it to the front,
+        --presses stay inside it, and dragging empty space moves it.
+        bgimage = true,
+        bgcolor = "clear",
+        raiseOnPress = true,
+        swallowPress = true,
+        draggable = true,
+        drag = function(element)
+            element.x = element.xdrag
+            element.y = element.ydrag
+            element:SetAsLastSibling()
+            g_editorLocation._tmp_location = {
+                x = element.x,
+                y = element.y,
+                width = element.selfStyle.width,
+                height = element.selfStyle.height,
+                moved = true,
+                screenx = dmhub.screenDimensionsBelowTitlebar.x,
+                screeny = dmhub.screenDimensionsBelowTitlebar.y,
+            }
+        end,
 
         gui.Panel {
 
@@ -4853,7 +5281,16 @@ function Encounter.CreateEditorDialog(encounter, options)
                 end,
             },
 
-        }
+        },
+
+        --resize handles on every edge and corner; must stay the last child so
+        --they sit above the content (sibling order is z-order).
+        gui.WindowResizePanel(g_editorLocation, width, height, {
+            minWidth = EDITOR_MIN_WIDTH,
+            minHeight = EDITOR_MIN_HEIGHT,
+            maxWidth = maxWidth,
+            maxHeight = maxHeight,
+        }),
 
     }
 

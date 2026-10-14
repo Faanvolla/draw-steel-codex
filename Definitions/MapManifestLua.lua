@@ -6,6 +6,8 @@
 --- @field mapManifest any
 --- @field dimensions any
 --- @field loadingScreenImage string
+--- @field thumbnailImage string|nil Asset id of this map's thumbnail: a ~512px picture of its default floor, lit, with no tokens, usable as a bgimage. nil until the Director captures one. See MAP_THUMBNAILS.md. (Read-only)
+--- @field thumbnailStale boolean True when the map has been edited since its thumbnail was captured; the Director's next visit recaptures it. (Read-only)
 --- @field packSource nil|{pack: string, mapid: string} The map pack this map was added from, or nil for a map that did not come from a map pack. pack is the pack's module fullid and mapid the map's id inside the pack. Maps added before provenance was recorded are recognised by their id when it is in the synced map pack index. (Read-only)
 --- @field defaultFloorId any
 --- @field groundLevel any
@@ -72,3 +74,7 @@ function MapManifestLua:Travel() end
 
 --- Start syncing this map in the background so a later Travel() to it skips the loading screen. Cheap to call repeatedly (e.g. on hover). Does nothing in Firebase-backed games or the lobby.
 function MapManifestLua:Prefetch() end
+
+--- Capture this map's thumbnail now, upload it and store it on the map (thumbnailImage). Only the current map can be captured, and only by the Director. The screen freezes for a moment while the map is rendered. Asynchronous: complete(assetid) when the thumbnail is stored, error(message) if it could not be made.
+--- @param options {complete: (fun(assetid: string): nil)|nil, error: (fun(message: string): nil)|nil}|nil
+function MapManifestLua:CaptureThumbnail(options) end

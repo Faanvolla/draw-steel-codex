@@ -415,6 +415,19 @@ local function RailCanTakeDocument(doc)
     return docs[doc.id] ~= nil
 end
 
+--A journal row dropped outside the journal, with no drag target under it.
+--Over the bare table (tabletop view) the entry goes on the table as an item
+--that opens it; over the map the Director gets an info bubble that opens it.
+--Anywhere else (over another panel) nothing happens.
+function JournalEntryDropped(entryid)
+    local surface = dmhub.panelDropSurface
+    if surface == "table" then
+        Tabletop.OpenDocItem(entryid, {screen = dmhub.mouseScreenPosition})
+    elseif surface == "map" and dmhub.isDM then
+        InfoDocument.PlaceLinkedBubble(entryid)
+    end
+end
+
 local function RailAddMenuEntries(element, doc)
     local result = {}
     if doc == nil or rawget(_G, "IconRailDocAdd") == nil or not RailAvailable() then
@@ -1352,9 +1365,21 @@ CreateFolderContentsPanel = function(journalPanel, folderid)
                                     IconRailDocDragging(nil)
                                 end
                             end
+                            --over the bare table the row shows as the
+                            --table item a drop there makes.
+                            if target == nil then
+                                Tabletop.JournalRowDragging(element, k)
+                            else
+                                Tabletop.JournalRowDragEnded(element)
+                            end
                         end,
                         drag = function(element, target)
+                            Tabletop.JournalRowDragEnded(element)
                             if target == nil then
+                                --dropped outside the journal: on the table it
+                                --becomes a table item, on the map (Director) an
+                                --info bubble that opens it.
+                                JournalEntryDropped(k)
                                 return
                             end
 
@@ -1897,6 +1922,21 @@ local function MakeRecentDocumentPanel(documentnumber)
             audio.FireSoundEvent("Mouse.Click")
             CustomDocument.OpenContent(documents[documentnumber])
             element.parent.tooltip = nil
+        end,
+
+        --dragged out like a journal row: onto the table it becomes a table
+        --item, onto the map (Director) an info bubble (JournalEntryDropped).
+        --No canDragOnto, so there is never a drag target.
+        draggable = true,
+        beginDrag = function(element)
+            element.parent.tooltip = nil
+        end,
+        dragging = function(element)
+            Tabletop.JournalRowDragging(element, documents[documentnumber].id)
+        end,
+        drag = function(element)
+            Tabletop.JournalRowDragEnded(element)
+            JournalEntryDropped(documents[documentnumber].id)
         end,
 
 
