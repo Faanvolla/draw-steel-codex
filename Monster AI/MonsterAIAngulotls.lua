@@ -240,7 +240,7 @@ local function StrikeTargetScore(target, edges)
     if target.isObject then
         return 0.1 + (edges or 0)*0.1
     end
-    return 1 + (edges or 0)*0.1 + (1 - StaminaFraction(target))*0.1
+    return 1 + (edges or 0)*0.1 + MonsterAI.TargetStaminaBias(target)
 end
 
 --Slippery angulotl captains harass low-Stamina heroes in the backline.

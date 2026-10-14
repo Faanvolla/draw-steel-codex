@@ -214,9 +214,7 @@ local function DefaultTargetScore(targetInfo)
     if targetInfo.token.isObject then
         return 0.1
     end
-    local stamina = targetInfo.token.properties:CurrentHitpoints()
-        / math.max(1, targetInfo.token.properties.max_hitpoints)
-    return 1 + (targetInfo.edges or 0)*0.1 + (1 - stamina)*0.08
+    return 1 + (targetInfo.edges or 0)*0.1 + MonsterAI.TargetStaminaBias(targetInfo.token)
 end
 
 -- Build a full movement-and-target plan so scoring and execution use the same

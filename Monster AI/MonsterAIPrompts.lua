@@ -92,9 +92,7 @@ local function CreatureFreeStrikeAbilities(token)
 end
 
 local function FreeStrikeTargetScore(targetInfo)
-    local stamina = targetInfo.token.properties:CurrentHitpoints()
-        / math.max(1, targetInfo.token.properties.max_hitpoints)
-    return 1 + (targetInfo.edges or 0)*0.1 + (1 - stamina)*0.08
+    return 1 + (targetInfo.edges or 0)*0.1 + MonsterAI.TargetStaminaBias(targetInfo.token)
 end
 
 local function FindBestImmediateFreeStrike(ai, actor, abilities)

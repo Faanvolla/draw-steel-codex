@@ -515,14 +515,22 @@ score = GenerateStandardStrikeScoreFunction(1),
 ```lua
 score = function(self, ai, token, ability)
     local loc, score = ai:FindBestMoveToUseStrike(token, ability, function(targetToken, edges)
-        -- prefer low-stamina targets
-        return 1 + (1 - targetToken.properties:CurrentHitpoints() / targetToken.properties.max_hitpoints)
+        -- the house default: a slight lean toward the enemy with the most Stamina
+        return 1 + (edges or 0)*0.1 + MonsterAI.TargetStaminaBias(targetToken)
     end)
     if loc ~= nil then
         return {score = score, loc = loc}
     end
 end,
 ```
+
+Target scorers lean slightly toward healthy enemies, not wounded ones, so
+monsters do not focus down the hero closest to dying (that is not fun to play
+against). Use `MonsterAI.TargetStaminaBias` rather than writing your own
+Stamina term, unless the monster's printed tactics call for picking on the
+wounded. If you do need a hero's Stamina fraction, divide by
+`properties:MaxHitpoints()`: the `max_hitpoints` field on a hero is a stale
+default of 10, not the real maximum.
 
 **Burst/area ability** -- use `FindBestMoveToUseBurst`:
 ```lua

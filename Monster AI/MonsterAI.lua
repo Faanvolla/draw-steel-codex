@@ -4375,14 +4375,32 @@ function MonsterAI:GetClaimedAbilityNames(token)
 end
 
 
+--The default target scores lean slightly toward the enemy with the most
+--Stamina left, so monsters spread damage instead of focusing down a hero who
+--is nearly out. It is current Stamina (temporary Stamina included), not a
+--fraction of the maximum, so a full-health tank outranks a full-health
+--squishy hero. The bonus grows targetStaminaBiasPerPoint per Stamina and stops
+--at targetStaminaBiasMax, which is two edges' worth.
+MonsterAI.targetStaminaBiasPerPoint = 0.004
+MonsterAI.targetStaminaBiasMax = 0.2
+
+---@param target CharacterToken
+---@return number
+function MonsterAI.TargetStaminaBias(target)
+    if target.isObject or target.properties == nil then
+        return 0
+    end
+    local stamina = math.max(0, target.properties:CurrentHitpoints())
+    return math.min(MonsterAI.targetStaminaBiasMax,
+        stamina*MonsterAI.targetStaminaBiasPerPoint)
+end
+
 local function SynthesizedDefaultTargetScore(targetInfo)
     local target = targetInfo.token
     if target.isObject or target.properties == nil then
         return 0.1
     end
-    local stamina = target.properties:CurrentHitpoints()
-        / math.max(1, target.properties.max_hitpoints)
-    return 1 + (targetInfo.edges or 0)*0.1 + (1 - stamina)*0.08
+    return 1 + (targetInfo.edges or 0)*0.1 + MonsterAI.TargetStaminaBias(target)
 end
 
 function MonsterAI:FindSynthesizedTargetPlan(token, ability)

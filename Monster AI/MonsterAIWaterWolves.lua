@@ -150,9 +150,7 @@ local function StrikeTargetScore(target, edges)
     if target.isObject then
         return 0.1 + (edges or 0)*0.1
     end
-    local stamina = target.properties:CurrentHitpoints()
-        / math.max(1, target.properties.max_hitpoints)
-    return 1 + (edges or 0)*0.1 + (1 - stamina)*0.08
+    return 1 + (edges or 0)*0.1 + MonsterAI.TargetStaminaBias(target)
 end
 
 local function NearestEnemyDistance(ai, actor, loc)
