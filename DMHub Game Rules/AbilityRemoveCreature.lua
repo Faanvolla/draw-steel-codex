@@ -320,6 +320,19 @@ function ActivatedAbilityRemoveCreatureBehavior:Cast(ability, casterToken, targe
             local waitStart = dmhub.Time()
             local waitDeadline = waitStart + 45
             local idleSince = nil
+
+            --An accepted trigger (Recovery on Death) does not start its cast until
+            --every running cast finishes -- and this cast is one of them. Mark this
+            --cast as only waiting, so those triggers start now, and release any that
+            --were queued behind it before the wait began.
+            --- @type {activity: string|nil}|nil
+            local castInfo = ActivatedAbility.CurrentCastInfo()
+            local priorActivity = castInfo ~= nil and castInfo.activity or nil
+            if castInfo ~= nil then
+                castInfo.activity = ActivatedAbility.AWAITING_TRIGGERS_ACTIVITY
+                ActivatedAbility.FlushCastCompleteActionsSoon()
+            end
+
             while dmhub.Time() < waitDeadline do
                 if not target.token.valid or target.token.properties == nil then
                     break
@@ -334,7 +347,9 @@ function ActivatedAbilityRemoveCreatureBehavior:Cast(ability, casterToken, targe
                         break
                     end
                 end
+                --An accepted trigger still queued to start counts as a cast in flight.
                 local hasCast = ActivatedAbility.TokenHasOtherActiveCasts(target.token)
+                    or ActivatedAbility.HasDeferredCastFor(target.token)
                 if (not hasPrompt) and (not hasCast) then
                     idleSince = idleSince or dmhub.Time()
                     if dmhub.Time() - idleSince >= idleRequired then
@@ -344,6 +359,10 @@ function ActivatedAbilityRemoveCreatureBehavior:Cast(ability, casterToken, targe
                     idleSince = nil
                 end
                 coroutine.yield(0.1)
+            end
+
+            if castInfo ~= nil then
+                castInfo.activity = priorActivity
             end
 
             --re-validate after the wait. The prompts waited on here can undo

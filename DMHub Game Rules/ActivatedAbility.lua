@@ -2203,7 +2203,7 @@ function ActivatedAbility:FireUseAbility(casterToken, options)
 			}
 		end
 
-        casterToken.properties:DispatchEvent("useability", {usedability = self, cast = options.symbols and options.symbols.cast})
+        casterToken.properties:DispatchEvent("useability", {usedability = self, cast = options.symbols and options.symbols.cast, partofanotherability = self:IsPartOfAnotherAbility(casterToken, options)})
 
         for _,target in ipairs(options.targets or {}) do
             if target.token ~= nil then
@@ -2843,7 +2843,7 @@ function ActivatedAbility:FinishCast(casterToken, options)
 	GameSystem.OnEndCastActivatedAbility(casterToken, self, options)
 
 	if self:CountsAsRegularAbilityCast() and casterToken ~= nil and casterToken.valid and casterToken.properties ~= nil then
-        casterToken.properties:DispatchEvent("finishability", {usedability = self, cast = options.symbols and options.symbols.cast})
+        casterToken.properties:DispatchEvent("finishability", {usedability = self, cast = options.symbols and options.symbols.cast, partofanotherability = self:IsPartOfAnotherAbility(casterToken, options)})
     end
 end
 
@@ -3481,13 +3481,24 @@ local function ScheduleDeferredCastSweep()
     end)
 end
 
+--A cast parked with this activity is only waiting for the triggers of a
+--creature it is about to remove (Hero Death waiting on Recovery on Death). It
+--resolves nothing, so deferred actions must not wait for it: they are the very
+--triggers it waits on, and holding them back let the removal win (2W8RV9CP).
+local AWAITING_TRIGGERS_ACTIVITY = "awaitingtriggers"
+ActivatedAbility.AWAITING_TRIGGERS_ACTIVITY = AWAITING_TRIGGERS_ACTIVITY
+
 --Runs fn once every ability cast that was active when this was called has
 --finished, including the calling cast if invoked from inside one. Runs fn
 --immediately when no casts are active.
-function ActivatedAbility.RunWhenCastsComplete(fn)
+--opts.casterid names the creature fn will cast for, so HasDeferredCastFor can
+--report that the creature still has work queued.
+--- @param fn function
+--- @param opts nil|{casterid: string|nil}
+function ActivatedAbility.RunWhenCastsComplete(fn, opts)
     local casts = {}
-    for co,_ in pairs(ActivatedAbility.coroutineStorage) do
-        if coroutine.status(co) ~= "dead" then
+    for co,info in pairs(ActivatedAbility.coroutineStorage) do
+        if coroutine.status(co) ~= "dead" and info.activity ~= AWAITING_TRIGGERS_ACTIVITY then
             casts[co] = true
         end
     end
@@ -3501,9 +3512,36 @@ function ActivatedAbility.RunWhenCastsComplete(fn)
         casts = casts,
         fn = fn,
         time = dmhub.Time(),
+        casterid = opts ~= nil and opts.casterid or nil,
     }
 
     ScheduleDeferredCastSweep()
+end
+
+--- Runs FlushCastCompleteActions on the next frame, outside any coroutine. Call
+--- this from inside a cast: flushing there would run each released trigger
+--- inline in the calling cast's coroutine (dmhub.CoroutineSynchronous runs
+--- synchronously when already in one) instead of in a coroutine of its own.
+function ActivatedAbility.FlushCastCompleteActionsSoon()
+    dmhub.Schedule(0.01, function()
+        if mod.unloaded then
+            return
+        end
+        ActivatedAbility.FlushCastCompleteActions()
+    end)
+end
+
+--- True while an action deferred by RunWhenCastsComplete on behalf of this
+--- creature (an accepted trigger whose cast has not started yet) is still queued.
+--- @param token CharacterToken
+--- @return boolean
+function ActivatedAbility.HasDeferredCastFor(token)
+    for _,entry in ipairs(g_deferredCastCompleteActions) do
+        if entry.casterid ~= nil and entry.casterid == token.charid then
+            return true
+        end
+    end
+    return false
 end
 
 function ActivatedAbility.FlushCastCompleteActions()
@@ -3529,7 +3567,7 @@ function ActivatedAbility.FlushCastCompleteActions()
                 --Only a cast with no sign of life for the whole window is stuck. Signs of life
                 --are the trigger queuing, the cast advancing, or a prompt being open.
                 local lastActivity = math.max(entry.time, info ~= nil and info.lastProgress or 0, g_lastPlayerResolvingCast)
-                if info ~= nil and coroutine.status(co) ~= "dead" and abandonNow - lastActivity > DEFERRED_CAST_ABANDON_SECONDS then
+                if info ~= nil and coroutine.status(co) ~= "dead" and info.activity ~= AWAITING_TRIGGERS_ACTIVITY and abandonNow - lastActivity > DEFERRED_CAST_ABANDON_SECONDS then
                     local age = "?"
                     if info.startTime ~= nil then
                         age = string.format("%d", math.floor(abandonNow - info.startTime))
@@ -3553,7 +3591,10 @@ function ActivatedAbility.FlushCastCompleteActions()
         local entry = g_deferredCastCompleteActions[i]
         local ready = true
         for co,_ in pairs(entry.casts) do
-            if ActivatedAbility.coroutineStorage[co] ~= nil and coroutine.status(co) ~= "dead" then
+            local info = ActivatedAbility.coroutineStorage[co]
+            --A cast that started waiting on triggers after this entry was queued
+            --no longer blocks it (see AWAITING_TRIGGERS_ACTIVITY).
+            if info ~= nil and coroutine.status(co) ~= "dead" and info.activity ~= AWAITING_TRIGGERS_ACTIVITY then
                 ready = false
                 break
             end
@@ -3945,6 +3986,47 @@ ActivatedAbility.countsAsCast = true
 --if this counts as casting an ability when used.
 function ActivatedAbility:CountsAsRegularAbilityCast()
     return self.countsAsCast and self.categorization ~= "Hidden"
+end
+
+--- True when this ability is being used as part of another ability of the same
+--- creature: the free strike a Riposte or a Charge makes. The use/finish events
+--- expose it as "Part Of Another Ability", so a rule that happens once per action
+--- (Bleeding) can count the outer ability alone, while per-strike rules still fire.
+--- An ability invoked for a different creature (an ally's signature ability from
+--- the Tactician's Strike Now) is that creature's own use, so it returns false.
+--- @param casterToken CharacterToken|nil
+--- @param options nil|table The cast options (options.symbols.cast is the cast this ability joined).
+--- @return boolean
+function ActivatedAbility:IsPartOfAnotherAbility(casterToken, options)
+    if casterToken == nil then
+        return false
+    end
+
+    --Invoked straight from an invoke behavior: the clone names who invoked it.
+    local invoker = self:try_get("invoker")
+    if type(invoker) == "function" then
+        invoker = invoker("self")
+    end
+    if invoker ~= nil and dmhub.LookupTokenId(invoker) == casterToken.charid then
+        return true
+    end
+
+    --A prompt (Charge's "Choose Charging Attack", Riposte's free strike) casts a
+    --different ability object that has no invoker. It still joins the outer cast
+    --instead of starting its own, and the outer ability by this same creature is
+    --still running while it resolves.
+    local cast = options ~= nil and options.symbols ~= nil and options.symbols.cast or nil
+    if cast == nil or cast:try_get("ability") == nil or rawequal(cast.ability, self) then
+        return false
+    end
+    for co,info in pairs(ActivatedAbility.coroutineStorage) do
+        if co ~= coroutine.running() and coroutine.status(co) ~= "dead"
+            and not rawequal(info.ability, self)
+            and info.casterToken ~= nil and info.casterToken.valid and info.casterToken.charid == casterToken.charid then
+            return true
+        end
+    end
+    return false
 end
 
 --- @return boolean

@@ -1275,7 +1275,12 @@ local g_abilitySymbols = {
         name = "Cast",
         type = "spellcast",
         desc = "Casting information for the ability",
-    }
+    },
+    {
+        name = "Part Of Another Ability",
+        type = "boolean",
+        desc = "True when the ability was used as part of another ability of the same creature, such as the free strike a Riposte or a Charge makes. Use 'not Part Of Another Ability' for effects that happen once per action, like Bleeding.",
+    },
 }
 
 TriggeredAbility.RegisterTrigger{

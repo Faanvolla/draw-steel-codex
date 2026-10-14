@@ -2097,7 +2097,7 @@ function TriggeredAbility:ExecuteTriggerCast(args)
 				return
 			end
 			dmhub.CoroutineSynchronous(TriggeredAbility.TriggerCo, self, targets, args.characterModifier, casterToken, args.creature, symbols, args.auraControllerToken, args.modContext, argOptions)
-		end)
+		end, {casterid = casterToken ~= nil and casterToken.charid or nil})
 	end
 
 	g_triggerDepth = g_triggerDepth - 1
@@ -2166,7 +2166,7 @@ function TriggeredAbility:SendTriggerCastToController(controllerid, args)
 				invokes[#invokes+1] = DeepCopy(invocation)
 			end,
 		}
-	end)
+	end, {casterid = casterToken.charid})
 end
 
 --Invoked by PumpRemoteInvokes on the controlling client. Reconstructs the
