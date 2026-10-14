@@ -699,21 +699,24 @@ function monster:GetMentor()
 end
 
 function creature:HeroicResourceHighWaterMarkForTurn()
-    local quantity = 0
-
     local resources = self:try_get("resources")
-    if resources ~= nil then
-        local heroicResource = resources[CharacterResource.heroicResourceId]
-        if heroicResource ~= nil then
-            quantity = heroicResource.unbounded or 0
-        end
+    if resources == nil then
+        return 0
     end
 
-    if self:has_key("_tmp_heroicResourceTurnId") then
-        local q = dmhub.initiativeQueue
-        if q ~= nil and (not q.hidden) and q:GetTurnId() == self._tmp_heroicResourceTurnId then
-            local currentHeroicResource = self:try_get("_tmp_heroicResourceForTurn") or 0
-            return math.max(currentHeroicResource, quantity)
+    local heroicResource = resources[CharacterResource.heroicResourceId]
+    if heroicResource == nil then
+        return 0
+    end
+
+    local quantity = heroicResource.unbounded or 0
+
+    --Count the most held this turn, not just what is left after spending.
+    local q = dmhub.initiativeQueue
+    if q ~= nil and (not q.hidden) then
+        local turnid = q:GetTurnId()
+        if turnid ~= nil and heroicResource:try_get("turnPeakId") == turnid then
+            return math.max(heroicResource.turnPeak, quantity)
         end
     end
 
@@ -885,34 +888,6 @@ function creature:RefreshToken(token)
     end
 
     g_baseRefreshToken(self, token)
-
-    if self:IsHero() then
-        --find this character's heroic resources high water mark for the turn.
-        local resources = self:try_get("resources")
-        if resources ~= nil then
-            local heroicResource = resources[CharacterResource.heroicResourceId]
-            if heroicResource ~= nil then
-                local quantity = heroicResource.unbounded
-                if quantity ~= nil then
-                    local turnid = nil
-                    local q = dmhub.initiativeQueue
-                    if q ~= nil and not q.hidden then
-                        local turnid = q:GetTurnId()
-                        local currentTurnId = self:try_get("_tmp_heroicResourceTurnId")
-                        if currentTurnId ~= turnid then
-                            self._tmp_heroicResourceForTurn = 0
-                            self._tmp_heroicResourceTurnId = turnid
-                        end
-
-                        local currentHeroicResource = self:try_get("_tmp_heroicResourceForTurn") or 0
-                        if quantity > currentHeroicResource then
-                            self._tmp_heroicResourceForTurn = quantity
-                        end
-                    end
-                end
-            end
-        end
-    end
 
     if not mod.unloaded then
         self:RefreshInitiativeInfo(token)
