@@ -509,6 +509,23 @@ function MonsterAI.RollsForCreature(subject)
     return ok and directorRun == true
 end
 
+--- The prompt handler for an invoke raised by a creature the AI plays but is
+--- not driving at this moment, such as a dying Abyssal Hyena's Death Snap on a
+--- hero's turn: mandatory triggers fire with no AI control installed. Same rule
+--- as RollsForCreature. A prompt with no registered handler still goes to the
+--- Director. nil when the AI does not play this creature.
+--- @param token CharacterToken
+--- @return nil|fun(invokerToken: CharacterToken, casterToken: CharacterToken, abilityClone: ActivatedAbility, symbols: table, options: table): string
+function MonsterAI.PromptCallbackForCreature(token)
+    if token == nil or token.properties == nil or not MonsterAI.RollsForCreature(token.properties) then
+        return nil
+    end
+    return function(invokerToken, casterToken, abilityClone, symbols, options)
+        local ai = MonsterAI.new{token = invokerToken}
+        return ai:HandlePrompt(invokerToken, casterToken, abilityClone, symbols, options)
+    end
+end
+
 MonsterAIPanel = function()
     local resultPanel
     local m_status

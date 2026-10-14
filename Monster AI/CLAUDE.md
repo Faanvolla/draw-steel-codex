@@ -179,6 +179,14 @@ minion) is matched through the current cast's caster. Both roll dialogs
 manual controls, waits out hero triggers, and accepts, exactly as for a token
 the AI controls.
 
+The same rule covers their invoke prompts. Mandatory triggers fire with no AI
+control installed, so a dying Abyssal Hyena's Death Snap free strike on a
+hero's turn used to go to the Director. When the invoker has no AI prompt
+callback, `ExecuteInvoke` (`DMHub Game Rules/AbilityInvokeAbility.lua`) asks
+`MonsterAI.PromptCallbackForCreature(token)`, which returns a handler running
+`HandlePrompt` whenever `RollsForCreature` holds. A prompt with no registered
+handler still falls through to the Director.
+
 ### Token control
 
 `MonsterAI:BeginTokenControl` / `EndTokenControl` (wrapped by

@@ -1569,6 +1569,16 @@ function ActivatedAbilityInvokeAbilityBehavior.ExecuteInvoke(invokerToken, abili
 
         --false unless the Monster AI controls the invoker.
         local aiPromptCallback = creature.GetTokenAIPromptCallback(invokerToken.charid)
+        --A Director-run creature the AI is not driving right now (a dying minion's
+        --death strike on a hero's turn) still has its prompts answered while the AI
+        --runs, as its rolls already are. rawget: Monster AI may not be loaded.
+        if not aiPromptCallback and (targeting == "prompt" or targeting == "prompt_inherit") then
+            local monsterAI = rawget(_G, "MonsterAI")
+            local fallback = monsterAI ~= nil and rawget(monsterAI, "PromptCallbackForCreature") or nil
+            if fallback ~= nil then
+                aiPromptCallback = fallback(invokerToken) or false
+            end
+        end
         print("AI:: PUSH:: IN INVOKE token", creature.GetTokenDescription(invokerToken), "targeting =", targeting, "ai", creature.IsTokenAIControlled(invokerToken.charid), "promptCallback =", aiPromptCallback, "for", abilityClone.name, coroutine.running())
         --Set when an AI prompt callback answered the prompt: the targets are already
         --resolved, so the cast below must NOT be routed through the action bar UI
