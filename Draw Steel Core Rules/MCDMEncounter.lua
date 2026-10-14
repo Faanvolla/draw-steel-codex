@@ -45,6 +45,28 @@ local g_numHeroesSetting = setting {
     }
 }
 
+--The party encounters are balanced against is worked out from the player
+--party until the Director overrides it in the encounter builder; from then on
+--these hold the override (with numheroes as the hero count). No editor: the
+--builder's party bar is their only UI.
+local g_partyManualSetting = setting {
+    id = "encounterpartymanual",
+    storage = "game",
+    default = false,
+}
+
+local g_partyLevelSetting = setting {
+    id = "encounterpartylevel",
+    storage = "game",
+    default = 1,
+}
+
+local g_partyVictoriesSetting = setting {
+    id = "encounterpartyvictories",
+    storage = "game",
+    default = 0,
+}
+
 --- @class Encounter: GameType
 --- @field new fun(o?: table): Encounter
 --- @field id string Key of this row in its data table; SetAndUploadTableItem sets it.
@@ -432,6 +454,97 @@ function Encounter.PartyStrength(args)
         victoryHeroes = victoryHeroes,
         numHeroes = numHeroes,
     }
+end
+
+--The party worked out from the heroes in the game's player party, wherever
+--they are: { numHeroes =, level =, victories = } with level and victories
+--averaged. numHeroes is held to the party sizes encounters balance for.
+--An empty player party gives four level 1 heroes with no victories.
+function Encounter.AutoParty()
+    local totalLevel = 0
+    local totalVictories = 0
+    local count = 0
+    for _, charid in ipairs(dmhub.GetCharacterIdsInParty(GetDefaultPartyID()) or {}) do
+        local tok = dmhub.GetCharacterById(charid)
+        local props = tok ~= nil and tok.properties or nil
+        if props ~= nil and props:IsHero() then
+            count = count + 1
+            totalLevel = totalLevel + props:CharacterLevel()
+            totalVictories = totalVictories + props:GetVictories()
+        end
+    end
+
+    if count == 0 then
+        return { numHeroes = 4, level = 1, victories = 0 }
+    end
+
+    local minHeroes = Encounter.RebalanceHeroCounts[1]
+    local maxHeroes = Encounter.RebalanceHeroCounts[#Encounter.RebalanceHeroCounts]
+    return {
+        numHeroes = math.max(minHeroes, math.min(maxHeroes, count)),
+        level = math.max(1, round(totalLevel / count)),
+        victories = math.max(0, round(totalVictories / count)),
+    }
+end
+
+--The party encounters are balanced against, as the builder's party bar holds
+--it: { numHeroes =, level =, victories =, manual = }. Auto-calculated from the
+--player party unless the Director has overridden it (manual = true).
+function Encounter.CurrentParty()
+    if g_partyManualSetting:Get() then
+        return {
+            numHeroes = g_numHeroesSetting:Get(),
+            level = g_partyLevelSetting:Get(),
+            victories = g_partyVictoriesSetting:Get(),
+            manual = true,
+        }
+    end
+
+    local party = Encounter.AutoParty()
+    party.manual = false
+    return party
+end
+
+--Placement, reinforcements and journal rosters all read the hero count from
+--numheroes, so while the party is auto-calculated that setting has to follow
+--the player party. Director only: game settings are not writable by players.
+local function SyncPartySizeToPlayerParty()
+    local party = Encounter.AutoParty()
+    if party.numHeroes ~= g_numHeroesSetting:Get() then
+        g_numHeroesSetting:Set(party.numHeroes)
+    end
+end
+
+function Encounter.SyncAutoPartySize()
+    if not g_partyManualSetting:Get() then
+        SyncPartySizeToPlayerParty()
+    end
+end
+
+--Save the Director's override of the party; it stops auto-calculating.
+function Encounter.SetManualParty(party)
+    if g_numHeroesSetting:Get() ~= party.numHeroes then
+        g_numHeroesSetting:Set(party.numHeroes)
+    end
+    if g_partyLevelSetting:Get() ~= party.level then
+        g_partyLevelSetting:Set(party.level)
+    end
+    if g_partyVictoriesSetting:Get() ~= party.victories then
+        g_partyVictoriesSetting:Set(party.victories)
+    end
+    if not g_partyManualSetting:Get() then
+        g_partyManualSetting:Set(true)
+    end
+end
+
+--Drop the Director's override and go back to the auto-calculated party,
+--which is returned.
+function Encounter.ClearManualParty()
+    if g_partyManualSetting:Get() then
+        g_partyManualSetting:Set(false)
+    end
+    SyncPartySizeToPlayerParty()
+    return Encounter.AutoParty()
 end
 
 --Compute a party's encounter strength from a list of hero/ally tokens.

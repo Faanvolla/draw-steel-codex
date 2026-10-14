@@ -6388,6 +6388,7 @@ local g_richTagDescriptions = {
     bar = {desc = "Progress or health bar", patternExample = "###--"},
     macro = {desc = "Clickable command button", patternExample = "/roll 1d20|Roll", menuLabel = "button"},
     encounter = {desc = "Embedded encounter", takesName = true},
+    encounterparty = {desc = "Heroes, level and victories encounters balance for", patternExample = "encounterparty"},
     scene = {desc = "Scene reference", takesName = true},
     party = {desc = "Party display", takesName = true},
     reminder = {desc = "Reminder notification", takesName = true},
