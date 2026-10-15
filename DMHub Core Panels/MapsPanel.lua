@@ -765,6 +765,7 @@ local CreateMapNode = function(map)
 		--tabletop view: over the bare table the row shows as the window a
 		--drop there opens.
 		dragging = function(element, target)
+			ChatItemLinks.Dragging(function() return {ChatItemLinks.MapItem(map.id)} end)
 			if target == nil then
 				Tabletop.MapRowDragging(element, map.id)
 			else
@@ -773,6 +774,10 @@ local CreateMapNode = function(map)
 		end,
 		drag = function(element, target)
 			Tabletop.MapRowDragEnded(element)
+			--dropped on the chat: a link to the map.
+			if ChatItemLinks.Dropped() then
+				return
+			end
 			if target == nil then
 				if map.valid and Tabletop.MapRowDropped(map.id) and newMapMarker ~= nil then
 					newMapMarker:DestroySelf()
@@ -1309,10 +1314,14 @@ local CreatePlayerMapNode = function(map)
 			return false
 		end,
 		dragging = function(element, target)
+			ChatItemLinks.Dragging(function() return {ChatItemLinks.MapItem(map.id)} end)
 			Tabletop.MapRowDragging(element, map.id)
 		end,
 		drag = function(element, target)
 			Tabletop.MapRowDragEnded(element)
+			if ChatItemLinks.Dropped() then
+				return
+			end
 			if map.valid then
 				Tabletop.MapRowDropped(map.id)
 			end

@@ -664,8 +664,13 @@ local function CreateCharacterRow(charid)
             if rawget(_G, "IconRailDocDragging") ~= nil then
                 IconRailDocDragging(target)
             end
+            ChatItemLinks.Dragging(function() return {ChatItemLinks.CharacterItem(charid)} end)
         end,
         drag = function(element, target)
+            --dropped on the chat: a link to the character.
+            if ChatItemLinks.Dropped() then
+                return
+            end
             if target == nil then
                 return
             end
@@ -1365,6 +1370,7 @@ CreateFolderContentsPanel = function(journalPanel, folderid)
                                     IconRailDocDragging(nil)
                                 end
                             end
+                            ChatItemLinks.Dragging(function() return {ChatItemLinks.DocItem(k)} end)
                             --over the bare table the row shows as the
                             --table item a drop there makes.
                             if target == nil then
@@ -1375,6 +1381,10 @@ CreateFolderContentsPanel = function(journalPanel, folderid)
                         end,
                         drag = function(element, target)
                             Tabletop.JournalRowDragEnded(element)
+                            --dropped on the chat: a link to the entry.
+                            if ChatItemLinks.Dropped() then
+                                return
+                            end
                             if target == nil then
                                 --dropped outside the journal: on the table it
                                 --becomes a table item, on the map (Director) an
@@ -1932,10 +1942,14 @@ local function MakeRecentDocumentPanel(documentnumber)
             element.parent.tooltip = nil
         end,
         dragging = function(element)
+            ChatItemLinks.Dragging(function() return {ChatItemLinks.DocItem(documents[documentnumber].id)} end)
             Tabletop.JournalRowDragging(element, documents[documentnumber].id)
         end,
         drag = function(element)
             Tabletop.JournalRowDragEnded(element)
+            if ChatItemLinks.Dropped() then
+                return
+            end
             JournalEntryDropped(documents[documentnumber].id)
         end,
 

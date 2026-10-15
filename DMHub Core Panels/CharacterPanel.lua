@@ -1206,10 +1206,21 @@ local function CreateMonsterEntry(nodeid, startHidden)
             end,
             drag = function(element, target)
                 Tabletop.BestiaryRowDragEnded(element)
+                --dropped on the chat: a link to the bestiary entry.
+                if ChatItemLinks.Dropped() then
+                    return
+                end
                 dropOnFolder(element, target)
             end,
 
             dragging = function(element, target)
+                ChatItemLinks.Dragging(function()
+                    local selected = dmhub.GetSelectedMonster()
+                    if type(selected) == "table" then
+                        selected = selected.monsterid
+                    end
+                    return {ChatItemLinks.MonsterItem(selected)}
+                end)
                 if target == nil then
                     dmhub.SetDraggingMonster()
                 end
@@ -2485,6 +2496,13 @@ CharacterPanel.CreateCharacterEntry = function(charid, party)
         events = {
 
             dragging = function(element, target)
+                ChatItemLinks.Dragging(function()
+                    local items = {}
+                    for _, charid in ipairs(dmhub.GetSelectedCharacters() or {}) do
+                        items[#items+1] = ChatItemLinks.CharacterItem(charid)
+                    end
+                    return items
+                end)
                 if target == nil then
                     dmhub.SetDraggingMonster()
                 end
@@ -2495,6 +2513,10 @@ CharacterPanel.CreateCharacterEntry = function(charid, party)
 
             drag = function(element, target)
                 Tabletop.CharacterRowDragEnded(element)
+                --dropped on the chat: links to the dragged characters.
+                if ChatItemLinks.Dropped() then
+                    return
+                end
                 if target ~= nil and target:HasClass("partyPanel") then
                     target = target.data.header
                 end

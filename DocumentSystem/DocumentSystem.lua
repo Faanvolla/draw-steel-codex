@@ -21833,6 +21833,11 @@ local function CreateIconRail(side, entries)
         --rearrange mode: wiggle, with neighbours desynced from the
         --start (odd slots begin counter-tilted, alternating pairs
         --begin contracted).
+        --the chat's button springs the chat open when something shareable
+        --is dragged onto it (ChatItemLinks.lua).
+        if key == "chat" then
+            buttonClasses[#buttonClasses + 1] = "chatItemOpenTarget"
+        end
         if g_railRearranging then
             buttonClasses[#buttonClasses + 1] = "rearranging"
             if index % 2 == 1 then
@@ -22064,6 +22069,45 @@ local function CreateIconRail(side, entries)
             --baseMargin are for the live drag reflow (ShowRailGhost).
             dragTarget = true,
             data = { slot = index, key = key, baseMargin = buttonMargin },
+
+            --Chat only: hovering a shareable item here opens the chat so
+            --it can be dropped in (springOpen, fired by ChatItemLinks for
+            --panel drags; tokenDragEnter for map tokens). A drop on the
+            --button itself posts the link.
+            tokenDropTarget = key == "chat",
+            --Not the press path: that closes the other transient window
+            --(which may be the panel the drag started in, ending the drag)
+            --and moves the focus (which character and bestiary drags read
+            --their selection from).
+            springOpen = function(element)
+                local verb, _, _, dialog = RailActivation(key)
+                if verb == "open" then
+                    local anchorX, anchorY = RailAnchor(side, index)
+                    OpenIconRailWindow(key, {x = anchorX, y = anchorY, anchor = true})
+                elseif dialog ~= nil and dialog.valid then
+                    dialog:SetAsLastSibling()
+                    if verb == "switch" then
+                        dialog:FireEventTree("focusPanelTab", key)
+                    end
+                end
+                RefreshRails()
+            end,
+            tokenDragEnter = function(element)
+                element.data.tokenDragOver = true
+                element:ScheduleEvent("tokenSpringOpen", ChatItemLinks.SPRING_OPEN_DELAY)
+            end,
+            tokenDragLeave = function(element)
+                element.data.tokenDragOver = false
+            end,
+            tokenSpringOpen = function(element)
+                if element.data.tokenDragOver then
+                    element:FireEvent("springOpen")
+                end
+            end,
+            dropTokens = function(element, info)
+                element.data.tokenDragOver = false
+                ChatItemLinks.SendCharacters(info.charids or {info.charid})
+            end,
 
             --The button's ONE refreshRail handler. A second `refreshRail =`
             --key later in this same constructor table silently overrides

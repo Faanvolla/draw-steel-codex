@@ -1005,6 +1005,7 @@ local function SceneRow(id, scene, depth)
         --over the bare table the row steps aside and the window a drop
         --there makes follows the mouse.
         dragging = function(element, target)
+            ChatItemLinks.Dragging(function() return {ChatItemLinks.SceneItem(id)} end)
             if target == nil then
                 Tabletop.SceneRowDragging(element, id)
             else
@@ -1013,6 +1014,10 @@ local function SceneRow(id, scene, depth)
         end,
         drag = function(element, target)
             Tabletop.SceneRowDragEnded(element)
+            --dropped on the chat: a link to the scene.
+            if ChatItemLinks.Dropped() then
+                return
+            end
             if target == nil then
                 Tabletop.SceneRowDropped(id)
                 return

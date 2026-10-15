@@ -1176,9 +1176,14 @@ local function UpdateTableButton(rec)
         end,
         dragging = function(element, target)
             IconRailDocDragging(target)
+            ChatItemLinks.Dragging(function() return {ChatItemLinks.MapItem(rec.mapid)} end)
         end,
         drag = function(element, target)
             IconRailDocDragging(nil)
+            --dropped on the chat: a link to the map, and the button stays put.
+            if ChatItemLinks.Dropped() then
+                return
+            end
             if target ~= nil and target.valid and (target:HasClass("iconRail") or target:HasClass("iconRailButton")) then
                 if IconRailKeyDrop(RailKey(rec), target) then
                     UpdateTableButton(rec)
@@ -2528,10 +2533,24 @@ function Tabletop.CanAccessMap(mapid)
     if map == nil or not map.valid then
         return false
     end
-    if map.playerViewable then
+    --a map opened from a chat link (Tabletop.OpenLinkedMap) stays open for
+    --this session.
+    if map.playerViewable or dmhub.HasLinkedMapView(mapid) then
         return true
     end
     return LocalPlayerHasTokenOn(mapid)
+end
+
+--- Opens a map from a chat link (ChatItemLinks.lua), in a new window, or
+--- brings its window up. A player who could not open the map gets a view of
+--- it on this client until the app closes (dmhub.GrantLinkedMapView); the
+--- map's Player Viewable setting is not changed.
+--- @param mapid string
+function Tabletop.OpenLinkedMap(mapid)
+    if not Tabletop.CanAccessMap(mapid) then
+        dmhub.GrantLinkedMapView(mapid)
+    end
+    Tabletop.OpenMap(mapid, {newWindow = true})
 end
 
 IsForcedHere = function(rec)
@@ -3262,6 +3281,7 @@ local function BuildCard(card)
             end
         end,
         dragging = function(element)
+            ChatItemLinks.Dragging(function() return {ChatItemLinks.CharacterItem(card.charid)} end)
             if g_cardDrag == nil or g_cardDrag.card ~= card then
                 return
             end
@@ -3274,17 +3294,24 @@ local function BuildCard(card)
             end
         end,
         drag = function(element)
+            --dropped on the chat: a link to the character; the card stays.
+            local toChat = ChatItemLinks.Dropped()
             local drag = g_cardDrag
             if drag ~= nil and drag.card == card then
                 element:SetClass("tabletopCardOverMap", false)
                 EndCardDrag(drag, element)
-                if drag.overMap then
+                if drag.overMap or toChat then
                     --dropped on the map: the engine teleports the character
                     --there, and the card stays where it was.
                     element.x = card.x
                     element.y = card.y
                     return
                 end
+            end
+            if toChat then
+                element.x = card.x
+                element.y = card.y
+                return
             end
             local lw, lh = LayerSize()
             card.x = math.max(0, math.min(element.xdrag, lw - 60))
@@ -4296,9 +4323,16 @@ do
             end,
             dragging = function(element, target)
                 IconRailDocDragging(target)
+                ChatItemLinks.Dragging(function() return {ChatItemLinks.DocItem(item.entryid)} end)
             end,
             drag = function(element, target)
                 IconRailDocDragging(nil)
+                --dropped on the chat: a link to the entry; the item stays.
+                if ChatItemLinks.Dropped() then
+                    element.x = item.x
+                    element.y = item.y
+                    return
+                end
                 if target ~= nil and target.valid and (target:HasClass("iconRail") or target:HasClass("iconRailButton")) then
                     if DockDocItem(item, function(key) return IconRailKeyDrop(key, target) end) then
                         return
