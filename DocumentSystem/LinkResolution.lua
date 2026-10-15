@@ -657,6 +657,13 @@ function CustomDocument.ResolveLink(link)
         return nil
     end
 
+    --"journal:<id>": any journal entry (document, PDF, image or PDF bookmark)
+    --by id, as written by dropping an entry into a document. The id is read
+    --from the original text because PDF and image ids are case-sensitive.
+    if string.starts_with(link, "journal:") then
+        return CustomDocument.FindJournalEntry(string.sub(original_link, 9))
+    end
+
     if string.starts_with(link, "document:") then
         local docid = string.sub(link, 10)
         local customDocs = dmhub.GetTable(CustomDocument.tableName) or {}

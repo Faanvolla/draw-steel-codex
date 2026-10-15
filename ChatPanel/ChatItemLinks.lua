@@ -14,6 +14,13 @@ local mod = dmhub.GetModLoading()
 --    the chat while the mouse is over it.
 --  * Map tokens: the chat panel's dropTokens event (ChatPanel.lua) calls
 --    ChatItemLinks.SendCharacters.
+--
+--The same drags reach other panels that take items, such as a journal
+--document (DocumentSystem.lua). Such a panel sets tokenDropTarget = true and
+--carries ChatItemLinks.ITEM_DROP_TARGET_CLASS, and gets these events:
+--  "itemLinkDragHover"(items)  a drag came over it; (nil) it left
+--  "itemLinkDrop"(items)       the drag was released over it
+--While hovered it can follow the mouse itself (dmhub.mouseScreenPosition).
 
 ChatItemLinks = {}
 
@@ -28,8 +35,17 @@ ChatItemLinks.DROP_TARGET_CLASS = "chatItemDropTarget"
 ChatItemLinks.OPEN_TARGET_CLASS = "chatItemOpenTarget"
 ChatItemLinks.SPRING_OPEN_DELAY = 0.4
 
+--Any other panel that takes item drops (see the top of this file).
+ChatItemLinks.ITEM_DROP_TARGET_CLASS = "itemLinkDropTarget"
+
 --- @alias ChatItemLink {kind: "map"|"scene"|"doc"|"character"|"monster", id: string, name: nil|string}
 --- @alias ChatItemLinkList (nil|ChatItemLink)[]
+--- What a drag offers a panel other than the chat: a link, a ready-made rich
+--- tag for a document (a dragged encounter), or a journal card being moved
+--- within its own document (RichItemLink.lua: tag is the tag's text, occurrence
+--- which copy of it, item the card's link for anywhere else).
+--- @alias ItemLinkDrop ChatItemLink|{kind: "richtag", richTag: RichTag, name: string}|ItemLinkMove
+--- @alias ItemLinkMove {kind: "move", tag: string, occurrence: integer, docid: string, item: ChatItemLink}
 
 ----------------------------------------------------------------------
 --Making links.
@@ -136,10 +152,11 @@ function ChatItemLinks.SendCharacters(charids)
 end
 
 ----------------------------------------------------------------------
---Dragging onto chat.
+--Dragging onto chat (or another panel that takes items).
 
---The chat panel (or the chat's rail button) the current drag is over:
---{target, items, seen, since, button, opened}, or nil.
+--The drop target the current drag is over: {target, items, seen, since,
+--role, opened}, or nil. role is "chat", "button" (the chat's rail button) or
+--"target" (any other panel that takes items).
 local g_hover = nil
 
 local function LinkText(items)
@@ -161,9 +178,29 @@ end
 local function ClearHover()
     local hover = g_hover
     g_hover = nil
-    if hover ~= nil and hover.target.valid and not hover.button then
-        hover.target:FireEvent("chatItemDragHover", nil)
+    if hover == nil or not hover.target.valid then
+        return
     end
+    if hover.role == "chat" then
+        hover.target:FireEvent("chatItemDragHover", nil)
+    elseif hover.role == "target" then
+        hover.target:FireEvent("itemLinkDragHover", nil)
+    end
+end
+
+--Whether panel is inside container (or is it). A card dragged out of a
+--document gets options.homeItems there, or nothing (see Dragging).
+--- @param container Panel
+--- @param panel nil|Panel
+--- @return boolean
+local function IsInside(container, panel)
+    while panel ~= nil do
+        if panel == container then
+            return true
+        end
+        panel = panel.parent
+    end
+    return false
 end
 
 --A drag can end without its source hearing of it (the row rebuilt
@@ -181,8 +218,13 @@ local function WatchHover()
     end)
 end
 
---- @param items fun(): ChatItemLinkList
---- @return ChatItemLink[]
+--- @class ChatItemLinkDragOptions
+--- @field source nil|Panel The dragged panel. A panel it came out of is not a target, unless homeItems is given.
+--- @field dropItems nil|fun(): ItemLinkDrop[] What panels other than the chat get instead of the links.
+--- @field homeItems nil|fun(): ItemLinkDrop[] What the panel source came out of gets (a card moved within its document).
+
+--- @param items function returns the links (or ItemLinkDrops); nil entries are skipped.
+--- @return ItemLinkDrop[]
 local function ListItems(items)
     local list = {}
     for _, item in pairs(items() or {}) do
@@ -193,18 +235,31 @@ local function ListItems(items)
     return list
 end
 
---- Call from a dragged panel's "dragging" event. Highlights the chat while
---- the mouse is over it; resting on the chat's rail button opens the chat. items: a function returning the links a drop there
---- posts (called only over the chat, once per chat entered).
+--- Call from a dragged panel's "dragging" event. Highlights the chat (or
+--- another panel that takes items) while the mouse is over it; resting on the
+--- chat's rail button opens the chat. items: a function returning the links a
+--- drop there makes (called once per target entered).
 --- @param items fun(): ChatItemLinkList
---- @return boolean overChat
-function ChatItemLinks.Dragging(items)
+--- @param options? ChatItemLinkDragOptions
+--- @return boolean overTarget
+function ChatItemLinks.Dragging(items, options)
+    options = options or {}
     local target = dmhub.tokenDropTargetUnderMouse
-    local button = target ~= nil and target:HasClass(ChatItemLinks.OPEN_TARGET_CLASS)
-    if target ~= nil and not button and not target:HasClass(ChatItemLinks.DROP_TARGET_CLASS) then
-        target = nil
+    local role = nil
+    local home = false
+    if target ~= nil then
+        if target:HasClass(ChatItemLinks.OPEN_TARGET_CLASS) then
+            role = "button"
+        elseif target:HasClass(ChatItemLinks.DROP_TARGET_CLASS) then
+            role = "chat"
+        elseif target:HasClass(ChatItemLinks.ITEM_DROP_TARGET_CLASS) then
+            home = IsInside(target, options.source)
+            if not home or options.homeItems ~= nil then
+                role = "target"
+            end
+        end
     end
-    if target == nil then
+    if target == nil or role == nil then
         ClearHover()
         return false
     end
@@ -213,7 +268,7 @@ function ChatItemLinks.Dragging(items)
     if g_hover ~= nil and g_hover.target == target then
         g_hover.seen = now
         --resting on the chat's rail button opens the chat beside it.
-        if g_hover.button and not g_hover.opened and now - g_hover.since >= ChatItemLinks.SPRING_OPEN_DELAY then
+        if role == "button" and not g_hover.opened and now - g_hover.since >= ChatItemLinks.SPRING_OPEN_DELAY then
             g_hover.opened = true
             target:FireEvent("springOpen")
         end
@@ -221,26 +276,42 @@ function ChatItemLinks.Dragging(items)
     end
 
     ClearHover()
-    local list = ListItems(items)
+    local list
+    if role == "target" and home and options.homeItems ~= nil then
+        list = ListItems(options.homeItems)
+    elseif role == "target" and options.dropItems ~= nil then
+        list = ListItems(options.dropItems)
+    else
+        list = ListItems(items)
+    end
     if #list == 0 then
         return false
     end
-    g_hover = {target = target, items = list, seen = now, since = now, button = button, opened = false}
-    if not button then
+    g_hover = {target = target, items = list, seen = now, since = now, role = role, opened = false}
+    if role == "chat" then
         target:FireEvent("chatItemDragHover", LinkText(list))
+    elseif role == "target" then
+        target:FireEvent("itemLinkDragHover", list)
     end
     WatchHover()
     return true
 end
 
 --- Call from a dragged panel's "drag" event, before anything else: posts the
---- links when it was released over the chat (as the last "dragging" saw it).
---- @return boolean posted true when the drop was taken
+--- links when it was released over the chat, or hands them to the panel it
+--- was released over (as the last "dragging" saw it).
+--- @return boolean taken true when the drop was taken
 function ChatItemLinks.Dropped()
     local hover = g_hover
     ClearHover()
     if hover == nil or dmhub.Time() - hover.seen > 0.3 then
         return false
+    end
+    if hover.role == "target" then
+        if hover.target.valid then
+            hover.target:FireEvent("itemLinkDrop", hover.items)
+        end
+        return true
     end
     ChatItemLinks.Send(hover.items)
     return true
@@ -316,9 +387,13 @@ local KIND_NAMES = {
 local LINK_HEIGHT = 44
 local PICTURE_SIZE = 40
 
---What a link row shows: {name, kind, image, icon, wide}. Read live, so a
---rename shows and each client sees only the names it may see.
-local function Describe(item)
+--- What a link shows: its name, a kind name ("Map"), a picture (or nil), an
+--- icon for when there is no picture, and whether the picture is wide. Read
+--- live, so a rename shows and each client sees only the names it may see.
+--- Journal cards (RichItemLink.lua) use it too.
+--- @param item ChatItemLink
+--- @return {name: string, kind: string, image: nil|string, icon: nil|string, wide: nil|boolean}
+function ChatItemLinks.Describe(item)
     local info = {name = item.name, kind = KIND_NAMES[item.kind] or "Item"}
     local kind = item.kind
     if kind == "map" then
@@ -443,7 +518,7 @@ local function LinkPicture(info)
 end
 
 local function LinkRow(item)
-    local info = Describe(item)
+    local info = ChatItemLinks.Describe(item)
     return gui.Panel{
         classes = {"chatItemLink"},
         bgimage = true,

@@ -4762,11 +4762,16 @@ function CustomDocument:CreateInterface(args)
         end,
     }
 
-    --Only documents you can edit accept drops. Drops are detected by overlap,
-    --so this panel needs no background to catch them.
+    --Dropping items. Anything that can be dragged into chat (a map, scene,
+    --journal entry, monster or character; ChatItemLinks.lua), an encounter
+    --card, or map tokens can be dropped on a document you can edit. In view
+    --mode the drop goes in front of the paragraph line or block at the mouse,
+    --shown by a bar, and is saved at once; while editing it goes in at the
+    --mouse, shown by a caret.
+    --RichItemLink.MarkupForDrop decides what each item becomes.
     local acceptsDrops = self.acceptsRichTagDrops and self:HaveEditPermissions()
 
-    --Outline shown while a card is dragged over the document. It never
+    --Outline shown while something is dragged over the document. It never
     --blocks clicks on the page.
     local m_dropOutline = nil
     if acceptsDrops then
@@ -4779,7 +4784,7 @@ function CustomDocument:CreateInterface(args)
                     borderWidth = 0,
                 },
                 {
-                    selectors = {"documentDropOutline", "parent:drag-target-hover"},
+                    selectors = {"documentDropOutline", "parent:itemLinkDropHover"},
                     borderWidth = 2,
                     borderColor = "@accent",
                     priority = 6,
@@ -4793,43 +4798,214 @@ function CustomDocument:CreateInterface(args)
         }
     end
 
+    --The drag over the document right now: {items, ghost, page}, or nil.
+    --page is the rendered page (view mode) or the editor (MarkdownDocument
+    --SeamlessEditPanel) the drop is placed on.
+    local m_drop = nil
+
+    --not while previewing as a player: the page then hides lines, so its
+    --blocks no longer line up with the text.
+    local function DropAllowed()
+        return acceptsDrops and resultPanel ~= nil and resultPanel.valid and not resultPanel:HasClass("playerPreview")
+    end
+
+    --What a drop is placed on: the rendered page in view mode (MarkdownDocument
+    --DisplayPanel), the editor while editing (MarkdownDocument
+    --SeamlessEditPanel), or nil (an editor that cannot place drops: they go
+    --in at its cursor).
+    local function FindDropPage()
+        local result = {}
+        if IsEditing() then
+            ---@cast writePanel -nil
+            writePanel:FireEventTree("itemLinkDropFindEditor", result)
+            return result.editor
+        end
+        readPanel:FireEventTree("itemLinkDropFind", result)
+        return result.page
+    end
+
+    --Where a drop at the mouse goes, shown by the page's drop bar or the
+    --editor's drop caret: {line = the source line it goes in front of (view
+    --mode; nil for the end)} or {pos = the byte offset it goes in at
+    --(editing; nil for the cursor)}.
+    local function DropPlaceOn(page, items)
+        local result = {items = items}
+        if page ~= nil and page.valid then
+            page:FireEvent("itemLinkDropPlace", result)
+        end
+        return result
+    end
+
+    local function EndDropHover()
+        local drop = m_drop
+        m_drop = nil
+        if resultPanel ~= nil and resultPanel.valid then
+            resultPanel:SetClass("itemLinkDropHover", false)
+        end
+        if drop ~= nil then
+            if drop.page ~= nil and drop.page.valid then
+                drop.page:FireEvent("itemLinkDropEnd")
+            end
+            if drop.ghost ~= nil and drop.ghost.valid then
+                drop.ghost:DestroySelf()
+            end
+        end
+    end
+
+    --The ghost by the mouse keeps the drop bar following it, and goes once
+    --the drag leaves (or ends without telling us).
+    local function BeginDropHover(items)
+        EndDropHover()
+        if not DropAllowed() or #items == 0 then
+            return
+        end
+        local drop = {items = items, page = FindDropPage()}
+        m_drop = drop
+        resultPanel:SetClass("itemLinkDropHover", true)
+        drop.ghost = RichItemLink.ShowDropGhost(items, function()
+            if m_drop ~= drop or not resultPanel.valid then
+                return false
+            end
+            if dmhub.tokenDropTargetUnderMouse ~= resultPanel then
+                EndDropHover()
+                return false
+            end
+            DropPlaceOn(drop.page, drop.items)
+            return true
+        end)
+    end
+
+    --Where a drop of items made now goes (see DropPlaceOn).
+    local function CurrentDropPlace(items)
+        local page = FindDropPage()
+        local place = DropPlaceOn(page, items)
+        if page ~= nil and page.valid then
+            page:FireEvent("itemLinkDropEnd")
+        end
+        return place
+    end
+
+    local function InsertDropped(items, place)
+        if not DropAllowed() or items == nil or #items == 0 then
+            return
+        end
+
+        --a card dragged within a document moves; one dragged out of a
+        --document embedded in this one is a copy here, like any other drop.
+        local move = nil
+        if items[1].kind == "move" then
+            local item = items[1] --[[@as ItemLinkMove]]
+            if item.docid == self.id then
+                move = item
+            else
+                items = {item.item}
+            end
+        end
+
+        if IsEditing() then
+            ---@cast writePanel -nil
+            if move ~= nil then
+                writePanel:FireEventTree("moveItemLink", move, place.pos)
+            else
+                writePanel:FireEventTree("insertItemLinks", items, place.pos)
+            end
+            return
+        end
+        local line = place.line
+
+        --use the latest saved copy so we don't overwrite someone else's
+        --recent changes.
+        local doc = (dmhub.GetTable(CustomDocument.tableName) or {})[self.id] or self
+        ---@cast doc MarkdownDocument
+        local original = DeepCopy(doc)
+
+        --split the way the page was when it rendered (so line means the same
+        --thing).
+        local lines = string.split_allow_duplicates((doc:GetTextContent():gsub("\v", "\n")), "\n")
+        if #lines == 0 then
+            lines = {""}
+        end
+        local at = line or (#lines + 1)
+        if at > #lines and lines[#lines] == "" then
+            --the text ends in a newline: go before it, not after a blank line.
+            at = #lines
+        end
+        at = math.max(1, math.min(at, #lines + 1))
+
+        if move ~= nil then
+            if RichItemLink.MoveTagLine(doc, lines, move, at) == nil then
+                return
+            end
+        else
+            --each item gets a line of its own.
+            local markup = RichItemLink.MarkupForDrop(doc, items)
+            if #markup == 0 then
+                return
+            end
+            for i, entry in ipairs(markup) do
+                table.insert(lines, at + i - 1, entry.text)
+            end
+        end
+        doc:SetTextContent(table.concat(lines, "\n"))
+        doc:Upload(original)
+        self = doc
+        resultPanel:FireEventTree("refreshDocument", doc)
+    end
+
+    --a map token drag's characters.
+    local function CharacterItems(charids)
+        local items = {}
+        for _, charid in ipairs(charids or {}) do
+            items[#items + 1] = ChatItemLinks.CharacterItem(charid)
+        end
+        return items
+    end
+
+    local m_shellClasses = {"documentPanel"}
+    if acceptsDrops then
+        m_shellClasses[#m_shellClasses + 1] = ChatItemLinks.ITEM_DROP_TARGET_CLASS
+    end
+
     resultPanel = gui.Panel {
-        classes = {"documentPanel"},
+        classes = m_shellClasses,
         monitorGame = monitorGame,
         width = "100%",
         height = "100%",
         halign = "left",
         valign = "top",
         flow = "vertical",
-        dragTarget = acceptsDrops,
+        tokenDropTarget = acceptsDrops,
+        --drop targets are found by what is under the mouse, so the page's
+        --blank areas need a (clear) background to count as the document.
+        bgimage = cond(acceptsDrops, "panels/square.png", nil),
+        bgcolor = "clear",
 
-        --A card was dropped here with a tag to add. While editing it goes in
-        --at the cursor; otherwise it is added at the end and saved.
-        insertRichTag = function(element, richTag, name)
-            if not acceptsDrops then
-                return
+        --panel drags, through ChatItemLinks.Dragging / Dropped.
+        itemLinkDragHover = function(element, items)
+            if items == nil then
+                EndDropHover()
+            else
+                BeginDropHover(items)
             end
+        end,
+        itemLinkDrop = function(element, items)
+            local place = CurrentDropPlace(items)
+            EndDropHover()
+            InsertDropped(items, place)
+        end,
 
-            if IsEditing() then
-                ---@cast writePanel -nil
-                writePanel:FireEventTree("insertRichTag", richTag, name)
-                return
-            end
-
-            --use the latest saved copy so we don't overwrite someone else's
-            --recent changes.
-            local doc = (dmhub.GetTable(CustomDocument.tableName) or {})[self.id] or self
-            ---@cast doc MarkdownDocument
-            local original = DeepCopy(doc)
-            local key = doc:AddRichTagAnnotation(richTag, name)
-            local text = doc:GetTextContent()
-            if text ~= "" and text:sub(-1) ~= "\n" then
-                text = text .. "\n"
-            end
-            doc:SetTextContent(text .. string.format("[[%s]]\n", key))
-            doc:Upload(original)
-            self = doc
-            element:FireEventTree("refreshDocument", doc)
+        --map tokens dragged off the board.
+        tokenDragEnter = function(element, info)
+            BeginDropHover(CharacterItems(info.charids))
+        end,
+        tokenDragLeave = function(element)
+            EndDropHover()
+        end,
+        dropTokens = function(element, info)
+            local items = CharacterItems(info.charids)
+            local place = CurrentDropPlace(items)
+            EndDropHover()
+            InsertDropped(items, place)
         end,
 
         closetab = function(element)
