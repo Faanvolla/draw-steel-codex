@@ -224,6 +224,7 @@ end
 --- @field encounterSpawnMonster? string Encounter builder: bestiary id spawned into this slot.
 --- @field encounterStaged? boolean Encounter builder: true while the token is a staged (not yet started) placement.
 --- @field encounterStagedBy? string Encounter builder: userid of the Director who staged it.
+--- @field encounterSourceId? string Encounter prep: id of the saved encounter whose play spawned this token.
 --- @field encounterWaveId? string Encounter waves: id of the wave that spawned this token.
 --- @field encounterGroupIndex? integer Encounter waves: index of the group within the authored encounter.
 --- @field isDuplicate? boolean Set on tokens created by the Duplicate summon behavior.
