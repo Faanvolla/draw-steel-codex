@@ -319,6 +319,9 @@ local RestoreWindow
 local RequestClose
 local ShareControl
 local UpdateShare
+--Share stores and the player's viewable-map tracking (one table: this file
+--is at Lua's 200-local limit). See the Sharing section.
+local g_sharing = {}
 local IsShared
 local IsForcedHere
 local ShowPreviewTooltip
@@ -806,15 +809,13 @@ local function BuildWindow(rec)
 
     local controls = {BuildFloorControl(rec)}
 
-    --the Director shares the map with the players' tables. Sharing again
-    --after stopping also puts the map back on tables whose players closed it.
+    --the Director makes the map Player Viewable, for all players or chosen
+    --ones, which opens it on their tables. Sharing again after stopping
+    --also puts it back on tables whose players closed it.
     local share = nil
     if dmhub.isDM then
         share = ShareControl{
-            itemId = "map:" .. rec.mapid,
-            newItem = function()
-                return {kind = "map", mapid = rec.mapid}
-            end,
+            store = g_sharing.MapStore(rec.mapid),
             what = "this map",
             iconSize = 15,
             changed = function()
@@ -1975,11 +1976,10 @@ function Tabletop.RecheckPresentedDialog()
 end
 
 ----------------------------------------------------------------------
---Sharing. The Director shares table items -- map windows, NPC cards and
---journal entries -- with the players' tables through the "tabletop" shared
+--Sharing. The Director shares table items -- NPC cards, journal entries
+--and scenes -- with the players' tables through the "tabletop" shared
 --document:
---  data.items[itemId]  {kind = "map", mapid = ..., seq = n}
---                      {kind = "card", charid = ..., seq = n}
+--  data.items[itemId]  {kind = "card", charid = ..., seq = n}
 --                      {kind = "doc", entryid = ..., seq = n} (a journal entry)
 --                      {kind = "scene", sceneid = ..., seq = n} (a Scenes library scene)
 --  data.seq            the last seq handed out
@@ -1992,9 +1992,11 @@ end
 --to them: they keep, move or close it, and it comes back only when it is
 --shared with them again.
 --A map the Director maximizes is forced maximized on the tables of the
---players with a token on it until the Director restores it. A shared map
---counts as Player Viewable for players with no token on it (engine side,
---dmhub.SetTabletopSharedMaps), so they can actually look at it.
+--players with a token on it until the Director restores it.
+--Maps are not in the document: a map window's share button is the map's
+--Player Viewable setting, for all players or chosen ones (g_sharing.MapStore).
+--A player's table opens a map when it becomes viewable for them and closes
+--it when it stops, unless they have a token there (SyncViewableMaps).
 
 local SHARE_DOC = "tabletop"
 
@@ -2008,10 +2010,6 @@ local function SharedItems()
         return {}
     end
     return items
-end
-
-local function MapItemId(mapid)
-    return "map:" .. mapid
 end
 
 local function CardItemId(charid)
@@ -2071,10 +2069,6 @@ local function IsItemSharedHere(itemId)
         return false
     end
     return dmhub.isDM or ShareSeqFor(item, dmhub.userid) ~= nil
-end
-
-IsShared = function(mapid)
-    return IsItemSharedHere(MapItemId(mapid))
 end
 
 function Tabletop.IsCardShared(charid)
@@ -2175,15 +2169,137 @@ local function SetSharedWithPlayer(itemId, newItem, userid, on)
     doc:CompleteChange("Share on the table", {undoable = false})
 end
 
---The players an item is shared with, by name, for its tooltip.
-local function SharedNames(itemId)
-    local item = SharedItems()[itemId]
-    local names = {}
-    if type(item) == "table" then
-        for _, uid in ipairs(SharePlayers()) do
-            if ShareSeqFor(item, uid) ~= nil then
-                names[#names+1] = dmhub.GetDisplayName(uid) or "?"
+--A share control reads and changes its item's share through a store, so a
+--map's button can work on the map's Player Viewable setting while cards,
+--journal entries and scenes use the shared document.
+--- @class TabletopShareStore
+--- @field state fun(): nil|string nil, "all" or "some"
+--- @field isSharedWith fun(userid: string): boolean
+--- @field share fun() share with every player (a click)
+--- @field unshare fun()
+--- @field shareAll fun() "All players" in the menu
+--- @field setPlayer fun(userid: string, on: boolean)
+
+--- @param itemId string
+--- @param newItem fun(): table the item record to share (kind and id)
+--- @return TabletopShareStore
+g_sharing.DocStore = function(itemId, newItem)
+    return {
+        state = function()
+            return ShareState(itemId)
+        end,
+        isSharedWith = function(userid)
+            local item = SharedItems()[itemId]
+            return type(item) == "table" and ShareSeqFor(item, userid) ~= nil
+        end,
+        share = function()
+            ShareItem(itemId, newItem())
+        end,
+        unshare = function()
+            UnshareItem(itemId)
+        end,
+        shareAll = function()
+            ShareWithAll(itemId, newItem())
+        end,
+        setPlayer = function(userid, on)
+            SetSharedWithPlayer(itemId, newItem(), userid, on)
+        end,
+    }
+end
+
+--A map's share is its Player Viewable setting: on for every player
+--(players joining later too), or for the players picked one by one.
+--- @param mapid string
+--- @return TabletopShareStore
+g_sharing.MapStore = function(mapid)
+    local function Map()
+        local map = game.GetMap(mapid)
+        if map == nil or not map.valid then
+            return nil
+        end
+        return map
+    end
+    return {
+        state = function()
+            local map = Map()
+            if map == nil then
+                return nil
             end
+            if map.playerViewableAll then
+                return "all"
+            end
+            if next(map.playerViewableUsers or {}) ~= nil then
+                return "some"
+            end
+            return nil
+        end,
+        isSharedWith = function(userid)
+            local map = Map()
+            return map ~= nil and map:IsPlayerViewableFor(userid)
+        end,
+        share = function()
+            local map = Map()
+            if map ~= nil then
+                map:SetPlayerViewable(true, nil)
+            end
+        end,
+        unshare = function()
+            local map = Map()
+            if map ~= nil then
+                map:SetPlayerViewable(false, nil)
+            end
+        end,
+        shareAll = function()
+            local map = Map()
+            if map ~= nil then
+                map:SetPlayerViewable(true, nil)
+            end
+        end,
+        setPlayer = function(userid, on)
+            local map = Map()
+            if map == nil then
+                return
+            end
+            local players = SharePlayers()
+            local users = {}
+            for _, uid in ipairs(players) do
+                if map:IsPlayerViewableFor(uid) then
+                    users[uid] = true
+                end
+            end
+            users[userid] = on or nil
+            local count = 0
+            for _, uid in ipairs(players) do
+                if users[uid] then
+                    count = count + 1
+                end
+            end
+            --every player picked counts as all players again, as with shares.
+            if count > 0 and count == #players then
+                map:SetPlayerViewable(true, nil)
+            else
+                map:SetPlayerViewable(false, users)
+            end
+        end,
+    }
+end
+
+--Shared at all for the Director; viewable by this user for a player.
+IsShared = function(mapid)
+    local store = g_sharing.MapStore(mapid)
+    if dmhub.isDM then
+        return store.state() ~= nil
+    end
+    return store.isSharedWith(dmhub.userid)
+end
+
+--The players an item is shared with, by name, for its tooltip.
+--- @param store TabletopShareStore
+local function SharedNames(store)
+    local names = {}
+    for _, uid in ipairs(SharePlayers()) do
+        if store.isSharedWith(uid) then
+            names[#names+1] = dmhub.GetDisplayName(uid) or "?"
         end
     end
     return table.concat(names, ", ")
@@ -2193,9 +2309,8 @@ end
 --share control. It stays open, rebuilt after each pick, so several players
 --can be checked or unchecked in a row.
 local function ShowSharePlayersMenu(share, element)
-    local itemId = share.itemId
-    local item = SharedItems()[itemId]
-    local state = ShareState(itemId)
+    local store = share.store
+    local state = store.state()
     local players = SharePlayers()
 
     local function Changed()
@@ -2219,23 +2334,23 @@ local function ShowSharePlayersMenu(share, element)
             click = function()
                 GuardClicks()
                 if state == "all" then
-                    UnshareItem(itemId)
+                    store.unshare()
                 else
-                    ShareWithAll(itemId, share.newItem())
+                    store.shareAll()
                 end
                 Changed()
             end,
         },
     }
     for _, uid in ipairs(players) do
-        local on = type(item) == "table" and ShareSeqFor(item, uid) ~= nil
+        local on = store.isSharedWith(uid)
         entries[#entries+1] = {
             text = dmhub.GetDisplayName(uid) or "?",
             check = on,
             group = "players",
             click = function()
                 GuardClicks()
-                SetSharedWithPlayer(itemId, share.newItem(), uid, not on)
+                store.setPlayer(uid, not on)
                 Changed()
             end,
         }
@@ -2274,8 +2389,9 @@ end
 --Returns {button, frame, itemId, ...}: the button goes in the titlebar's
 --controls, the frame among the item's own children, and UpdateShare keeps
 --both current.
---args: itemId; newItem, a function making the item record to share (kind
---and id); what ("this map") for the tooltip; changed, called after the
+--args: store (a TabletopShareStore), or itemId and newItem, a function
+--making the item record to share (kind and id), for an item in the shared
+--document; what ("this map") for the tooltip; changed, called after the
 --Director changes the share; iconSize, width, passPress and beforeHover
 --(called before the tooltip shows) for the button; cornerRadius for the
 --frame.
@@ -2294,8 +2410,7 @@ ShareControl = function(args)
         interactable = false,
     }
     local share = {
-        itemId = args.itemId,
-        newItem = args.newItem,
+        store = args.store or g_sharing.DocStore(args.itemId, args.newItem),
         changed = args.changed,
         half = half,
         frame = ShareFrame(args.cornerRadius),
@@ -2310,22 +2425,22 @@ ShareControl = function(args)
             if args.beforeHover ~= nil then
                 args.beforeHover()
             end
-            local state = ShareState(share.itemId)
+            local state = share.store.state()
             local text
             if state == "all" then
                 text = "Shared with all players. Click to stop sharing; right-click to choose players."
             elseif state == "some" then
-                text = string.format("Shared with %s. Click to stop sharing; right-click to choose players.", SharedNames(share.itemId))
+                text = string.format("Shared with %s. Click to stop sharing; right-click to choose players.", SharedNames(share.store))
             else
                 text = string.format("Share %s with the players' tables. Right-click to choose players.", args.what or "this")
             end
             gui.Tooltip(text)(element)
         end,
         click = function(element)
-            if ShareState(share.itemId) ~= nil then
-                UnshareItem(share.itemId)
+            if share.store.state() ~= nil then
+                share.store.unshare()
             else
-                ShareItem(share.itemId, share.newItem())
+                share.store.share()
             end
             UpdateShare(share)
             if share.changed ~= nil then
@@ -2347,7 +2462,7 @@ UpdateShare = function(share)
     if share == nil then
         return
     end
-    local state = ShareState(share.itemId)
+    local state = share.store.state()
     share.button:SetClass("tabletopShared", state == "all")
     share.half:SetClass("collapsed", state ~= "some")
     share.frame:SetClass("collapsed", state == nil)
@@ -2403,8 +2518,8 @@ local function LocalPlayerHasTokenOn(mapid)
 end
 
 --Whether this user may open a map: the Director always; a player when it
---is Player Viewable, shared, or one of their tokens is on it (the same
---rule as the player's Maps panel, plus sharing).
+--is Player Viewable for them or one of their tokens is on it (the same
+--rule as the player's Maps panel).
 function Tabletop.CanAccessMap(mapid)
     if dmhub.isDM then
         return true
@@ -2413,7 +2528,7 @@ function Tabletop.CanAccessMap(mapid)
     if map == nil or not map.valid then
         return false
     end
-    if map.playerViewable or IsShared(mapid) then
+    if map.playerViewable then
         return true
     end
     return LocalPlayerHasTokenOn(mapid)
@@ -2423,7 +2538,7 @@ IsForcedHere = function(rec)
     return rec.forced == true
 end
 
---A map the Director shared turns up on this player's table: its window
+--A map made Player Viewable for this player turns up on their table: its window
 --comes forward, or a new one opens beside the others. It does not travel
 --there; the player clicks it when they want to look.
 local function OpenSharedMap(mapid)
@@ -2494,23 +2609,22 @@ end
 local g_seenShares = {}
 --What SyncShares last acted on, so it only does work when the document changes.
 local g_shareSignature = nil
+--What SyncViewableMaps tracks. seen: the maps that were Player Viewable for
+--this player when their table last looked (mapid -> true), saved with the
+--layout so a map made viewable while they were away still opens. seed: a
+--table saved before seen was kept takes the current list without opening
+--anything. nextCheck: when to look again.
+g_sharing.viewable = {seen = {}, seed = false, nextCheck = 0}
 
 g_layoutWriters[#g_layoutWriters+1] = function(out)
     out.seenShares = g_seenShares
+    out.viewableMaps = g_sharing.viewable.seen
 end
 
 SyncShares = function()
     local doc = ShareDoc()
     local items = SharedItems()
 
-    --the maps shared with this user (all of them, for the Director).
-    local mapids = {}
-    for itemId, item in pairs(items) do
-        if type(item) == "table" and item.kind == "map" and type(item.mapid) == "string" and IsItemSharedHere(itemId) then
-            mapids[#mapids+1] = item.mapid
-        end
-    end
-    table.sort(mapids)
     local forcedIds = {}
     if type(doc.data.forced) == "table" then
         for mapid, on in pairs(doc.data.forced) do
@@ -2520,15 +2634,11 @@ SyncShares = function()
         end
     end
     table.sort(forcedIds)
-    local signature = string.format("%s|%s|%s", table.concat(mapids, ","), tostring(doc.data.seq), table.concat(forcedIds, ","))
+    local signature = string.format("%s|%s", tostring(doc.data.seq), table.concat(forcedIds, ","))
     if signature == g_shareSignature then
         return
     end
     g_shareSignature = signature
-
-    --every client: maps shared with this player count as Player Viewable
-    --for them even with no token there.
-    dmhub.SetTabletopSharedMaps(mapids)
 
     if dmhub.isDM then
         Refresh()
@@ -2541,9 +2651,7 @@ SyncShares = function()
         if seq > (tonumber(g_seenShares[itemId]) or 0) then
             g_seenShares[itemId] = seq
             opened = true
-            if item.kind == "map" and type(item.mapid) == "string" and MapExists(item.mapid) then
-                OpenSharedMap(item.mapid)
-            elseif item.kind == "card" and type(item.charid) == "string" then
+            if item.kind == "card" and type(item.charid) == "string" then
                 Tabletop.OpenCard(item.charid, {shared = true})
             elseif item.kind == "doc" and type(item.entryid) == "string" then
                 Tabletop.OpenDocItem(item.entryid, {shared = true})
@@ -2554,6 +2662,57 @@ SyncShares = function()
     end
     ApplyForced(doc.data.forced)
     if opened then
+        SaveSoon()
+    end
+end
+
+--A player's table follows the maps' Player Viewable settings, which the
+--Director's share buttons write: a map that becomes viewable for this
+--player opens on their table, and one that stops closes, unless one of
+--their tokens is on it. Checked four times a second.
+g_sharing.SyncViewableMaps = function()
+    if dmhub.isDM or dmhub.Time() < g_sharing.viewable.nextCheck then
+        return
+    end
+    g_sharing.viewable.nextCheck = dmhub.Time() + 0.25
+
+    local maps = game.maps
+    if #maps == 0 then
+        --the game's maps are not in yet; an empty list would close everything.
+        return
+    end
+    local now = {}
+    for _, map in ipairs(maps) do
+        if map.valid and map.playerViewable then
+            now[map.id] = true
+        end
+    end
+
+    if g_sharing.viewable.seed then
+        g_sharing.viewable.seed = false
+        g_sharing.viewable.seen = now
+        SaveSoon()
+        return
+    end
+
+    local changed = false
+    for mapid in pairs(now) do
+        if not g_sharing.viewable.seen[mapid] then
+            changed = true
+            OpenSharedMap(mapid)
+        end
+    end
+    for mapid in pairs(g_sharing.viewable.seen) do
+        if not now[mapid] then
+            changed = true
+            local rec = WindowForMap(mapid)
+            if rec ~= nil and not Tabletop.CanAccessMap(mapid) then
+                CloseWindow(rec)
+            end
+        end
+    end
+    if changed then
+        g_sharing.viewable.seen = now
         SaveSoon()
     end
 end
@@ -5117,14 +5276,24 @@ local function InitForGame()
     if layout ~= nil and type(layout.seenShares) == "table" then
         g_seenShares = layout.seenShares
     end
+    --a new table opens every map viewable for this player; one saved before
+    --the list was kept only starts tracking from here.
+    g_sharing.viewable.seen = {}
+    g_sharing.viewable.seed = false
+    g_sharing.viewable.nextCheck = 0
+    if layout ~= nil and type(layout.viewableMaps) == "table" then
+        g_sharing.viewable.seen = layout.viewableMaps
+    elseif layout ~= nil then
+        g_sharing.viewable.seed = true
+    end
     LoadCards(layout)
     LoadDocItems(layout)
     LoadSceneWindows(layout)
     NoteExistingMapDialog()
     if layout ~= nil and type(layout.windows) == "table" then
         for _,saved in ipairs(layout.windows) do
-            --a player's table keeps only maps they can still open (a share
-            --withdrawn, their token moved on).
+            --a player's table keeps only maps they can still open (no longer
+            --Player Viewable for them, their token moved on).
             if type(saved) == "table" and type(saved.mapid) == "string" and MapExists(saved.mapid) and WindowForMap(saved.mapid) == nil
                     and Tabletop.CanAccessMap(saved.mapid) then
                 local rec = {
@@ -5225,6 +5394,7 @@ local function Sync()
     end
 
     SyncShares()
+    g_sharing.SyncViewableMaps()
     SyncCards()
     SyncDocItems()
     SyncSceneWindows()

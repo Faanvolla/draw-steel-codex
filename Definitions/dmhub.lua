@@ -1676,9 +1676,6 @@ function dmhub.GetMapInitiativeQueue(mapid) end
 --- @return boolean
 function dmhub.HasMapSnapshot(mapid) end
 
---- Tabletop mode: the maps the Director has shared to the players' tables (Tabletop.lua keeps this in step with its shared document). A shared map counts as Player Viewable for a player with no token of their own on it, so they can view it.
---- @param mapids string[]
-function dmhub.SetTabletopSharedMaps(mapids) end
 
 --- Tabletop mode: refreshes the current map's frozen snapshot ("#MapSnapshot:<mapid>") from what its live window shows right now. Does nothing when no window shows the map. Used before a live window is minimized, so its button's preview and the collapse animation show the map as it was left.
 function dmhub.CaptureMapSnapshot() end

@@ -16,7 +16,9 @@
 --- @field floors any
 --- @field parentFolder any
 --- @field ord number
---- @field playerViewable boolean (Read-only) True if this map has the 'Player Viewable' map setting enabled. Player-viewable maps grant all players full vision and always appear in the player-facing Maps panel.
+--- @field playerViewable boolean (Read-only) True if this map is 'Player Viewable' for the local user: on for all players, or for this user among the chosen players. Player-viewable maps grant full vision and always appear in the player-facing Maps panel. A Director is never one of the chosen players, so for them this is true only when it is on for all players.
+--- @field playerViewableAll boolean (Read-only) True if this map's 'Player Viewable' setting is on for every player (including players who join later).
+--- @field playerViewableUsers nil|table<string, boolean> (Read-only) The players this map is 'Player Viewable' for when it is not on for every player: {userid = true}, or nil when there are none.
 --- @field mapid string
 MapManifestLua = {}
 
@@ -78,3 +80,13 @@ function MapManifestLua:Travel() end
 
 --- Start syncing this map in the background so a later Travel() to it skips the loading screen. Cheap to call repeatedly (e.g. on hover). Does nothing in Firebase-backed games or the lobby.
 function MapManifestLua:Prefetch() end
+
+--- True if this map is 'Player Viewable' for the given user: on for all players, or that user is one of the chosen players.
+--- @param userid? string
+--- @return boolean
+function MapManifestLua:IsPlayerViewableFor(userid) end
+
+--- Director only. Sets who this map is 'Player Viewable' for: all = true for every player (including players who join later), otherwise users = {userid = true} for just those players (nil or empty for nobody). Uploads at once, as one undoable change, and works on any map, not just the current one.
+--- @param all boolean
+--- @param users nil|table<string, boolean>
+function MapManifestLua:SetPlayerViewable(all, users) end
