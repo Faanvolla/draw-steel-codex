@@ -863,6 +863,7 @@ local function CharacterDetailsPanel(token)
 
     local m_characterPanel = CharacterPanel.CreateCharacterDetailsPanel(token)
 
+    local resultPanel
     resultPanel = gui.Panel {
         width = "100%",
         height = "auto",

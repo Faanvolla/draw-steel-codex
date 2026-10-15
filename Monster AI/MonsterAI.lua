@@ -3930,15 +3930,21 @@ function MonsterAI:ExecuteSquadStrike(ability)
     return executed or advanced
 end
 
+--- @param token CharacterToken
+--- @param ability ActivatedAbility
+--- @param scorefn? fun(targetToken: CharacterToken, edges: number|nil): number Value of striking targetToken with this many edges.
 function MonsterAI:FindBestMoveToUseStrike(token, ability, scorefn)
     if scorefn ~= nil then
+        --Memoise per target AND edge count: a target's edges change with the
+        --square the monster strikes from, so the score can too.
         local scoreCache = {}
         local scoreInternal = scorefn
-        scorefn = function(tok)
-            local score = scoreCache[tok.charid]
+        scorefn = function(tok, edges)
+            local key = tok.charid .. ":" .. tostring(edges)
+            local score = scoreCache[key]
             if score == nil then
-                score = scoreInternal(tok)
-                scoreCache[tok.charid] = score
+                score = scoreInternal(tok, edges)
+                scoreCache[key] = score
             end
             return score
         end

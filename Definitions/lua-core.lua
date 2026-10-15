@@ -128,6 +128,7 @@ end
 ---@return K[]
 function table.keys(t)
 	if type(t) ~= "table" then
+		---@diagnostic disable-next-line: return-type-mismatch
 		return nil
 	end
 
@@ -464,6 +465,7 @@ function RebindStaleGameTypes()
 
 	local getupvalue = debug.getupvalue
 	local visited = {}
+	---@type (table|function)[]
 	local stack = { debug.getregistry(), _G }
 	local count = #stack
 	for _,v in ipairs(stack) do
@@ -506,6 +508,8 @@ function RebindStaleGameTypes()
 				push(val)
 			end
 		else
+			--push only stacks tables and functions, so anything not a table is a function.
+			---@cast v function
 			local i = 1
 			while true do
 				local name, up = getupvalue(v, i)

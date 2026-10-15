@@ -7011,7 +7011,7 @@ function GameHud.CreateInitiativeEntry(self, info, initiativeid, options)
 
 	local playerColor = "black"
 	if token ~= nil then
-		playercolor = token.playerColor.tostring
+		playerColor = token.playerColor.tostring
 	end
 
 	local m_bossTurnsPanel = nil

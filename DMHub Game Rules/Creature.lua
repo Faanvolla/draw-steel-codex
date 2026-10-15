@@ -406,8 +406,9 @@ end
 --- @return string[]
 function creature:GetMonsterCategoryList(base_only)
 	local cat = self:try_get("monster_category")
+	local result
 	if cat == nil or (type(cat) == "table" and #cat == 0) then
-		local result = {"monster"}
+		result = {"monster"}
 	elseif type(cat) == "string" then
 		result = {cat}
 	else
@@ -1753,7 +1754,7 @@ end
 
 
 function creature.GetEquipmentAttackActions(self, options)
-	result = {}
+	local result = {}
 	local gearTable = GetTableCached('tbl_Gear')
 
 	for k,itemid in pairs(self:Equipment()) do
@@ -2466,6 +2467,8 @@ function creature:ConsumeResourcesForD20Roll(rollid, options)
 	if resourceConsumed then
 		local ourToken = dmhub.LookupToken(self)
 		if ourToken ~= nil then
+			--D&D 5e d20 resource use, outside any ModifyProperties; kept until 5e's future is decided.
+			---@diagnostic disable-next-line: deprecated
 			ourToken:Upload("used resource")
 		end
 	end
@@ -2925,6 +2928,8 @@ function creature:RollDeathSavingThrow(args)
 
 		local token = dmhub.LookupToken(thisCreature)
 		if token ~= nil then
+			--D&D 5e death saves, outside any ModifyProperties; kept until 5e's future is decided.
+			---@diagnostic disable-next-line: deprecated
 			token:Upload('Death saving throw result')
 		end
 
@@ -3372,6 +3377,8 @@ function creature.RollAttackHit(self, attack, target, options)
 	if attackRanged and target ~= nil then
 		--only ActivatedAbility passes a target, and it calls this on a live caster token's properties.
 		---@cast selfToken -nil
+		--D&D 5e long-range check in feet: Distance counts a diagonal as 7 under 5e's 5 units per square.
+		---@diagnostic disable-next-line: deprecated
 		local range = selfToken:DistanceInFeet(target) - 2.5
 
 		if range > attack:RangeNormal() then
@@ -3894,11 +3901,11 @@ function creature:CalculateSpellcastingFeatures()
 
 	local modifiers = self:GetActiveModifiers()
 	for _,mod in ipairs(modifiers) do
-		proficiencyBonus = mod.mod:AccumulateSpellcastingFeatures(self, result)
+		mod.mod:AccumulateSpellcastingFeatures(self, result)
 	end
 
 	for _,mod in ipairs(modifiers) do
-		proficiencyBonus = mod.mod:ModifySpellcastingFeatures(self, result)
+		mod.mod:ModifySpellcastingFeatures(self, result)
 	end
 
 	self._tmp_spellcastingFeaturesCache = {
@@ -13133,7 +13140,6 @@ function creature:EventPaste()
 			}
 		end,
 		upload = function(imageid)
-			uploadComplete = true
 			dmhub.AddAndUploadImageToLibrary("Avatar", imageid)
 
 			token.portrait = imageid
