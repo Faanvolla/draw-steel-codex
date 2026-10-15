@@ -826,6 +826,19 @@ local function BuilderStyles()
             selectors = { "encounterEntryRow", "gatedOff" },
             opacity = 0.55,
         },
+        --a map token dragged over the builder: the engine puts
+        --token-drop-hover on the group card (or the body) a release would join.
+        {
+            selectors = { "encounterGroupCard", "token-drop-hover" },
+            borderColor = "@accent",
+            borderWidth = 2,
+        },
+        {
+            selectors = { "encounterTokenDrop", "token-drop-hover" },
+            borderColor = "@accent",
+            borderWidth = 2,
+            cornerRadius = 4,
+        },
         --the map card in the header (CreateEncounterMapCard) and its picker.
         {
             selectors = { "encounterMapCard" },
@@ -3111,6 +3124,19 @@ local function CreateGroupCard(args)
             rebuild()
         end,
 
+        --monsters dragged off the map and dropped on the card join THIS
+        --group, staged where they stand (Encounter.Editor's AdoptDroppedTokens).
+        tokenDropTarget = args.adoptTokens ~= nil,
+        dropTokens = function(element, info)
+            args.adoptTokens(info.charids, group)
+        end,
+        tokenDragEnter = function(element, info)
+            args.previewTokens(info.charids, group)
+        end,
+        tokenDragLeave = function(element)
+            args.hideTokenPreview()
+        end,
+
         rightClick = function(element)
             local menuEntries = {
                 {
@@ -3386,6 +3412,9 @@ local function CreateWaveSections(args)
                             groupIndex = groupIndex,
                             refresh = refresh,
                             rebuild = rebuild,
+                            adoptTokens = args.adoptTokens,
+                            previewTokens = args.previewTokens,
+                            hideTokenPreview = args.hideTokenPreview,
                         }
                     end
                 end
@@ -4607,6 +4636,291 @@ local function PlaceEncounterForReal(encounter, party, opts)
 end
 
 -- ===========================================================================
+-- Map token drops: the drag preview, and encounters made from map tokens
+-- ===========================================================================
+
+--The dragged tokens that can join an encounter -- Bestiary monsters, as
+--{token, monsterid} in drag order -- and how many others there were (heroes,
+--creatures made on the map): those have no Bestiary entry to add.
+local function DroppableMonsters(charids)
+    local monsters = {}
+    local others = 0
+    for _, charid in ipairs(charids or {}) do
+        local token = dmhub.GetTokenById(charid)
+        if token ~= nil and token.properties ~= nil then
+            local monsterid = token.bestiaryId
+            if monsterid ~= nil and assets.monsters[monsterid] ~= nil then
+                monsters[#monsters + 1] = { token = token, monsterid = monsterid }
+            else
+                others = others + 1
+            end
+        end
+    end
+    return monsters, others
+end
+
+--"Goblin Warrior x2, Goblin Sniper": the monsters by type, in drag order.
+local function DescribeMonsters(monsters)
+    local order = {}
+    local counts = {}
+    for _, entry in ipairs(monsters) do
+        if counts[entry.monsterid] == nil then
+            order[#order + 1] = entry.monsterid
+            counts[entry.monsterid] = 0
+        end
+        counts[entry.monsterid] = counts[entry.monsterid] + 1
+    end
+    local parts = {}
+    for _, monsterid in ipairs(order) do
+        local name = creature.GetTokenDescription(assets.monsters[monsterid])
+        if counts[monsterid] > 1 then
+            name = string.format("%s x%d", name, counts[monsterid])
+        end
+        parts[#parts + 1] = name
+    end
+    return table.concat(parts, ", ")
+end
+
+--The card following the mouse while map tokens are dragged over a drop target
+--(tokenDragEnter/tokenDragLeave): the dragged monsters and what a release does.
+local g_dropPreview = nil
+
+local DROP_PREVIEW_MAX_IMAGES = 6
+
+local function HideTokenDropPreview()
+    if g_dropPreview ~= nil and g_dropPreview.valid then
+        g_dropPreview:DestroySelf()
+    end
+    g_dropPreview = nil
+end
+
+--Screen pixels from the top-left to the layer's own units (the hud layers sit
+--below the title bar and may be scaled).
+local function ScreenToLayer(layer, px, py)
+    local screen = dmhub.screenDimensions
+    local below = dmhub.screenDimensionsBelowTitlebar
+    if below.y <= 0 then
+        return px, py
+    end
+    local scale = layer.renderedHeight / below.y
+    return px * scale, (py - (screen.y - below.y)) * scale
+end
+
+--Show the preview for a drag of charids. describe(list) turns the dragged
+--monsters ("Goblin Warrior x2, Goblin Sniper") into the line saying what a drop
+--does; a drag with no Bestiary monsters says why nothing will happen instead.
+local function ShowTokenDropPreview(charids, describe)
+    HideTokenDropPreview()
+
+    local hud = GameHud.instance --[[@as GameHud]]
+    if hud == nil then
+        return
+    end
+    --the banner layer sits above every window, the builder included.
+    local layer = hud.bannerLayer
+    if layer == nil or not layer.valid then
+        layer = hud.documentsPanel
+    end
+    if layer == nil or not layer.valid then
+        return
+    end
+
+    local monsters, others = DroppableMonsters(charids)
+
+    local images = {}
+    for i, entry in ipairs(monsters) do
+        if i > DROP_PREVIEW_MAX_IMAGES then
+            images[#images + 1] = gui.Label {
+                classes = { "fgMuted", "sizeS" },
+                interactable = false,
+                width = "auto",
+                height = "auto",
+                valign = "center",
+                lmargin = 4,
+                text = string.format("+%d", #monsters - DROP_PREVIEW_MAX_IMAGES),
+            }
+            break
+        end
+        images[#images + 1] = gui.CreateTokenImage(entry.token, {
+            interactable = false,
+            width = 36,
+            height = 36,
+            valign = "center",
+            rmargin = 4,
+        })
+    end
+
+    --the token row, then the text lines.
+    local lines = {
+        gui.Panel {
+            interactable = false,
+            width = "auto",
+            height = "auto",
+            flow = "horizontal",
+            children = images,
+        },
+    }
+    if #monsters > 0 then
+        lines[#lines + 1] = gui.Label {
+            classes = { "sizeS" },
+            interactable = false,
+            width = "auto",
+            maxWidth = 340,
+            height = "auto",
+            tmargin = 6,
+            text = describe(DescribeMonsters(monsters)),
+        }
+    end
+    if others > 0 then
+        local text
+        if #monsters == 0 then
+            text = "Only Bestiary creatures can join an encounter."
+        elseif others == 1 then
+            text = "1 creature has no Bestiary entry and is left out."
+        else
+            text = string.format("%d creatures have no Bestiary entry and are left out.", others)
+        end
+        lines[#lines + 1] = gui.Label {
+            classes = { "warning", "sizeXs" },
+            interactable = false,
+            width = "auto",
+            maxWidth = 340,
+            height = "auto",
+            tmargin = 4,
+            text = text,
+        }
+    end
+
+    local styles = ThemeEngine.MergeStyles({
+        {
+            selectors = { "encounterDropPreview" },
+            borderColor = "@accent",
+            borderWidth = 2,
+            cornerRadius = 6,
+        },
+    })
+
+    --where the card sits: below and right of the pointer, clear of the hit
+    --test that finds the drop target under the mouse.
+    local function Follow(element)
+        local mouse = dmhub.mouseScreenPosition
+        element.x, element.y = ScreenToLayer(layer, mouse.x + 18, mouse.y + 22)
+    end
+
+    local preview = gui.Panel {
+        classes = { "encounterDropPreview", "bordered", "bg" },
+        styles = styles,
+        interactable = false,
+        halign = "left",
+        valign = "top",
+        width = "auto",
+        height = "auto",
+        flow = "vertical",
+        hpad = 10,
+        vpad = 8,
+        borderBox = true,
+        bgimage = true,
+
+        thinkTime = 0.01,
+        think = function(element)
+            --a drag that ended without a leave (cancelled, say) takes the card with it.
+            if mod.unloaded or dmhub.tokenDropTargetUnderMouse == nil then
+                HideTokenDropPreview()
+                return
+            end
+            Follow(element)
+        end,
+
+        children = lines,
+    }
+
+    layer:AddChild(preview)
+    preview:SetAsLastSibling()
+    Follow(preview)
+    g_dropPreview = preview
+end
+
+--Tag a token as one of a plan group's staged monsters, exactly as staging tags
+--the tokens it spawns, so the builder banks, collects and places it.
+local function StampStagedToken(token, group, slot, monsterid)
+    token:ModifyProperties {
+        description = "Add to encounter",
+        undoable = false,
+        combine = true,
+        execute = function()
+            token.properties.encounterPlacementId = group.placementid
+            token.properties.encounterSpawnSlot = slot
+            token.properties.encounterSpawnMonster = monsterid
+            token.properties.encounterStaged = true
+            token.properties.encounterStagedBy = dmhub.userid
+        end,
+    }
+end
+
+--Make and save a new encounter from monsters on the map (map tokens dropped on
+--the Encounters panel), then open it in the builder. Monsters sharing an
+--initiative (an initiative grouping or a minion squad) become one group; the
+--monsters with an initiative of their own go into one group together. The
+--tokens stay where they are as the plan's staged monsters, with their
+--positions already saved. Returns the saved encounter, or nil.
+function Encounter.CreateFromTokens(charids)
+    local monsters, others = DroppableMonsters(charids)
+    if #monsters == 0 then
+        if others > 0 then
+            gui.ModalMessage {
+                title = "Not a Bestiary Monster",
+                message = "Only creatures from the Bestiary can join an encounter. Heroes and creatures made on the map have no Bestiary entry to add.",
+            }
+        end
+        return nil
+    end
+
+    local encounter = Encounter.new()
+    encounter.groups = {}
+    encounter.mapid = game.currentMapId
+
+    --the monster list names the encounter while it fits the builder's name field.
+    local name = DescribeMonsters(monsters)
+    if #name <= 40 then
+        encounter.name = name
+    end
+
+    local groupsByKey = {}
+    local slots = {}
+    for _, entry in ipairs(monsters) do
+        local token = entry.token
+        local initiativeid = InitiativeQueue.GetInitiativeId(token)
+        local key = initiativeid or ""
+        if key == token.id then
+            key = ""
+        end
+        local group = groupsByKey[key]
+        if group == nil then
+            group = { monsters = {}, placementid = dmhub.GenerateGuid() }
+            groupsByKey[key] = group
+            encounter.groups[#encounter.groups + 1] = group
+            slots[group] = 0
+        end
+        group.monsters[entry.monsterid] = (group.monsters[entry.monsterid] or 0) + 1
+        slots[group] = slots[group] + 1
+        StampStagedToken(token, group, slots[group], entry.monsterid)
+    end
+
+    for _, group in ipairs(encounter.groups) do
+        BankGroupPositions(group, encounter.saveAppearances)
+    end
+    BankStagedMounts(encounter)
+
+    local id = dmhub.SetAndUploadTableItem("encounters", encounter)
+
+    --the builder edits a copy, as the list's own edit button does.
+    local copy = DeepCopy(encounter)
+    copy.id = id
+    Encounter.CreateEditorDialog(copy, { mode = "Save" })
+    return encounter
+end
+
+-- ===========================================================================
 -- The encounter builder editor
 -- ===========================================================================
 
@@ -4820,6 +5134,142 @@ function Encounter.Editor(self, options)
         m_savedSnapshot = SnapshotPlan()
     end
 
+    --Monsters dragged off the map and dropped on the builder (the panels are
+    --tokenDropTarget, so the engine fires dropTokens): staging in reverse. Each
+    --monster joins targetGroup and is tagged exactly as staging tags the tokens
+    --it spawns, so it banks, collects and places with the plan from then on.
+    --A drop beside the cards (targetGroup nil) fills the active group while it
+    --is still empty, else starts a new group. A monster already in another of
+    --this plan's groups moves over; one already in targetGroup is left alone.
+    local function AdoptDroppedTokens(charids, targetGroup)
+        local tokens, skipped = DroppableMonsters(charids)
+
+        if #tokens == 0 then
+            if skipped > 0 then
+                gui.ModalMessage {
+                    title = "Not a Bestiary Monster",
+                    message = "Only creatures from the Bestiary can join an encounter. Heroes and creatures made on the map have no Bestiary entry to add.",
+                }
+            end
+            return
+        end
+
+        local group = targetGroup
+        if group == nil then
+            group = state.activeGroup
+            if group == nil or next(group.monsters) ~= nil then
+                --AddGroup deep-copies the groups array, so take the new group
+                --from the copy.
+                self:AddGroup()
+                group = self.groups[#self.groups]
+            end
+        end
+
+        local groupIndex = nil
+        for i, g in ipairs(self.groups) do
+            if g == group then
+                groupIndex = i
+            end
+        end
+        if groupIndex == nil then
+            return
+        end
+
+        if group.placementid == nil then
+            group.placementid = dmhub.GenerateGuid()
+        end
+
+        --A group whose positions are saved but not on the map would bank only
+        --the newcomers on the next save, losing everyone else's tile. Bring its
+        --saved arrangement back first so the whole group is staged together.
+        local live = PlacedTokensForGroup(group)
+        if #live == 0 and group.spawnlocs ~= nil and #group.spawnlocs > 0 and not GroupStagedOnOtherMap(group) then
+            for _, token in ipairs(StageGroupAtSavedLocations(self, groupIndex, group, party.numHeroes, group.placementid)) do
+                live[#live + 1] = token
+            end
+        end
+
+        local nextSlot = 1
+        for _, token in ipairs(live) do
+            nextSlot = math.max(nextSlot, token.properties:try_get("encounterSpawnSlot", 0) + 1)
+        end
+
+        local emptiedGroups = {}
+        for _, entry in ipairs(tokens) do
+            local token = entry.token
+            local monsterid = entry.monsterid
+            local placementid = token.properties:try_get("encounterPlacementId")
+
+            local oldGroup = nil
+            if placementid ~= nil then
+                for _, g in ipairs(self.groups) do
+                    if g.placementid == placementid then
+                        oldGroup = g
+                    end
+                end
+            end
+
+            if oldGroup ~= group or token.properties:try_get("encounterStaged") == false then
+                --already counted in this plan's roster: move the count over
+                --rather than adding a second copy.
+                if oldGroup == nil then
+                    group.monsters[monsterid] = (group.monsters[monsterid] or 0) + 1
+                elseif oldGroup ~= group then
+                    local oldMonster = token.properties:try_get("encounterSpawnMonster") or monsterid
+                    local count = (oldGroup.monsters[oldMonster] or 0) - 1
+                    oldGroup.monsters[oldMonster] = cond(count > 0, count, nil)
+                    if next(oldGroup.monsters) == nil then
+                        emptiedGroups[#emptiedGroups + 1] = oldGroup
+                    end
+                    group.monsters[monsterid] = (group.monsters[monsterid] or 0) + 1
+                end
+
+                StampStagedToken(token, group, nextSlot, monsterid)
+                nextSlot = nextSlot + 1
+            end
+        end
+
+        --a group the drop took its last monster from goes, as removing the
+        --last monster by hand does (RemoveMonsterFromGroup in the card).
+        for _, emptied in ipairs(emptiedGroups) do
+            for i = #self.groups, 1, -1 do
+                if self.groups[i] == emptied and next(emptied.monsters) == nil then
+                    table.remove(self.groups, i)
+                    self:RepairMountsAfterGroupRemoved(i)
+                end
+            end
+        end
+
+        state.activeGroup = group
+        rebuild()
+    end
+
+    --The drag preview's line for a drop on targetGroup's card, or (nil) beside
+    --the cards: the group AdoptDroppedTokens would put the monsters in.
+    local function PreviewDroppedTokens(charids, targetGroup)
+        local group = targetGroup
+        if group == nil then
+            group = state.activeGroup
+            if group ~= nil and next(group.monsters) ~= nil then
+                group = nil
+            end
+        end
+
+        local groupName = nil
+        for i, g in ipairs(self.groups) do
+            if g == group then
+                groupName = GroupName(self, g, i)
+            end
+        end
+
+        ShowTokenDropPreview(charids, function(list)
+            if groupName == nil then
+                return string.format("Start a new group with %s", list)
+            end
+            return string.format("Add %s to %s", list, groupName)
+        end)
+    end
+
     local function StagedGroupNames()
         local names = {}
         for i, group in ipairs(self.groups) do
@@ -4914,12 +5364,29 @@ function Encounter.Editor(self, options)
 
         CreatePartyBar(self, party, refresh, rebuild, CreateBudgetDial(self, party)),
 
-        --the two-pane body: bestiary browser left, composition right.
+        --the two-pane body: bestiary browser left, composition right. Monsters
+        --dragged off the map and dropped here join the plan as if staged
+        --(AdoptDroppedTokens); a group card takes the drops over it. The clear
+        --bgimage makes the gaps between the panes catch the drop too.
         gui.Panel {
+            classes = { "encounterTokenDrop" },
             width = "100%",
             height = "100% available",
             flow = "horizontal",
             tmargin = 6,
+            bgimage = true,
+            bgcolor = "clear",
+
+            tokenDropTarget = true,
+            dropTokens = function(element, info)
+                AdoptDroppedTokens(info.charids, nil)
+            end,
+            tokenDragEnter = function(element, info)
+                PreviewDroppedTokens(info.charids, nil)
+            end,
+            tokenDragLeave = function(element)
+                HideTokenDropPreview()
+            end,
 
             CreateBestiaryPane(party, addMonster),
 
@@ -4936,6 +5403,9 @@ function Encounter.Editor(self, options)
                     state = state,
                     refresh = refresh,
                     rebuild = rebuild,
+                    adoptTokens = AdoptDroppedTokens,
+                    previewTokens = PreviewDroppedTokens,
+                    hideTokenPreview = HideTokenDropPreview,
                 },
             },
         },
@@ -5333,16 +5803,34 @@ CreateEncounterPanel = function()
 
     local inspectorPanel
 
+    --monsters dragged off the map and dropped on the list become a new
+    --encounter (Encounter.CreateFromTokens); minHeight keeps a drop zone when
+    --the list is short or empty.
+    local function ListStyles()
+        return ThemeEngine.MergeStyles({
+            {
+                selectors = { "encounterListDrop", "token-drop-hover" },
+                borderColor = "@accent",
+                borderWidth = 2,
+                cornerRadius = 4,
+            },
+        })
+    end
+
     inspectorPanel = gui.Panel {
         id = "inspector-panel",
-        styles = ThemeEngine.GetStyles(),
+        classes = { "encounterListDrop" },
+        styles = ListStyles(),
         hpad = 6,
         width = "100%",
         height = "auto",
+        minHeight = 160,
         flow = "vertical",
         monitorAssets = true,
         bgimage = true,
         bgcolor = "clear",
+
+        tokenDropTarget = true,
 
         xrightClick = function(panel)
             panel.popup = gui.ContextMenu {
@@ -5363,6 +5851,21 @@ CreateEncounterPanel = function()
         events = {
             create = function(panel)
                 panel:FireEvent("update")
+            end,
+
+            tokenDragEnter = function(panel, info)
+                ShowTokenDropPreview(info.charids, function(list)
+                    return string.format("Create a new encounter from %s", list)
+                end)
+            end,
+
+            tokenDragLeave = function(panel)
+                HideTokenDropPreview()
+            end,
+
+            dropTokens = function(panel, info)
+                HideTokenDropPreview()
+                Encounter.CreateFromTokens(info.charids)
             end,
 
             refreshAssets = function(panel)
@@ -5667,7 +6170,7 @@ CreateEncounterPanel = function()
 
     ThemeEngine.OnThemeChanged(mod, function()
         if inspectorPanel ~= nil and inspectorPanel.valid then
-            inspectorPanel.styles = ThemeEngine.GetStyles()
+            inspectorPanel.styles = ListStyles()
         end
     end)
 
