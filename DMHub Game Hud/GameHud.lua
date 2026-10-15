@@ -1788,6 +1788,9 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 			--minimized tabletop map windows float on the table over the
 			--windows and journals (Tabletop.lua).
 			Tabletop.CreateButtonLayer(),
+			--mode banners (e.g. the encounter builder's staging banner) sit over
+			--every window, so click-to-front on a map window cannot bury them.
+			gamehud:CreateBannerLayer(),
 
 			--The action bar sits ABOVE the documents layer for the same reason.
 			--Everything the bar floats out of its strip -- the drawer menus, the
@@ -2242,6 +2245,21 @@ function GameHud:CreatePopupPanel()
 	}
 
 	return self.popupPanel
+end
+
+--The layer just above the documents (window) layer, for banners that show
+--a mode the user is in. Windows raise themselves within their own layer on
+--press, so a banner in the documents layer could end up under a map window;
+--one here cannot. It has no image, so it takes no mouse when empty.
+function GameHud:CreateBannerLayer()
+	self.bannerLayer = gui.Panel{
+		id = "hudBannerLayer",
+		width = "100%",
+		height = "100%",
+		interactable = false,
+	}
+
+	return self.bannerLayer
 end
 
 function GameHud:CreateFrozenLabel()

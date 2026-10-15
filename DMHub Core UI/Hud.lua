@@ -801,6 +801,7 @@ end
 --- @field tokenInfo SheetHud The engine's token/selection interface, passed to dmhub.CreateGameHud.
 --- @field parentPanel Panel Root panel of the hud (dialog.sheet); set by dmhub.CreateGameHud.
 --- @field actionBarPanel Panel Set by the action bar when it is created.
+--- @field bannerLayer? Panel Layer over the floating windows for mode banners; set by GameHud:CreateBannerLayer (nil on the lobby hud).
 --- @field rollDialog Panel Set by dmhub.CreateGameHud (GameHud:CreateRollDialog).
 --- @field inventoryDialog Panel
 --- @field basicInventoryDialog Panel

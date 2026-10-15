@@ -2905,7 +2905,10 @@ local function CreateGroupCard(args)
         refreshBuilder = function(element)
             element.text = cond(#PlacedTokensForGroup(group) > 0, "Save Positions & Remove", "Stage on Map")
         end,
-        press = function(element)
+        --on click (release), not press: staging hides the builder, and on press
+        --the release then fell through to the window underneath, which raised
+        --itself over the placement banner.
+        click = function(element)
             --already on the map: bank the arrangement, then collect the
             --tokens. Discarding instead lives on the card's right-click menu.
             local placed = PlacedTokensForGroup(group)
@@ -2942,7 +2945,8 @@ local function CreateGroupCard(args)
             end
             local placementid = group.placementid
 
-            local editorPanel = element:FindParentWithClass("editorPanel")
+            --the link lives on a group card inside the builder, so this is never nil.
+            local editorPanel = element:FindParentWithClass("editorPanel") --[[@as Panel]]
 
             local function ShowArrangeBanner()
                 ShowStagingBanner(
@@ -2951,6 +2955,9 @@ local function CreateGroupCard(args)
                         onClosed = function()
                             if editorPanel ~= nil and editorPanel.valid then
                                 editorPanel:SetClass("hidden", false)
+                                --map windows clicked while arranging were
+                                --raised over the hidden builder; come back on top.
+                                editorPanel:SetAsLastSibling()
                                 refresh()
                             end
                         end,
@@ -3742,6 +3749,20 @@ end
 -- Footer actions: Place on Map
 -- ===========================================================================
 
+--Mount a mode banner (placement, staging) in the hud's banner layer, which sits
+--over the map and journal windows: a window raised by a click must not hide
+--the banner telling the user what mode they are in. The lobby hud has no
+--banner layer, so fall back to the documents layer there.
+local function MountModeBanner(banner)
+    local hud = GameHud.instance --[[@as GameHud]]
+    local layer = hud.bannerLayer
+    if layer ~= nil and layer.valid then
+        layer:AddChild(banner)
+    else
+        hud.documentsPanel:AddChild(banner)
+    end
+end
+
 --"Place on Map" from the builder uses the engine's click-to-place path: a
 --focused panel exposing data.encounter is consulted by the engine (via
 --dmhub.GetSelectedEncounter) when the DM clicks the map, which spawns the
@@ -3878,13 +3899,14 @@ ShowPlacementBanner = function(encounter, opts)
             valign = "center",
             text = "Cancel",
             swallowPress = true,
-            press = function(element)
+            --on click (release), not press: see Back to Builder below.
+            click = function(element)
                 banner:DestroySelf()
             end,
         },
     }
 
-    GameHud.instance.documentsPanel:AddChild(banner)
+    MountModeBanner(banner)
 end
 
 --A small focused banner shown while a staged group's tokens are on the map
@@ -3931,13 +3953,16 @@ ShowStagingBanner = function(message, opts)
             halign = "right",
             valign = "center",
             text = "Back to Builder",
-            press = function(element)
+            --on click (release), not press: closing on press let the release
+            --fall through to the window under the banner, which raised itself
+            --over the builder we just brought back.
+            click = function(element)
                 banner:DestroySelf()
             end,
         },
     }
 
-    GameHud.instance.documentsPanel:AddChild(banner)
+    MountModeBanner(banner)
 end
 
 -- ===========================================================================
