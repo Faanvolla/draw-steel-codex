@@ -7236,6 +7236,8 @@ function creature:PersistentAbilities()
             local customPrompt = persistence.promptText
             if type(customPrompt) == "string" and trim(customPrompt) ~= "" then
                 promptText = string.format("%s: %s; %s", tr("Persistence"), ability.name, customPrompt)
+                --The "!" trigger card shows triggerPrompt as its rules text.
+                newAbility.triggerPrompt = customPrompt
             else
                 promptText = string.format(tr("Persistence: Recast %s"), ability.name)
             end
