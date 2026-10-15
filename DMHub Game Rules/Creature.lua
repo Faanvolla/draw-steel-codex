@@ -193,7 +193,7 @@ end
 --- @field attributeIds string[] Ordered list of registered attribute ids.
 --- @field attributeDropdownOptions {id: string, text: string}[] Attribute options for use in dropdowns.
 --- @field attributeDropdownOptionsWithNone {id: string, text: string}[] Attribute options including a leading "None" entry.
---- @field savingThrowInfo table<string, {id: string, attrid?: string, description: string, order: number}> Registered saving throw metadata keyed by id.
+--- @field savingThrowInfo table<string, SavingThrowInfo> Registered saving throw metadata keyed by id.
 --- @field savingThrowIds string[] Ordered list of registered saving throw ids.
 --- @field savingThrowDropdownOptions {id: string, text: string, order: number}[] Saving throw options for use in dropdowns.
 --- @field SavingThrowMod fun(self: creature, saveid: string): number Total saving throw modifier. Implemented by character and monster (not TargetableObject).
@@ -1089,8 +1089,17 @@ creature.savingThrowInfo = {}
 creature.savingThrowIds = {}
 creature.savingThrowDropdownOptions = {}
 
+--- One registered saving throw. A named class rather than an inline table type: with
+--- the inline shape LuaLS sometimes compared registrations against a caller's literal
+--- (attrid required) instead, depending on which file it diagnosed first.
+--- @class SavingThrowInfo
+--- @field id string
+--- @field attrid? string Characteristic the save rolls with, when it has one.
+--- @field description string
+--- @field order number
+
 --- Register a saving throw.
---- @param info {id: string, attrid?: string, description: string, order: number}
+--- @param info SavingThrowInfo
 function creature.RegisterSavingThrow(info)
 	local index = #creature.savingThrowIds+1
 	for i,existing in ipairs(creature.savingThrowIds) do

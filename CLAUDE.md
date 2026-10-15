@@ -205,7 +205,10 @@ reference; that is expected. No codex file uses the engine's `@if`/`@else`/`@end
 preprocessor directives any more, so a raw `luac -p` sweep is clean with no special
 handling; see "Checking Lua Yourself" in the root [`CLAUDE.md`](../CLAUDE.md).
 
-**Every file checks clean, and must stay that way.** `luac -p` only catches syntax.
+**Every file checks clean, and must stay that way.** [`TYPING.md`](TYPING.md) is the
+contributor-facing statement of the standard (it is all that someone with only this
+repository has); CI (`.github/workflows/lua-typecheck.yml`) runs LuaLS on every push to
+`main` and every pull request. `luac -p` only catches syntax.
 The type checker is `../tools/lua-typing/check.ps1` (run it from the repo root), and its
 ceiling is **zero** (since 2026-10-14): one problem anywhere exits 1, naming the file. Run
 it before you call Lua work finished: `-Changed` while editing (~45 s; only the
