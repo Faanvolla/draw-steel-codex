@@ -24907,20 +24907,19 @@ dmhub.RegisterEventHandler("EnterGame", function()
         --chosen for them (Lisa+David review 2026-07-19 for players;
         --David 2026-08-08 extended it to Directors, whose default used
         --to be Custom). Only when the rail mode is on, no view is
-        --active, and there is no evidence they have ever used views (an
-        --empty per-game stash is the proxy -- Custom always stashes on
-        --the first switch away from it) -- so it applies once, and never
-        --tramples an arrangement they've built.
+        --active, and they have no saved views or window arrangement
+        --in this game yet. Players who had pinned windows used to lose
+        --them all when they came back into the game.
         if RailModeActive() and (dmhub.GetSettingValue("viewsactive") or "") == "" then
-            local stash = dmhub.GetSettingValue("viewsstash")
-            local stashEmpty = true
-            if type(stash) == "table" then
-                for _ in pairs(stash) do
-                    stashEmpty = false
+            local nothingOfTheirs = true
+            for _, id in ipairs({"viewsstash", "iconrailpins", "iconrailpanelpinned", "iconrailtabs", "iconraillayout"}) do
+                local value = dmhub.GetSettingValue(id)
+                if type(value) == "table" and next(value) ~= nil then
+                    nothingOfTheirs = false
                     break
                 end
             end
-            if stashEmpty and rawget(_G, "ViewsSwitchTo") ~= nil then
+            if nothingOfTheirs and rawget(_G, "ViewsSwitchTo") ~= nil then
                 if dmhub.isDM then
                     ViewsSwitchTo("builtin:director")
                 else
