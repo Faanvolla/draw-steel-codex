@@ -2917,16 +2917,54 @@ local function CreateMapClusterPanel(classes, tileChip, mapNameLabel)
     }
 end
 
---A second map cluster (terrain chip + map name, opening the map overlay
---menu) for the titlebar of a tabletop map window (Tabletop.lua). It
---describes the live map, so only the focused window shows one; while it
---does, the title bar's own cluster is collapsed (SetMapStatusInWindow).
---options.nameWidth: width of the map-name label (default 220).
-function CodexTitleBar.CreateMapCluster(options)
+--Where the mouse is on the live map, for the titlebar of a tabletop map
+--window and its maximized strip (Tabletop.lua), which show the map's name
+--on its own: the terrain chip and the tile's coordinates, on one plate that
+--opens the map overlay menu. With the mouse off the map it keeps the last
+--position, dimmed, so the bar does not jump; with tile info turned off it
+--is empty. While a window shows it, the title bar's own cluster is
+--collapsed (SetMapStatusInWindow).
+--options.width: the readout's width, fixed so the bar does not shift as the
+--mouse moves (default 96).
+function CodexTitleBar.CreateMapPosition(options)
     options = options or {}
-    local label = CreateMapNameLabel(options.nameWidth or 220)
-    local cluster = CreateMapClusterPanel({"menuItem"}, g_tileIndicator.CreatePanel(), label)
-    return cluster, label
+    local chip = g_tileIndicator.CreatePanel()
+    local label = gui.Label{
+        classes = {"menuLabel"},
+        fontSize = 13,
+        minFontSize = 10,
+        width = options.width or 96,
+        height = "100%",
+        hmargin = 0,
+        textAlignment = "left",
+        textWrap = false,
+        textOverflow = "ellipsis",
+        interactable = false,
+        text = "--",
+        data = {offMap = nil},
+        thinkTime = 0.1,
+        think = function(element)
+            local text = element.text
+            local offMap = dmhub.mouseOutsideMapView == true
+            if (not dmhub.inGame) or dmhub.isLobbyGame or not g_tileIndicator.ShowsTileInfo() then
+                text = ""
+            elseif not offMap then
+                text = dmhub.status or ""
+            end
+            if element.text ~= text then
+                element.text = text
+            end
+            --opacity is per panel, so the chip is dimmed on its own. (A
+            --selfStyle value cannot be read back, hence data.offMap.)
+            if element.data.offMap ~= offMap then
+                element.data.offMap = offMap
+                local opacity = cond(offMap, 0.4, 1)
+                element.selfStyle.opacity = opacity
+                chip.selfStyle.opacity = opacity
+            end
+        end,
+    }
+    return CreateMapClusterPanel({"menuItem"}, chip, label)
 end
 
 --True while a tabletop map window shows the live map's status in its own
@@ -2935,22 +2973,6 @@ local g_mapStatusInWindow = false
 
 function CodexTitleBar.SetMapStatusInWindow(inWindow)
     g_mapStatusInWindow = inWindow == true
-end
-
---Right of the map cluster: controls for a maximized tabletop map window
---(its restore button), or empty.
-local g_mapWindowControlsHost = nil
-
-function CodexTitleBar.SetMapWindowControls(panel)
-    local host = g_mapWindowControlsHost
-    if host == nil or not host.valid then
-        return
-    end
-    if panel == nil then
-        host.children = {}
-    elseif panel.parent ~= host then
-        host.children = {panel}
-    end
 end
 
 local function CreateStatusBar()
@@ -3027,13 +3049,6 @@ local function CreateStatusBar()
 
     m_initiativeHost = CreateInitiativeStatusHost()
     BarFitRegister("initiative", m_initiativeHost)
-
-    g_mapWindowControlsHost = gui.Panel{
-        flow = "horizontal",
-        width = "auto",
-        height = "100%",
-        valign = "center",
-    }
 
     -- While a CommandBuilder session is active, a floating recorder dialog
     -- shows the steps; this zero-size host is just its mount point.
@@ -3112,10 +3127,6 @@ local function CreateStatusBar()
         -- Hovered-tile terrain chip + map name/engine status, sharing one
         -- clickable plate that opens the map overlay menu.
         m_mapCluster,
-
-        -- A maximized tabletop map window's restore button (see
-        -- SetMapWindowControls); empty otherwise.
-        g_mapWindowControlsHost,
 
         -- Zero-size mount point that opens the command-builder recorder
         -- dialog when a session begins.

@@ -517,10 +517,13 @@ local MAX_GHOST_PICTURES = 4
 --- Shows a small card by the mouse saying what dropping items here adds.
 --- think() is called every frame while it shows; the card destroys itself
 --- when think returns false (the caller may also destroy it).
+--- text replaces the card's own wording (files dragged in from the desktop
+--- pass no items, only text).
 --- @param items ItemLinkDrop[]
 --- @param think fun(ghost: Panel): boolean
+--- @param text nil|string
 --- @return nil|Panel
-function RichItemLink.ShowDropGhost(items, think)
+function RichItemLink.ShowDropGhost(items, think, text)
     local hud = GameHud.instance --[[@as GameHud]]
     if hud == nil then
         return nil
@@ -568,15 +571,16 @@ function RichItemLink.ShowDropGhost(items, think)
         end
     end
 
-    local text
-    if #items == 1 and items[1].kind == "move" then
-        text = string.format("Move %s here", names[1])
-    elseif #items == 1 and items[1].kind == "doc" then
-        text = string.format("Add a link to %s", names[1])
-    elseif #names == 1 then
-        text = string.format("Add %s", names[1])
-    else
-        text = string.format("Add %d items", #names)
+    if text == nil then
+        if #items == 1 and items[1].kind == "move" then
+            text = string.format("Move %s here", names[1])
+        elseif #items == 1 and items[1].kind == "doc" then
+            text = string.format("Add a link to %s", names[1])
+        elseif #names == 1 then
+            text = string.format("Add %s", names[1])
+        else
+            text = string.format("Add %d items", #names)
+        end
     end
 
     local ghost

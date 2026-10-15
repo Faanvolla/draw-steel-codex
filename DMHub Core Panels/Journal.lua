@@ -850,6 +850,65 @@ local function JournalFoldersWithMatches(journalPanel, searchText)
     return result
 end
 
+--Image and video files dragged in from the desktop become image entries
+--(an image asset of type "document", as Upload Document makes). The
+--Director's go into the folder they are dropped on; a player's always go
+--into the player's own folder.
+
+--The drag over the journal now: {element, ghost}, or nil.
+local g_fileDrag = nil
+
+--element: end only the drag over this panel (nil: any).
+local function EndJournalFileDrag(element)
+    local drag = g_fileDrag
+    if drag == nil or (element ~= nil and drag.element ~= element) then
+        return
+    end
+    g_fileDrag = nil
+    if drag.ghost ~= nil and drag.ghost.valid then
+        drag.ghost:DestroySelf()
+    end
+end
+
+--folderid: the folder under the mouse, or nil for the journal as a whole.
+local function JournalFileDropFolder(folderid)
+    if not dmhub.isDM then
+        return dmhub.loginUserid
+    end
+    return folderid or "private"
+end
+
+local function BeginJournalFileDrag(journalPanel, element, paths, folderid)
+    EndJournalFileDrag(nil)
+    local folder = journalPanel.data.documentFoldersTable[JournalFileDropFolder(folderid)]
+    local where = "the journal"
+    if folder ~= nil and folder.description ~= nil and folder.description ~= "" then
+        where = folder.description
+    end
+    local drag = {element = element}
+    drag.ghost = FileDrops.ShowGhost(string.format("Add %s to %s", FileDrops.Describe(paths), where), function()
+        return g_fileDrag == drag and element.valid
+    end)
+    g_fileDrag = drag
+end
+
+local function DropJournalFiles(element, paths, folderid)
+    EndJournalFileDrag(nil)
+    for _, path in ipairs(paths) do
+        FileDrops.UploadImage(path, {
+            imageType = "document",
+            parentFolder = JournalFileDropFolder(folderid),
+            error = function(msg)
+                gui.ModalMessage{
+                    owner = element,
+                    title = "Error importing " .. FileDrops.BaseName(path),
+                    message = msg,
+                }
+            end,
+        })
+    end
+end
+
 local function CreateFolderPanel(journalPanel, folderid)
     local builtinFolder = folderid == "private" or folderid == "public" or folderid == "templates" or
         folderid == game.currentMapId or folderid == dmhub.loginUserid
@@ -866,6 +925,18 @@ local function CreateFolderPanel(journalPanel, folderid)
         data = {
             folderid = folderid,
         },
+
+        --files from the desktop dropped on this folder (or a row in it).
+        dragAndDropExtensions = cond(dmhub.isDM, FileDrops.MEDIA_EXTENSIONS, nil),
+        dragfilesenter = function(element, paths)
+            BeginJournalFileDrag(journalPanel, element, paths, folderid)
+        end,
+        dragfilesleave = function(element)
+            EndJournalFileDrag(element)
+        end,
+        dropfiles = function(element, paths)
+            DropJournalFiles(element, paths, folderid)
+        end,
 
         expanded = builtinFolder,
         queryNode = function(element, info)
@@ -2128,6 +2199,18 @@ CreateJournalPanel = function(options)
         height = "100%",
         flow = "vertical",
 
+        --files from the desktop dropped anywhere else in the journal.
+        dragAndDropExtensions = FileDrops.MEDIA_EXTENSIONS,
+        dragfilesenter = function(element, paths)
+            BeginJournalFileDrag(element, element, paths, nil)
+        end,
+        dragfilesleave = function(element)
+            EndJournalFileDrag(element)
+        end,
+        dropfiles = function(element, paths)
+            DropJournalFiles(element, paths, nil)
+        end,
+
         data = {
             foldersToMembers = {},
 
@@ -2589,9 +2672,9 @@ CreateJournalPanel = function(options)
 
                             dmhub.OpenFileDialog {
                                 id = "PDF",
-                                extensions = { "pdf", "png", "jpg", "jpeg", "webp" },
+                                extensions = { "pdf", "png", "jpg", "jpeg", "webp", "mp4", "webm" },
                                 multiFiles = false,
-                                prompt = "Choose an image or a PDF document file",
+                                prompt = "Choose an image, a video or a PDF document file",
                                 open = function(path)
                                     if path == nil then
                                         return

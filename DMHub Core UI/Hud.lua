@@ -33,27 +33,6 @@ function Hud.SetFocus(self, newFocus)
 	gui.SetFocus(newFocus)
 end
 
-function Hud.CreateShapesLayer(self)
-	if dmhub.isDM then
-		return gui.Panel{
-			interactable = false,
-			bgcolor = "white",
-			bgimage = "#Shapes",
-			width = "100%",
-			height = "100%",
-			--tabletop view: the live map window shows the shapes cropped to
-			--itself (#ShapesView, Tabletop.lua); full-screen they would spill
-			--onto the table.
-			thinkTime = 0.2,
-			think = function(element)
-				element.selfStyle.opacity = cond(dmhub.tabletopMode, 0, 1)
-			end,
-		}
-	else
-		return nil
-	end
-end
-
 local g_screenArea = core.Vector4(0,0,0,0)
 
 --function called by dmhub to see what area of the screen is occupied by the hud.

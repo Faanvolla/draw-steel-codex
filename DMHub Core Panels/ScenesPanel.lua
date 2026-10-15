@@ -834,6 +834,7 @@ local function BuildScenesStyles()
             width = "100%-24",
             height = "auto",
             halign = "center",
+            valign = "top",
             textAlignment = "center",
             vmargin = 16,
         },
@@ -1266,6 +1267,7 @@ local function CreateScenesPanel()
         width = "100%",
         height = "auto",
         flow = "vertical",
+        valign = "top",
     }
 
     local emptyLabel = gui.Label{
@@ -1287,29 +1289,6 @@ local function CreateScenesPanel()
             listPanel:FireEventTree("search", m_search)
         end
     end
-
-    --Turned off, the panel says how to turn the tabletop on: scenes open
-    --on the table.
-    local offNotice = gui.Panel{
-        classes = {"collapsed"},
-        width = "100%",
-        height = "auto",
-        flow = "vertical",
-        gui.Label{
-            classes = {"sceneEmptyText"},
-            text = "Scenes open in windows on the tabletop. Turn on Tabletop View to use them.",
-        },
-        gui.Button{
-            classes = {"sizeM"},
-            width = "auto",
-            halign = "center",
-            bmargin = 12,
-            text = "Turn On Tabletop View",
-            click = function(element)
-                dmhub.SetSettingValue("tabletop:enabled", true)
-            end,
-        },
-    }
 
     local toolbar = gui.Panel{
         flow = "horizontal",
@@ -1370,7 +1349,6 @@ local function CreateScenesPanel()
         width = "100%",
         height = "100%",
         flow = "vertical",
-        offNotice,
         toolbar,
         body,
 
@@ -1383,14 +1361,9 @@ local function CreateScenesPanel()
             Rebuild()
         end,
 
-        --what is on show, and whether the tabletop is on, change without the
-        --library changing.
+        --what is on show changes without the library changing.
         thinkTime = 0.5,
         think = function(element)
-            local active = Tabletop.IsActive()
-            offNotice:SetClass("collapsed", active)
-            toolbar:SetClass("collapsed", not active)
-            body:SetClass("collapsed", not active)
             local presented = Scenes.PresentedId()
             if presented ~= element.data.presented then
                 element.data.presented = presented

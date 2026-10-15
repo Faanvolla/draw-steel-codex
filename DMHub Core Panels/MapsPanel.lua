@@ -123,13 +123,9 @@ local TravelToMap = function(map)
 		if mod.unloaded or not map.valid then
 			return
 		end
-		if Tabletop.IsActive() then
-			--tabletop view: the map opens in a window on the table (the
-			--focused one, or a new one), which travels there.
-			Tabletop.OpenMap(map.id)
-		else
-			map:Travel()
-		end
+		--the map opens in a window on the table (the focused one, or a new
+		--one), which travels there.
+		Tabletop.OpenMap(map.id)
 	end)
 
 	--if the travel never lands, put the highlight back on the current map.
@@ -928,9 +924,9 @@ local CreateMapNode = function(map)
 				return
 			end
 
-			--in the tabletop view the current map still needs a click when
-			--its window is closed (or to bring that window forward).
-			if (not map.valid) or (map.id == SelectedMapId() and not Tabletop.IsActive()) then
+			--the current map still takes a click: its window may be closed,
+			--or need bringing forward.
+			if not map.valid then
 				return
 			end
 
@@ -1268,12 +1264,10 @@ GetPlayerAccessibleMaps = function()
 		end
 	end
 
-	--in the tabletop view, maps the Director has shared to the players' tables.
-	if Tabletop.IsActive() then
-		for _,m in ipairs(game.maps) do
-			if m.valid and result[m.id] == nil and Tabletop.CanAccessMap(m.id) then
-				result[m.id] = true
-			end
+	--maps the Director has shared to the players' tables.
+	for _,m in ipairs(game.maps) do
+		if m.valid and result[m.id] == nil and Tabletop.CanAccessMap(m.id) then
+			result[m.id] = true
 		end
 	end
 
@@ -1282,8 +1276,8 @@ end
 
 --Read-only map row shown to players. Unlike CreateMapNode it has no rename,
 --reorder drag, delete/duplicate context menu or cover-art editor -- clicking
---the row simply travels to the map. In the tabletop view it can be dragged
---onto the table to open the map in a window there.
+--the row simply opens the map. It can be dragged onto the table to open the
+--map in a window there.
 local CreatePlayerMapNode = function(map)
 	local resultPanel
 
@@ -1308,8 +1302,8 @@ local CreatePlayerMapNode = function(map)
 		idprefix = "player-map-panel",
 		classes = {"mapRow"},
 
-		--only the tabletop view takes a drag: onto the table, as a window.
-		draggable = Tabletop.IsActive(),
+		--a drag goes onto the table, as a window.
+		draggable = true,
 		canDragOnto = function(element, target)
 			return false
 		end,
@@ -1329,7 +1323,6 @@ local CreatePlayerMapNode = function(map)
 
 		refreshMaps = function(element)
 			element:SetClass("selected", map.valid and map.id == SelectedMapId())
-			element.draggable = Tabletop.IsActive()
 		end,
 
 		search = function(element, text)
@@ -1350,12 +1343,11 @@ local CreatePlayerMapNode = function(map)
 				element.popup = nil
 				return
 			end
-			if map.valid and (map.id ~= SelectedMapId() or Tabletop.IsActive()) then
+			if map.valid then
 				TravelToMap(map)
 			end
 		end,
 
-		--only the tabletop view has anything to offer here.
 		rightClick = function(element)
 			local entries = {}
 			for _,entry in ipairs(Tabletop.MapContextMenuEntries(map.id)) do

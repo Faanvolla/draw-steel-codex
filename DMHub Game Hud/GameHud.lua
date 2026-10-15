@@ -1587,10 +1587,10 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
                     end
 
                     --A dialog presented for one map (the "Draw Steel" banner) opens
-                    --over that map. In the tabletop view that is inside its map
-                    --window; with no window showing the map, wait for one.
+                    --over that map, inside its map window; with no window
+                    --showing the map, wait for one.
                     local mapHost = nil
-                    if data.dialog.args.mapid ~= nil and Tabletop.IsActive() then
+                    if data.dialog.args.mapid ~= nil then
                         mapHost = Tabletop.MapOverlayHost()
                         if mapHost == nil then
                             return
@@ -1759,10 +1759,13 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 			Tabletop.CreateLayer(),
 
             gamehud:CreateAdventureDocumentsManager(),
-			--initiative is per map: in the tabletop view the bar moves into the
-			--live map window (Tabletop.MapHudSlot).
+			--initiative is per map: the bar moves into the live map window
+			--(Tabletop.MapHudSlot). The Director's Shapes overlay is drawn in
+			--that window too (#ShapesView), not over the whole screen.
 		    Tabletop.MapHudSlot(gamehud:CreateInitiativeBar(tokenInfo)),
-			gamehud:CreateShapesLayer(),
+			--the Director's pre-combat bar for an encounter in prep, in the
+			--initiative bar's place until Draw Steel (EncounterPrep.lua).
+		    Tabletop.MapHudSlot(gamehud:CreateEncounterPrepBar()),
 
 			gamehud:RequireRollListenerPanel(),
 			FullscreenDisplay.Create{belowui = true},
@@ -1828,6 +1831,9 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 			FullscreenDisplay.Create{belowui = false},
 			--a maximized tabletop scene on show over the UI (Tabletop.lua).
 			Tabletop.CreateTopLayer(),
+			--a maximized map or scene window's strip under the app title bar:
+			--chrome, so it is over everything the windows can be under.
+			Tabletop.CreateChromeLayer(),
 
 			DramaticBanner.Create(),
 

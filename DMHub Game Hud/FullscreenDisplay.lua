@@ -323,9 +323,10 @@ function FullscreenDisplay.Create(options)
     }
 end
 
---The Director's control in the title bar: Hide / Players / All and Below UI.
---It controls the scene in a maximized tabletop scene window when there is
---one (Players / All only), else whatever is on show; with neither it is not there.
+--The Director's control in the title bar: Hide / Players / All and Below UI,
+--for whatever is on show. A maximized tabletop scene window has its own
+--(Players / All) in its strip under the title bar (Tabletop.lua), so while
+--there is one the bar shows none.
 local function WriteDisplay(description, fn)
     local doc = mod:GetDocumentSnapshot(FullscreenDisplay.docid)
     doc:BeginChange()
@@ -337,22 +338,15 @@ function FullscreenDisplay.UpdatePresentationBar()
     local data = mod:GetDocumentSnapshot(FullscreenDisplay.docid).data or {}
     local scenes = rawget(_G, "Scenes")
 
-    local sceneid = nil
-    if dmhub.isDM and scenes ~= nil then
-        sceneid = Tabletop.MaximizedSceneId()
-    end
-
     local value = nil
-    if sceneid ~= nil then
-        value = scenes.ShowState(sceneid)
-    elseif dmhub.isDM and data.show then
+    if dmhub.isDM and data.show and Tabletop.MaximizedSceneId() == nil then
         value = data.show
     end
 
     local belowui = data.belowui == true
     local signature = nil
     if value ~= nil then
-        signature = string.format("%s|%s|%s", tostring(sceneid), tostring(value), tostring(belowui))
+        signature = string.format("%s|%s", tostring(value), tostring(belowui))
     end
     if signature == g_presentationSignature then
         return
@@ -364,25 +358,16 @@ function FullscreenDisplay.UpdatePresentationBar()
         return
     end
 
-    --a maximized scene window has no Hide: closing the window hides it.
-    local options = {
-        {id = true, text = "Players"},
-        {id = "all", text = "All"},
-    }
-    if sceneid == nil then
-        table.insert(options, 1, {id = false, text = "Hide"})
-    end
-
     TopBar.SetPresentationInfo{
         id = PRESENTATION_ID,
         text = "Show Scene",
         value = value,
-        options = options,
+        options = {
+            {id = false, text = "Hide"},
+            {id = true, text = "Players"},
+            {id = "all", text = "All"},
+        },
         onchange = function(newValue)
-            if sceneid ~= nil then
-                scenes.Present(sceneid, newValue)
-                return
-            end
             local current = mod:GetDocumentSnapshot(FullscreenDisplay.docid).data
             if scenes ~= nil and type(current.sceneid) == "string" then
                 --a library scene: its sound cue follows it.
