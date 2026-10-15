@@ -1610,6 +1610,10 @@ function dmhub.GenerateGuid() end
 --- @return boolean
 function dmhub.PlayScreenEffect(effectId, duration) end
 
+--- Shows a rectangle of the map as it is, with everything around it desaturated and dimmed, on this machine only (cosmetic, not networked). x1/y1/x2/y2 are tile coordinates with x2/y2 exclusive, the convention of a map's dimensions. mapid limits it to that map: it shows only while that map is current, and comes back when it is current again. saturation (default 0) and brightness (default 0.6) are what the area outside the rectangle is drawn with. Affects the map image only, not the HUD or the gizmos drawn over the map. Calling again replaces the region; pass nil to clear it. The encounter builder uses this to show an encounter's region.
+--- @param args nil|{x1: number, y1: number, x2: number, y2: number, mapid: nil|string, saturation: nil|number, brightness: nil|number}
+function dmhub.SetMapFocusRegion(args) end
+
 --- Make the screen shake on this machine.
 --- @param duration? any
 --- @param strength? any

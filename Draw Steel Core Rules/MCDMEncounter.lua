@@ -83,6 +83,12 @@ Encounter.tableName = 'encounters'
 --none is chosen. Set in the encounter builder; a record, nothing enforces it.
 Encounter.mapid = ''
 
+--A Map Library (map pack) map the encounter is set on, as
+--"pack|<pack>|<map id>|<name>" (CustomDocument.LibraryMapValue), or "".
+--Shipped encounters use it: their mapid and staging name the pack map's id,
+--which a game only has once the map is added (Encounter.ResolveMapRef).
+Encounter.mapRef = ''
+
 Encounter.monsters = {}
 
 Encounter.groups = {}
@@ -3547,6 +3553,464 @@ function Encounter.ClearReadiedEncounter()
     g_readiedEncounter = nil
 end
 
+-- ===========================================================================
+-- Encounter region and hero start zone
+-- ===========================================================================
+--
+-- Both are drawn in the encounter builder (EncounterPanel.lua) on the
+-- encounter's map.
+--
+-- region: the rectangle of the map the encounter takes place in, in tile
+-- coordinates, corners inclusive: { x1, y1, x2, y2 }. Unset = the entire
+-- map. When combat starts on it the map's bounds shrink to the region, and
+-- they grow back when combat ends. The original bounds are kept in a shared
+-- document, not in memory, so a crash or a combat ended from anywhere (the
+-- victory screen, End Combat, a respite) still restores them.
+--
+-- heroStartLocs: the tiles heroes may start on, { {x, y, floor = floorid} }.
+-- Unset or empty = no start zone. Once the encounter is placed on the map,
+-- every client shows the zone and players' tokens can only move inside it,
+-- until combat starts.
+
+--- @alias EncounterRegion {x1: number, y1: number, x2: number, y2: number}
+--- @alias EncounterStartLoc {x: number, y: number, floor: string}
+
+--- @return EncounterRegion|nil
+function Encounter:GetRegion()
+    local region = self:try_get("region")
+    if type(region) ~= "table" or region.x1 == nil then
+        return nil
+    end
+    return region
+end
+
+--- @param region EncounterRegion|nil nil = the entire map.
+function Encounter:SetRegion(region)
+    self.region = region
+end
+
+--- @return EncounterStartLoc[]
+function Encounter:GetHeroStartLocs()
+    local locs = self:try_get("heroStartLocs")
+    if type(locs) ~= "table" then
+        return {}
+    end
+    return locs
+end
+
+--- @param locs EncounterStartLoc[]|nil nil or empty = no start zone.
+function Encounter:SetHeroStartLocs(locs)
+    if locs ~= nil and #locs == 0 then
+        locs = nil
+    end
+    self.heroStartLocs = locs
+end
+
+--- @alias EncounterMapRef {pack: string, mapid: string, name: string}
+
+--The Map Library map the encounter is set on (see Encounter.mapRef), or nil.
+--- @return EncounterMapRef|nil
+function Encounter:GetMapRef()
+    local value = self:try_get("mapRef")
+    if type(value) ~= "string" or value == "" or rawget(_G, "CustomDocument") == nil then
+        return nil
+    end
+    return CustomDocument.ParseLibraryMap(value)
+end
+
+--The map in this game that a library map ref names, or nil if it has not
+--been added. Found by where the map came from (packSource), so a second
+--copy, which gets fresh ids, is found too; the copy keeping the pack's id wins.
+--- @param ref EncounterMapRef
+--- @return MapManifestLua|nil
+function Encounter.FindLibraryMap(ref)
+    local found = nil
+    for _, map in ipairs(game.maps) do
+        local source = map.packSource
+        if map.valid and source ~= nil and source.pack == ref.pack and source.mapid == ref.mapid then
+            if map.id == ref.mapid then
+                return map
+            end
+            found = found or map
+        end
+    end
+    return found
+end
+
+--Where a shipped encounter comes from, for grouping it in the Encounters
+--list, or nil for one made in this game. Shipped delve encounters carry
+--{source = "Draw Steel: Encounters", delve = "Aixco Hollow", level = 1, area = "A1", page = 11}.
+--- @alias EncounterBookInfo {source: string, delve: string, level: number, area: string, page: number|nil}
+--- @return EncounterBookInfo|nil
+function Encounter:GetBookInfo()
+    local book = self:try_get("book")
+    if type(book) ~= "table" or type(book.delve) ~= "string" then
+        return nil
+    end
+    return book
+end
+
+--The start tiles that lie on the current map's floors, as placeable locs.
+--Tiles on a floor the map no longer has are skipped.
+--- @param startLocs EncounterStartLoc[]
+--- @return Loc[]
+function Encounter.StartLocsOnCurrentMap(startLocs)
+    local floorIndexById = {}
+    local map = game.currentMap
+    if map ~= nil then
+        for _, floor in ipairs(map.floors or {}) do
+            pcall(function()
+                if floor.floorIndex >= 0 then
+                    floorIndexById[floor.floorid] = floor.floorIndex
+                end
+            end)
+        end
+    end
+
+    local result = {}
+    for _, l in ipairs(startLocs or {}) do
+        local floorIndex = floorIndexById[l.floor or ""]
+        if floorIndex ~= nil then
+            result[#result + 1] = core.Loc { x = l.x, y = l.y, floorIndex = floorIndex }
+        end
+    end
+    return result
+end
+
+--{ [mapid] = {x1, y1, x2, y2, appliedAt} }: the bounds a map had before an
+--encounter's region replaced them. x2/y2 inclusive, the way the
+--map.dimensions setter takes them.
+local REGION_BOUNDS_DOC = "encounterRegionBounds"
+
+--{ [mapid] = {locs = EncounterStartLoc[], encounterid, name, at} }: the start
+--zone of the encounter placed on each map, shown until combat starts there.
+local START_ZONE_DOC = "encounterStartZones"
+
+--The map dimensions getter reports x2/y2 one PAST the last tile, while the
+--setter takes the last tile itself, so they are converted here.
+local function ReadMapBounds(map)
+    local dim = map.dimensions
+    return { x1 = dim.x1, y1 = dim.y1, x2 = dim.x2 - 1, y2 = dim.y2 - 1 }
+end
+
+--MarkUndo first, on the same map object: Upload's undo restores the snapshot
+--MarkUndo took, and with none it DELETES the whole map manifest on Ctrl+Z.
+local function WriteMapBounds(map, bounds, description)
+    map:MarkUndo()
+    map.dimensions = { x1 = bounds.x1, y1 = bounds.y1, x2 = bounds.x2, y2 = bounds.y2 }
+    map:Upload(description)
+end
+
+--Combat is starting on the current map with this encounter (called as the
+--initiative queue is created, on the client creating it). Shrinks the map to
+--the encounter's region and takes down its start zone and its prep.
+--- @param encounter Encounter
+function Encounter.OnCombatStarting(encounter)
+    local mapid = game.currentMapId
+    Encounter.ClearStartZone(mapid)
+    Encounter.SetPrep(mapid, nil)
+    Encounter.ApplyRegion(encounter)
+end
+
+--Shrinks the current map to the encounter's region, keeping the original
+--bounds in a shared document so they come back once the encounter is over
+--(see RestoreEndedRegionBounds). Done when prep begins and again, harmlessly,
+--when combat starts.
+--- @param encounter Encounter
+function Encounter.ApplyRegion(encounter)
+    local mapid = game.currentMapId
+    local region = encounter:GetRegion()
+    local map = game.currentMap
+    if region == nil or map == nil then
+        return
+    end
+    if encounter.mapid ~= "" and encounter.mapid ~= mapid then
+        --the region was drawn on another map.
+        return
+    end
+
+    local doc = mod:GetDocumentSnapshot(REGION_BOUNDS_DOC)
+    doc:BeginChange()
+    local saved = doc.data[mapid]
+    if saved == nil then
+        --a map still shrunk from an earlier encounter (its restore has not
+        --run yet) keeps its true original bounds.
+        saved = ReadMapBounds(map)
+        doc.data[mapid] = saved
+    end
+    saved.appliedAt = dmhub.serverTime
+    doc:CompleteChange("Encounter region", { undoable = false })
+
+    WriteMapBounds(map, region, "Encounter region")
+end
+
+--Puts back the bounds of any map whose combat has ended. Polled by the
+--driver below on the host; m_combatSeen keeps a bounds change made the
+--moment the queue was created from being undone before the queue lands.
+local m_combatSeen = {}
+local RESTORE_GRACE_SECONDS = 30
+
+local function RestoreEndedRegionBounds()
+    if not dmhub.isDMOrPlayerHost then
+        return
+    end
+
+    local doc = mod:GetDocumentSnapshot(REGION_BOUNDS_DOC)
+    local ended = {}
+    for mapid, saved in pairs(doc.data) do
+        if type(saved) == "table" then
+            local queue = dmhub.GetMapInitiativeQueue(mapid)
+            local inCombat = queue ~= nil and not queue.hidden
+            if inCombat then
+                m_combatSeen[mapid] = true
+            elseif Encounter.GetPrep(mapid) ~= nil then
+                --still preparing the encounter: the region stays until it
+                --starts (or the prep is cancelled, which clears the record).
+            elseif m_combatSeen[mapid] or dmhub.serverTime - (saved.appliedAt or 0) > RESTORE_GRACE_SECONDS then
+                ended[#ended + 1] = mapid
+            end
+        end
+    end
+
+    if #ended == 0 then
+        return
+    end
+
+    doc:BeginChange()
+    for _, mapid in ipairs(ended) do
+        local saved = doc.data[mapid]
+        local map = game.GetMap(mapid)
+        if map ~= nil and saved ~= nil then
+            WriteMapBounds(map, saved, "Restore map bounds after encounter")
+        end
+        doc.data[mapid] = nil
+        m_combatSeen[mapid] = nil
+    end
+    doc:CompleteChange("Restore map bounds after encounter", { undoable = false })
+end
+
+--Puts a map's bounds back right away (an encounter prep was cancelled), rather
+--than waiting for the restore driver's grace period.
+--- @param mapid string
+function Encounter.RestoreRegionBounds(mapid)
+    local doc = mod:GetDocumentSnapshot(REGION_BOUNDS_DOC)
+    local saved = doc.data[mapid]
+    if type(saved) ~= "table" then
+        return
+    end
+    local map = game.GetMap(mapid)
+    if map ~= nil then
+        WriteMapBounds(map, saved, "Restore map bounds")
+    end
+    doc:BeginChange()
+    doc.data[mapid] = nil
+    doc:CompleteChange("Restore map bounds", { undoable = false })
+    m_combatSeen[mapid] = nil
+end
+
+--The encounter has just been placed on the current map for play: show its
+--start zone (if it has one) until combat starts.
+--- @param encounter Encounter
+function Encounter.ShowStartZone(encounter)
+    local mapid = game.currentMapId
+    local locs = encounter:GetHeroStartLocs()
+    if #locs == 0 then
+        Encounter.ClearStartZone(mapid)
+        return
+    end
+
+    local doc = mod:GetDocumentSnapshot(START_ZONE_DOC)
+    doc:BeginChange()
+    doc.data[mapid] = {
+        locs = DeepCopy(locs),
+        encounterid = encounter:try_get("id"),
+        name = encounter.name,
+        at = dmhub.serverTime,
+    }
+    doc:CompleteChange("Show hero start zone", { undoable = false })
+end
+
+--- @param mapid string
+--- @param encounterid nil|string only clear it if this encounter's zone is showing.
+function Encounter.ClearStartZone(mapid, encounterid)
+    local doc = mod:GetDocumentSnapshot(START_ZONE_DOC)
+    local entry = doc.data[mapid]
+    if entry == nil then
+        return
+    end
+    if encounterid ~= nil and entry.encounterid ~= encounterid then
+        return
+    end
+    doc:BeginChange()
+    doc.data[mapid] = nil
+    doc:CompleteChange("Clear hero start zone", { undoable = false })
+end
+
+-- ===========================================================================
+-- Encounter prep: the pre-combat phase
+-- ===========================================================================
+--
+-- An encounter placed for play (Start Encounter, or dragging it onto the
+-- board) waits on its map in "prep" until the Director presses Draw Steel:
+-- the map is already shrunk to its region, the start zone shows, heroes are
+-- brought in, and monsters re-balance as the hero count changes. The runtime
+-- and the Director's bar live in Draw Steel V/EncounterPrep.lua; the record
+-- lives here, beside the region and start zone it drives, because documents
+-- belong to the mod that opens them.
+
+--- @class EncounterPrepRecord
+--- @field prepid string unique per prep, so clients can tell one prep on a map from the next.
+--- @field encounterid string id in the "encounters" table ("" = not saved there).
+--- @field name string
+--- @field by string userid of the Director who started it; their client balances.
+--- @field startedAt number
+--- @field placementids table<string, string> "g<group index>" -> the group's placement id for this play.
+--- @field removed table<string, table<string, number>> placement id -> monsterid -> monsters the Director deleted by hand.
+--- @field added table<string, boolean> charids of monsters the Director added by hand.
+--- @field excluded table<string, boolean> hero charids left out of the fight.
+--- @field heroOverride nil|number the hero count to balance for instead of the heroes on the map.
+
+local PREP_DOC = "encounterPrep"
+
+--- @param mapid string|nil
+--- @return EncounterPrepRecord|nil
+function Encounter.GetPrep(mapid)
+    if mapid == nil then
+        return nil
+    end
+    local entry = mod:GetDocumentSnapshot(PREP_DOC).data[mapid]
+    if type(entry) ~= "table" then
+        return nil
+    end
+    return entry
+end
+
+--The path to monitor (monitorGame) for any change to any map's prep.
+--- @return string
+function Encounter.PrepDocPath()
+    return mod:GetDocumentPath(PREP_DOC)
+end
+
+--- @param mapid string
+--- @param record EncounterPrepRecord|nil nil ends the prep on that map.
+function Encounter.SetPrep(mapid, record)
+    local doc = mod:GetDocumentSnapshot(PREP_DOC)
+    if record == nil and doc.data[mapid] == nil then
+        return
+    end
+    doc:BeginChange()
+    doc.data[mapid] = record
+    doc:CompleteChange(cond(record == nil, "End encounter prep", "Encounter prep"), { undoable = false })
+end
+
+--Changes a map's prep record in place: fn(record) mutates it. Does nothing
+--when the map has no prep.
+--- @param mapid string
+--- @param description string
+--- @param fn fun(record: EncounterPrepRecord)
+function Encounter.ModifyPrep(mapid, description, fn)
+    local doc = mod:GetDocumentSnapshot(PREP_DOC)
+    local record = doc.data[mapid]
+    if type(record) ~= "table" then
+        return
+    end
+    doc:BeginChange()
+    fn(doc.data[mapid])
+    doc:CompleteChange(description, { undoable = false })
+end
+
+--This client's view of the current map's start zone: the outline everyone
+--sees, and on players' clients the movement confinement. The Director is
+--never confined: the restriction applies to every token on a client, and the
+--Director has monsters to place.
+local START_ZONE_COLOR = "#79d2a0"
+local m_startZone = {
+    key = nil,
+    marker = nil,
+    restricted = false,
+}
+
+local function ClearStartZoneView()
+    if m_startZone.marker ~= nil then
+        pcall(function() m_startZone.marker:Destroy() end)
+        m_startZone.marker = nil
+    end
+    if m_startZone.restricted then
+        m_startZone.restricted = false
+        pcall(function() dmhub.ClearMovementRestriction() end)
+    end
+    m_startZone.key = nil
+end
+
+local function UpdateStartZoneView()
+    local mapid = game.currentMapId
+    if mapid == nil then
+        ClearStartZoneView()
+        return
+    end
+    local entry = mod:GetDocumentSnapshot(START_ZONE_DOC).data[mapid]
+
+    local queue = dmhub.initiativeQueue
+    local inCombat = queue ~= nil and not queue.hidden
+    if entry ~= nil and inCombat then
+        --combat started without passing through OnCombatStarting.
+        if dmhub.isDMOrPlayerHost then
+            Encounter.ClearStartZone(mapid)
+        end
+        entry = nil
+    end
+
+    if entry == nil or type(entry.locs) ~= "table" or #entry.locs == 0 then
+        ClearStartZoneView()
+        return
+    end
+
+    --rebuilt only when the zone, the map or the floor list changes.
+    local floorCount = 0
+    pcall(function() floorCount = #game.currentMap.floors end)
+    local key = string.format("%s|%s|%s|%d|%s", mapid, tostring(entry.encounterid), tostring(entry.at), floorCount, tostring(dmhub.isDM))
+    if key == m_startZone.key then
+        return
+    end
+
+    ClearStartZoneView()
+    m_startZone.key = key
+
+    local locs = Encounter.StartLocsOnCurrentMap(entry.locs)
+    if #locs == 0 then
+        return
+    end
+
+    m_startZone.marker = dmhub.MarkLocs {
+        locs = locs,
+        color = START_ZONE_COLOR,
+        style = "dashed",
+    }
+
+    if not dmhub.isDM then
+        m_startZone.restricted = true
+        pcall(function() dmhub.SetMovementRestriction { locs = locs } end)
+    end
+end
+
+--The per-client driver: a cheap poll that self-heals across reloads, map
+--changes and combats ended from anywhere.
+dmhub.Coroutine(function()
+    while true do
+        coroutine.yield(0.5)
+        if mod.unloaded then
+            ClearStartZoneView()
+            return
+        end
+        pcall(function()
+            if game.currentMap ~= nil then
+                pcall(UpdateStartZoneView)
+                pcall(RestoreEndedRegionBounds)
+            end
+        end)
+    end
+end)
+
 -- The engine's own click-to-place is armed through GUI focus, not through a
 -- mode flag: dmhub.GetSelectedEncounter reads gui.GetFocus().data.encounter,
 -- so while a panel carrying an encounter holds focus the map draws a ghost of
@@ -4704,6 +5168,10 @@ EncounterScript.starterTemplate = [==[
 --   ctx.round      current round number
 --   ctx.queue      the initiative queue
 --   ctx.encounter  the LiveEncounter
+-- onPrepare runs once when the encounter is placed for play and waits for
+-- Draw Steel (its pre-combat prep), on the Director's client that placed it:
+-- ctx.queue is nil, ctx.round is 0 and ctx.state is not kept.
+--
 -- ctx methods (call with ':'):
 --   ctx:Announce(text)      send a chat message
 --   ctx:DeployWave(waveid)  deploy one of the encounter's reinforcement waves
@@ -4738,6 +5206,9 @@ return {
     --     text = function(ctx) return "The Caravan is Destroyed" end,
     --     check = function(ctx) return ctx.state.caravanDestroyed == true end,
     -- },
+
+    onPrepare = function(ctx)
+    end,
 
     onStart = function(ctx)
     end,
@@ -4910,7 +5381,7 @@ local function NormalizeDefinition(def)
         norm.defeat = { check = def.defeat.check, text = text }
     end
 
-    for _, handler in ipairs({ "onStart", "onRound", "think", "onEnd" }) do
+    for _, handler in ipairs({ "onPrepare", "onStart", "onRound", "think", "onEnd" }) do
         local fn = def[handler]
         if fn ~= nil and type(fn) ~= "function" then
             return nil, handler .. " must be a function"
@@ -4987,7 +5458,7 @@ function EncounterScript.DescribeDefinition(def)
         parts[#parts + 1] = "custom defeat condition"
     end
     local handlers = {}
-    for _, handler in ipairs({ "onStart", "onRound", "think", "onEnd" }) do
+    for _, handler in ipairs({ "onPrepare", "onStart", "onRound", "think", "onEnd" }) do
         if def[handler] ~= nil then
             handlers[#handlers + 1] = handler
         end
@@ -5568,6 +6039,56 @@ local function ResolveLiveConditionText(cond, ctx)
         end
     end
     return nil
+end
+
+--Loads an encounter's scripts as it goes into prep: compiles each one, and
+--when runHandlers is set fires its onPrepare once. Returns a summary per
+--script for the prep bar: { name, error, victoryText, defeatText }.
+--- @param encounter Encounter
+--- @param runHandlers boolean
+--- @return {name: string, error: nil|string, victoryText: nil|string, defeatText: nil|string}[]
+function EncounterScript.PrepareEncounter(encounter, runHandlers)
+    local result = {}
+    for _, instance in ipairs(encounter:try_get("scripts", {})) do
+        local entry = { name = instance:try_get("name", "Encounter Script") }
+        local def, err = instance:GetDefinition()
+        if def == nil then
+            entry.error = err or "The script did not compile"
+            PrintScriptError(instance, entry.error)
+        else
+            if def.name ~= nil then
+                entry.name = def.name
+            end
+            local ctx = {
+                params = instance:ResolveParams(def),
+                state = {},
+                round = 0,
+                queue = nil,
+                encounter = encounter,
+                isHost = true,
+            }
+            ctx.IsLive = function()
+                return not mod.unloaded and Encounter.GetPrep(game.currentMapId) ~= nil
+            end
+            ctx.Announce = function(_, text)
+                pcall(function() chat.Send(tostring(text)) end)
+            end
+            ctx.Log = function(_, text)
+                print(string.format("EncounterScript '%s': %s", entry.name, tostring(text)))
+            end
+            entry.victoryText = ResolveLiveConditionText(def.victory, ctx) or instance:try_get("victoryText")
+            entry.defeatText = ResolveLiveConditionText(def.defeat, ctx) or instance:try_get("defeatText")
+            if runHandlers and def.onPrepare ~= nil then
+                local ok, fnErr = pcall(def.onPrepare, ctx)
+                if not ok then
+                    entry.error = tostring(fnErr)
+                    PrintScriptError(instance, entry.error)
+                end
+            end
+        end
+        result[#result + 1] = entry
+    end
+    return result
 end
 
 --Run one script instance for one heartbeat. Returns true when its persisted
