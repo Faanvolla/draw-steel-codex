@@ -2769,10 +2769,13 @@ local CARD_MAX_SCALE = 3
 local CARD_GRIP = 18
 local CARD_GRIP_OUT = 8
 --the edge resize grips: CARD_EDGE thick, CARD_EDGE_OUT of it outside the card.
---The top edge's is all inside (CARD_EDGE_TOP), clear of the titlebar.
+--The top grips run along the top of the titlebar, not the card, so the
+--titlebar itself is never a resize spot; its corner grips are the smaller
+--CARD_TOP_GRIP, CARD_TOP_GRIP_OUT of it outside, to stay off its controls.
 local CARD_EDGE = 8
 local CARD_EDGE_OUT = 4
-local CARD_EDGE_TOP = 6
+local CARD_TOP_GRIP = 12
+local CARD_TOP_GRIP_OUT = 8
 
 --The card the Director is dragging: {card, overMap, ghost}. overMap is true
 --while its placement ghost shows on the map, where a drop teleports the
@@ -2901,8 +2904,9 @@ end
 local CloseCard
 
 --Puts a card's resize grip on its edge or corner of the card's current size,
---and stretches an edge grip along the edge between the corner grips. Top
---grips stay inside the card: the titlebar sits just above it.
+--and stretches an edge grip along the edge between the corner grips. The
+--top grips sit on the top of the titlebar (just above the card), and the
+--side grips run up beside the titlebar to meet them.
 local function PlaceGrip(card, grip)
     local w, h = ItemSize(card)
     local s = card.scale or 1
@@ -2911,12 +2915,18 @@ local function PlaceGrip(card, grip)
     local hx = grip.data.hx
     local hy = grip.data.hy
     local inset = CARD_GRIP - CARD_GRIP_OUT
+    local topInset = CARD_TOP_GRIP - CARD_TOP_GRIP_OUT
+    local top = -CARD_TITLE_HEIGHT
     local corner = hx ~= 0 and hy ~= 0
 
     local x, width
     if hx == 0 then
-        x = inset
-        width = math.max(1, W - 2 * inset)
+        local edgeInset = cond(hy < 0, topInset, inset)
+        x = edgeInset
+        width = math.max(1, W - 2 * edgeInset)
+    elseif corner and hy < 0 then
+        x = cond(hx < 0, -CARD_TOP_GRIP_OUT, W - topInset)
+        width = CARD_TOP_GRIP
     elseif corner then
         x = cond(hx < 0, -CARD_GRIP_OUT, W - inset)
         width = CARD_GRIP
@@ -2927,11 +2937,16 @@ local function PlaceGrip(card, grip)
 
     local y, height
     if hy == 0 then
-        y = inset
-        height = math.max(1, H - 2 * inset)
+        y = top + topInset
+        height = math.max(1, H - inset - y)
     elseif hy < 0 then
-        y = 0
-        height = cond(corner, inset, CARD_EDGE_TOP)
+        if corner then
+            y = top - CARD_TOP_GRIP_OUT
+            height = CARD_TOP_GRIP
+        else
+            y = top - CARD_EDGE_OUT
+            height = CARD_EDGE
+        end
     elseif corner then
         y = H - inset
         height = CARD_GRIP
@@ -2991,6 +3006,16 @@ local function CardGrip(card, hx, hy)
     else
         cursor = MirrorDiagonalCursor()
     end
+    --whether a grip is hovered or dragged. The titlebar shows while the card
+    --or a grip is hovered: hover events for the two can come in either order
+    --as the mouse crosses a grip into the card, so each keeps its own flag.
+    local function SetGripHover(on)
+        card.gripHovered = on
+        local titlebar = card.titlebar
+        if titlebar ~= nil and titlebar.valid then
+            titlebar:SetClassTree("shown", on or card.cardHovered == true)
+        end
+    end
     return gui.Panel{
         styles = {
             {
@@ -3012,6 +3037,16 @@ local function CardGrip(card, hx, hy)
             homeX = 0,
             homeY = 0,
         },
+        --a grip swallows the press, so hovering it does not hover the card;
+        --it keeps the card's titlebar shown itself (the top grips sit on it).
+        hover = function(element)
+            SetGripHover(true)
+        end,
+        dehover = function(element)
+            if not element.data.dragging then
+                SetGripHover(false)
+            end
+        end,
         beginDrag = function(element)
             local w, h = ItemSize(card)
             local s = card.scale or 1
@@ -3074,6 +3109,7 @@ local function CardGrip(card, hx, hy)
         drag = function(element)
             element.data.dragging = false
             PlaceGrip(card, element)
+            SetGripHover(false)
             SaveSoon()
         end,
     }
@@ -3238,6 +3274,7 @@ local function BuildCard(card)
     }
     titlebar:SetClassTree("tabletopCardChrome", true)
 
+    card.titlebar = titlebar
     card.grips = CardGrips(card)
 
     local children = {card.scaler, titlebar}
@@ -3268,11 +3305,14 @@ local function BuildCard(card)
         },
         --click-to-front from a press anywhere on it (engine walk).
         raiseOnPress = true,
+        --a hovered grip keeps the titlebar up too (see CardGrip).
         hover = function(element)
+            card.cardHovered = true
             titlebar:SetClassTree("shown", true)
         end,
         dehover = function(element)
-            titlebar:SetClassTree("shown", false)
+            card.cardHovered = false
+            titlebar:SetClassTree("shown", card.gripHovered == true)
         end,
         beginDrag = function(element)
             if dmhub.isDM then
@@ -4244,6 +4284,7 @@ do
         }
         titlebar:SetClassTree("tabletopCardChrome", true)
 
+        item.titlebar = titlebar
         item.grips = CardGrips(item)
 
         local children = {item.scaler, titlebar}
@@ -4272,12 +4313,14 @@ do
             swallowPress = true,
             hoverCursor = "hand",
             hover = function(element)
+                item.cardHovered = true
                 titlebar:SetClassTree("shown", true)
                 face:SetClass("lit", true)
                 CustomDocument.ShowJournalPreview(element, item.entryid)
             end,
             dehover = function(element)
-                titlebar:SetClassTree("shown", false)
+                item.cardHovered = false
+                titlebar:SetClassTree("shown", item.gripHovered == true)
                 face:SetClass("lit", false)
             end,
             click = function(element)
