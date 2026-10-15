@@ -35,6 +35,10 @@ function MapManifestLua:Delete() end
 --- @return string
 function MapManifestLua:FitDimensionsToMapImages(expandOnly) end
 
+--- Capture this map's thumbnail now, upload it and store it on the map (thumbnailImage). Only the current map can be captured, and only by the Director. The screen freezes for a moment while the map is rendered. Asynchronous: complete(assetid) when the thumbnail is stored, error(message) if it could not be made.
+--- @param options {complete: (fun(assetid: string): nil)|nil, error: (fun(message: string): nil)|nil}|nil
+function MapManifestLua:CaptureThumbnail(options) end
+
 --- Counts the building operations across all of this map's floors (every terrain layer) that draw with the given wall asset id. Erase operations do not count. The Map Markup panel uses this to tell whether removing a wall type from its palette orphans the asset. Probe inside pcall: older engine builds lack this method.
 --- @param wallid string
 --- @return number
@@ -74,7 +78,3 @@ function MapManifestLua:Travel() end
 
 --- Start syncing this map in the background so a later Travel() to it skips the loading screen. Cheap to call repeatedly (e.g. on hover). Does nothing in Firebase-backed games or the lobby.
 function MapManifestLua:Prefetch() end
-
---- Capture this map's thumbnail now, upload it and store it on the map (thumbnailImage). Only the current map can be captured, and only by the Director. The screen freezes for a moment while the map is rendered. Asynchronous: complete(assetid) when the thumbnail is stored, error(message) if it could not be made.
---- @param options {complete: (fun(assetid: string): nil)|nil, error: (fun(message: string): nil)|nil}|nil
-function MapManifestLua:CaptureThumbnail(options) end
