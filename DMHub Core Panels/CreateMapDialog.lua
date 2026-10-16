@@ -51,6 +51,16 @@ end
 --then the game.GetOtherGameMapPreview result (or {failed = true}).
 local s_otherGamePreviews = {}
 
+--the sidebar section the dialog last showed, so the next open this session
+--returns to it (transient: every app start opens on All Maps). One of
+--"empty", "import", "othergames", or "library|<kind>|<packid or blank>".
+local g_lastSectionSetting = setting{
+    id = "createmap:lastsection",
+    description = "Create Map Dialog Section",
+    storage = "transient",
+    default = "library|all|",
+}
+
 --options (optional): { created = function(mapid) } is called once the map
 --the dialog makes exists in the game, before travelling to it. Every way of
 --making a map calls it: blank, import, map library, another game.
@@ -2123,6 +2133,19 @@ mod.shared.ShowCreateMapDialog = function(options)
         --the rows arrive after the dialog opened; when the library view
         --is already showing, light the row for the active filter.
         if m_mainMode == "library" then
+            --a filter remembered from an earlier open may name a pack that
+            --is gone, or Your Maps for an account no longer pledged: then
+            --show All Maps instead (every caller refreshes the grid next).
+            local matched = false
+            for _, row in ipairs(rows) do
+                if row.data.pack == m_packFilter and row.data.kind == m_packKind then
+                    matched = true
+                end
+            end
+            if not matched then
+                m_packFilter = nil
+                m_packKind = "all"
+            end
             for _, row in ipairs(rows) do
                 row:SetClass("selected", row.data.pack == m_packFilter and row.data.kind == m_packKind)
             end
@@ -2835,10 +2858,36 @@ mod.shared.ShowCreateMapDialog = function(options)
                 row:SetClass("selected", false)
             end
         end
+        if mode == "library" then
+            g_lastSectionSetting:Set(string.format("library|%s|%s", m_packKind, m_packFilter or ""))
+        else
+            g_lastSectionSetting:Set(mode)
+        end
     end
-    --open on the library with All Maps active (m_packFilter starts nil);
-    --the filter rows light themselves in BuildLibraryNav once synced.
-    GoToLibrary()
+
+    --reopen on the section used last this session (All Maps by default).
+    --Library filter rows light themselves in BuildLibraryNav once synced,
+    --which falls back to All Maps if the remembered row no longer exists.
+    local lastSection = g_lastSectionSetting:Get() or ""
+    local restoredSource = false
+    if lastSection == "empty" or lastSection == "import" or lastSection == "othergames" then
+        for _, el in ipairs(sourceNav.children) do
+            if el.data.type == lastSection then
+                el:FireEvent("press")
+                restoredSource = true
+                break
+            end
+        end
+    else
+        local kind, packid = string.match(lastSection, "^library|([^|]*)|(.*)$")
+        if kind ~= nil and kind ~= "" then
+            m_packKind = kind
+            m_packFilter = cond(packid == "", nil, packid)
+        end
+    end
+    if not restoredSource then
+        GoToLibrary()
+    end
 
     local main = gui.Panel{
         width = string.format("100%%-%d", SIDEBAR_WIDTH),
