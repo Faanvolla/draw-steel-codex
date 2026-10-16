@@ -1787,10 +1787,15 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 			--Documents now come first, putting the roll UI above floating windows
 			--while still leaving it below mainDialog / modal / popup / rollDialog,
 			--so modals and the dice dialog continue to win.
+			--the Director's Screen: a band down the right of the table, under
+			--the windows that lie on it (DirectorScreen.lua).
+			DirectorScreen.CreateLayer(),
 			gamehud:CreateDocumentsPanel(),
 			--minimized tabletop map windows float on the table over the
 			--windows and journals (Tabletop.lua).
 			Tabletop.CreateButtonLayer(),
+			--the Director's Screen's tab and drop hint, over the windows.
+			DirectorScreen.CreateTabLayer(),
 			--mode banners (e.g. the encounter builder's staging banner) sit over
 			--every window, so click-to-front on a map window cannot bury them.
 			gamehud:CreateBannerLayer(),

@@ -373,6 +373,21 @@ local UpdateShare
 --Share stores and the player's viewable-map tracking (one table: this file
 --is at Lua's 200-local limit). See the Sharing section.
 local g_sharing = {}
+--The Director's Screen (DirectorScreen.lua) sees the table items through
+--these: each kind of shareable item adds a function(list) that appends a
+--DirectorScreenItem for each of its items (see Tabletop.ScreenItems).
+g_sharing.screenKinds = {}
+--The screen's key for a map or scene window (its button stands for it), or
+--nil for a window this file does not own (rec.railKey).
+g_sharing.ScreenKey = function(rec)
+    if rec.railKey ~= nil then
+        return nil
+    end
+    if rec.sceneid ~= nil then
+        return "scene:" .. rec.id
+    end
+    return "map:" .. rec.id
+end
 local IsShared
 local IsForcedHere
 local ShowPreviewTooltip
@@ -593,6 +608,7 @@ local function Highlight(rec)
     if panel == nil or not panel.valid then
         return
     end
+    DirectorScreen.Reveal(g_sharing.ScreenKey(rec))
     panel:SetClass("tabletopHighlight", true)
     dmhub.Schedule(1.2, function()
         if panel.valid then
@@ -1755,6 +1771,11 @@ local function BuildWindow(rec)
         bgimage = "panels/square.png",
         swallowPress = true,
         draggable = true,
+        dragging = function(element)
+            if not rec.maximized then
+                DirectorScreen.ItemDragging(g_sharing.ScreenKey(rec), element.xdrag, rec.width)
+            end
+        end,
         drag = function(element)
             if rec.maximized then
                 return
@@ -1763,6 +1784,9 @@ local function BuildWindow(rec)
             element.x = rec.x
             element.y = rec.y
             SaveSoon()
+            --onto the Director's Screen it is the Director's alone; off it,
+            --the players get it (DirectorScreen.lua).
+            DirectorScreen.ItemDropped(g_sharing.ScreenKey(rec))
         end,
         click = function(element)
             if ClicksGuarded() then
@@ -1884,6 +1908,8 @@ function Tabletop.ApplyCollapsed(rec)
         return
     end
     local collapsed = rec.minimized == true or (not rec.maximized and g_chrome.MaximizedMap() ~= nil)
+    --on the Director's Screen while it is closed.
+    collapsed = collapsed or (not rec.maximized and DirectorScreen.IsStowed(g_sharing.ScreenKey(rec)))
     if panel:HasClass("collapsed") ~= collapsed then
         panel:SetClass("collapsed", collapsed)
     end
@@ -2082,12 +2108,14 @@ local function UpdateTableButton(rec)
         dragging = function(element, target)
             IconRailDocDragging(target)
             ChatItemLinks.Dragging(function() return ops.chatItems(rec) end)
+            DirectorScreen.ItemDragging(g_sharing.ScreenKey(rec), element.xdrag, BUTTON_SIZE * scale)
         end,
         drag = function(element, target)
             IconRailDocDragging(nil)
             --dropped on the chat: a link to the map or scene, and the button
             --stays put.
             if ChatItemLinks.Dropped() then
+                DirectorScreen.ItemDropped(nil)
                 return
             end
             if target ~= nil and target.valid and (target:HasClass("iconRail") or target:HasClass("iconRailButton")) then
@@ -2104,6 +2132,8 @@ local function UpdateTableButton(rec)
             element.x = rec.iconX
             element.y = rec.iconY
             SaveSoon()
+            --the button stands for its window on the Director's Screen too.
+            DirectorScreen.ItemDropped(g_sharing.ScreenKey(rec))
         end,
         click = function(element)
             if ClicksGuarded() then
@@ -2744,6 +2774,8 @@ Focus = function(rec, fromPress)
     if not IsOpen(rec) then
         return
     end
+    --hidden on the closed Director's Screen: the screen opens to show it.
+    DirectorScreen.Reveal(g_sharing.ScreenKey(rec))
     if rec.minimized then
         RestoreWindow(rec)
         return
@@ -3607,6 +3639,83 @@ UpdateShare = function(share)
     share.button:SetClass("tabletopShared", state == "all")
     share.half:SetClass("collapsed", state ~= "some")
     share.frame:SetClass("collapsed", state == nil)
+end
+
+--The Director's Screen's view of a map or scene window: the window, or its
+--button on the table while minimized. store and share are its share store
+--and share control; apply re-applies its hidden state.
+g_sharing.ScreenWindowItem = function(rec, store, share, apply)
+    local rect = nil
+    local size = BUTTON_SIZE * ButtonScale()
+    if rec.minimized then
+        if not IsDocked(rec) then
+            rect = {x = rec.iconX or 0, y = rec.iconY or 0, w = size, h = size}
+        end
+    elseif not rec.maximized then
+        rect = {x = rec.x, y = rec.y, w = rec.width, h = rec.height}
+    end
+    return {
+        key = g_sharing.ScreenKey(rec),
+        rect = rect,
+        move = function(x)
+            if rec.minimized then
+                local w = LayerSize()
+                rec.iconX = math.max(0, math.min(x, w - size))
+                if rec.button ~= nil and rec.button.valid then
+                    rec.button.x = rec.iconX
+                end
+            elseif not rec.maximized then
+                rec.x, rec.y = ClampWindow(rec, x, rec.y)
+                if rec.panel ~= nil and rec.panel.valid then
+                    rec.panel.x = rec.x
+                    rec.panel.y = rec.y
+                end
+            end
+            SaveSoon()
+        end,
+        store = store,
+        changed = function()
+            UpdateShare(share)
+            if share ~= nil and share.changed ~= nil then
+                share.changed()
+            end
+        end,
+        stow = function(stowed)
+            apply(rec)
+            local button = rec.button
+            if button ~= nil and button.valid and button:HasClass("collapsed") ~= stowed then
+                button:SetClass("collapsed", stowed)
+            end
+        end,
+    }
+end
+
+g_sharing.screenKinds[#g_sharing.screenKinds+1] = function(list)
+    for _, rec in ipairs(g_windows) do
+        list[#list+1] = g_sharing.ScreenWindowItem(rec, g_sharing.MapStore(rec.mapid), rec.share, Tabletop.ApplyCollapsed)
+    end
+end
+
+--- The table items the Director's Screen works on (DirectorScreen.lua):
+--- map and scene windows, NPC cards and journal items.
+--- @return DirectorScreenItem[]
+function Tabletop.ScreenItems()
+    local list = {}
+    for _, kind in ipairs(g_sharing.screenKinds) do
+        kind(list)
+    end
+    return list
+end
+
+--- Saves the table layout soon (the Director's Screen is saved with it).
+function Tabletop.SaveLayoutSoon()
+    SaveSoon()
+end
+
+g_layoutWriters[#g_layoutWriters+1] = function(out)
+    if dmhub.isDM then
+        out.directorScreen = DirectorScreen.Save()
+    end
 end
 
 --The Director maximizing (or restoring) a map forces it maximized (or
@@ -4515,6 +4624,13 @@ local function BuildCard(card)
             if g_cardDrag == nil or g_cardDrag.card ~= card then
                 return
             end
+            if dmhub.tabletopDragSurface == "map" then
+                --going onto a map, not the table: no Director's Screen hint.
+                DirectorScreen.ItemDragging(nil, 0, 0)
+            else
+                local cw = CardSize()
+                DirectorScreen.ItemDragging(CardItemId(card.charid), element.xdrag, cw * (card.scale or 1))
+            end
             dmhub.SetDraggingMonster()
             local overMap = dmhub.tabletopDragSurface == "map"
             if overMap ~= g_cardDrag.overMap then
@@ -4552,6 +4668,11 @@ local function BuildCard(card)
             element.y = card.y
             element:SetAsLastSibling()
             SaveSoon()
+            --onto the Director's Screen it is the Director's alone; off it,
+            --the players get it (DirectorScreen.lua).
+            if dmhub.isDM then
+                DirectorScreen.ItemDropped(CardItemId(card.charid))
+            end
         end,
         --the card's portrait, stamina and conditions repaint on this cadence.
         thinkTime = 0.5,
@@ -4659,6 +4780,42 @@ g_layoutWriters[#g_layoutWriters+1] = function(out)
         cards[#cards+1] = {charid = card.charid, x = card.x, y = card.y, scale = card.scale, fromShare = card.fromShare}
     end
     out.cards = cards
+end
+
+--The Director's Screen's view of a card or journal item: store is its
+--share store, and stowing it collapses its panel.
+g_sharing.ScreenCardItem = function(key, card, store)
+    local w, h = ItemSize(card)
+    local s = card.scale or 1
+    return {
+        key = key,
+        rect = {x = card.x, y = card.y, w = w * s, h = h * s},
+        move = function(x)
+            local lw = LayerSize()
+            card.x = math.max(0, math.min(x, lw - 60))
+            if card.panel ~= nil and card.panel.valid then
+                card.panel.x = card.x
+            end
+            SaveSoon()
+        end,
+        store = store,
+        changed = function() end,
+        stow = function(stowed)
+            local panel = card.panel
+            if panel ~= nil and panel.valid and panel:HasClass("collapsed") ~= stowed then
+                panel:SetClass("collapsed", stowed)
+            end
+        end,
+    }
+end
+
+g_sharing.screenKinds[#g_sharing.screenKinds+1] = function(list)
+    for _, card in ipairs(g_cards) do
+        local charid = card.charid
+        list[#list+1] = g_sharing.ScreenCardItem(CardItemId(charid), card, g_sharing.DocStore(CardItemId(charid), function()
+            return {kind = "card", charid = charid}
+        end))
+    end
 end
 
 g_sharing.unshareClosers[#g_sharing.unshareClosers+1] = function(stillShared)
@@ -5135,6 +5292,8 @@ function Tabletop.MapRowDropped(mapid)
             rec.x, rec.y = x, y
             if not rec.minimized then
                 PlaceWindow(rec)
+                --a move onto or off the Director's Screen, as a drag is.
+                DirectorScreen.ItemDropped(g_sharing.ScreenKey(rec))
             end
         end
         --Focus restores a minimized window, growing it out to its new spot.
@@ -6113,6 +6272,8 @@ do
             dragging = function(element, target)
                 IconRailDocDragging(target)
                 ChatItemLinks.Dragging(function() return {ChatItemLinks.DocItem(item.entryid)} end)
+                local iw = ItemSize(item)
+                DirectorScreen.ItemDragging(DocItemId(item.entryid), element.xdrag, iw * (item.scale or 1))
             end,
             drag = function(element, target)
                 IconRailDocDragging(nil)
@@ -6134,6 +6295,9 @@ do
                 element.y = item.y
                 element:SetAsLastSibling()
                 SaveSoon()
+                --onto the Director's Screen it is the Director's alone; off
+                --it, the players get it (DirectorScreen.lua).
+                DirectorScreen.ItemDropped(DocItemId(item.entryid))
             end,
             --renames reach the item, a deleted entry takes it off the table,
             --and the share light follows the shared document.
@@ -6394,6 +6558,15 @@ do
             docs[#docs+1] = {entryid = item.entryid, x = item.x, y = item.y, scale = item.scale, fromShare = item.fromShare}
         end
         out.docs = docs
+    end
+
+    g_sharing.screenKinds[#g_sharing.screenKinds+1] = function(list)
+        for _, item in ipairs(g_docItems) do
+            local entryid = item.entryid
+            list[#list+1] = g_sharing.ScreenCardItem(DocItemId(entryid), item, g_sharing.DocStore(DocItemId(entryid), function()
+                return {kind = "doc", entryid = entryid}
+            end))
+        end
     end
 
     g_sharing.unshareClosers[#g_sharing.unshareClosers+1] = function(stillShared)
@@ -7058,8 +7231,20 @@ local function DefineSceneWindows()
         end
         local growing = rec.restoring ~= nil and dmhub.Time() - rec.restoring < ANIM_SECONDS + 0.5
         local covered = rec.minimized == true or growing or (rec.maximized == true and SceneHiddenHere(rec))
+        --on the Director's Screen while it is closed.
+        covered = covered or (not rec.maximized and DirectorScreen.IsStowed(g_sharing.ScreenKey(rec)))
         if panel:HasClass("collapsed") ~= covered then
             panel:SetClass("collapsed", covered)
+        end
+    end
+
+    g_sharing.screenKinds[#g_sharing.screenKinds+1] = function(list)
+        for _, rec in ipairs(g_sceneWindows) do
+            local sceneid = rec.sceneid
+            local store = g_sharing.DocStore(SceneItemId(sceneid), function()
+                return {kind = "scene", sceneid = sceneid}
+            end)
+            list[#list+1] = g_sharing.ScreenWindowItem(rec, store, rec.share, ApplySceneCollapsed)
         end
     end
 
@@ -7306,6 +7491,11 @@ local function DefineSceneWindows()
             bgimage = "panels/square.png",
             swallowPress = true,
             draggable = true,
+            dragging = function(element)
+                if not rec.maximized then
+                    DirectorScreen.ItemDragging(g_sharing.ScreenKey(rec), element.xdrag, rec.width)
+                end
+            end,
             drag = function(element)
                 if rec.maximized then
                     return
@@ -7314,6 +7504,9 @@ local function DefineSceneWindows()
                 element.x = rec.x
                 element.y = rec.y
                 SaveSoon()
+                --onto the Director's Screen it is the Director's alone; off
+                --it, the players get it (DirectorScreen.lua).
+                DirectorScreen.ItemDropped(g_sharing.ScreenKey(rec))
             end,
             click = function(element)
                 if ClicksGuarded() or rec.maximized then
@@ -8328,6 +8521,7 @@ local function InitForGame()
     LoadDocItems(layout)
     g_tableItems.Load(layout)
     LoadSceneWindows(layout)
+    DirectorScreen.Load(layout ~= nil and layout.directorScreen or nil)
     NoteExistingMapDialog()
     if layout ~= nil and type(layout.windows) == "table" then
         for _,saved in ipairs(layout.windows) do
@@ -8449,6 +8643,7 @@ local function Sync()
     SyncDocItems()
     g_tableItems.Sync()
     SyncSceneWindows()
+    DirectorScreen.Sync()
     g_sharing.PublishDirectorOpen()
     --cheap when nothing moved; catches a scene's show state changing.
     g_chrome.Sync()
