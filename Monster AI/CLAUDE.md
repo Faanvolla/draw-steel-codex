@@ -187,6 +187,17 @@ callback, `ExecuteInvoke` (`DMHub Game Rules/AbilityInvokeAbility.lua`) asks
 `HandlePrompt` whenever `RollsForCreature` holds. A prompt with no registered
 handler still falls through to the Director.
 
+### "AI is running" status for every client
+
+The AI runs only on the hosting machine. So other clients can tell, `MonsterAI.lua`
+publishes `{running, busy, userid}` to the `monsterAIStatus` document whenever it
+changes (polled every 0.2 s): `running` while the AI process runs, `busy` while it
+plays a monster's turn or has an AI activity in progress. Ask
+`MonsterAI.IsAIRunningAnywhere()` / `MonsterAI.IsAIBusyAnywhere()` (or
+`MonsterAI.BusyHere()` for this client only). A status published by a user who has gone
+offline is ignored, and a client clears its own stale status once its AI stops. Turn
+Rewind uses it to lock rewinding while the AI plays (`TURN_REWIND_REFERENCE.md`).
+
 ### Token control
 
 `MonsterAI:BeginTokenControl` / `EndTokenControl` (wrapped by
