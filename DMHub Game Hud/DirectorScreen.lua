@@ -237,7 +237,7 @@ local function Layout(force)
     local w, h = TableSize()
     local edge = Edge()
     local reserve = RailReserve()
-    local signature = string.format("%s|%d|%d|%d|%d", tostring(active), math.floor(w), math.floor(h), edge, math.floor(reserve))
+    local signature = string.format("%s|%d|%d|%d|%d", tostring(active), math.floor(w), math.floor(h), math.floor(edge), math.floor(reserve))
     if signature == g.signature and not force then
         return
     end
