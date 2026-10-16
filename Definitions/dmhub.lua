@@ -1665,6 +1665,10 @@ function dmhub.CenterOnToken(tokenid, args) end
 --- @return boolean
 function dmhub.CenterOnLoc(args) end
 
+--- Zooms and centres the current map's view so a rectangle of the map fills it -- the live tabletop map window, or the screen without one -- on this machine only. x1/y1/x2/y2 are tile coordinates with x2/y2 exclusive (the convention of a map's dimensions); without them, the whole map. margin (default 1.04) is how much bigger than the rectangle the view is. A player can't zoom out past the game's player zoom limit.
+--- @param args nil|{x1: nil|number, y1: nil|number, x2: nil|number, y2: nil|number, margin: nil|number}
+function dmhub.FrameMapArea(args) end
+
 --- Select the token with the given id, clearing selection of other tokens. The token is only selected if the user controls it in their own right (see CharacterToken.canControlAsUser); the selection is cleared regardless.
 --- @param charid? string
 function dmhub.SelectToken(charid) end

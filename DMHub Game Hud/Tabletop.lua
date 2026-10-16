@@ -4878,14 +4878,21 @@ do
 
     --The item's own size, before its scale: a fixed tile for a document; a
     --picture's width with its shape kept (within reason) inside a thin frame.
-    local function DocBaseSize(entry)
+    local function DocBaseSize(entry, entryid)
         local _, aspect = EntryPicture(entry)
+        --a file dropped from the desktop knows its shape before its asset does.
+        local media = TableMedia.Info(entryid)
+        if media ~= nil and media.width > 0 and media.height > 0 then
+            aspect = media.height / media.width
+        end
         if aspect == nil then
             return DOC_TILE_WIDTH, DOC_TILE_HEIGHT
         end
         aspect = math.max(0.4, math.min(1.6, aspect))
-        local inner = DOC_PICTURE_WIDTH - DOC_PICTURE_INSET * 2
-        return DOC_PICTURE_WIDTH, math.floor(inner * aspect) + DOC_PICTURE_INSET * 2
+        --a video is laid out wider, so its play bar fits.
+        local width = TableMedia.BaseWidth(entryid) or DOC_PICTURE_WIDTH
+        local inner = width - DOC_PICTURE_INSET * 2
+        return width, math.floor(inner * aspect) + DOC_PICTURE_INSET * 2
     end
 
     local function DocStyles()
@@ -4948,7 +4955,10 @@ do
 
     --The item's face at its own size: the tile or the picture. The tile's
     --name label takes a refreshDoc event that keeps it current.
-    local function DocFace(entry, w, h)
+    local function DocFace(entry, entryid, w, h)
+        if TableMedia.IsVideo(entryid) then
+            return TableMedia.VideoFace(entryid, w, h)
+        end
         local picture = EntryPicture(entry)
         if picture == nil then
             local icon = gui.Panel{
@@ -5042,13 +5052,15 @@ do
         if layer == nil or entry == nil then
             return
         end
-        local w, h = DocBaseSize(entry)
+        local w, h = DocBaseSize(entry, item.entryid)
         item.baseSize = function()
             return w, h
         end
         item.scale = item.scale or 1
 
-        local face = DocFace(entry, w, h)
+        --a video with its own controls takes clicks; anything else is a picture.
+        local playable = TableMedia.HasControls(item.entryid)
+        local face = DocFace(entry, item.entryid, w, h)
         item.face = face
         item.scaler = gui.Panel{
             halign = "center",
@@ -5056,7 +5068,7 @@ do
             width = w,
             height = h,
             scale = item.scale,
-            interactable = false,
+            interactable = playable,
             face,
         }
 
@@ -5083,6 +5095,47 @@ do
                 cornerRadius = 6,
             }
             controls[#controls+1] = share.button
+        end
+        --a picture or video can become a map or a scene, opened where it lies.
+        if dmhub.isDM and entry.nodeType == "image" then
+            local function Middle()
+                local scale = item.scale or 1
+                return item.x + w * scale / 2, item.y + h * scale / 2
+            end
+            controls[#controls+1] = WindowControl{
+                icon = "phosphor/map-trifold.png",
+                iconSize = 13,
+                width = 26,
+                passPress = true,
+                hover = function(element)
+                    HidePreview()
+                    gui.Tooltip("Make this a map")(element)
+                end,
+                click = function(element)
+                    local mx, my = Middle()
+                    --the picture leaves the table once the map exists, not if the
+                    --wizard is cancelled.
+                    TableMedia.ConvertToMap(item.entryid, mx, my, function()
+                        CloseDocItem(item)
+                    end)
+                end,
+            }
+            controls[#controls+1] = WindowControl{
+                icon = "phosphor/mountains.png",
+                iconSize = 13,
+                width = 26,
+                passPress = true,
+                hover = function(element)
+                    HidePreview()
+                    gui.Tooltip("Make this a scene")(element)
+                end,
+                click = function(element)
+                    local mx, my = Middle()
+                    if TableMedia.ConvertToScene(item.entryid, mx, my) then
+                        CloseDocItem(item)
+                    end
+                end,
+            }
         end
         controls[#controls+1] = WindowControl{
             danger = true,
@@ -5154,7 +5207,10 @@ do
                 item.cardHovered = true
                 titlebar:SetClassTree("shown", true)
                 face:SetClass("lit", true)
-                CustomDocument.ShowJournalPreview(element, item.entryid)
+                --a video is already playing right here: no second copy in a tooltip.
+                if not TableMedia.IsVideo(item.entryid) then
+                    CustomDocument.ShowJournalPreview(element, item.entryid)
+                end
             end,
             dehover = function(element)
                 item.cardHovered = false
@@ -5162,7 +5218,7 @@ do
                 face:SetClass("lit", false)
             end,
             click = function(element)
-                if ClicksGuarded() then
+                if ClicksGuarded() or playable then
                     return
                 end
                 local e = CustomDocument.FindJournalEntry(item.entryid)
@@ -5250,8 +5306,9 @@ do
 
     --Puts a journal entry on this user's table (or brings its item forward).
     --options.screen: the mouse in screen pixels, where a drop centres the
-    --item (moving it if it is already on the table); options.shared marks
-    --an item that arrived from the Director's share.
+    --item (moving it if it is already on the table); options.at: the same in
+    --the table's own units ({x, y}); options.scale: a new item's size;
+    --options.shared marks an item that arrived from the Director's share.
     function Tabletop.OpenDocItem(entryid, options)
         options = options or {}
         local entry = CustomDocument.FindJournalEntry(entryid)
@@ -5259,17 +5316,21 @@ do
             return
         end
         local lw, lh = LayerSize()
-        local bw, bh = DocBaseSize(entry)
+        local bw, bh = DocBaseSize(entry, entryid)
         local item = DocItemById(entryid)
-        local scale = 1
+        local scale = math.max(CARD_MIN_SCALE, math.min(CARD_MAX_SCALE, options.scale or 1))
         if item ~= nil then
             scale = item.scale or 1
         end
         local x, y = nil, nil
+        local at = options.at
         if options.screen ~= nil then
-            local mx, my = ScreenToLayer(options.screen.x, options.screen.y)
-            x = math.floor(mx - bw * scale / 2)
-            y = math.floor(my - bh * scale / 2)
+            local sx, sy = ScreenToLayer(options.screen.x, options.screen.y)
+            at = {x = sx, y = sy}
+        end
+        if at ~= nil then
+            x = math.floor(at.x - bw * scale / 2)
+            y = math.floor(at.y - bh * scale / 2)
         end
         if item == nil then
             item = {
@@ -5392,7 +5453,7 @@ do
         if onTable and drag.preview == nil then
             local layer = DocumentsLayer()
             if layer ~= nil then
-                local w, h = DocBaseSize(entry)
+                local w, h = DocBaseSize(entry, entryid)
                 --at the item's current size when it is already on the table.
                 local existing = DocItemById(entryid)
                 local s = 1
@@ -5407,7 +5468,7 @@ do
                     height = h,
                     scale = s,
                     flow = "none",
-                    DocFace(entry, w, h),
+                    DocFace(entry, entryid, w, h),
                 }
                 layer:AddChild(drag.preview)
                 --it rides under the mouse, so it must not count as a panel
@@ -5423,7 +5484,7 @@ do
                 local mx, my = ScreenToLayer(mouse.x, mouse.y)
                 --scale is about the panel's centre, so it is centred on the
                 --mouse by its unscaled size.
-                local w, h = DocBaseSize(entry)
+                local w, h = DocBaseSize(entry, entryid)
                 preview.x = math.floor(mx - w / 2)
                 preview.y = math.floor(my - h / 2)
                 preview:SetAsLastSibling()
@@ -7174,9 +7235,10 @@ end
 
 ----------------------------------------------------------------------
 --Image and video files dragged in from the desktop onto the bare table
---(Director only). The drop asks whether they are a scene or a map; either
---way the new window opens where they were dropped. Files over a live map
---window never reach the table: the engine places them on the map.
+--(Director only). The drop opens the Add Image / Add Video dialog
+--(TableDropDialog.lua): a map, scenes, or pictures and videos on the table,
+--each opening where they were dropped. Files over a live map window never
+--reach the table: the engine places them on the map.
 
 --The card by the mouse while files are over the table, or nil.
 local g_fileDragGhost = nil
@@ -7203,9 +7265,9 @@ local function BeginTableFileDrag(paths)
     if #media == 0 then
         text = string.format("Put %s on the table to play", FileDrops.Describe(sounds))
     elseif #sounds == 0 then
-        text = string.format("Add %s to the table as a scene or a map", FileDrops.Describe(media))
+        text = string.format("Add %s to the table", FileDrops.Describe(media))
     else
-        text = string.format("Add %s to the table as a scene or a map, and %s to play",
+        text = string.format("Add %s to the table, and %s to play",
             FileDrops.Describe(media), FileDrops.Describe(sounds))
     end
     local ghost
@@ -7215,9 +7277,12 @@ local function BeginTableFileDrag(paths)
     g_fileDragGhost = ghost
 end
 
---Each file becomes a scene (in the Scenes library) opened at (mx, my),
---stepping down-right for each further file.
-local function AddFilesAsScenes(paths, mx, my)
+--- Each file becomes a scene (in the Scenes library) opened at (mx, my) on
+--- the table, stepping down-right for each further file.
+--- @param paths string[]
+--- @param mx number
+--- @param my number
+function Tabletop.AddFilesAsScenes(paths, mx, my)
     for i, path in ipairs(paths) do
         local imageid = FileDrops.UploadImage(path, {library = "coverart"})
         if imageid ~= nil then
@@ -7231,16 +7296,41 @@ local function AddFilesAsScenes(paths, mx, my)
     end
 end
 
---The files become one new map (a floor each) through the import wizard,
---whose window opens at (mx, my) once the map exists.
-local function AddFilesAsMap(paths, mx, my)
+--- The files become one new map (a floor each) through the import wizard,
+--- whose window opens at (mx, my) on the table once the map exists.
+--- options (optional): aspect, the image's width over height -- the window
+--- takes that shape and frames the whole map once it is placed; variations,
+--- more files that become the map's alternate appearances (paths is then
+--- the one base image); name, the map's name (else the first file's);
+--- created(mapid), called once the map exists.
+--- @param paths string[]
+--- @param mx number
+--- @param my number
+--- @param options nil|{aspect: nil|number, variations: nil|string[], name: nil|string, created: nil|fun(mapid: string)}
+function Tabletop.AddFilesAsMap(paths, mx, my, options)
+    options = options or {}
+    local rec = nil
     ImportMapFromFiles(paths, {
-        name = FileDrops.BaseName(paths[1]),
+        name = options.name or FileDrops.BaseName(paths[1]),
+        variations = options.variations,
         created = function(mapid)
             if mod.unloaded or WindowForMap(mapid) ~= nil then
                 return
             end
-            local rec = NewWindowRecord(mapid)
+            rec = NewWindowRecord(mapid)
+            local aspect = options.aspect
+            if aspect ~= nil and aspect > 0 then
+                --the picture's shape under the titlebar, as big as a new
+                --window's usual box allows.
+                local boxW, boxH = rec.width, rec.height - TITLE_HEIGHT
+                local bodyW, bodyH = boxW, boxW / aspect
+                if bodyH > boxH then
+                    bodyH = boxH
+                    bodyW = boxH * aspect
+                end
+                rec.width = math.max(MIN_WIDTH, math.floor(bodyW))
+                rec.height = math.max(MIN_HEIGHT, math.floor(bodyH) + TITLE_HEIGHT)
+            end
             local tw, th = LayerSize()
             rec.x = math.max(0, math.min(math.floor(mx - rec.width / 2), tw - rec.width))
             rec.y = math.max(0, math.min(math.floor(my - rec.height / 2), th - rec.height))
@@ -7248,6 +7338,29 @@ local function AddFilesAsMap(paths, mx, my)
             EnsureBuilt(rec)
             Focus(rec)
             SaveSoon()
+            if options.created ~= nil then
+                options.created(mapid)
+            end
+        end,
+        --a window shaped like its picture shows all of it: zoom to the
+        --whole map once its window is the live one.
+        done = function(mapid)
+            if options.aspect == nil then
+                return
+            end
+            local deadline = dmhub.Time() + 15
+            dmhub.ScheduleWhen(function()
+                return mod.unloaded or dmhub.Time() > deadline
+                    or (rec ~= nil and Tabletop.LiveWindowId() == rec.id and game.currentMapId == mapid)
+            end, function()
+                --a frame for the window's viewport to reach the camera.
+                dmhub.Schedule(0.1, function()
+                    if mod.unloaded or rec == nil or Tabletop.LiveWindowId() ~= rec.id or game.currentMapId ~= mapid then
+                        return
+                    end
+                    dmhub.FrameMapArea()
+                end)
+            end)
         end,
     })
 end
@@ -7279,28 +7392,8 @@ local function TableFilesDropped(allPaths)
     if not dmhub.isDM or #paths == 0 then
         return
     end
-    gui.ModalMessage{
-        title = "Add to the Table",
-        message = string.format("Add %s to the table as a scene, or make a new map from %s?",
-            FileDrops.Describe(paths), cond(#paths == 1, "it", "them")),
-        options = {
-            {
-                text = "Scene",
-                execute = function()
-                    AddFilesAsScenes(paths, mx, my)
-                end,
-            },
-            {
-                text = "Map",
-                execute = function()
-                    AddFilesAsMap(paths, mx, my)
-                end,
-            },
-            {
-                text = "Cancel",
-            },
-        },
-    }
+    --the Add Image / Add Video dialog: map, scene, or a picture on the table.
+    TableDropDialog.Show(paths, mx, my)
 end
 
 --The bottom layer of the GameHud: maximized windows live here, under the

@@ -3960,7 +3960,11 @@ end
 
 --created (optional): called with the new map's id once it exists, before
 --travelling there (ShowCreateMapDialog's options.created).
-mod.shared.FinishMapImport = function(mapName, info, created)
+--extra (optional): variations, local image or video paths that become the
+--first floor's map appearances (the Floors panel's Map Appearance gallery),
+--each named after its file; done(mapid), called once the images are placed.
+mod.shared.FinishMapImport = function(mapName, info, created, extra)
+    extra = extra or {}
     local floors = {}
 
     for i,objid in ipairs(info.objids) do
@@ -4078,7 +4082,66 @@ mod.shared.FinishMapImport = function(mapName, info, created)
         end
 
         mod.shared.FitMapBoundsToImagesCo(game.GetMap(guid), false, "Fit map bounds to imported images")
+
+        if extra.variations ~= nil and #extra.variations > 0 then
+            mod.shared.AddMapVariations(extra.variations, info.paths)
+        end
+
+        if extra.done ~= nil then
+            extra.done(guid)
+        end
     end)
+end
+
+--Gives the current map's map image the files in paths as alternate
+--appearances (uploaded; they show at once), named after their files, with
+--the base image named after basePaths[1]. Same-sized images line up exactly.
+mod.shared.AddMapVariations = function(paths, basePaths)
+    local mapObj = nil
+    for _, floor in ipairs(game.currentMap.floors) do
+        for _, obj in pairs(floor.objects) do
+            if obj:GetComponent("Map") ~= nil then
+                mapObj = obj
+                break
+            end
+        end
+        if mapObj ~= nil then
+            break
+        end
+    end
+    if mapObj == nil then
+        return
+    end
+
+    local swaps = {}
+    local names = {}
+    for _, path in ipairs(paths) do
+        local imageid = FileDrops.UploadImage(path)
+        if imageid ~= nil then
+            swaps[#swaps+1] = imageid
+            names[#names+1] = FileDrops.BaseName(path)
+        end
+    end
+    if #swaps == 0 then
+        return
+    end
+
+    local baseName = ""
+    if basePaths ~= nil and basePaths[1] ~= nil then
+        baseName = FileDrops.BaseName(basePaths[1])
+    end
+
+    mapObj:MarkUndo()
+    mapObj:AddComponent("Appearance")
+    local comp = mapObj:GetComponent("Appearance")
+    if comp == nil then
+        return
+    end
+    comp:SetProperty("imageSwaps", swaps)
+    comp:SetProperty("imageSwapNames", names)
+    comp:SetProperty("imageDefaultName", baseName)
+    comp:SetProperty("imageNumber", 0)
+    mapObj:Upload()
 end
 
 -- Open the alignment dialog in "realign" mode for an already-imported floor.
@@ -5696,4 +5759,28 @@ end
 --mod.shared. options as mod.shared.ShowCreateMapDialog: { created = function(mapid) }.
 function ShowCreateMapDialog(options)
     mod.shared.ShowCreateMapDialog(options)
+end
+
+--- Makes a new map from image or video files (an operating-system file drop
+--- on the table, say) through the import wizard, where the user sets the
+--- grid. The new map is travelled to once made.
+--- @param paths string[] Local file paths, one per floor.
+--- @param options nil|{name: nil|string, created: nil|fun(mapid: string), variations: nil|string[], done: nil|fun(mapid: string)} name: the map's name; created: called once the map exists, just before travelling to it; variations: more files that become the map's alternate appearances (same size as paths[1], which should then be the only path); done: called once the images are placed on the map.
+function ImportMapFromFiles(paths, options)
+    options = options or {}
+    if paths == nil or #paths == 0 then
+        return
+    end
+    mod.shared.ImportMap{
+        --tile type is always squares for now (as in the create-map dialog).
+        tileType = "squares",
+        nofade = true,
+        paths = paths,
+        finish = function(info)
+            mod.shared.FinishMapImport(options.name or "New Map", info, options.created, {
+                variations = options.variations,
+                done = options.done,
+            })
+        end,
+    }
 end
