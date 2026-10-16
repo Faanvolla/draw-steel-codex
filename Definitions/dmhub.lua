@@ -213,6 +213,8 @@
 --- @field tabletopDragSurface nil|string (read-only) Tabletop mode: what a drag released now would land on. "map" while the placement preview (the ghost of a character or creature dragged from a panel or a table card) is showing in the live map window; "table" over the bare table: outside the live map window, with no UI panel under the mouse (the panel being dragged doesn't count), where a drop fires 'tabletopCreatureDropped'. nil otherwise: over a UI panel, inside the window with no preview showing, or with the view off.
 --- @field tabletopTokenDrag nil|string[] (read-only) Tabletop mode: while tokens dragged off the live map window are over the bare table, their charids (the grabbed token first). A release now cancels the move and fires 'tabletopTokenDropped' with these ids, so this is where to show the cards that drop would make; the map shows no move preview meanwhile. nil whenever no token drag is over the table, including over a UI panel, where a release does nothing.
 --- @field tokenDropTargetUnderMouse nil|Panel (read-only) The token drop target panel (a panel with tokenDropTarget = true) that a map token dragged and released at the mouse now would be dropped onto, or nil. Answers whether or not a drag is in progress. During a panel drag the dragged panel is looked past, so it also says which drop target a dragged panel is over (read it from the dragging event).
+--- @field mapTransitionMapId nil|string (read-only) Tabletop mode: the map a map change shown inside the map windows is heading to, from the moment Travel() starts it until the window has been uncovered; nil otherwise. A change that falls back to the full-screen loading screen clears it. Before the map is current, the window waiting for it can show that it is loading; once it is current, see mapTransitionCovered.
+--- @field mapTransitionCovered boolean (read-only) Tabletop mode: true while the window that has just taken the map named by mapTransitionMapId should stay covered by what it showed before (its snapshot), because the new map is still building or loading its images. When it turns false the window's cover should fade out over about 0.3 seconds; mapTransitionMapId clears when that is done.
 --- @field panelDropSurface nil|string (read-only) Where a panel being dragged (a journal row, say) would land if released now. "map" over the visible map: anywhere off the UI normally, or inside the live map window in tabletop mode. "table" over the bare table in tabletop mode. nil over any UI panel (the panel being dragged doesn't count), or when no game is showing. Unlike tabletopDragSurface it needs no placement preview, so it suits drags that are not creatures; read it from the drag's dragging/drag events.
 --- @field mouseScreenPosition Vector2 (read-only) The mouse position in screen pixels from the top-left corner of the screen: the same measure as the screenx/screeny of the tabletop drop events.
 --- @field companionChannel CompanionChannelLua The Codex <-> Companion channel: send events/requests to, and receive them from, the desktop Companion windows.
@@ -1684,6 +1686,24 @@ function dmhub.GetMapInitiativeQueue(mapid) end
 --- @param mapid string
 --- @return boolean
 function dmhub.HasMapSnapshot(mapid) end
+
+--- Tabletop mode: what the map's frozen snapshot ("#MapSnapshot:<mapid>") shows, or nil if it has none. x1/y1/x2/y2 is the world rectangle it covers (x1,y1 its bottom-left corner), floor the floor index it shows. tokens, keyed by charid, are the tokens drawn in it (the ones this client could see) and where they were, in the same terms as GetMapTokens. hasTokenFree is true when "#MapSnapshotBase:<mapid>" exists: the same view with no tokens drawn, for drawing the map's tokens over where they are now.
+--- @param mapid string
+--- @return nil|{x1: number, y1: number, x2: number, y2: number, floor: integer, floorid: nil|string, hasTokenFree: boolean, tokens: table<string, {charid: string, x: number, y: number, floor: integer, scale: number}>}
+function dmhub.GetMapSnapshotInfo(mapid) end
+
+--- The tokens on a map, any map, where the game data says they are now: x/y the world position of the token's centre, floor its floor index on that map, scale the token's size in world units (tiles) as the map draws it. Leaves out tokens this client would not show at all (despawned or inactive). playerControlled as on CharacterToken. Used to draw a map's tokens over its frozen window (GetMapSnapshotInfo).
+--- @param mapid string
+--- @return {charid: string, x: number, y: number, floor: integer, scale: number, playerControlled: boolean}[]
+function dmhub.GetMapTokens(mapid) end
+
+--- Tabletop mode: the maps open in map windows on this table, minimized ones included. Leaving one of these maps keeps it loaded but hidden (up to three maps), so switching back to its window is quick; they are also kept synced first. Call whenever the windows change; a list equal to the last one does nothing.
+--- @param mapids string[]
+function dmhub.SetTabletopWindowMaps(mapids) end
+
+--- Diagnostic, tabletop mode: for the given number of seconds, every 0.1 s, logs (MAPTRACE lines) the live map window's mean brightness and what a map change is still waiting to load. Start it just before switching maps to see when the new map actually appears.
+--- @param seconds number
+function dmhub.TraceMapLoad(seconds) end
 
 --- Lets this client view a map opened from a chat link: until the app closes, the map counts as Player Viewable for this player while they have no token of their own on it. Not saved and not sent to anyone; the map's own Player Viewable setting is not touched.
 --- @param mapid string

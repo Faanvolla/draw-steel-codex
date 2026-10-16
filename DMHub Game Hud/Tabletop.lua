@@ -714,14 +714,13 @@ local g_titleStyles = {
 }
 
 local g_frozenStyles = {
+    --the snapshot of the map as this window last showed it, drawn as it is:
+    --a window that is not live looks just like the live one.
+    --(the snapshot itself is a child panel, g_chrome.ShowImage; this is what
+    --shows through its transparent parts, the window's colour as when live.)
     {
         selectors = {"tabletopFrozen"},
-        bgcolor = "#8a8a8aff",
-        saturation = 0.12,
-    },
-    {
-        selectors = {"tabletopFrozen", "hover"},
-        bgcolor = "#b0b0b0ff",
+        bgcolor = "#100d0bff",
     },
     {
         selectors = {"tabletopFrozen", "tabletopPlaceholder"},
@@ -739,6 +738,12 @@ local g_frozenStyles = {
     },
     {
         selectors = {"tabletopFrozenHint", "parent:hover"},
+        opacity = 1,
+        transitionTime = 0.15,
+    },
+    --the window is waiting for its map's data (g_chrome.UpdateFrozenHint).
+    {
+        selectors = {"tabletopFrozenHint", "loading"},
         opacity = 1,
         transitionTime = 0.15,
     },
@@ -1027,6 +1032,333 @@ function g_chrome.Release(rec)
     end
 end
 
+--Switching maps between windows. The engine still has one live map, so
+--focusing another window travels to its map; these hide that. In tabletop
+--mode the engine plays a map change inside the windows only
+--(GameController.ChangeMapInWindowCo): the old window freezes on its
+--snapshot and the new one goes live in the same frame (OnCurrentMapChanged),
+--covered by what it showed just before until the new map is built and its
+--images are in, then the cover fades.
+--
+--g_chrome.cover: {windowId, mapid, image, placeholder, tokenLayer} -- the
+--window to cover and with what, for the transition to mapid; nil when none.
+--tokenLayer is the window's own token layer when it was showing live tokens:
+--it moves into the cover so the cover is exactly what the window showed.
+g_chrome.cover = nil
+
+--Shows image (an image key, or nil for none) in holder, a panel that holds
+--nothing else. Each key gets a panel of its own: switching one panel from one
+--"#" image key to another can leave a white backing behind the image's
+--transparent parts (the map void).
+function g_chrome.ShowImage(holder, image, color, saturation)
+    if holder == nil or not holder.valid then
+        return
+    end
+    local child = holder.data.imagePanel
+    if holder.data.image ~= image or child == nil or not child.valid then
+        if child ~= nil and child.valid then
+            child:DestroySelf()
+        end
+        child = nil
+        if image ~= nil then
+            child = gui.Panel{
+                floating = true,
+                interactable = false,
+                halign = "left",
+                valign = "top",
+                width = "100%",
+                height = "100%",
+                bgimage = image,
+                bgcolor = color or "white",
+            }
+            holder:AddChild(child)
+        end
+        holder.data.imagePanel = child
+        holder.data.image = image
+    end
+    if child ~= nil then
+        child.selfStyle.bgcolor = color or "white"
+        child.selfStyle.saturation = saturation or 1
+    end
+end
+
+--Adds or removes a class on a panel and everything inside it (opacity does
+--not carry from a panel to its children, so the cover fades every part).
+function g_chrome.SetTreeClass(panel, class, on)
+    if panel == nil or not panel.valid then
+        return
+    end
+    panel:SetClass(class, on)
+    for _, child in ipairs(panel.children) do
+        g_chrome.SetTreeClass(child, class, on)
+    end
+end
+
+local function HolderPanel()
+    return gui.Panel{
+        floating = true,
+        interactable = false,
+        halign = "left",
+        valign = "top",
+        width = "100%",
+        height = "100%",
+        data = {},
+    }
+end
+g_chrome.HolderPanel = HolderPanel
+
+function g_chrome.CoverPanel(rec)
+    local imageHolder = HolderPanel()
+    local tokenSlot = HolderPanel()
+    return gui.Panel{
+        classes = {"tabletopCover", "collapsed"},
+        styles = {
+            {
+                selectors = {"tabletopCover"},
+                --the window's own colour, so the map void looks as it does live.
+                bgcolor = "#100d0bff",
+            },
+            {
+                selectors = {"coverFading"},
+                opacity = 0,
+                transitionTime = 0.3,
+            },
+        },
+        floating = true,
+        --the map under it keeps the mouse.
+        interactable = false,
+        halign = "center",
+        valign = "center",
+        width = "100%",
+        height = "100%",
+        bgimage = "panels/square.png",
+        data = { imageHolder = imageHolder, tokenSlot = tokenSlot, tokenLayer = nil, fading = false },
+        --only while shown: a collapsed panel does not think.
+        thinkTime = 0.02,
+        think = function(element)
+            g_chrome.UpdateCover(rec)
+        end,
+        imageHolder,
+        tokenSlot,
+    }
+end
+
+--Gives a token layer lent to the cover back to its window, hidden.
+function g_chrome.ReturnCoverTokens(rec, panel)
+    local layer = panel.data.tokenLayer
+    panel.data.tokenLayer = nil
+    if layer == nil or not layer.valid then
+        return
+    end
+    g_chrome.SetTreeClass(layer, "coverFading", false)
+    layer:SetClass("collapsed", true)
+    layer:Unparent()
+    if rec.tokenHolder ~= nil and rec.tokenHolder.valid and rec.tokenLayer == layer then
+        rec.tokenHolder:AddChild(layer)
+    else
+        layer:DestroySelf()
+    end
+end
+
+--Shows, fades or hides the cover over a window's live map.
+function g_chrome.UpdateCover(rec)
+    local panel = rec.cover
+    if panel == nil or not panel.valid then
+        return
+    end
+
+    local cover = g_chrome.cover
+    if cover ~= nil and dmhub.mapTransitionMapId ~= cover.mapid then
+        --the transition is over, or another one replaced it.
+        g_chrome.cover = nil
+        cover = nil
+    end
+
+    if cover == nil or cover.windowId ~= rec.id or rec.id ~= g_liveId then
+        if not panel:HasClass("collapsed") or panel.data.tokenLayer ~= nil then
+            g_chrome.ReturnCoverTokens(rec, panel)
+            panel:SetClass("collapsed", true)
+            g_chrome.SetTreeClass(panel, "coverFading", false)
+            panel.data.fading = false
+        end
+        return
+    end
+
+    if not cover.placeholder then
+        g_chrome.ShowImage(panel.data.imageHolder, cover.image)
+    else
+        g_chrome.ShowImage(panel.data.imageHolder, nil)
+    end
+
+    local layer = cover.tokenLayer
+    if layer ~= nil and layer.valid and panel.data.tokenLayer ~= layer then
+        g_chrome.ReturnCoverTokens(rec, panel)
+        layer:Unparent()
+        panel.data.tokenSlot:AddChild(layer)
+        layer:SetClass("collapsed", false)
+        panel.data.tokenLayer = layer
+    end
+
+    panel:SetClass("collapsed", false)
+    local fading = not dmhub.mapTransitionCovered
+    if fading ~= panel.data.fading then
+        panel.data.fading = fading
+        g_chrome.SetTreeClass(panel, "coverFading", fading)
+    end
+end
+
+--A frozen window's tokens. The window shows its map's snapshot exactly as
+--it was left while nothing on that map has changed. Once a token there has
+--moved, arrived or left (the game data keeps changing for every map), it
+--shows the token-free copy of the snapshot ("#MapSnapshotBase:") with the
+--map's tokens drawn over it where they are now, so the window stays live.
+--Players only see tokens drawn in their snapshot (ones they could see when
+--they left) and player-controlled ones; the Director sees every token on the
+--snapshot's floor.
+function g_chrome.SyncFrozenTokens(rec)
+    local body = rec.frozenBody
+    if body == nil or not body.valid or rec.id == g_liveId then
+        return
+    end
+
+    local info = dmhub.GetMapSnapshotInfo(rec.mapid)
+    local shown = {}
+    local live = false
+    if info ~= nil and info.hasTokenFree then
+        local present = {}
+        for _, t in ipairs(dmhub.GetMapTokens(rec.mapid)) do
+            present[t.charid] = true
+            local was = info.tokens[t.charid]
+            local eligible = t.floor == info.floor and (dmhub.isDM or was ~= nil or t.playerControlled)
+            if eligible then
+                shown[#shown+1] = t
+            end
+            if was ~= nil then
+                if math.abs(was.x - t.x) > 0.01 or math.abs(was.y - t.y) > 0.01 or was.floor ~= t.floor or math.abs(was.scale - t.scale) > 0.01 then
+                    live = true
+                end
+            elseif eligible then
+                live = true
+            end
+        end
+        for charid, _ in pairs(info.tokens) do
+            if not present[charid] then
+                live = true
+            end
+        end
+    end
+
+    --The token-free snapshot is its own panel over the snapshot, made with its
+    --image key (switching a panel from one "#" image key to another can leave
+    --a white backing behind the image's transparent parts).
+    local layer = rec.tokenLayer
+    if not live or info == nil then
+        if layer ~= nil and layer.valid then
+            layer:SetClass("collapsed", true)
+        end
+        return
+    end
+
+    if layer == nil or not layer.valid or rec.tokenLayerMap ~= rec.mapid then
+        if layer ~= nil and layer.valid then
+            layer:DestroySelf()
+        end
+        layer = gui.Panel{
+            floating = true,
+            interactable = false,
+            halign = "left",
+            valign = "top",
+            width = "100%",
+            height = "100%",
+            bgimage = "#MapSnapshotBase:" .. rec.mapid,
+            bgcolor = "white",
+        }
+        rec.tokenLayer = layer
+        rec.tokenLayerMap = rec.mapid
+        rec.tokenPanels = {}
+        rec.tokenHolder:AddChild(layer)
+    end
+    layer:SetClass("collapsed", false)
+
+    rec.tokenPanels = rec.tokenPanels or {}
+    local panels = rec.tokenPanels
+
+    local w = body.renderedWidth
+    local h = body.renderedHeight
+    local ww = info.x2 - info.x1
+    local wh = info.y2 - info.y1
+    if w == nil or h == nil or w <= 0 or h <= 0 or ww <= 0 or wh <= 0 then
+        return
+    end
+
+    local keep = {}
+    for _, t in ipairs(shown) do
+        keep[t.charid] = true
+        local size = t.scale * w / ww
+        local x = (t.x - info.x1) / ww * w - size / 2
+        local y = (info.y2 - t.y) / wh * h - size / 2
+        local panel = panels[t.charid]
+        if panel == nil or not panel.valid then
+            local token = dmhub.GetCharacterById(t.charid)
+            if token ~= nil then
+                panel = gui.CreateTokenImage(token, {
+                    floating = true,
+                    interactable = false,
+                    halign = "left",
+                    valign = "top",
+                    width = size,
+                    height = size,
+                })
+                panels[t.charid] = panel
+                layer:AddChild(panel)
+            end
+        end
+        if panel ~= nil and panel.valid then
+            panel.x = x
+            panel.y = y
+            if panel.selfStyle.width ~= size then
+                panel.selfStyle.width = size
+                panel.selfStyle.height = size
+            end
+        end
+    end
+
+    for charid, panel in pairs(panels) do
+        if not keep[charid] then
+            if panel.valid then
+                panel:DestroySelf()
+            end
+            panels[charid] = nil
+        end
+    end
+end
+
+--A frozen window's hint: "Click to view" on hover when it shows loading
+--art or nothing, and "Loading..." while it waits for its map's data (only
+--after a moment, so a quick switch never flashes it). A window showing a
+--snapshot has no hover hint: it looks like a live map.
+function g_chrome.UpdateFrozenHint(rec)
+    local hint = rec.frozenHint
+    if hint == nil or not hint.valid then
+        return
+    end
+
+    local loading = false
+    if dmhub.mapTransitionMapId == rec.mapid and game.currentMapId ~= rec.mapid then
+        rec.loadingSince = rec.loadingSince or dmhub.Time()
+        loading = dmhub.Time() >= rec.loadingSince + 0.3
+    else
+        rec.loadingSince = nil
+    end
+
+    local text = cond(loading, "Loading...", "Click to view")
+    if hint.text ~= text then
+        hint.text = text
+    end
+    hint:SetClass("loading", loading)
+    hint:SetClass("collapsed", rec.frozenSnapshot == true and not loading)
+end
+
 local function BuildWindow(rec)
     local panel
 
@@ -1042,6 +1374,11 @@ local function BuildWindow(rec)
             bgcolor = "white",
         }
     end
+
+    --over the map while a switch to it builds it (g_chrome.UpdateCover);
+    --under the map's own HUD.
+    rec.cover = g_chrome.CoverPanel(rec)
+    liveChildren[#liveChildren+1] = rec.cover
 
     --The map's own HUD, drawn over the map inside this window: the initiative
     --bar moves in here while this window is live, and dialogs presented for
@@ -1089,20 +1426,46 @@ local function BuildWindow(rec)
         text = "Click to view",
     }
 
+    --the snapshot (or loading art), and over it the map's tokens drawn on its
+    --token-free snapshot (SyncFrozenTokens): panels made per image key.
+    rec.snapHolder = HolderPanel()
+    rec.tokenHolder = HolderPanel()
+    rec.tokenLayer = nil
+    rec.tokenPanels = {}
+
     --Not the live map: the snapshot of what this window last showed, or
     --the map's loading-screen art before it has been shown this session.
+    --Like the live map it stands in for, a press here goes to the map, not
+    --to dragging the window: the switch starts on the press, and once the
+    --map is live the token under it is selected (map:TravelFromPress).
     local frozenBody = gui.Panel{
         styles = ThemeEngine.MergeStyles(g_frozenStyles),
         classes = {"tabletopFrozen"},
         width = "100%",
         height = "100% available",
         bgimage = "panels/square.png",
-        click = function(element)
+        swallowPress = true,
+        --start syncing the map as the mouse comes over, so the press finds
+        --its data in.
+        hover = function(element)
+            local map = game.GetMap(rec.mapid)
+            if map ~= nil and map.valid then
+                map:Prefetch()
+            end
+        end,
+        press = function(element)
             if ClicksGuarded() then
                 return
             end
-            Focus(rec)
+            Focus(rec, true)
         end,
+        thinkTime = 0.1,
+        think = function(element)
+            g_chrome.UpdateFrozenHint(rec)
+            g_chrome.SyncFrozenTokens(rec)
+        end,
+        rec.snapHolder,
+        rec.tokenHolder,
         frozenHint,
     }
 
@@ -1276,6 +1639,7 @@ local function BuildWindow(rec)
     rec.liveBody = liveBody
     rec.overlay = overlay
     rec.frozenBody = frozenBody
+    rec.frozenHint = frozenHint
     rec.nameLabel = nameLabel
     rec.liveStatus = liveStatus
     rec.initiativeSlot = initiativeSlot
@@ -1918,17 +2282,18 @@ local function ResolveLive()
     g_liveId = other ~= nil and other.id or nil
 end
 
---What a frozen window shows, and whether that is just a placeholder (no
---snapshot this session and no loading-screen art).
+--What a frozen window shows, whether that is just a placeholder (no
+--snapshot this session and no loading-screen art), and whether it is the
+--map's snapshot (the map as the window last showed it).
 local function FrozenImage(rec)
     if dmhub.HasMapSnapshot(rec.mapid) then
-        return "#MapSnapshot:" .. rec.mapid, false
+        return "#MapSnapshot:" .. rec.mapid, false, true
     end
     local map = game.GetMap(rec.mapid)
     if map ~= nil and map.valid and type(map.loadingScreenImage) == "string" and map.loadingScreenImage ~= "" then
-        return map.loadingScreenImage, false
+        return map.loadingScreenImage, false, false
     end
-    return "panels/square.png", true
+    return "panels/square.png", true, false
 end
 
 Tabletop.FrozenImage = FrozenImage
@@ -2045,14 +2410,23 @@ Refresh = function()
             end
             local round = nil
             if not live then
-                local image, placeholder = FrozenImage(rec)
-                if rec.frozenImage ~= image then
-                    rec.frozenImage = image
-                    rec.frozenBody.bgimage = image
+                local image, placeholder, snapshot = FrozenImage(rec)
+                if placeholder then
+                    g_chrome.ShowImage(rec.snapHolder, nil)
+                elseif snapshot then
+                    g_chrome.ShowImage(rec.snapHolder, image)
+                else
+                    --the map's loading art, not the map: greyed.
+                    g_chrome.ShowImage(rec.snapHolder, image, "#8a8a8aff", 0.12)
                 end
+                rec.frozenSnapshot = snapshot
                 rec.frozenBody:SetClass("tabletopPlaceholder", placeholder)
+                rec.frozenBody:SetClass("tabletopArt", not snapshot)
+                g_chrome.UpdateFrozenHint(rec)
+                g_chrome.SyncFrozenTokens(rec)
                 round = FrozenRound(rec)
             end
+            g_chrome.UpdateCover(rec)
             rec.roundLabel:SetClass("collapsed", round == nil)
             if round ~= nil and rec.roundLabel.text ~= round then
                 rec.roundLabel.text = round
@@ -2082,6 +2456,14 @@ Refresh = function()
     if liveShown and liveRec ~= nil then
         hudHost = liveRec.overlay
     end
+    --the maps open in windows stay loaded (hidden) when left, so switching
+    --back to them is quick; the engine keeps up to three.
+    local windowMaps = {}
+    for _, rec in ipairs(g_windows) do
+        windowMaps[#windowMaps+1] = rec.mapid
+    end
+    dmhub.SetTabletopWindowMaps(windowMaps)
+
     PlaceMapHuds(hudHost)
     --keyed on the host actually being on screen (a window growing back out
     --of its button is still collapsed for the length of the animation).
@@ -2105,7 +2487,8 @@ end
 --does not start another (cleared when the current map changes).
 local g_travelTarget = nil
 
-Travel = function(mapid)
+--fromPress: started by a press on the map's frozen window (map:TravelFromPress).
+Travel = function(mapid, fromPress)
     if mapid == game.currentMapId then
         return
     end
@@ -2115,7 +2498,11 @@ Travel = function(mapid)
     local map = game.GetMap(mapid)
     if map ~= nil and map.valid then
         g_travelTarget = {mapid = mapid, time = dmhub.Time()}
-        map:Travel()
+        if fromPress then
+            map:TravelFromPress()
+        else
+            map:Travel()
+        end
     end
 end
 
@@ -2135,7 +2522,8 @@ local function EnsureBuilt(rec)
     PlaceWindow(rec)
 end
 
-Focus = function(rec)
+--fromPress: a press on the window's frozen map (see Travel).
+Focus = function(rec, fromPress)
     --a click on a window's close button also reaches the window itself.
     if not IsOpen(rec) then
         return
@@ -2149,7 +2537,7 @@ Focus = function(rec)
         g_focusedId = rec.id
         SaveSoon()
     end
-    Travel(rec.mapid)
+    Travel(rec.mapid, fromPress)
     Refresh()
 end
 
@@ -2261,10 +2649,19 @@ end
 --journal link...). A window already showing the new map takes over, with
 --a highlight when the change was not the user's own click; otherwise the
 --window that was live, or the one waiting for this map, shows it now.
-local function OnCurrentMapChanged(newMapId)
+local function OnCurrentMapChanged(newMapId, fromMapId)
     local adopt = g_pendingAdopt
     g_pendingAdopt = nil
     g_travelTarget = nil
+
+    --what each window showed before the change, for the cover over the one
+    --that takes the new map: the live one the old map (frozen on the way
+    --out), the others their frozen image.
+    local prevLiveId = g_liveId
+    local prevMapIds = {}
+    for _, rec in ipairs(g_windows) do
+        prevMapIds[rec.id] = rec.mapid
+    end
 
     local requested = WindowById(g_focusedId)
     local target = WindowForMap(newMapId)
@@ -2305,6 +2702,23 @@ local function OnCurrentMapChanged(newMapId)
         end
     else
         g_liveId = nil
+    end
+
+    --a switch the engine plays in the windows (not behind the loading
+    --screen): the window taking the map is covered until the map is ready.
+    g_chrome.cover = nil
+    if target ~= nil and dmhub.mapTransitionMapId == newMapId then
+        local image, placeholder
+        if target.id == prevLiveId and fromMapId ~= nil and dmhub.HasMapSnapshot(fromMapId) then
+            image, placeholder = "#MapSnapshot:" .. fromMapId, false
+        else
+            image, placeholder = FrozenImage({mapid = prevMapIds[target.id] or newMapId})
+        end
+        g_chrome.cover = {windowId = target.id, mapid = newMapId, image = image, placeholder = placeholder}
+        --a frozen window showing its map's live tokens: the cover shows them too.
+        if target.id ~= prevLiveId and target.tokenLayer ~= nil and target.tokenLayer.valid and not target.tokenLayer:HasClass("collapsed") then
+            g_chrome.cover.tokenLayer = target.tokenLayer
+        end
     end
 
     Refresh()
@@ -4860,9 +5274,9 @@ do
         if item == nil then
             item = {
                 entryid = entryid,
-                x = x or math.floor((lw - bw) / 2),
-                y = y or math.floor((lh - bh) / 2),
-                scale = 1,
+                x = x or math.floor((lw - bw * scale) / 2),
+                y = y or math.floor((lh - bh * scale) / 2),
+                scale = scale,
             }
             g_docItems[#g_docItems+1] = item
         elseif x ~= nil then
@@ -6636,8 +7050,9 @@ local function Sync()
     end
 
     if game.currentMapId ~= g_lastMapId then
+        local fromMapId = g_lastMapId
         g_lastMapId = game.currentMapId
-        OnCurrentMapChanged(game.currentMapId)
+        OnCurrentMapChanged(game.currentMapId, fromMapId)
     elseif built then
         Refresh()
         --windows are rebuilt in creation order; the live one belongs on top.
