@@ -338,6 +338,20 @@ MonsterAI:RegisterTrigger{
 }
 ```
 
+#### End Effect (shared, do not re-register per band)
+
+`MonsterAIPrompts.lua` registers one generic `End Effect` trigger handler for
+every monster. `MonsterAI.EndEffectDecision` reads the purge behind the trigger
+and its Stamina cost from the data, takes it only to end something at least
+`endEffectMinimumSeverity` bad (`MonsterAI.conditionSeverity` rates conditions
+0-5), and only when the monster keeps the cost again and
+`endEffectStaminaReserve` of its Stamina after paying. The choice of effect is
+made by `ActivatedAbilityPurgeEffectsBehavior.aiChooser`, a hook the purge
+behavior consults before opening its selection dialog for an AI-driven caster:
+the worst harm on friends, the best buff on enemies, within the purge's limits.
+A band-specific `End Effect` registration would override all of this. Run
+`../dependencies/lua/bin/lua.exe tests/ai_end_effect_test.lua` from the codex root.
+
 #### 6. Villain actions (`MonsterAI:RegisterVillainAction{}`)
 
 A **villain action** is scored after a turn's `EndTurn` events finish and before
