@@ -133,6 +133,25 @@ function Tabletop.LiveWindowId()
     return g_liveId
 end
 
+--- How the live map window is on screen, for the map rail (MapRail in
+--- DocumentSystem.lua): "maximized", "window", or nil when there is no
+--- live map window on screen (none open, or it is minimized).
+--- @return nil|"maximized"|"window"
+function Tabletop.LiveWindowState()
+    if not Tabletop.IsActive() then
+        return nil
+    end
+    for _, rec in ipairs(g_windows) do
+        if rec.id == g_liveId then
+            if rec.minimized then
+                return nil
+            end
+            return cond(rec.maximized == true, "maximized", "window")
+        end
+    end
+    return nil
+end
+
 local function WindowById(id)
     if id == nil then
         return nil
@@ -1032,6 +1051,46 @@ function g_chrome.Release(rec)
     end
 end
 
+--The map rail inside a window (MapRail in DocumentSystem.lua): map panels
+--down the left edge, the map's own buttons down the right. Only on the
+--live window, and not while it is maximized -- the buttons then join the
+--screen rails. Rebuilt whenever MapRail.Signature changes. No bgimage, so
+--between the columns it takes no mouse and the map gets it.
+function g_chrome.MapRailHost(rec)
+    return gui.Panel{
+        floating = true,
+        width = "100%",
+        height = "100%",
+        flow = "none",
+        data = { sig = nil },
+        thinkTime = 0.25,
+        think = function(element)
+            element:FireEvent("syncMapRail")
+        end,
+        --also fired by ToggleMaximize, so restoring shows it at once.
+        syncMapRail = function(element)
+            local mapRail = rawget(_G, "MapRail")
+            local sig = nil
+            if mapRail ~= nil and rec.id == g_liveId and not rec.maximized and not rec.minimized then
+                sig = mapRail.Signature()
+            end
+            if sig == element.data.sig then
+                return
+            end
+            element.data.sig = sig
+            if sig == nil or sig == "off" then
+                element.children = {}
+                return
+            end
+            element.children = PanelDocument.CreateMapRails()
+            --the rail's Font Size zoom needs it attached first.
+            for _, child in ipairs(element.children) do
+                child:FireEvent("setRailScale")
+            end
+        end,
+    }
+end
+
 --Switching maps between windows. The engine still has one live map, so
 --focusing another window travels to its map; these hide that. In tabletop
 --mode the engine plays a map change inside the windows only
@@ -1399,6 +1458,8 @@ local function BuildWindow(rec)
         end,
     }
     liveChildren[#liveChildren+1] = overlay
+    rec.mapRailHost = g_chrome.MapRailHost(rec)
+    liveChildren[#liveChildren+1] = rec.mapRailHost
 
     --The live map: this panel's rectangle of the screen-aligned map image.
     --It does not block the map, so clicks, drags and the wheel inside it
@@ -2605,6 +2666,15 @@ ToggleMaximize = function(rec)
     Tabletop.SetForced(rec.mapid, rec.maximized == true)
     Focus(rec)
     SaveSoon()
+    --the map rail moves onto (or off) the screen rails now rather than on
+    --their next poll.
+    local mapRail = rawget(_G, "MapRail")
+    if mapRail ~= nil then
+        mapRail.CheckMerged()
+    end
+    if rec.mapRailHost ~= nil and rec.mapRailHost.valid then
+        rec.mapRailHost:FireEvent("syncMapRail")
+    end
 end
 
 --Opens a map on the table (the Maps panel calls this in tabletop mode).

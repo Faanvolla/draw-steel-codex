@@ -8493,13 +8493,113 @@ function PanelDocument.SetPinned(key, on)
     end
 end
 
+----------------------------------------------------------------------
+-- The map rail
+-- ------------
+-- Panels that only make sense with a map open (map editing, floors,
+-- lighting, measuring) live on the MAP RAIL instead of the user's icon
+-- rails: a column down the left edge of the live map window, appended to
+-- the left rail when that window is maximized. A second column on the
+-- window's right edge holds buttons a particular map or encounter
+-- provides (MapButtons). The map rail is hard-wired: these panels never
+-- go on the user's rails, and their folders below are fixed in code
+-- rather than read from "iconrailtabs". A GLOBAL table: the main chunk
+-- sits on the 200-locals ceiling.
+MapRail = rawget(_G, "MapRail") or {}
+
+--The map rail's panels, in rail order: each entry is a folder owner
+--followed by its members. A panel this user cannot see (dmonly, or not
+--registered here) is skipped; a folder whose owner is skipped leaves its
+--members as plain buttons.
+MapRail.FOLDERS = {
+    { "map markup", "building editor", "terrain editor", "effects editor", "objects", "editor settings", "clipboard" },
+    { "floors & layers", "time of day/lighting", "elevation editor", "weather" },
+    { "map settings" },
+    { "measuring tool", "whiteboard" },
+}
+
+MapRail.isMapPanel = {}
+for _, folder in ipairs(MapRail.FOLDERS) do
+    for _, key in ipairs(folder) do
+        MapRail.isMapPanel[key] = true
+    end
+end
+
+--- Whether a panel key belongs to the map rail (never the user's rails).
+--- @param key string|nil
+--- @return boolean
+function MapRail.IsMapPanel(key)
+    return type(key) == "string" and MapRail.isMapPanel[string.lower(key)] == true
+end
+
+--a panel this user can open here.
+function MapRail.PanelAvailable(key)
+    local reg = DockablePanel.GetRegistration(key)
+    return reg ~= nil and reg.launch == nil and DockablePanel.PanelPermittedForUser(reg)
+end
+
+--- The map rail's folders as this user sees them: { [owner] = {owner, members...} },
+--- only folders with at least one available member.
+--- @return table<string, string[]>
+function MapRail.LiveFolders()
+    --every folder lookup (WindowOwner, StoredTabs) lands here, often many
+    --times a frame; the answer only changes with permissions, so reuse it
+    --within a frame. Callers must not modify the result.
+    local now = dmhub.Time()
+    if MapRail.liveFoldersTime == now and MapRail.liveFoldersCache ~= nil then
+        return MapRail.liveFoldersCache
+    end
+    local result = {}
+    for _, folder in ipairs(MapRail.FOLDERS) do
+        if MapRail.PanelAvailable(folder[1]) then
+            local tabs = {}
+            for _, key in ipairs(folder) do
+                if MapRail.PanelAvailable(key) then
+                    tabs[#tabs + 1] = key
+                end
+            end
+            if #tabs > 1 then
+                result[folder[1]] = tabs
+            end
+        end
+    end
+    MapRail.liveFoldersTime = now
+    MapRail.liveFoldersCache = result
+    return result
+end
+
+--- The folder table every reader uses: the stored "iconrailtabs" with map
+--- panels taken out of the user's folders, plus the map rail's own fixed ones.
+--- @return table<string, string[]>
+function MapRail.EffectiveTabs()
+    local result = {}
+    for owner, tabs in pairs(dmhub.GetSettingValue("iconrailtabs") or {}) do
+        if type(owner) == "string" and type(tabs) == "table" and not MapRail.IsMapPanel(owner) then
+            local kept = {}
+            for _, k in ipairs(tabs) do
+                if not MapRail.IsMapPanel(k) then
+                    kept[#kept + 1] = k
+                end
+            end
+            if #kept > 1 then
+                result[string.lower(owner)] = kept
+            end
+        end
+    end
+    for owner, tabs in pairs(MapRail.LiveFolders()) do
+        --a copy: callers may edit what they get, and LiveFolders is cached.
+        result[owner] = { table.unpack(tabs) }
+    end
+    return result
+end
+
 --The stored member list for a panel's folder (owner included), or nil
 --when the panel has no folder beyond itself.
 function PanelDocument.StoredTabs(key)
     if key == nil then
         return nil
     end
-    local tabs = (dmhub.GetSettingValue("iconrailtabs") or {})[string.lower(key)]
+    local tabs = MapRail.EffectiveTabs()[string.lower(key)]
     if type(tabs) ~= "table" or #tabs <= 1 then
         return nil
     end
@@ -8518,6 +8618,20 @@ function PanelDocument.SetStoredTabs(key, keys)
         return
     end
     key = string.lower(key)
+    --the map rail's folders are fixed (MapRail.FOLDERS), and its panels
+    --join no user folder.
+    if MapRail.IsMapPanel(key) then
+        return
+    end
+    if type(keys) == "table" then
+        local kept = {}
+        for _, k in ipairs(keys) do
+            if not MapRail.IsMapPanel(k) then
+                kept[#kept + 1] = k
+            end
+        end
+        keys = kept
+    end
     local stored = dmhub.GetSettingValue("iconrailtabs") or {}
     local changed = false
 
@@ -8590,7 +8704,7 @@ end
 --appear as members (SetStoredTabs enforces it), so this cannot chain.
 function PanelDocument.GroupOwners()
     local result = {}
-    for owner, tabs in pairs(dmhub.GetSettingValue("iconrailtabs") or {}) do
+    for owner, tabs in pairs(MapRail.EffectiveTabs()) do
         if type(tabs) == "table" and #tabs > 1 then
             for _, k in ipairs(tabs) do
                 if k ~= owner then
@@ -11050,6 +11164,140 @@ local function RailMigrateRenamedPanels()
     return anyChanged
 end
 
+--Remove map panels from a stored rail table ({[key] = {side, slot}}),
+--closing the gap each one leaves: buttons below it on the same side move
+--up a slot. Returns whether anything was removed.
+function MapRail.StripRail(rail)
+    if type(rail) ~= "table" then
+        return false
+    end
+    local removed = { left = {}, right = {} }
+    local any = false
+    for key, entry in pairs(rail) do
+        if MapRail.IsMapPanel(key) then
+            if type(entry) == "table" and type(entry.slot) == "number" and entry.side ~= "off" then
+                --RailLayout reads any side but right/off as left.
+                local side = cond(entry.side == "right", "right", "left")
+                removed[side][#removed[side] + 1] = entry.slot
+            end
+            rail[key] = nil
+            any = true
+        end
+    end
+    if not any then
+        return false
+    end
+    for _, entry in pairs(rail) do
+        if type(entry) == "table" and type(entry.slot) == "number" and entry.side ~= "off" then
+            local side = cond(entry.side == "right", "right", "left")
+            local shift = 0
+            for _, s in ipairs(removed[side]) do
+                if s < entry.slot then
+                    shift = shift + 1
+                end
+            end
+            entry.slot = entry.slot - shift
+        end
+    end
+    return true
+end
+
+--Remove map panels from a stored folder table ({[owner] = {keys}}): a
+--map panel's own folder goes, and map panels leave everyone else's.
+function MapRail.StripTabs(tabs)
+    if type(tabs) ~= "table" then
+        return false
+    end
+    local changed = false
+    for owner, list in pairs(tabs) do
+        if MapRail.IsMapPanel(owner) then
+            tabs[owner] = nil
+            changed = true
+        elseif type(list) == "table" then
+            local kept = {}
+            for _, k in ipairs(list) do
+                if not MapRail.IsMapPanel(k) then
+                    kept[#kept + 1] = k
+                end
+            end
+            if #kept ~= #list then
+                changed = true
+                tabs[owner] = cond(#kept > 1, kept, nil)
+            end
+        end
+    end
+    return changed
+end
+
+--A view layout payload (ViewsCaptureLayout's shape).
+function MapRail.StripLayout(layout)
+    if type(layout) ~= "table" then
+        return false
+    end
+    local railChanged = MapRail.StripRail(layout.rail)
+    local tabsChanged = MapRail.StripTabs(layout.tabs)
+    return railChanged or tabsChanged
+end
+
+--The one-time move to the map rail, run on every rail setup like the
+--rename repair above: take map panels out of this game's rail layout and
+--folders, its view stashes and update baselines, and the account-wide
+--view library. Writes only what changed, so it settles to a no-op.
+--Open-window records are left alone: a map panel that was open stays open.
+function MapRail.StripStoredLayouts()
+    local anyChanged = false
+
+    local layout = DeepCopy(dmhub.GetSettingValue("iconraillayout") or {})
+    if MapRail.StripRail(layout) then
+        dmhub.SetSettingValue("iconraillayout", layout)
+        anyChanged = true
+    end
+
+    local tabs = DeepCopy(dmhub.GetSettingValue("iconrailtabs") or {})
+    if MapRail.StripTabs(tabs) then
+        dmhub.SetSettingValue("iconrailtabs", tabs)
+        anyChanged = true
+    end
+
+    local stash = DeepCopy(dmhub.GetSettingValue("viewsstash") or {})
+    local stashChanged = false
+    for _, stashed in pairs(stash) do
+        stashChanged = MapRail.StripLayout(stashed) or stashChanged
+    end
+    if stashChanged then
+        dmhub.SetSettingValue("viewsstash", stash)
+        anyChanged = true
+    end
+
+    --baselines too, or the on-entry update check would read the strip
+    --as the user rearranging a built-in view (see the rename repair).
+    local stamps = DeepCopy(dmhub.GetSettingValue("viewsbuiltinversion") or {})
+    local stampsChanged = false
+    for _, rec in pairs(stamps) do
+        if type(rec) == "table" then
+            stampsChanged = MapRail.StripLayout(rec.layout) or stampsChanged
+        end
+    end
+    if stampsChanged then
+        dmhub.SetSettingValue("viewsbuiltinversion", stamps)
+        anyChanged = true
+    end
+
+    local lib = DeepCopy(dmhub.GetSettingValue("viewslibrary") or {})
+    local libChanged = false
+    for _, entry in pairs(lib) do
+        if type(entry) == "table" then
+            libChanged = MapRail.StripLayout(entry.layout) or libChanged
+        end
+    end
+    if libChanged then
+        dmhub.SetSettingValue("viewslibrary", lib)
+        anyChanged = true
+    end
+
+    return anyChanged
+end
+
 local ICON_RAIL_BUTTON = 40
 local ICON_RAIL_GAP = 8
 --the widest a rail button may be (a journal PDF's cover, sized to its
@@ -11732,6 +11980,10 @@ local function RailLayout()
             return
         end
         seen[key] = true
+        --map panels live on the map rail, never here (see MapRail).
+        if MapRail.IsMapPanel(key) then
+            return
+        end
 
         local side = "left"
         local slot = nil
@@ -12015,6 +12267,13 @@ end
 local function RefreshRails()
     for _, rail in pairs(g_iconRails) do
         if rail ~= nil and rail.valid then
+            rail:FireEventTree("refreshRail")
+        end
+    end
+    --and the live map window's rail (MapRail), so its lit states follow
+    --a window opened or closed anywhere at once rather than on its think.
+    for _, rail in ipairs(MapRail.windowRails or {}) do
+        if rail.valid then
             rail:FireEventTree("refreshRail")
         end
     end
@@ -14378,6 +14637,24 @@ local function IconRailStyles()
             opacity = 1,
             priority = 20,
         },
+        --a map's own buttons (MapButtons, on the map rail) wear the
+        --accent on their glyph: "this map offers something", not more
+        --standing chrome. Two-class selectors out-rank iconRailIcon's.
+        {
+            selectors = {"iconRailIcon", "mapButtonIcon"},
+            bgcolor = "@accent",
+        },
+        {
+            selectors = {"iconRailIcon", "mapButtonIcon", "parent:hover"},
+            bgcolor = "@accentHover",
+        },
+        --the rule above a merged map rail section.
+        {
+            selectors = {"iconRailMapDivider"},
+            bgcolor = "@fg",
+            opacity = 0.35,
+            cornerRadius = 1,
+        },
     })
 end
 
@@ -15027,6 +15304,9 @@ end
 --Add a panel to a rail at the next free slot (the inverse of "Remove
 --from rail"; also how non-curated panels first reach the rail).
 local function RailAddPanel(name, side)
+    if MapRail.IsMapPanel(name) then
+        return
+    end
     side = PanelDocument.RailVisibleSide(side)
     local sides, inert = RailLayout()
     local key = string.lower(name)
@@ -15493,6 +15773,8 @@ local function RailIsGroupableKey(key)
         --an action registration has no window, so a folder tab for it
         --would be an inert chip; it stays a standalone button.
         and RailLaunchAction(key) == nil
+        --map panels keep the map rail's fixed folders.
+        and not MapRail.IsMapPanel(key)
 end
 
 --(Grouping edits reach open windows through g_onPanelGroupChanged,
@@ -16785,7 +17067,7 @@ local function RailAddPanelEntries(element, side)
     table.sort(items, function(a, b) return (a.text or "") < (b.text or "") end)
     for _, item in ipairs(items) do
         local name = item.text
-        if name ~= nil and not onRail[string.lower(name)] and PanelDocument.Get(name) ~= nil then
+        if name ~= nil and not onRail[string.lower(name)] and not MapRail.IsMapPanel(name) and PanelDocument.Get(name) ~= nil then
             entries[#entries + 1] = {
                 text = "Add: " .. name,
                 click = function()
@@ -20874,6 +21156,10 @@ RailShowAddPicker = function(element, side)
     for memberKey in pairs(PanelDocument.GroupOwners()) do
         onRail[memberKey] = true
     end
+    --map panels are on the map rail and cannot be added here.
+    for mapKey in pairs(MapRail.isMapPanel) do
+        onRail[mapKey] = true
+    end
 
     --RECOMMENDED is the curated rail order filtered to what is not
     --already on a rail; ALL PANELS is every available panel (curated
@@ -21695,8 +21981,38 @@ local function CreateRailAddButton(side)
     return button
 end
 
-local function CreateIconRail(side, entries)
+--opts (optional), used by the map rail (see MapRail):
+--  fixed     true: not customizable -- no rearrange mode, no + button, no
+--            move/remove/group menus (entries can also be fixed one by one
+--            with entry.mapRail on an ordinary rail)
+--  windowed  true: the column sits inside a map window rather than on the
+--            screen edge; inset is its margin from the window's edges
+--  anchor    function(button, index) -> x, y: where a window opened from
+--            a button lands (layer units); nil falls back to RailAnchor
+local function CreateIconRail(side, entries, opts)
+    opts = opts or {}
+    local fixedRail = opts.fixed == true
+    local windowedRail = opts.windowed == true
     local buttons = {}
+
+    --A press inside a map window raises that window (raiseOnPress, an
+    --engine walk that runs AFTER the press handlers), burying the panel
+    --window the press just opened or raised. Raise it again next frame.
+    local function RaiseWindowSoon(key)
+        if not windowedRail then
+            return
+        end
+        dmhub.Schedule(0.01, function()
+            if mod.unloaded then
+                return
+            end
+            local doc = RailPanelDocument(PanelDocument.WindowOwner(key))
+            local d = doc ~= nil and doc:try_get("_tmp_dialog") or nil
+            if d ~= nil and d.valid then
+                d:SetAsLastSibling()
+            end
+        end)
+    end
 
     --halign is EXPLICIT on both sides. Without it the label defaults to
     --centred on its x anchor and grows in BOTH directions, so a long title
@@ -21720,7 +22036,7 @@ local function CreateIconRail(side, entries)
     --always clears the title bar; RAIL_STOP_GAP is the same gap on
     --both sides of it.
     --Escape exits the mode too: escapeActivates fires the click handler.
-    if g_railRearranging then
+    if g_railRearranging and not fixedRail then
         buttons[#buttons + 1] = gui.Panel{
             classes = {"iconRailButton", "iconRailStopButton"},
             bgimage = true,
@@ -21852,6 +22168,11 @@ local function CreateIconRail(side, entries)
         --button becomes a tombstone -- skull face, no window to open, and
         --a click that erases it from the layout.
         local missing = entry.missing == true
+        --a map rail button (see MapRail): no move, remove or group verbs.
+        local fixedEntry = fixedRail or entry.mapRail == true
+        --a registered entry type asking for the accent-colored glyph (the
+        --map's own buttons, so they read as "this map offers something").
+        local accentIcon = false
 
         --panel buttons draw their registration icon; document shortcuts
         --draw the doc's semantic-type icon; character shortcuts draw the
@@ -21876,6 +22197,8 @@ local function CreateIconRail(side, entries)
             pcall(function()
                 buttonIcon = RailEntryTypes[entry.customType].icon(entry.customId) or buttonIcon
             end)
+            accentIcon = RailEntryTypes[entry.customType].accent == true
+            sbuttonAnimates = RailEntryTypes[entry.customType].clickAnim == true
         elseif toolkitid ~= nil then
             --the user's chosen icon, falling back to the toolbox for
             --toolkits made before icons existed (and for anyone who left
@@ -22041,6 +22364,18 @@ local function CreateIconRail(side, entries)
         --the owner's own button, captured on create so the members can
         --schedule the close on it.
         local ownerButton
+        --where a window opened from this button (or its folder's strip)
+        --lands: beside the button, via the rail's own anchor function when
+        --it has one (a map window's rail moves with its window).
+        local function EntryAnchor()
+            if opts.anchor ~= nil then
+                local ax, ay = opts.anchor(ownerButton, index)
+                if ax ~= nil then
+                    return ax, ay
+                end
+            end
+            return RailAnchor(side, index)
+        end
         --Fold the strip away, from any route: the deferred close, a press,
         --a member opening its tab, or another button taking over the rail.
         --Every route goes through here so the strip, the marker card and
@@ -22087,6 +22422,7 @@ local function CreateIconRail(side, entries)
         --member has no button of its own to anchor to.
         local function ToggleGroupMember(memberKey)
             memberKey = string.lower(memberKey)
+            RaiseWindowSoon(memberKey)
             --defensive: launch panels are not groupable, but a stored
             --group could predate the flag. Run the action, keep the strip.
             local launch = RailLaunchAction(memberKey)
@@ -22119,7 +22455,7 @@ local function CreateIconRail(side, entries)
             --the same one-transient-window rule the icon's own click
             --follows.
             RailSweepTransient(ownerKey)
-            local anchorX, anchorY = RailAnchor(side, index)
+            local anchorX, anchorY = EntryAnchor()
             OpenIconRailWindow(memberKey, { x = anchorX, y = anchorY, anchor = true, autoFocus = true })
             --the strip has done its job, and the window it just opened
             --lands on top of it.
@@ -22435,13 +22771,20 @@ local function CreateIconRail(side, entries)
                                     ToggleGroupMember(memberKey)
                                 end,
                             },
-                            {
-                                text = "Make group owner",
-                                click = function()
-                                    element.popup = nil
-                                    RailGroupInvert(memberKey, key)
-                                end,
-                            },
+                        }
+                        --the map rail's folders are fixed: open/close only.
+                        if fixedEntry then
+                            element.popup = gui.ContextMenu{
+                                entries = entries,
+                            }
+                            return
+                        end
+                        entries[#entries + 1] = {
+                            text = "Make group owner",
+                            click = function()
+                                element.popup = nil
+                                RailGroupInvert(memberKey, key)
+                            end,
                         }
                         if mi > 1 then
                             entries[#entries + 1] = {
@@ -22860,7 +23203,7 @@ local function CreateIconRail(side, entries)
             }
         else
             buttonContent = gui.Panel{
-                classes = {"iconRailIcon"},
+                classes = {"iconRailIcon", cond(accentIcon, "mapButtonIcon")},
                 bgimage = buttonIcon,
                 width = 20,
                 height = 20,
@@ -22925,10 +23268,33 @@ local function CreateIconRail(side, entries)
         --Everything re-checks on the rail's refreshRail cadence, and the
         --marker hides while the panel itself is shown.
         local novelMarker = nil
-        if reg ~= nil and reg.hasNewContent ~= nil then
-            local hasNewContent = reg.hasNewContent
-            local newContentCount = reg.newContentCount
-            local markContentSeen = reg.markContentSeen
+        --a registered entry type's alert(id) drives the same marker: true
+        --or a count while it needs attention (a map button's alert).
+        local alertSource = reg
+        if entry.customType ~= nil and RailEntryTypes[entry.customType].alert ~= nil then
+            local alert = RailEntryTypes[entry.customType].alert
+            local customId = entry.customId
+            local function AlertCount()
+                local ok, n = pcall(alert, customId)
+                if ok and n == true then
+                    return 1
+                end
+                if ok and type(n) == "number" and n >= 1 then
+                    return math.floor(n)
+                end
+                return nil
+            end
+            alertSource = {
+                hasNewContent = function()
+                    return AlertCount() ~= nil
+                end,
+                newContentCount = AlertCount,
+            }
+        end
+        if alertSource ~= nil and alertSource.hasNewContent ~= nil then
+            local hasNewContent = alertSource.hasNewContent
+            local newContentCount = alertSource.newContentCount
+            local markContentSeen = alertSource.markContentSeen
             local m_shownCount = nil --count the marker currently displays; nil = hidden.
             --the container is a 1x1 anchor sitting ON the button's
             --top-right corner; the badge centers on it, so it pops out
@@ -23058,6 +23424,24 @@ local function CreateIconRail(side, entries)
             }
         end
 
+        --the first map rail button on a merged rail (MapRail.AppendMerged
+        --leaves one empty slot above it): a short rule across that slot
+        --marks where the map's own section begins. Floating at the slot's
+        --absolute position, like the group card below.
+        if entry.mapDivider then
+            buttons[#buttons + 1] = gui.Panel{
+                classes = {"iconRailMapDivider"},
+                bgimage = true,
+                floating = true,
+                interactable = false,
+                width = ICON_RAIL_BUTTON - 12,
+                height = 2,
+                halign = "center",
+                valign = "top",
+                y = buttonTop - math.floor((ICON_RAIL_BUTTON + 2 * ICON_RAIL_GAP) / 2) - 1,
+            }
+        end
+
         --GROUP marker: a second card peeking out from behind the button
         --(up and toward the screen centre), so a grouped button reads as
         --a small stack. A floating SIBLING appended before the button --
@@ -23128,7 +23512,8 @@ local function CreateIconRail(side, entries)
             --journal documents can be dropped onto buttons (insert at
             --this slot); data.slot is how the drop finds it. key and
             --baseMargin are for the live drag reflow (ShowRailGhost).
-            dragTarget = true,
+            --(not on a map window's rail: its slots are not the user's.)
+            dragTarget = not windowedRail,
             data = { slot = index, key = key, baseMargin = buttonMargin },
 
             --Chat only: hovering a shareable item here opens the chat so
@@ -23143,7 +23528,7 @@ local function CreateIconRail(side, entries)
             springOpen = function(element)
                 local verb, _, _, dialog = RailActivation(key)
                 if verb == "open" then
-                    local anchorX, anchorY = RailAnchor(side, index)
+                    local anchorX, anchorY = EntryAnchor()
                     OpenIconRailWindow(key, {x = anchorX, y = anchorY, anchor = true})
                 elseif dialog ~= nil and dialog.valid then
                     dialog:SetAsLastSibling()
@@ -23319,6 +23704,11 @@ local function CreateIconRail(side, entries)
                     sx1 = (dmhub.screenDimensionsBelowTitlebar.x - ICON_RAIL_LEFT - ICON_RAIL_BUTTON * railScale) - stripWidth
                 end
                 local overPanel = RailWindowIntersectsBand(sx1, sy, sx1 + stripWidth, sy + ICON_RAIL_BUTTON * railScale)
+                --a rail inside a map window opens its strip over the map
+                --(the band math above is for the screen-edge rails).
+                if windowedRail then
+                    overPanel = true
+                end
                 --docks are not panel-document windows, but a dock visible
                 --on this side always underlies the strip band -- the strip
                 --opens straight across it. Err toward the card: text and
@@ -23804,7 +24194,7 @@ local function CreateIconRail(side, entries)
                 --this button on first open (it remembers its own spot
                 --thereafter).
                 if toolkitid ~= nil then
-                    local ax, ay = RailAnchor(side, index)
+                    local ax, ay = EntryAnchor()
                     ToggleToolkitStrip(toolkitid, ax, ay)
                     RefreshRails()
                     return
@@ -23893,7 +24283,7 @@ local function CreateIconRail(side, entries)
                     --the shared sweep restores it.)
                     RailSweepTransient(ownerKey)
 
-                    local anchorX, anchorY = RailAnchor(side, index)
+                    local anchorX, anchorY = EntryAnchor()
                     OpenIconRailWindow(key, {
                         x = anchorX,
                         y = anchorY,
@@ -23941,6 +24331,7 @@ local function CreateIconRail(side, entries)
                 end
 
                 element:FireEvent("activateRailButton")
+                RaiseWindowSoon(key)
             end,
 
             --right-click: context menu with the non-drag equivalents of
@@ -23985,14 +24376,18 @@ local function CreateIconRail(side, entries)
                     end
                     local pinning = not PanelDocument.IsPinned(key)
                     if pinning and not doc:PresentDocumentOpen() then
-                        local anchorX, anchorY = RailAnchor(side, index)
+                        local anchorX, anchorY = EntryAnchor()
                         OpenIconRailWindow(key, { x = anchorX, y = anchorY, anchor = true, autoFocus = true })
                     end
                     PanelDocument.SetPinned(key, pinning)
                 end
 
-                --the move/remove entries every rail button carries.
+                --the move/remove entries every rail button carries -- but
+                --a map rail button is not the user's to move.
                 local function moveEntries()
+                    if fixedEntry then
+                        return {}
+                    end
                     return {
                         {
                             text = "Rearrange...",
@@ -24056,6 +24451,9 @@ local function CreateIconRail(side, entries)
                                 table.insert(entries, 1, extra[i])
                             end
                         end
+                    end
+                    if #entries == 0 then
+                        return
                     end
                     element.popup = gui.ContextMenu{
                         entries = entries,
@@ -24167,7 +24565,7 @@ local function CreateIconRail(side, entries)
                             RailRememberWindow(key, d.x, d.y, doc)
                         end
                     else
-                        local anchorX, anchorY = RailAnchor(side, index)
+                        local anchorX, anchorY = EntryAnchor()
                         OpenIconRailWindow(key, {
                             x = anchorX,
                             y = anchorY,
@@ -24191,7 +24589,7 @@ local function CreateIconRail(side, entries)
 
                 --a grouped window's button can dissolve the whole group:
                 --every member returns to its own remembered rail slot.
-                if groupMembers ~= nil then
+                if groupMembers ~= nil and not fixedEntry then
                     entries[#entries + 1] = {
                         text = "Ungroup",
                         click = function()
@@ -24360,18 +24758,27 @@ local function CreateIconRail(side, entries)
     --Every later addButton reference is nil-guarded anyway, because
     --rearrange mode leaves it nil the same way.
     local addButton = nil
-    if not g_railRearranging then
+    if not g_railRearranging and not fixedRail then
         addButton = CreateRailAddButton(side)
         buttons[#buttons + 1] = addButton
     end
 
+    --a rail on the screen edge sits under the title bar; a map window's
+    --rail sits just inside the window's own edges.
+    local edgeInset = ICON_RAIL_LEFT
+    local topInset = IconRailTop()
+    if windowedRail then
+        edgeInset = opts.inset or ICON_RAIL_GAP
+        topInset = opts.inset or ICON_RAIL_GAP
+    end
+
     return gui.Panel{
-        classes = {"iconRail"},
+        classes = {"iconRail", cond(windowedRail, "iconRailWindowed")},
         halign = side,
         valign = "top",
-        lmargin = cond(side == "left", ICON_RAIL_LEFT, 0),
-        rmargin = cond(side == "right", ICON_RAIL_LEFT, 0),
-        tmargin = IconRailTop(),
+        lmargin = cond(side == "left", edgeInset, 0),
+        rmargin = cond(side == "right", edgeInset, 0),
+        tmargin = topInset,
         width = ICON_RAIL_BUTTON,
         --ALWAYS auto, never a fixed column height: the vertical flow
         --distributes children across a fixed height, spreading the
@@ -24384,8 +24791,9 @@ local function CreateIconRail(side, entries)
         --end of this side. The near-invisible surface gives the root a
         --hit area so drops between/around buttons resolve, not just
         --drops exactly on a button (field-tested: the bare container
-        --never resolved as a drag target).
-        dragTarget = true,
+        --never resolved as a drag target). A map window's rail takes no
+        --drops: its buttons are fixed.
+        dragTarget = not windowedRail,
         bgimage = true,
         bgcolor = "#00000001",
         --without this the right-click below ALSO reaches the map, and the
@@ -24416,9 +24824,13 @@ local function CreateIconRail(side, entries)
         --wrap (buttons that stop fitting move to the other column), so it
         --is a full rebuild. Deferred + deduped: a monitor must not
         --destroy the panel it is firing on, and both rails observe the
-        --same setting.
-        multimonitor = {"fontsize"},
+        --same setting. (A map window's rail is rebuilt by its window,
+        --which watches the zoom itself: MapRail.Signature.)
+        multimonitor = cond(windowedRail, nil, {"fontsize"}),
         monitor = function(element)
+            if windowedRail then
+                return
+            end
             if g_railRebuildPending then
                 return
             end
@@ -24524,7 +24936,7 @@ local function CreateIconRail(side, entries)
         --menu used to hang off the dock/tray button at the top of the
         --column, which no longer exists.
         rightClick = function(element)
-            if g_railRearranging then
+            if g_railRearranging or fixedRail then
                 return
             end
             local menuEntries = RailAddPanelEntries(element, side)
@@ -24558,6 +24970,10 @@ local function CreateIconRail(side, entries)
         --collapsed panels don't process events -- without this call the
         --map stays squeezed as if the docks were still on screen.
         syncDockMode = function(element)
+            --the docks are a screen-edge matter.
+            if windowedRail then
+                return
+            end
             local dockVisible = not dmhub.GetSettingValue(side .. "dockoffscreen")
             if element.data.lastDockVisible ~= dockVisible then
                 element.data.lastDockVisible = dockVisible
@@ -24625,6 +25041,17 @@ local function CreateIconRail(side, entries)
             if mod.unloaded then
                 element:DestroySelf()
                 return
+            end
+            --a map window's rail only keeps its own buttons current; the
+            --screen-edge rails below own the shared bookkeeping.
+            if windowedRail then
+                element:FireEventTree("refreshRail")
+                return
+            end
+            --one rail (whichever exists) watches whether the map rail's
+            --merged section is still the right one (MapRail.CheckMerged).
+            if element == (g_iconRails.left or g_iconRails.right) then
+                MapRail.CheckMerged()
             end
             --a custom interface took the rail surface over mid-session
             --(e.g. the game mode identified itself after the rails were
@@ -24986,6 +25413,8 @@ local function BuildIconRails()
         return
     end
     local sides = RailLayout()
+    --the maximized live map window's rail joins the bottom of these.
+    MapRail.AppendMerged(sides)
     WrapRailOverflow(sides)
     for _, side in ipairs({"left", "right"}) do
         --a hidden side is not built in normal mode: nothing to paint, no
@@ -25062,6 +25491,8 @@ end
 --drag rearranges them). Open windows are untouched.
 RebuildIconRails = function()
     DestroyIconRails()
+    --map windows' rails rebuild with these (MapRail.Signature).
+    MapRail.version = (MapRail.version or 0) + 1
     if RailModeActive() and DocumentsLayer() ~= nil then
         BuildIconRails()
     end
@@ -25133,14 +25564,16 @@ end)
 -- ---------------------------------------------------------------------------
 -- Map Buttons
 -- ---------------------------------------------------------------------------
---A short row of rail-styled buttons in the top-right corner of the map,
---supplied by whatever is running on the CURRENT map rather than by the
---user's layout -- Map Scripts are the first client: a script declares
---`buttons = {...}` and each attached instance registers them while it
---runs, so they come and go with the map (a uvtt import's settings
---button, an encounter's controls). They are deliberately NOT rail
---entries: nothing about them belongs in iconraillayout, and they must
---show even with the rail mode off. They reuse the rail's button/icon
+--Rail-styled buttons supplied by whatever is running on the CURRENT map
+--rather than by the user's layout -- Map Scripts are the first client: a
+--script declares `buttons = {...}` and each attached instance registers
+--them while it runs, so they come and go with the map (a uvtt import's
+--settings button, an encounter's controls). With the table up and the
+--rail mode on they show on the MAP RAIL's right column (MapRail below:
+--inside the live map window, or on the right screen rail when it is
+--maximized). Otherwise -- rail mode off, or a full-screen map -- they
+--show as the bar described here. Either way nothing about them belongs
+--in iconraillayout. They reuse the rail's button/icon
 --classes and styles so they look native, with one difference -- the
 --glyph wears the scheme's accent color, so the row reads as "this map
 --offers something" rather than as more standing chrome.
@@ -25409,6 +25842,14 @@ function MapButtons.Build()
         end
     end
 
+    --with the table up and the rail mode on, these buttons are on the map
+    --rail instead (MapRail); the bar is for the full-screen map and the
+    --dock UI.
+    local tabletop = rawget(_G, "Tabletop")
+    if RailModeActive() and tabletop ~= nil and tabletop.IsActive() then
+        return
+    end
+
     local entries = MapButtons.VisibleEntries()
     if #entries == 0 then
         return
@@ -25485,7 +25926,254 @@ ThemeEngine.OnThemeChanged(mod, function()
         bar.styles = MapButtons.Styles()
         bar:UpdateStyle()
     end
+    --map window rails carry styles resolved at build: rebuild them.
+    MapRail.version = (MapRail.version or 0) + 1
 end)
+
+-- ---------------------------------------------------------------------------
+-- Map rail: the columns themselves (the panel list and fixed folders are
+-- with PanelDocument.StoredTabs above)
+-- ---------------------------------------------------------------------------
+--
+--While the rail mode is on in a game with the table up, the map rail
+--replaces the MapButtons bar:
+--  * the live map window, windowed: a fixed rail column inside each of
+--    its edges -- map panels on the left, the map's own buttons
+--    (MapButtons: map scripts, encounter controls) on the right. Built by
+--    PanelDocument.CreateMapRails; Tabletop.lua hosts and rebuilds them.
+--  * the live map window, maximized: the same buttons appended to the
+--    screen rails below a divider (MapRail.AppendMerged, from
+--    BuildIconRails), left to left and right to right.
+--  * no live map window on screen: no map rail at all. The panels can
+--    still be opened from the Panels menu; they act on the current map.
+--Everything is rebuilt by polling a signature rather than by events: the
+--inputs (panel permissions, map scripts starting, the window being
+--maximized) come from several modules, and a string compare twice a
+--second is cheap.
+MapRail.version = MapRail.version or 0
+
+--how far a map window's rail sits in from the window's edges.
+MapRail.WINDOW_INSET = 8
+
+--A map button as a rail entry ("mapbutton:<id>"): drawn and driven from
+--the MapButtons registry, with the accent glyph and the registry's alert.
+RailEntryTypes.mapbutton = {
+    available = function(id)
+        return MapButtons.registry[id] ~= nil
+    end,
+    name = function(id)
+        local def = MapButtons.registry[id]
+        if def == nil then
+            return "Map Button"
+        end
+        return def.tooltip or def.name
+    end,
+    icon = function(id)
+        local def = MapButtons.registry[id]
+        if def == nil then
+            return "phosphor/lightning.png"
+        end
+        return def.icon
+    end,
+    accent = true,
+    clickAnim = true,
+    alert = function(id)
+        local def = MapButtons.registry[id]
+        if def == nil or type(def.alert) ~= "function" then
+            return nil
+        end
+        return def.alert()
+    end,
+    activate = function(id, element)
+        --a second press on a button whose popup is up closes it.
+        if element.popup ~= nil then
+            element.popup = nil
+            return
+        end
+        --re-read at press time so a replaced registration is live.
+        local def = MapButtons.registry[id]
+        if def == nil or type(def.click) ~= "function" then
+            return
+        end
+        element.popupPositioning = "panel"
+        element:PulseClass("clickPop")
+        def.click(element)
+    end,
+}
+
+--- The map panels' rail entries for this user, in rail order: folder
+--- owners and any panel no folder of theirs holds. Slots are unassigned.
+--- @return table[]
+function MapRail.PanelEntries()
+    local list = {}
+    local owners = PanelDocument.GroupOwners()
+    for _, folder in ipairs(MapRail.FOLDERS) do
+        for _, key in ipairs(folder) do
+            local reg = DockablePanel.GetRegistration(key)
+            if reg ~= nil and owners[key] == nil and MapRail.PanelAvailable(key) and PanelDocument.Get(key) ~= nil then
+                list[#list + 1] = { key = key, name = reg.name, span = 1, ord = #list, mapRail = true }
+            end
+        end
+    end
+    return list
+end
+
+--- The current map's own buttons (MapButtons) as rail entries.
+--- @return table[]
+function MapRail.ButtonEntries()
+    local list = {}
+    for _, def in ipairs(MapButtons.VisibleEntries()) do
+        list[#list + 1] = {
+            key = "mapbutton:" .. def.id,
+            name = def.tooltip or def.name,
+            span = 1,
+            ord = #list,
+            mapRail = true,
+            customType = "mapbutton",
+            customId = def.id,
+        }
+    end
+    return list
+end
+
+function MapRail.EntriesSignature(entries)
+    local keys = {}
+    for _, e in ipairs(entries) do
+        keys[#keys + 1] = e.key
+    end
+    return table.concat(keys, ",")
+end
+
+--how the live map window is on screen: "maximized", "window" or nil.
+function MapRail.LiveWindowState()
+    local tabletop = rawget(_G, "Tabletop")
+    if tabletop == nil or tabletop.LiveWindowState == nil then
+        return nil
+    end
+    return tabletop.LiveWindowState()
+end
+
+--the map rail exists only in rail mode, and steps aside for rearranging
+--(its buttons are not the user's to move).
+function MapRail.Active()
+    return RailModeActive() and not g_railRearranging and PanelDocument.RailCustomInterfaceId() == nil
+end
+
+--- What a map window's rails are built from; Tabletop rebuilds them when
+--- this changes. "off" when there are none to build.
+--- @return string
+function MapRail.Signature()
+    if not MapRail.Active() then
+        return "off"
+    end
+    return string.format("%s|%s|%s|%d", MapRail.EntriesSignature(MapRail.PanelEntries()),
+        MapRail.EntriesSignature(MapRail.ButtonEntries()), tostring(WindowUIScale()), MapRail.version)
+end
+
+--what the screen rails' merged section is built from.
+function MapRail.MergedSignature()
+    if not MapRail.Active() or MapRail.LiveWindowState() ~= "maximized" then
+        return "off"
+    end
+    return MapRail.EntriesSignature(MapRail.PanelEntries()) .. "|" .. MapRail.EntriesSignature(MapRail.ButtonEntries())
+end
+
+--Put entries at the end of a rail column (a side's RailLayout list),
+--one empty slot below its last button, with the divider over that gap.
+function MapRail.AppendSection(list, entries)
+    if #entries == 0 then
+        return
+    end
+    local last = -1
+    for _, e in ipairs(list) do
+        local bottom = e.slot + (e.span or 1) - 1
+        if bottom > last then
+            last = bottom
+        end
+    end
+    local slot = 0
+    if last >= 0 then
+        slot = last + 2
+    end
+    for i, e in ipairs(entries) do
+        e.slot = slot + i - 1
+        e.mapDivider = i == 1 and last >= 0
+        list[#list + 1] = e
+    end
+end
+
+--- BuildIconRails: add the merged map section to the screen rails' columns
+--- while the live map window is maximized. A hidden side's section goes to
+--- the other side rather than nowhere.
+--- @param sides {left: table[], right: table[]}
+function MapRail.AppendMerged(sides)
+    MapRail.mergedSig = MapRail.MergedSignature()
+    if MapRail.mergedSig == "off" then
+        return
+    end
+    local panelSide = cond(PanelDocument.RailSideHidden("left"), "right", "left")
+    local buttonSide = cond(PanelDocument.RailSideHidden("right"), "left", "right")
+    MapRail.AppendSection(sides[panelSide], MapRail.PanelEntries())
+    MapRail.AppendSection(sides[buttonSide], MapRail.ButtonEntries())
+end
+
+--Polled by a screen rail's think: rebuild the rails when the merged
+--section they were built with is no longer the right one (the window was
+--maximized or restored, a map script added a button, ...).
+function MapRail.CheckMerged()
+    if g_railRebuildPending or MapRail.MergedSignature() == MapRail.mergedSig then
+        return
+    end
+    g_railRebuildPending = true
+    dmhub.Schedule(0.01, function()
+        g_railRebuildPending = false
+        if mod.unloaded then
+            return
+        end
+        RebuildIconRails()
+    end)
+end
+
+--- The live map window's rail columns (left: map panels, right: the map's
+--- own buttons), for Tabletop.lua to mount inside the window. Each needs
+--- setRailScale fired once attached. Empty when the map rail is off.
+--- @return Panel[]
+function PanelDocument.CreateMapRails()
+    local result = {}
+    if not MapRail.Active() then
+        return result
+    end
+    local columns = {
+        { side = "left", entries = MapRail.PanelEntries() },
+        { side = "right", entries = MapRail.ButtonEntries() },
+    }
+    for _, column in ipairs(columns) do
+        if #column.entries > 0 then
+            for i, e in ipairs(column.entries) do
+                e.slot = i - 1
+            end
+            result[#result + 1] = CreateIconRail(column.side, column.entries, {
+                fixed = true,
+                windowed = true,
+                inset = MapRail.WINDOW_INSET,
+                --beside the button, toward the middle of the screen.
+                anchor = function(button, index)
+                    local scale = WindowUIScale()
+                    local placement = PanelDocument.PanelWindowPlacement(button,
+                        PanelDocument.DefaultWidth * scale, PanelDocument.DefaultHeight * scale)
+                    if placement == nil then
+                        return nil
+                    end
+                    return placement.x, placement.y
+                end,
+            })
+        end
+    end
+    --RefreshRails reaches these too. Only the live window has rails, so
+    --the newest build replaces the last.
+    MapRail.windowRails = result
+    return result
+end
 
 --Create or destroy the rails to match the setting; restore pinned windows
 --when they come up. Safe to call any time.
@@ -25570,12 +26258,18 @@ function EnsureIconRail()
     --call and costs a handful of settings reads once it is clean.
     local renamed = RailMigrateRenamedPanels()
 
+    --map panels moved to the map rail: take them out of stored layouts.
+    local mapStripped = MapRail.StripStoredLayouts()
+
     --push this game's authored buttons into the account-wide store
     --(one-time per game; a no-op costs one settings read + flag check).
     UserButtons.Migrate()
 
     local existing = g_iconRails.left
     if existing ~= nil and existing.valid then
+        if mapStripped and not renamed and RebuildIconRails ~= nil then
+            RebuildIconRails()
+        end
         --rails already up: they were built from the pre-rename state, so
         --the repair has to reach the screen on its own. A window still
         --open under an old key references a document the repaired state
@@ -25899,32 +26593,26 @@ local g_viewBuiltins = {
         name = "Director",
         version = 6,
         dmonly = true,
+        --Floors & Layers, Measuring Tool, Map Markup and their folders
+        --(and Map Settings from the Maps folder) moved to the map rail
+        --(MapRail, 2026-10-15). The slots below are what
+        --MapRail.StripStoredLayouts leaves of the old layout, so baselines
+        --stamped from it still match and no version bump is needed.
         layout = {
             rail = {
                 ["character"] = { side = "left", slot = 0 },
-                --the two map-level groups sit directly under Character
-                --(David 2026-08-08): what map you are on, then how it is
-                --stacked and lit. Map *editing* stays down at "map
-                --markup" -- these are about picking and framing a map,
-                --not painting one.
                 ["maps"] = { side = "left", slot = 1 },
-                ["floors & layers"] = { side = "left", slot = 2 },
-                ["bestiary"] = { side = "left", slot = 3 },
-                ["journal"] = { side = "left", slot = 4 },
-                ["dice"] = { side = "left", slot = 5 },
-                ["measuring tool"] = { side = "left", slot = 6 },
-                ["chat"] = { side = "left", slot = 7 },
-                ["audio"] = { side = "left", slot = 8 },
-                ["map markup"] = { side = "left", slot = 9 },
+                ["bestiary"] = { side = "left", slot = 2 },
+                ["journal"] = { side = "left", slot = 3 },
+                ["dice"] = { side = "left", slot = 4 },
+                ["chat"] = { side = "left", slot = 5 },
+                ["audio"] = { side = "left", slot = 6 },
             },
             tabs = {
                 ["character"] = { "character", "triggers", "downtime projects" },
-                ["maps"] = { "maps", "map settings" },
-                ["floors & layers"] = { "floors & layers", "time of day/lighting" },
                 ["bestiary"] = { "bestiary", "encounters" },
                 ["journal"] = { "journal", "campaign tracker" },
                 ["dice"] = { "dice", "physical dice" },
-                ["measuring tool"] = { "measuring tool", "whiteboard" },
                 --every key here MUST be the full registered panel name:
                 --a dead key orphans that panel from the group, and a
                 --curated one then auto-places itself back onto the rail
@@ -25975,15 +26663,15 @@ local g_viewBuiltins = {
                 ["maps"] = { side = "left", slot = 1 },
                 ["journal"] = { side = "left", slot = 2 },
                 ["dice"] = { side = "left", slot = 3 },
-                ["measuring tool"] = { side = "left", slot = 4 },
-                ["chat"] = { side = "left", slot = 5 },
-                ["audio"] = { side = "left", slot = 6 },
+                --Measuring Tool (slot 4, with Whiteboard) moved to the map
+                --rail, 2026-10-15; see the Director view's note.
+                ["chat"] = { side = "left", slot = 4 },
+                ["audio"] = { side = "left", slot = 5 },
             },
             tabs = {
                 ["character"] = { "character", "triggers", "downtime projects" },
                 ["journal"] = { "journal", "campaign tracker" },
                 ["dice"] = { "dice", "physical dice" },
-                ["measuring tool"] = { "measuring tool", "whiteboard" },
                 --every key here MUST be the full registered panel name:
                 --a dead key orphans that panel from the group, and a
                 --curated one then auto-places itself back onto the rail
