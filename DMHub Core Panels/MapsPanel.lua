@@ -168,8 +168,8 @@ local RebuildTokensPerMap = function()
 	return result
 end
 
---Whether a dragged row is out over the table or the map rather than over a
---panel. The engine picks a drag target by overlap, not by what is under the
+--Whether a dragged row is out over the table, the map or a map window
+--rather than over a panel. The engine picks a drag target by overlap, not by what is under the
 --mouse, and a scrolled list's off-screen folders still overlap a row released
 --below the list -- which re-filed the map. Read once a frame, since
 --canDragOnto runs for every target in the list.
@@ -179,7 +179,7 @@ local function DragIsOffPanel()
 	local frame = dmhub.FrameCount()
 	if frame ~= g_offPanelFrame then
 		g_offPanelFrame = frame
-		g_offPanel = dmhub.panelDropSurface ~= nil
+		g_offPanel = dmhub.panelDropSurface ~= nil or Tabletop.MapRowOverTable()
 	end
 	return g_offPanel
 end

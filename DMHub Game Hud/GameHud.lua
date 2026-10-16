@@ -1834,6 +1834,8 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 			--a maximized map or scene window's strip under the app title bar:
 			--chrome, so it is over everything the windows can be under.
 			Tabletop.CreateChromeLayer(),
+			--the Ctrl+Tab window switcher's cards, over every window and the strip.
+			WindowSwitcher.CreateLayer(),
 
 			DramaticBanner.Create(),
 

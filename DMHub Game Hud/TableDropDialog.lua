@@ -899,7 +899,6 @@ function TableDropDialog.Show(paths, mx, my)
             hpad = OPTION_HPAD,
             vpad = 14,
             borderBox = true,
-            hoverCursor = "hand",
             press = function(element)
                 Select(option.id)
             end,
@@ -1427,7 +1426,6 @@ function TableDropDialog.Show(paths, mx, my)
                 height = 36,
                 halign = "right",
                 valign = "center",
-                hover = gui.Tooltip("Cancel"),
                 press = function(element)
                     gui.CloseModal()
                 end,

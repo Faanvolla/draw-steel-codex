@@ -64,6 +64,8 @@
 --- | "enter"
 --- | "find"
 --- | "save"
+--- | "switchwindow"
+--- | "switchwindowback"
 
 --- @alias Easing
 --- | "EaseInQuad"

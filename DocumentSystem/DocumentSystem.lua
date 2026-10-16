@@ -5685,11 +5685,37 @@ local g_viewerCascadeDefaults = {
     },
 }
 
+--Journal and panel windows cast the same soft shadow as the tabletop's own
+--windows (Tabletop.shadows, the boxShadow style), lifted while dragged
+--("dragging" is set by the engine). None while maximized (nothing beside it
+--to fall on) or popped out (the panel IS the OS window). A function on
+--CustomDocument, not a local: this chunk is at Lua's 200-local ceiling.
+do
+    local cache = nil
+    ---@return table[]
+    function CustomDocument.WindowShadowRules()
+        if cache == nil then
+            local shadows = rawget(_G, "Tabletop") ~= nil and Tabletop.shadows or nil
+            if shadows == nil then
+                return {}
+            end
+            cache = {
+                gui.Style{classes = {"journalViewer"}, boxShadow = shadows.rest},
+                gui.Style{classes = {"journalViewer", "dragging"}, boxShadow = shadows.lifted, transitionTime = 0.15},
+                gui.Style{classes = {"journalViewer", "journalMaximized"}, boxShadow = false},
+                gui.Style{classes = {"journalViewer", "poppedOut"}, boxShadow = false},
+            }
+        end
+        return cache
+    end
+end
+
 local function TabbedViewerStyles()
     return {
         Styles.Default,
         g_viewerCascadeDefaults,
         ThemeEngine.MergeStyles(g_viewerPopoutRules),
+        CustomDocument.WindowShadowRules(),
     }
 end
 
@@ -6861,6 +6887,47 @@ function CustomDocument.CreateTabbedViewer(placement)
         element.data.minimizedButton = button
     end
 
+    --On the tabletop a minimizing journal window becomes the table items for
+    --its documents (Tabletop.MinimizeToDocItem), the shown one placed last so
+    --it lies on top. Clicking one opens it, which restores this window
+    --(ShowDocument); taking one off the table closes its tab. False when no
+    --document could go there: the window then gets a button instead.
+    local function MinimizeOntoTable(element, from)
+        if rawget(_G, "Tabletop") == nil or Tabletop.MinimizeToDocItem == nil then
+            return false
+        end
+        local ordered = {}
+        local active = nil
+        for _, tab in ipairs(element.data.tabs) do
+            if tab.tabId == element.data.activeTabId then
+                active = tab
+            else
+                ordered[#ordered + 1] = tab
+            end
+        end
+        ordered[#ordered + 1] = active
+        local placed = 0
+        for _, tab in ipairs(ordered) do
+            local tabId = tab.tabId
+            local ok = Tabletop.MinimizeToDocItem(tab.docId, from, {
+                token = element,
+                index = placed,
+                still = function()
+                    return element.valid and element.data.minimized == true
+                end,
+                onTakenOff = function()
+                    if element.valid and element.data.minimized then
+                        element:FireEvent("closeTab", tabId)
+                    end
+                end,
+            })
+            if ok then
+                placed = placed + 1
+            end
+        end
+        return placed > 0
+    end
+
     --The mouse's position in panel as 0..1 fractions, or nil when the mouse
     --is not over it. mousePoint alone is no test: during a drag it can come
     --back non-nil with the mouse far outside the panel (y = -10 for a tab
@@ -6934,13 +7001,21 @@ function CustomDocument.CreateTabbedViewer(placement)
         end
     end
 
-    --Tears a tab off into a new journal window of the same size, placed so
-    --the tab sits where it was dropped (dx/dy: how far it was dragged).
-    local function TearOff(source, tab, dx, dy)
-        local layer = WindowLayer()
-        if layer == nil then
-            return
+    --Whether releasing a tab dragged dy units, with no tab strip under the
+    --mouse, tears it off: a small slip off the strip is not a tear-off; a
+    --pull clear of it, or out of the window altogether, is. Never while
+    --popped out: the mouse has left that OS window.
+    local function WouldTearOff(source, dy)
+        if source.data.poppedOut then
+            return false
         end
+        return math.abs(dy) >= TAB_HEIGHT * 1.5 or MouseOver(source) == nil
+    end
+
+    --Where a tab torn off with this drag (dx/dy: how far it was dragged)
+    --opens: a window the size of this one, placed so its tab sits where the
+    --dragged tab is, kept on the table. {x, y, w, h}.
+    local function TearOffRect(source, tab, dx, dy)
         local toggleWidth = treeToggleButton.renderedWidth or TAB_HEIGHT
         local tabLeft = toggleWidth
         for _, t in ipairs(source.data.tabs) do
@@ -6957,7 +7032,88 @@ function CustomDocument.CreateTabbedViewer(placement)
         local y = source.y + dy
         x = math.max(120 - w, math.min(x, lw - 120))
         y = math.max(0, math.min(y, lh - TAB_BAR_HEIGHT))
-        local nv = CustomDocument.CreateTabbedViewer{x = x, y = y, width = w, height = h}
+        return {x = x, y = y, w = w, h = h}
+    end
+
+    --The tear-off preview: an outline of the window the dragged tab would
+    --open, with its tab strip, following the drag. Drawn in the layer over
+    --the windows so no journal covers it.
+    local function ShowTearOffGhost(source, tab, rect)
+        local ghost = source.data.tearOffGhost
+        if ghost == nil or not ghost.valid then
+            local layer = MinimizedLayer()
+            if layer == nil then
+                return
+            end
+            local docs = dmhub.GetTable(CustomDocument.tableName) or {}
+            local doc = docs[tab.docId] or tab.doc
+            local title = (doc ~= nil and doc.description) or "Untitled"
+            ghost = gui.Panel{
+                floating = true,
+                interactable = false,
+                halign = "left",
+                valign = "top",
+                x = rect.x,
+                y = rect.y,
+                width = rect.w,
+                height = rect.h,
+                flow = "vertical",
+                bgimage = "panels/square.png",
+                bgcolor = "#1a1a1e99",
+                borderWidth = 2,
+                borderColor = "#b8925acc",
+                cornerRadius = 6,
+                gui.Panel{
+                    interactable = false,
+                    width = "100%",
+                    height = TAB_BAR_HEIGHT,
+                    flow = "horizontal",
+                    bgimage = "panels/square.png",
+                    bgcolor = "#0a0a0bdd",
+                    gui.Label{
+                        interactable = false,
+                        text = title,
+                        width = "auto",
+                        height = TAB_HEIGHT,
+                        maxWidth = TAB_MAX_WIDTH,
+                        halign = "left",
+                        valign = "bottom",
+                        lmargin = treeToggleButton.renderedWidth or TAB_HEIGHT,
+                        hpad = 11,
+                        textWrap = false,
+                        textOverflow = "ellipsis",
+                        fontSize = 13.5,
+                        color = "#e4ddd0",
+                        bgimage = "panels/square.png",
+                        bgcolor = "#1a1a1e",
+                        border = 1,
+                        borderColor = "#ffffff99",
+                    },
+                },
+            }
+            layer:AddChild(ghost)
+            source.data.tearOffGhost = ghost
+        end
+        ghost.x = rect.x
+        ghost.y = rect.y
+    end
+
+    local function HideTearOffGhost(source)
+        local ghost = source.data.tearOffGhost
+        if ghost ~= nil and ghost.valid then
+            ghost:DestroySelf()
+        end
+        source.data.tearOffGhost = nil
+    end
+
+    --Tears a tab off into a new journal window at TearOffRect.
+    local function TearOff(source, tab, dx, dy)
+        local layer = WindowLayer()
+        if layer == nil then
+            return
+        end
+        local r = TearOffRect(source, tab, dx, dy)
+        local nv = CustomDocument.CreateTabbedViewer{x = r.x, y = r.y, width = r.w, height = r.h}
         layer:AddChild(nv)
         MoveTab(source, tab, nv, nil)
     end
@@ -7120,6 +7276,7 @@ function CustomDocument.CreateTabbedViewer(placement)
             if button ~= nil and button.valid then
                 button:DestroySelf()
             end
+            HideTearOffGhost(element)
             local kept = {}
             for _, v in ipairs(g_journal.viewers) do
                 if v ~= element and v.valid then
@@ -7501,7 +7658,8 @@ function CustomDocument.CreateTabbedViewer(placement)
             tabDropMarker:SetClass("collapsed", false)
         end,
 
-        --every frame of a tab drag: mark where it would land.
+        --every frame of a tab drag: mark where it would land -- a slot in a
+        --tab strip, or the outline of the window a tear-off would open.
         tabDragging = function(element, tabButton)
             local target = g_journal.DropTarget(element, tabButton, true)
             local shown = nil
@@ -7517,12 +7675,21 @@ function CustomDocument.CreateTabbedViewer(placement)
                     v:FireEvent("showTabDropMarker", nil)
                 end
             end
+
+            local tab = FindTab(element, tabButton.data.tabId)
+            local dx, dy = tabButton.xdrag, tabButton.ydrag
+            if target == nil and tab ~= nil and WouldTearOff(element, dy) then
+                ShowTearOffGhost(element, tab, TearOffRect(element, tab, dx, dy))
+            else
+                HideTearOffGhost(element)
+            end
         end,
 
         --a tab drag ended: reorder, move to another window's strip, or --
         --pulled well away from any strip -- tear off into a new window.
         tabDropped = function(element, tabButton)
             HideDropMarkers()
+            HideTearOffGhost(element)
             local dx, dy = tabButton.xdrag, tabButton.ydrag
             tabButton.x = 0
             tabButton.y = 0
@@ -7539,16 +7706,9 @@ function CustomDocument.CreateTabbedViewer(placement)
                 end
                 return
             end
-            --not while popped out: the mouse has left that OS window.
-            if element.data.poppedOut then
-                return
+            if WouldTearOff(element, dy) then
+                TearOff(element, tab, dx, dy)
             end
-            --a small slip off the strip is not a tear-off; a pull clear of
-            --it, or out of the window altogether, is.
-            if math.abs(dy) < TAB_HEIGHT * 1.5 and MouseOver(element) ~= nil then
-                return
-            end
-            TearOff(element, tab, dx, dy)
         end,
 
         --moves tab tabId to position index (counted with it still in place).
@@ -7606,6 +7766,10 @@ function CustomDocument.CreateTabbedViewer(placement)
             end
             element.data.minimized = true
             element:SetClass("collapsed", true)
+            if MinimizeOntoTable(element, from) then
+                element.data.minimizedOnTable = true
+                return
+            end
             FlyGhost(from, {x = element.data.iconX, y = element.data.iconY, w = size, h = size}, function()
                 if element.valid and element.data.minimized then
                     BuildMinimizedButton(element)
@@ -7613,8 +7777,31 @@ function CustomDocument.CreateTabbedViewer(placement)
             end)
         end,
 
-        restoreJournal = function(element)
+        --fromDocId (optional): the document being opened, whose table item
+        --(when minimized onto the table) the window grows out of.
+        restoreJournal = function(element, fromDocId)
             if not element.data.minimized then
+                return
+            end
+            if element.data.minimizedOnTable then
+                element.data.minimizedOnTable = false
+                element.data.minimized = false
+                g_journal.viewer = element
+                local w = element.selfStyle.width
+                local h = element.selfStyle.height
+                if type(w) ~= "number" or type(h) ~= "number" then
+                    w, h = RestingSize(element)
+                end
+                if fromDocId == nil then
+                    local active = FindTab(element, element.data.activeTabId)
+                    fromDocId = active ~= nil and active.docId or nil
+                end
+                Tabletop.RestoreFromDocItems(element, {x = element.x, y = element.y, w = w, h = h}, function()
+                    if element.valid and not element.data.minimized then
+                        element:SetClass("collapsed", false)
+                        element:SetAsLastSibling()
+                    end
+                end, fromDocId)
                 return
             end
             local size = MinButtonSize()
@@ -7665,6 +7852,7 @@ function CustomDocument.CreateTabbedViewer(placement)
             --a maximized window stays put: no dragging it, no resize handles.
             element.dragMove = not element.data.maximized
             resizePanel:SetClass("collapsed", element.data.maximized)
+            element:SetClass("journalMaximized", element.data.maximized)
             element:FireEventTree("journalMaximized", element.data.maximized)
             element:SetAsLastSibling()
             g_journal.viewer = element
@@ -7831,6 +8019,9 @@ local function DocumentWindowStyles()
         opacity = 0,
         transitionTime = 0.15,
     }
+    for _, rule in ipairs(CustomDocument.WindowShadowRules()) do
+        dialogStyles[#dialogStyles + 1] = rule
+    end
     return dialogStyles
 end
 
@@ -8228,7 +8419,7 @@ function CustomDocument:ShowDocument(args)
         GameHud.instance.documentsPanel:AddChild(viewer)
     else
         if viewer.data.minimized then
-            viewer:FireEvent("restoreJournal")
+            viewer:FireEvent("restoreJournal", self.id)
         end
         viewer:SetAsLastSibling()
     end
@@ -24534,6 +24725,18 @@ local function CreateIconRail(side, entries, opts)
                             click = function()
                                 element.popup = nil
                                 togglePin()
+                            end,
+                        })
+                    end
+                    --a document shortcut can leave the rail as an item on
+                    --the table (the reverse of docking one from there).
+                    if docid ~= nil and rawget(_G, "Tabletop") ~= nil and Tabletop.CanUndockDocItem ~= nil
+                            and Tabletop.CanUndockDocItem(docid) then
+                        table.insert(entries, 1, {
+                            text = "Move to the table",
+                            click = function()
+                                element.popup = nil
+                                Tabletop.UndockDocItem(docid, key, element)
                             end,
                         })
                     end

@@ -7614,6 +7614,33 @@ local function CreateTopBar()
             end,
         },
 
+        --Every window on the table, checked while open; a player's also
+        --lists what the Director shared and has open, which they closed
+        --(Tabletop.WindowsMenuEntries).
+        CreateCodexMenuItem{
+            name = "Windows",
+            calculateVisibility = function(element)
+                --only where there is a table (not the lobby). BarFitMenuDropped:
+                --this item owns its selfStyle.collapsed, as Developer below does.
+                --Audio.lua makes a bare Tabletop table before Tabletop.lua
+                --loads, so check for the function, not just the table.
+                local tabletop = rawget(_G, "Tabletop")
+                local active = tabletop ~= nil and tabletop.IsActive ~= nil and tabletop.IsActive()
+                element.selfStyle.collapsed = cond(active and not BarFitMenuDropped(element), 0, 1)
+            end,
+            menuItems = function()
+                local tabletop = rawget(_G, "Tabletop")
+                local items = {}
+                if tabletop ~= nil and tabletop.WindowsMenuEntries ~= nil then
+                    items = tabletop.WindowsMenuEntries()
+                end
+                if #items == 0 then
+                    items = {{text = "No windows on the table", disabled = true}}
+                end
+                return items
+            end,
+        },
+
         m_adventureDocumentsBar,
 
         CreateCodexMenuItem{

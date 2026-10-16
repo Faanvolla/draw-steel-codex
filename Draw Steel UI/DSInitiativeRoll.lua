@@ -122,6 +122,9 @@ local function CreateCombatQueue(heroesWin)
         --not the plan's count for the default party size.
         if Encounter.GetPrep(game.currentMapId) ~= nil then
             live.onsetMonsterCount = Encounter.PrepOnsetMonsterCount(g_selectedEncounterOpenInitiative, g_monsterTokensOpenInitiative or {})
+            if live:try_get("victoryCondition") == "nonminions_defeated" then
+                live.onsetNonMinionCount = Encounter.PrepOnsetMonsterCount(g_selectedEncounterOpenInitiative, g_monsterTokensOpenInitiative or {}, true)
+            end
         end
         info.initiativeQueue.liveEncounter = live
     else

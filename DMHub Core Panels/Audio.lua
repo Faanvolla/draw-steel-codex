@@ -3480,8 +3480,16 @@ local AudioSoundboardButtonStyles = {
 	--hmargin=20 nudge is gone with it -- the label is not shown at all now.
 	{ selectors = {"audioSbDuration", "parent:editMode"}, hidden = 1 },
 	{ selectors = {"audioSbVolumeRow", "parent:editMode"}, hidden = 1 },
-	{ selectors = {"audioSbLoop", "parent:editMode"}, hidden = 1 },
-	--Loop glyph: dim when off, accent-tinted when on. Always visible on filled buttons.
+	{ selectors = {"audioSbLoopChip", "parent:editMode"}, hidden = 1 },
+	--Pad loop toggle: on = dark glyph on a solid @accent chip, off = a faint bare
+	--glyph that brightens on hover. A tint/opacity change alone read the same both
+	--ways on the coloured pads, since @accent is near-white.
+	{ selectors = {"audioSbLoopChip"}, bgcolor = "clear" },
+	{ selectors = {"audioSbLoopChip", "active"}, bgcolor = "@accent" },
+	{ selectors = {"audioSbLoopIcon"}, bgcolor = "white", opacity = 0.25 },
+	{ selectors = {"audioSbLoopIcon", "parent:hover"}, opacity = 0.7 },
+	{ selectors = {"audioSbLoopIcon", "parent:active"}, bgcolor = "black", opacity = 1 },
+	--Standalone loop glyph (the dock's running-ambience badge).
 	{ selectors = {"audioSbLoop"}, bgcolor = "white", opacity = 0.4 },
 	{ selectors = {"audioSbLoop", "active"}, bgcolor = "@accent", opacity = 1 },
 	--K2: a pool pad actively looping as ambience gets a persistent ring so it reads
@@ -3591,16 +3599,27 @@ CreateSoundboardButton = function(getBoardOrLegacyBoard, slot, opts)
 		valign = "center",
 	}
 
-	--Loop glyph: top-left corner, always visible on filled buttons (both surfaces).
-	--bgimage set directly (not via a class rule) so it renders under any cascade.
+	--Loop toggle: top-left corner, always visible on filled buttons (both surfaces).
+	--A chip holding the glyph so "on" can fill behind it. bgimages set directly (not
+	--via a class rule) so they render under any cascade.
 	local loopGlyph = gui.Panel{
-		classes = {"audioSbLoop", "collapsed"},
-		bgimage = "game-icons/infinity.png",
-		width = 13,
+		classes = {"audioSbLoopChip", "collapsed"},
+		bgimage = "panels/square.png",
+		cornerRadius = 3,
+		width = 19,
 		height = 13,
 		halign = "left",
 		valign = "top",
 		swallowPress = true,
+		gui.Panel{
+			classes = {"audioSbLoopIcon"},
+			bgimage = "game-icons/infinity.png",
+			width = 13,
+			height = 13,
+			halign = "center",
+			valign = "center",
+			interactable = false,
+		},
 		press = function(element)
 			--Pool pads: the glyph is a passive loop-ambience indicator (start/stop
 			--lives on the pad's own click handler), so no-op here.

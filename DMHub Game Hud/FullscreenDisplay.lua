@@ -42,6 +42,10 @@ function FullscreenDisplay.IsShowingHere(belowui)
     if belowui ~= nil and (data.belowui == true) ~= belowui then
         return false
     end
+    --a library scene the Director shares with only some players.
+    if type(data.sceneid) == "string" and Tabletop.SceneShareExcludesMe(data.sceneid) then
+        return false
+    end
     return true
 end
 
@@ -296,6 +300,21 @@ function FullscreenDisplay.Create(options)
     --interactable: while shown it takes the clicks, as the full-screen art always has.
     local view = FullscreenDisplay.CreateSceneView{fit = "cover", interactable = true}
 
+    --the table's shares decide which players see a library scene, so a
+    --change to them refreshes the display too.
+    local shareMonitor = gui.Panel{
+        floating = true,
+        width = 0,
+        height = 0,
+        interactable = false,
+        monitorGame = Tabletop.ShareDocPath(),
+        refreshGame = function(element)
+            if element.parent ~= nil then
+                element.parent:FireEvent("refreshGame")
+            end
+        end,
+    }
+
     return gui.Panel{
         classes = {"hidden", cond(belowui, "belowui", "aboveui")},
         width = "100%",
@@ -303,6 +322,7 @@ function FullscreenDisplay.Create(options)
         halign = "center",
         valign = "center",
         view,
+        shareMonitor,
 
         monitorGame = doc.path,
 

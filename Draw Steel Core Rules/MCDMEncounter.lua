@@ -139,6 +139,8 @@ end
 function Encounter.GetVictoryConditions(encounter)
     local result = {
         { id = "all_defeated", text = "All Monsters Defeated" },
+        --the book's usual ending: minions left standing flee once the rest fall.
+        { id = "nonminions_defeated", text = "All Non-Minions Defeated" },
         { id = "heroes_outnumber", text = "Heroes Outnumber Monsters" },
         { id = "heroes_outnumber_two_to_one", text = "Heroes Outnumber Monsters Two-to-One" },
         { id = "half_defeated", text = "Half Monsters Defeated" },
@@ -1811,6 +1813,11 @@ function LiveEncounter.Create(encounter)
     --this guards an encounter that never actually had a leader from being won instantly.
     if result:try_get("victoryCondition") == "leader_defeated" then
         result.onsetLeaderCount = result:CountNonMinionMonsters(nil, "leader")
+    end
+    --for "All Non-Minions Defeated": the progress denominator, and the guard that an
+    --encounter with no non-minions falls back to "All Monsters Defeated".
+    if result:try_get("victoryCondition") == "nonminions_defeated" then
+        result.onsetNonMinionCount = result:CountNonMinionMonsters(nil)
     end
     --per-hero statistics for this encounter (see LiveEncounter:IncrementStat).
     --keyed by hero tokenid; sub-tables are vivified on first increment.
@@ -4444,7 +4451,8 @@ end
 -- the monsters the heroes still have to deal with even though they're not yet on
 -- the map. Each minion squad counts as one monster.
 -- If org is given (a lowercase organization keyword such as "leader"), only pending
--- non-minion monsters of that organization are counted.
+-- non-minion monsters of that organization are counted; org "*" counts every
+-- pending non-minion and no minion squads.
 function LiveEncounter:CountPendingReinforcements(numHeroes, org)
     numHeroes = numHeroes or dmhub.GetSettingValue("numheroes")
     local clone = self:CloneForNumberOfHeroes(numHeroes)
@@ -4454,7 +4462,7 @@ function LiveEncounter:CountPendingReinforcements(numHeroes, org)
             for monsterid, quantity in pairs(group.monsters) do
                 local monster = assets.monsters[monsterid]
                 if monster ~= nil and not monster.properties.minion and
-                    (org == nil or OrganizationKeyword(monster.properties) == org) then
+                    (org == nil or org == "*" or OrganizationKeyword(monster.properties) == org) then
                     count = count + quantity
                 end
             end
@@ -4614,6 +4622,13 @@ end
 -- initiative queue. A defeated leader (0 Stamina) or one removed from the queue is not
 -- counted, which is what drives the "Leader Defeated" victory check.
 function LiveEncounter:CountLiveLeaders()
+    return self:CountLiveNonMinions("leader")
+end
+
+-- Counts the live (Stamina > 0) non-minion monsters in the active initiative queue,
+-- only those of organization org (a lowercase keyword such as "leader") when given.
+-- Drives "Leader Defeated" and "All Non-Minions Defeated".
+function LiveEncounter:CountLiveNonMinions(org)
     local q = dmhub.initiativeQueue
     local count = 0
     if q == nil then
@@ -4627,7 +4642,7 @@ function LiveEncounter:CountLiveLeaders()
                 seen[token.charid] = true
                 local props = token.properties
                 if props ~= nil and props:IsMonster() and not props.minion and
-                    OrganizationKeyword(props) == "leader" and props:CurrentHitpoints() > 0 then
+                    (org == nil or OrganizationKeyword(props) == org) and props:CurrentHitpoints() > 0 then
                     count = count + 1
                 end
             end
@@ -4640,8 +4655,8 @@ end
 -- should be shown. A boss bar is appropriate when:
 --   * the victory condition is "Solo Exhausted" (the objective is literally to wear the
 --     solo down), or
---   * the victory condition is "all monsters defeated" AND the encounter contains exactly
---     one non-minion monster with the Solo role, or
+--   * the victory condition is "all monsters defeated" (or "all non-minions defeated")
+--     AND the encounter contains exactly one non-minion monster with the Solo role, or
 --   * the victory condition is "Leader Defeated" AND the encounter contains a Leader (the
 --     bar tracks that leader's Stamina), or
 --   * the victory condition is "Destroy the Thing!" AND exactly one matching object was
@@ -4671,7 +4686,7 @@ function LiveEncounter:GetBossToken()
         return self:GetFirstMonsterWithOrganization("leader")
     end
 
-    if condition ~= "solo_exhausted" and condition ~= "all_defeated" then
+    if condition ~= "solo_exhausted" and condition ~= "all_defeated" and condition ~= "nonminions_defeated" then
         return nil
     end
 
@@ -4700,7 +4715,7 @@ function LiveEncounter:GetBossToken()
         return solos[1]
     end
 
-    --all_defeated: only surface a boss bar for a single-solo encounter.
+    --all_defeated / nonminions_defeated: only surface a boss bar for a single-solo encounter.
     if #solos == 1 then
         return solos[1]
     end
@@ -4748,8 +4763,16 @@ function LiveEncounter:CheckVictory()
     local heroes, monstersOnField = self:CountLiveCombatants()
     local monstersRemaining = monstersOnField + self:CountPendingReinforcements(numHeroes)
 
+    --an encounter with no non-minions at all is judged as "All Monsters Defeated", so
+    --it can never be won before a blow is struck.
+    if condition == "nonminions_defeated" and self:try_get("onsetNonMinionCount", 0) <= 0 then
+        condition = "all_defeated"
+    end
+
     if condition == "all_defeated" then
         return monstersRemaining <= 0
+    elseif condition == "nonminions_defeated" then
+        return self:CountLiveNonMinions() + self:CountPendingReinforcements(numHeroes, "*") <= 0
     elseif condition == "heroes_outnumber" then
         return heroes > 0 and heroes > monstersRemaining
     elseif condition == "heroes_outnumber_two_to_one" then
@@ -4784,6 +4807,15 @@ function LiveEncounter:GetDefeatProgress()
     local condition = self:try_get("victoryCondition", "all_defeated")
     local onset = self:try_get("onsetMonsterCount", 0)
     local numHeroes = dmhub.GetSettingValue("numheroes")
+
+    --"All Non-Minions Defeated" counts non-minions only; minion squads are ignored.
+    if condition == "nonminions_defeated" and self:try_get("onsetNonMinionCount", 0) > 0 then
+        local remaining = self:CountLiveNonMinions() + self:CountPendingReinforcements(numHeroes, "*")
+        --the Director may have added non-minions during prep, so never report fewer
+        --needed than are still standing.
+        local needed = math.max(self:try_get("onsetNonMinionCount", 0), remaining)
+        return needed - remaining, needed
+    end
     local heroes, monstersOnField = self:CountLiveCombatants()
     local monstersRemaining = monstersOnField + self:CountPendingReinforcements(numHeroes)
 
@@ -4846,6 +4878,9 @@ function LiveEncounter:GetObjectiveText()
     end
 
     local defeated, needed = self:GetDefeatProgress()
+    if condition == "nonminions_defeated" and self:try_get("onsetNonMinionCount", 0) > 0 then
+        return string.format("Objective: Defeat %d/%d non-minions to win", defeated, needed)
+    end
     return string.format("Objective: Defeat %d/%d monsters to win", defeated, needed)
 end
 
@@ -4871,6 +4906,21 @@ function LiveEncounter:GetObjectiveTooltip()
     local lines = {}
     if condition == "all_defeated" then
         lines[#lines + 1] = "Victory when every monster is defeated. Each minion squad counts as one monster."
+    elseif condition == "nonminions_defeated" then
+        local tooltipLines = {
+            "Victory when every monster that is not a minion is defeated. Minions left standing do not count.",
+            "",
+            string.format("Non-minions at onset: %d", self:try_get("onsetNonMinionCount", 0)),
+            string.format("Non-minions still standing: %d", self:CountLiveNonMinions()),
+        }
+        local pendingNonMinions = self:CountPendingReinforcements(numHeroes, "*")
+        if pendingNonMinions > 0 then
+            tooltipLines[#tooltipLines + 1] = string.format("Non-minions still to arrive: %d", pendingNonMinions)
+        end
+        if self:try_get("onsetNonMinionCount", 0) <= 0 then
+            tooltipLines[#tooltipLines + 1] = "This encounter has no non-minions, so every monster must be defeated."
+        end
+        return table.concat(tooltipLines, "\n")
     elseif condition == "half_defeated" then
         lines[#lines + 1] = "Victory when at least half of the encounter's monsters are defeated. Each minion squad counts as one monster."
     elseif condition == "heroes_outnumber" then

@@ -3267,7 +3267,9 @@ local ShowPDFViewerDialogInternal = function(doc, starting_page)
     --view panel.
     pdfScrollViewPanel = gui.Panel {
         id = "pdfScrollView",
-        width = "100%-260",
+        --takes whatever the sidebar leaves, so it fills the window when the
+        --sidebar is collapsed.
+        width = "100% available",
         height = "100%",
         vscroll = true,
         data = {
@@ -4509,12 +4511,32 @@ mod.shared.ShowPDFViewerDialog = function(doc, starting_page, options)
         end
         PlaceViewer()
         SyncCommandContext()
+        --docked on the rail it collapses onto its rail button; otherwise it
+        --becomes the PDF's item on the table, which a click opens (and so
+        --restores, see ShowPDFViewerDialog). Taking that off the table closes it.
+        if from ~= nil and not Tabletop.IsExternalDocked(tableRec) and Tabletop.MinimizeToDocItem(doc.id, from, {
+            token = dialogPanel,
+            still = function()
+                return dialogPanel ~= nil and dialogPanel.valid and data.minimized == true
+            end,
+            onTakenOff = function()
+                if dialogPanel ~= nil and dialogPanel.valid and data.minimized and data.closeViewer ~= nil then
+                    data.closeViewer()
+                end
+            end,
+        }) then
+            data.minimizedOnTable = true
+            return
+        end
         Tabletop.MinimizeExternal(tableRec, from)
     end
 
     local function RestoreViewer()
         local data = dialogPanel.data
-        if tableRec == nil or not data.minimized or tableRec.minimized == false then
+        if tableRec == nil or not data.minimized then
+            return
+        end
+        if not data.minimizedOnTable and tableRec.minimized == false then
             return
         end
         local to
@@ -4524,7 +4546,7 @@ mod.shared.ShowPDFViewerDialog = function(doc, starting_page, options)
             local x, y, w, h = RestoredGeometry()
             to = {x = x, y = y, w = w, h = h}
         end
-        Tabletop.RestoreExternal(tableRec, to, function()
+        local function Shown()
             if dialogPanel == nil or not dialogPanel.valid or not data.minimized then
                 return
             end
@@ -4534,7 +4556,14 @@ mod.shared.ShowPDFViewerDialog = function(doc, starting_page, options)
                 FocusViewer()
             end
             SyncCommandContext()
-        end)
+        end
+        if data.minimizedOnTable then
+            --minimized onto the table: grows back out of its item there.
+            data.minimizedOnTable = false
+            Tabletop.RestoreFromDocItems(dialogPanel, to, Shown, doc.id)
+        else
+            Tabletop.RestoreExternal(tableRec, to, Shown)
+        end
     end
 
     local function CloseViewer()

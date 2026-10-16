@@ -1139,7 +1139,7 @@ RailEntryTypes.journal = {
         CustomDocument.ShowJournalPreview(element, id, CustomDocument.RailPreviewPlacement(element))
     end,
     menu = function(id, element)
-        return {
+        local entries = {
             {
                 text = "Open",
                 click = function()
@@ -1148,6 +1148,17 @@ RailEntryTypes.journal = {
                 end,
             },
         }
+        --back off the rail, as the table item it was docked from.
+        if rawget(_G, "Tabletop") ~= nil and Tabletop.CanUndockDocItem ~= nil and Tabletop.CanUndockDocItem(id) then
+            entries[#entries+1] = {
+                text = "Move to the table",
+                click = function()
+                    element.popup = nil
+                    Tabletop.UndockDocItem(id, "journal:" .. id, element)
+                end,
+            }
+        end
+        return entries
     end,
     onRemove = function(id)
     end,

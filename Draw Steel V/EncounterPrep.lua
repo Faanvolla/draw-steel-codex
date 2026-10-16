@@ -672,16 +672,21 @@ end
 --The victory units the heroes face when combat starts from a prep: the
 --monsters on the map (one per minion squad) plus the plan's reinforcements,
 --which arrive later. Read by CreateCombatQueue (DSInitiativeRoll.lua).
+--nonMinionsOnly counts only the non-minions, for "All Non-Minions Defeated".
 --- @param encounter Encounter
 --- @param monsterCharids table<string, boolean>
+--- @param nonMinionsOnly boolean|nil
 --- @return number
-function Encounter.PrepOnsetMonsterCount(encounter, monsterCharids)
+function Encounter.PrepOnsetMonsterCount(encounter, monsterCharids, nonMinionsOnly)
     local units = {}
     local count = 0
     for charid, _ in pairs(monsterCharids) do
         local tok = dmhub.GetCharacterById(charid)
         if tok ~= nil and tok.valid then
             local unit = Encounter.VictoryUnitKey(tok)
+            if nonMinionsOnly and tok.properties.minion then
+                unit = nil
+            end
             if unit ~= nil and not units[unit] then
                 units[unit] = true
                 count = count + 1
@@ -699,6 +704,9 @@ function Encounter.PrepOnsetMonsterCount(encounter, monsterCharids)
     waves.groups = waveGroups
     local record = Encounter.GetPrep(game.currentMapId)
     local numHeroes = record ~= nil and BalanceCount(record) or nil
+    if nonMinionsOnly then
+        return count + waves:CountNonMinionMonsters(numHeroes)
+    end
     return count + waves:CountVictoryUnits(numHeroes)
 end
 

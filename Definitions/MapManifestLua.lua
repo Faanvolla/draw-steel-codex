@@ -78,8 +78,9 @@ function MapManifestLua:DestroyPreviewFloor(floorInfo) end
 --- Travel
 function MapManifestLua:Travel() end
 
---- Tabletop mode: Travel() because the user pressed on this map's frozen window. The map ignores the mouse until that press is released, and once the map is live the token under the press is selected (when the user may select it), as if the window had been live when pressed. Outside tabletop mode it is just Travel().
-function MapManifestLua:TravelFromPress() end
+--- Tabletop mode: Travel() because the user pressed on this map's frozen window with the given mouse button (0 left, the default; 1 right; 2 middle), and once the map is live the press lands on it as if the window had been live when pressed: a left press selects the token under it (when the user may select it), a right press opens the map's context menu there, a middle press still held starts panning. The map ignores the mouse until a left press is released. Outside tabletop mode it is just Travel().
+--- @param button nil|integer
+function MapManifestLua:TravelFromPress(button) end
 
 --- Start syncing this map in the background so a later Travel() to it skips the loading screen. Cheap to call repeatedly (e.g. on hover). Does nothing in Firebase-backed games or the lobby.
 function MapManifestLua:Prefetch() end
