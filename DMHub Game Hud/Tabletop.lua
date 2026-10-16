@@ -7206,88 +7206,6 @@ dmhub.RegisterEventHandler("ChangeCurrentFloor", function()
     Sync()
 end)
 
---Lets the user pick or upload an image to cover the table.
-local function ShowCustomSurfaceDialog()
-    local dialog = gui.Panel{
-        classes = {"framedPanel"},
-        styles = ThemeEngine.GetStyles(),
-        width = 440,
-        height = "auto",
-        halign = "center",
-        valign = "center",
-        flow = "vertical",
-        pad = 20,
-        borderBox = true,
-        gui.Label{
-            classes = {"modalTitle"},
-            text = "Table Image",
-        },
-        gui.Label{
-            text = "Choose or upload an image to cover the table.",
-            width = "100%",
-            height = "auto",
-            textAlignment = "center",
-            vmargin = 10,
-        },
-        gui.IconEditor{
-            library = "coverart",
-            width = 320,
-            height = 180,
-            halign = "center",
-            allowNone = false,
-            value = g_surfaceImageSetting:Get(),
-            change = function(element)
-                if element.value ~= nil and element.value ~= "" then
-                    g_surfaceImageSetting:Set(element.value)
-                    g_surfaceSetting:Set("custom")
-                end
-            end,
-        },
-        gui.Button{
-            text = "Done",
-            halign = "center",
-            tmargin = 16,
-            click = function(element)
-                gui.CloseModal()
-            end,
-        },
-    }
-    gui.ShowModal(dialog)
-end
-
---Right-click on the bare table: the surfaces, one flat list (a submenu
---opened near a screen corner lands on top of its own menu).
-local function ShowTableMenu(element)
-    local current = g_surfaceSetting:Get()
-    local entries = {}
-    --only the current surface carries a check (check = false would draw an
-    --empty box on every other row).
-    local function AddSurfaces(surfaces)
-        for _, surface in ipairs(surfaces) do
-            local id = surface.id
-            local entry = GuardedEntry(surface.text, function()
-                element.popup = nil
-                g_surfaceSetting:Set(id)
-            end)
-            entry.check = (current == id) or nil
-            entries[#entries+1] = entry
-        end
-    end
-    AddSurfaces(TABLE_SURFACES)
-    if dmhub.GetSettingValue("dev") then
-        AddSurfaces(DEV_TABLE_SURFACES)
-    end
-    local imageEntry = GuardedEntry("Table Image...", function()
-        element.popup = nil
-        ShowCustomSurfaceDialog()
-    end)
-    imageEntry.check = (current == "custom") or nil
-    entries[#entries+1] = imageEntry
-    element.popup = gui.ContextMenu{
-        entries = entries,
-    }
-end
-
 --Keeps the engine's table surface in step with this user's choice.
 SyncSurface = function()
     local surface = g_surfaceSetting:Get()
@@ -7435,14 +7353,15 @@ function Tabletop.AddFilesAsMap(paths, mx, my, options)
     })
 end
 
-local function TableFilesDropped(allPaths)
+--screenPos (optional) is where they land, in screen pixels; else the mouse.
+local function TableFilesDropped(allPaths, screenPos)
     EndTableFileDrag()
     if not Tabletop.IsActive() or #allPaths == 0 then
         return
     end
     --where they were dropped; by the time the dialog is answered the mouse
     --is elsewhere.
-    local mouse = dmhub.mouseScreenPosition
+    local mouse = screenPos or dmhub.mouseScreenPosition
     local mx, my = ScreenToLayer(mouse.x, mouse.y)
 
     --audio files become audio widgets there (Audio.lua) with no question;
@@ -7466,6 +7385,214 @@ local function TableFilesDropped(allPaths)
     TableDropDialog.Show(paths, mx, my)
 end
 
+--Owns the table's right-click menu. The engine keeps a popup open while its
+--owner is hovered, and the table layer is hovered wherever the table shows,
+--so a menu owned by it never closed on a click away. This 1px panel has no
+--image, so it is never hovered.
+local g_tableMenuAnchor = nil
+
+--Right-click on the bare table: Paste (when the clipboard holds something
+--the table takes), Add Character, and the Background submenu.
+local function ShowTableMenu()
+    if g_layer == nil or not g_layer.valid then
+        return
+    end
+    if g_tableMenuAnchor == nil or not g_tableMenuAnchor.valid then
+        g_tableMenuAnchor = gui.Panel{
+            width = 1,
+            height = 1,
+            floating = true,
+            interactable = false,
+        }
+        g_layer:AddChild(g_tableMenuAnchor)
+        g_tableMenuAnchor.popupPositioning = "mouse"
+    end
+    local anchor = g_tableMenuAnchor
+    local function Close()
+        if anchor.valid then
+            anchor.popup = nil
+        end
+    end
+
+    --pastes and cards land where the menu was opened, not where the mouse
+    --is when an entry is clicked.
+    local mouse = dmhub.mouseScreenPosition
+    local screenx, screeny = mouse.x, mouse.y
+    local entries = {}
+
+    --Paste: files copied in Explorer (as a drop of those files), else an
+    --image (saved to a file, then the same as a dropped image file).
+    local canAudio = false
+    local audioBar = rawget(_G, "g_drawSteelAudioBar")
+    if audioBar ~= nil and audioBar.CanControlAudio() then
+        canAudio = true
+    end
+    local files = {}
+    local images, videos, sounds = 0, 0, 0
+    for _, path in ipairs(dmhub.GetClipboardFiles()) do
+        if FileDrops.IsAudio(path) then
+            if canAudio then
+                files[#files+1] = path
+                sounds = sounds + 1
+            end
+        elseif dmhub.isDM then
+            local ext = FileDrops.Extension(path)
+            for _, mediaExt in ipairs(FileDrops.MEDIA_EXTENSIONS) do
+                if ext == mediaExt then
+                    files[#files+1] = path
+                    if FileDrops.IsVideo(path) then
+                        videos = videos + 1
+                    else
+                        images = images + 1
+                    end
+                    break
+                end
+            end
+        end
+    end
+    if #files > 0 then
+        local text
+        if #files == 1 then
+            text = string.format('Paste "%s%s"', FileDrops.BaseName(files[1]), FileDrops.Extension(files[1]))
+        else
+            local parts = {}
+            local function Part(n, one, many)
+                if n == 1 then
+                    parts[#parts+1] = "1 " .. one
+                elseif n > 1 then
+                    parts[#parts+1] = string.format("%d %s", n, many)
+                end
+            end
+            Part(images, "image", "images")
+            Part(videos, "video", "videos")
+            Part(sounds, "sound", "sounds")
+            text = "Paste " .. table.concat(parts, ", ")
+        end
+        entries[#entries+1] = {
+            text = text,
+            click = function()
+                Close()
+                TableFilesDropped(files, {x = screenx, y = screeny})
+            end,
+        }
+    elseif dmhub.isDM and dmhub.HaveImageInClipboard() then
+        local text = "Paste Image"
+        local size = dmhub.GetClipboardImageSize()
+        if size ~= nil then
+            text = string.format("Paste Image (%d x %d)", size.width, size.height)
+        end
+        entries[#entries+1] = {
+            text = text,
+            click = function()
+                Close()
+                local path = dmhub.SaveClipboardImageToFile()
+                if path == nil then
+                    gui.ModalMessage{
+                        title = "Could not paste",
+                        message = "The image in the clipboard could not be read.",
+                    }
+                    return
+                end
+                TableFilesDropped({path}, {x = screenx, y = screeny})
+            end,
+        }
+    end
+
+    --Add Character: a card for a character this user controls; the
+    --Director's list is the players' party, plus All Players.
+    local charids = {}
+    if dmhub.isDM then
+        for _, charid in ipairs(dmhub.GetCharacterIdsInParty(GetDefaultPartyID()) or {}) do
+            local tok = dmhub.GetCharacterById(charid)
+            if tok ~= nil and not tok.despawned then
+                charids[#charids+1] = charid
+            end
+        end
+    else
+        local seen = {}
+        for partyid in unhidden_pairs(dmhub.GetTable(Party.tableName) or {}) do
+            for _, charid in ipairs(dmhub.GetCharacterIdsInParty(partyid) or {}) do
+                local tok = dmhub.GetCharacterById(charid)
+                if not seen[charid] and tok ~= nil and not tok.despawned and tok.canControlAsUser then
+                    seen[charid] = true
+                    charids[#charids+1] = charid
+                end
+            end
+        end
+    end
+    local names = {}
+    for _, charid in ipairs(charids) do
+        local tok = dmhub.GetCharacterById(charid)
+        names[charid] = (tok ~= nil and tok.name) or "Character"
+    end
+    table.sort(charids, function(a, b)
+        return string.lower(names[a]) < string.lower(names[b])
+    end)
+    --cards for several characters sit in a row centred where the menu opened.
+    local function AddCards(ids)
+        local cw = CardSize()
+        local _, y = DropPlacement(screenx, screeny, 1)
+        local x0 = math.floor(ScreenToLayer(screenx, screeny) - (#ids * cw + (#ids - 1) * CARD_GAP) / 2)
+        for i, charid in ipairs(ids) do
+            Tabletop.OpenCard(charid, {x = x0 + (i - 1) * (cw + CARD_GAP), y = y})
+        end
+    end
+    local characterEntries = {}
+    for _, charid in ipairs(charids) do
+        local entry = GuardedEntry(names[charid], function()
+            Close()
+            AddCards({charid})
+        end)
+        --a character already on the table: picking it moves the card here.
+        entry.check = (CardById(charid) ~= nil) or nil
+        entry.group = "characters"
+        characterEntries[#characterEntries+1] = entry
+    end
+    if dmhub.isDM and #charids > 1 then
+        characterEntries[#characterEntries+1] = GuardedEntry("All Players", function()
+            Close()
+            AddCards(charids)
+        end)
+    end
+    entries[#entries+1] = {
+        text = "Add Character",
+        submenu = cond(#characterEntries > 0, characterEntries, nil),
+        disabled = #characterEntries == 0,
+    }
+
+    --Background: the built-in surfaces. Only the current one carries a check
+    --(check = false would draw an empty box on every other row).
+    local current = g_surfaceSetting:Get()
+    local surfaceEntries = {}
+    local function AddSurfaces(surfaces)
+        for _, surface in ipairs(surfaces) do
+            local id = surface.id
+            local entry = GuardedEntry(surface.text, function()
+                Close()
+                g_surfaceSetting:Set(id)
+            end)
+            entry.check = (current == id) or nil
+            surfaceEntries[#surfaceEntries+1] = entry
+        end
+    end
+    AddSurfaces(TABLE_SURFACES)
+    if dmhub.GetSettingValue("dev") then
+        AddSurfaces(DEV_TABLE_SURFACES)
+    end
+    entries[#entries+1] = {
+        text = "Background",
+        submenu = surfaceEntries,
+    }
+
+    local menu = gui.ContextMenu{
+        entries = entries,
+    }
+    if menu == nil then
+        return
+    end
+    anchor.popup = menu
+end
+
 --The bottom layer of the GameHud: maximized windows live here, under the
 --docks and the rest of the hud, and its think drives the tabletop. It is
 --the table itself (a clear image, so it takes the right-click), and it
@@ -7483,7 +7610,7 @@ function Tabletop.CreateLayer()
         blocksGameInteraction = false,
         swallowPress = true,
         rightClick = function(element)
-            ShowTableMenu(element)
+            ShowTableMenu()
         end,
 
         --files dragged in from the desktop (see TableFilesDropped): pictures

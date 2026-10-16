@@ -1737,6 +1737,19 @@ function dmhub:IncrementInitiativeData(path, amount) end
 --- @return boolean
 function dmhub.HaveImageInClipboard() end
 
+--- The size of the image in the system clipboard, read from its header without decoding it: {width, height} in pixels, or nil when there is no image or its size can't be read cheaply.
+--- @return nil|{width: number, height: number}
+function dmhub.GetClipboardImageSize() end
+
+--- Writes the image in the system clipboard to a new PNG file in the app's temporary folder and returns its full path, or nil when there is no image. name (optional, default 'Pasted Image') is the file's name without extension; each call writes to its own folder, so the name can repeat. Lets a pasted image go anywhere a dropped file can.
+--- @param name? string
+--- @return nil|string
+function dmhub.SaveClipboardImageToFile(name) end
+
+--- The files copied to the system clipboard (Copy on files in Explorer), as an array of full paths; empty when it holds none. Windows only for now: always empty elsewhere.
+--- @return string[]
+function dmhub.GetClipboardFiles() end
+
 --- Copies the given text to the system clipboard.
 --- @param text? string
 function dmhub.CopyToClipboard(text) end
