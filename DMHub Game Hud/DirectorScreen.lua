@@ -113,7 +113,7 @@ local HELD_BACK_OPACITY = 0.45
 --- @field veil nil|string
 local COVERS = {
     {id = "plain"},
-    {id = "vasloria", image = "md5:dscovervasloria", width = 2000, height = 633, left = 0, tint = "#ffffffff", veil = "#16171bf2"},
+    {id = "vasloria", image = "e83e6ea1-6212-4baf-8f26-a11bf7b85c6e", width = 2000, height = 633, left = 0, tint = "#ffffffff", veil = "#16171bf2"},
 }
 local COVER_ID = "vasloria"
 
