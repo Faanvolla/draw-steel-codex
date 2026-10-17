@@ -333,6 +333,10 @@ local LIVE_SECTIONS = { "identity", "progress", "vitals", "resource" }
 --Layout at the 1920x1080 design size (see the mock): a 400px left column
 --that never scrolls, and the main column taking the rest.
 local PAD = 24
+--The layout sits this much lower than PAD: both columns end 24px short of
+--their full height, so +12 at the top and -12 at the bottom leaves an even
+--36px above and below, where the sheet has always opened.
+local LAYOUT_DROP = 12
 local COLUMN_GAP = 20
 local LEFT_WIDTH = 400
 local LEFT_GAP = 14
@@ -369,8 +373,9 @@ local LOAD_TIMEOUT = 15
 local SHIMMER_SECONDS = 0.7
 --How long a stat equipping just changed stays gold before it settles.
 local PREVIEW_HOLD_SECONDS = 1.5
---Motion (C6): the sheet opens with a 200ms fade and rise; the card's wash
---for a hit or a heal fires at most once a second.
+--Motion (C6): the sheet opens with a 200ms fade (no rise: the engine snaps a
+--style y rather than animating it); the card's wash for a hit or a heal fires
+--at most once a second.
 local OPEN_SECONDS = 0.2
 local WASH_MIN_GAP = 1
 --A kit-equivalent's text longer than this (at 100% Font Size; shorter when
@@ -750,7 +755,7 @@ local function BuildRules()
             selectors = { "eotwsItemName", "focus" },
             color = C.CREAM_LIGHT,
         },
-        --motion: the cover the sheet opens behind, and the layout's rise
+        --motion: the cover the sheet fades in from
         {
             selectors = { "eotwsOpener" },
             bgimage = "panels/square.png",
@@ -759,15 +764,6 @@ local function BuildRules()
         {
             selectors = { "eotwsOpener", "done" },
             bgcolor = "#0b0b0a00",
-            transitionTime = OPEN_SECONDS,
-        },
-        {
-            selectors = { "eotwsRise" },
-            y = 12,
-        },
-        {
-            selectors = { "eotwsRise", "done" },
-            y = 0,
             transitionTime = OPEN_SECONDS,
         },
         --the card's art fades in over its dark ground (on open and on a switch)
@@ -5505,11 +5501,12 @@ function EotwHeroSheet.Show(args)
 
     local animate = not args.switching and not ThemeEngine.GetAccessibility().reduceMotion
     local layout = gui.Panel{
-        classes = { cond(animate, "eotwsRise", "eotwsStill") },
         floating = true,
         width = "100%",
         height = "100%",
-        pad = PAD,
+        hpad = PAD,
+        tpad = PAD + LAYOUT_DROP,
+        bpad = PAD - LAYOUT_DROP,
         borderBox = true,
         flow = "horizontal",
         leftColumn,
@@ -5628,15 +5625,12 @@ function EotwHeroSheet.Show(args)
         end
     end
 
-    --open: fade and rise (not on a switch between Heroes, not under Reduce Motion)
+    --open: fade (not on a switch between Heroes, not under Reduce Motion)
     if not args.switching then
         audio.FireSoundEvent("UI.WindowOpen")
     end
     if animate then
         dmhub.Schedule(0.02, function()
-            if layout.valid then
-                layout:SetClass("done", true)
-            end
             if opener ~= nil and opener.valid then
                 opener:SetClass("done", true)
             end
