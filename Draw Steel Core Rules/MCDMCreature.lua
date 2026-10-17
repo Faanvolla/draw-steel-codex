@@ -6067,6 +6067,10 @@ local function AccumulateDamageThisTurn(self, amount)
     return self.damageTakenThisTurn
 end
 
+--True only on TargetableObject (a map object with a Targetable component). Lets the
+--damage path skip creature-only outcomes such as the hero "dying" branch.
+creature.isMapObject = false
+
 function creature.TakeDamage(self, amount, note, info)
     info = info or {}
     if type(amount) == 'string' then
@@ -6520,7 +6524,10 @@ function creature.TakeDamage(self, amount, note, info)
                 audio.DispatchSoundEvent("Notify.Status_Dead_Enemy", soundArgs)
             end
         end
-    elseif isBelowZeroNow then
+    elseif isBelowZeroNow and not self.isMapObject then
+        --Map objects never die (creature:IsDead is false for them), so without the
+        --isMapObject gate a destroyed barrel played the hero-dying sting and fired
+        --"dying". Objects get "objectdestroyed" from TargetableObject.TakeDamage instead.
         if not isBelowZeroAtStart then
             audio.DispatchSoundEvent("Notify.Status_Dying_Hero", soundArgs)
 
@@ -6831,7 +6838,7 @@ function creature.SetStaminaDirect(self, amount, note)
         audio.DispatchSoundEvent("Condition.Winded", { tokenid = dmhub.LookupTokenId(self) })
     end
 
-    if isBelowZeroNow and not isBelowZeroAtStart then
+    if isBelowZeroNow and not isBelowZeroAtStart and not self.isMapObject then
         audio.DispatchSoundEvent("Notify.Status_Dying_Hero", { tokenid = dmhub.LookupTokenId(self) })
         self:DispatchEvent("dying", {})
     end
@@ -6942,7 +6949,9 @@ end
 
 --- @param eventName string
 --- @param info table
-function creature:DispatchEventAndWait(eventName, info)
+--- @param opts? {ignoreTurn: boolean?} ignoreTurn: keep waiting even if the turn moves on or combat is not running (a destroyed map object waits for its trigger in or out of combat).
+function creature:DispatchEventAndWait(eventName, info, opts)
+    opts = opts or {}
     -- Check if there are any triggers for this event first
     local mods = self:GetActiveModifiers()
     local hasTrigger = false
@@ -6988,6 +6997,9 @@ function creature:DispatchEventAndWait(eventName, info)
     local startTurn = startQueue ~= nil and startQueue:try_get("currentTurn") or nil
     local startRound = startQueue ~= nil and startQueue.round or nil
     local function TurnStillCurrent()
+        if opts.ignoreTurn then
+            return true
+        end
         local q = dmhub.initiativeQueue
         if q == nil or q.hidden then
             return false

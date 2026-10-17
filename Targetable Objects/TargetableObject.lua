@@ -34,6 +34,26 @@ function TargetableObject:DispatchEvent(eventName, args)
     creature.DispatchEvent(self, eventName, args)
 end
 
+--Lets the shared creature damage path tell objects apart (see creature.isMapObject).
+TargetableObject.isMapObject = true
+
+--True if any of this object's modifiers has a triggered ability for eventName.
+--- @param eventName string
+--- @return boolean
+function TargetableObject:HasTriggerFor(eventName)
+    for _, entry in ipairs(self:GetActiveModifiers()) do
+        if entry.mod:HasTriggeredEvent(self, eventName) then
+            return true
+        end
+    end
+    return false
+end
+
+--At 0 Stamina the object fires "objectdestroyed" (the Destroyed trigger), and only
+--then runs the engine's onDeath (delete/disable/open). With a Destroyed trigger the
+--onDeath waits until that cast has finished, so a pillar is still on the map while
+--its Toppling Pillar resolves. The wait is a detached coroutine: the attack that
+--broke the object carries on without waiting for the object's own ability.
 function TargetableObject.TakeDamage(self, amount, note, info)
     local staminaBefore = self:CurrentHitpoints()
     creature.TakeDamage(self, amount, note, info)
@@ -42,7 +62,30 @@ function TargetableObject.TakeDamage(self, amount, note, info)
         local token = dmhub.LookupToken(self)
         --Damage is only dealt to properties that belong to a live object token.
         ---@cast token -nil
-        token.objectComponent:OnDeath()
+
+        if not self:HasTriggerFor("objectdestroyed") then
+            token.objectComponent:OnDeath()
+            return
+        end
+
+        info = info or {}
+        local args = {
+            damage = cond(type(amount) == "number", amount, staminaBefore - staminaAfter),
+            damagetype = info.damagetype or "untyped",
+            attacker = info.attacker,
+            hasattacker = info.attacker ~= nil,
+        }
+
+        local charid = token.charid
+        dmhub.Coroutine(function()
+            self:DispatchEventAndWait("objectdestroyed", args, {ignoreTurn = true})
+
+            --Re-resolve: the token may have been replaced by a synced write while we waited.
+            local tok = dmhub.GetTokenById(charid) or dmhub.LookupToken(self)
+            if tok ~= nil and tok.valid and tok.objectComponent ~= nil then
+                tok.objectComponent:OnDeath()
+            end
+        end)
     end
 end
 
