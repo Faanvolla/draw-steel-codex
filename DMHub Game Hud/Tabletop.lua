@@ -244,6 +244,7 @@ local function SaveLayout()
             minimized = rec.minimized == true,
             iconX = rec.iconX,
             iconY = rec.iconY,
+            card = rec.card == true or nil,
         }
     end
     for _, writer in ipairs(g_layoutWriters) do
@@ -2120,6 +2121,9 @@ local function BuildWindow(rec)
         bgimage = "panels/square.png",
         swallowPress = true,
         draggable = true,
+        --stays among the table items while dragged, so the Director's
+        --Screen can lie over it (DirectorScreen KeepOnTop).
+        dragInPlace = true,
         dragging = function(element)
             if not rec.maximized then
                 DirectorScreen.ItemDragging(g_sharing.ScreenKey(rec), element.xdrag, rec.width)
@@ -2282,6 +2286,24 @@ local function ButtonScale()
     return PanelDocument.WindowUIScale()
 end
 
+--A minimized window on the Director's Screen is drawn as a card (Venla,
+--2026-10-17): the picture it last showed and its name, in place of the
+--40-wide button. rec.card says so. It stays set while the card is expanded,
+--so minimizing the window again makes a card; it clears when the window
+--goes out on the table (DirectorScreen grows it). One size for every card.
+--(One table, g_card, holds the card's size and helpers: this file's top
+--level is near Lua's 200-local limit.)
+local g_card = {width = 168, height = 112}
+
+--A minimized window's button size on the table, in documents-layer units.
+function g_card.Size(rec)
+    local scale = ButtonScale()
+    if rec.card then
+        return g_card.width * scale, g_card.height * scale
+    end
+    return BUTTON_SIZE * scale, BUTTON_SIZE * scale
+end
+
 --A panel's rectangle in the documents layer's units (origin top-left).
 --positionInScreenSpace is the panel's centre in layer units, y up.
 local function LayerRect(panel, size)
@@ -2334,14 +2356,15 @@ end
 --on the table.
 local function ButtonRect(rec)
     local size = BUTTON_SIZE * ButtonScale()
-    if IsDocked(rec) then
+    if IsDocked(rec) and not rec.card then
         local button = RailButton(rec)
         local rect = LayerRect(button, size)
         if rect ~= nil then
             return rect
         end
     end
-    return {x = rec.iconX or 0, y = rec.iconY or 0, w = size, h = size}
+    local w, h = g_card.Size(rec)
+    return {x = rec.iconX or 0, y = rec.iconY or 0, w = w, h = h}
 end
 
 --A window-shaped stand-in that flies between two rectangles, showing what
@@ -2399,6 +2422,199 @@ local function AnimateGhost(rec, from, to, done)
     layer:AddChild(ghost)
 end
 
+--A card's name: its map's or its scene's.
+function g_card.Name(rec)
+    if rec.sceneid ~= nil then
+        return Scenes.Name(rec.sceneid) or "Scene"
+    end
+    return MapName(rec.mapid)
+end
+
+--The part of an image a card shows: cropped to the card's shape from the
+--middle, never stretched. aspect is the image's width over its height.
+function g_card.Crop(aspect)
+    local box = g_card.width / g_card.height
+    local w, h = 1, 1
+    if aspect > box then
+        w = box / aspect
+    else
+        h = aspect / box
+    end
+    return {x1 = (1 - w) / 2, y1 = (1 - h) / 2, x2 = (1 + w) / 2, y2 = (1 + h) / 2}
+end
+
+--Grows a card back into its window, on the Director's Screen, at its full
+--size: where the card is, pulled left so its titlebar's buttons stay on the
+--table, but never so far that its middle leaves the screen (it would be
+--shared). Privacy wins when both cannot hold.
+function g_card.Expand(rec, ops)
+    local x = rec.iconX or rec.x
+    local w = LayerSize()
+    x = math.min(x, w - rec.width)
+    local edge = DirectorScreen.EdgeX()
+    if edge ~= nil then
+        x = math.max(x, edge - rec.width / 2 + 24)
+    end
+    rec.x, rec.y = ClampWindow(rec, x, rec.iconY or rec.y)
+    ops.restore(rec)
+end
+
+--A minimized window's card (see g_card.width): its picture with its name along
+--the bottom. Dragged like the button; double-click, or the expand button
+--that shows on hover, grows it back into its window.
+function g_card.Button(rec, ops, scale)
+    local image, placeholder
+    if ops.image ~= nil then
+        image, placeholder = ops.image(rec)
+    else
+        image, placeholder = Tabletop.FrozenImage(rec)
+    end
+    local expand = gui.Panel{
+        classes = {"tabletopCardExpand", "hidden"},
+        bgimage = "panels/square.png",
+        bgcolor = "#16171bdd",
+        cornerRadius = 5,
+        floating = true,
+        halign = "right",
+        valign = "top",
+        x = -5,
+        y = 5,
+        width = 24,
+        height = 24,
+        flow = "none",
+        swallowPress = true,
+        press = function(element)
+            g_card.Expand(rec, ops)
+        end,
+        gui.Panel{
+            bgimage = "phosphor/arrows-out-simple-fill.png",
+            bgcolor = "#ffffffe0",
+            width = 14,
+            height = 14,
+            halign = "center",
+            valign = "center",
+            interactable = false,
+        },
+    }
+    local card
+    card = gui.Panel{
+        classes = {"tabletopTableButton", "tabletopWindowCard"},
+        bgimage = image,
+        bgcolor = cond(placeholder, "#1b1814ff", "white"),
+        cornerRadius = 6,
+        borderWidth = 1,
+        borderColor = "#ffffff30",
+        floating = true,
+        halign = "left",
+        valign = "top",
+        x = rec.iconX or 0,
+        y = rec.iconY or 0,
+        width = g_card.width,
+        height = g_card.height,
+        flow = "none",
+        swallowPress = true,
+        draggable = true,
+
+        dragging = function(element, target)
+            ChatItemLinks.Dragging(function() return ops.chatItems(rec) end)
+            local w = g_card.Size(rec)
+            DirectorScreen.ItemDragging(g_sharing.ScreenKey(rec), element.xdrag, w)
+        end,
+        drag = function(element, target)
+            if ChatItemLinks.Dropped() then
+                DirectorScreen.ItemDropped(nil)
+                return
+            end
+            local lw, lh = LayerSize()
+            local w, h = g_card.Size(rec)
+            rec.iconX = math.max(0, math.min(element.xdrag, lw - w))
+            rec.iconY = math.max(0, math.min(element.ydrag, lh - h))
+            element.x = rec.iconX
+            element.y = rec.iconY
+            SaveSoon()
+            DirectorScreen.ItemDropped(g_sharing.ScreenKey(rec))
+        end,
+        doubleclick = function(element)
+            if ClicksGuarded() then
+                return
+            end
+            g_card.Expand(rec, ops)
+        end,
+        hover = function(element)
+            element.selfStyle.borderColor = "#ffffff90"
+            expand:SetClass("hidden", false)
+        end,
+        dehover = function(element)
+            element.selfStyle.borderColor = "#ffffff30"
+            expand:SetClass("hidden", true)
+        end,
+        rightClick = function(element)
+            element.popup = gui.ContextMenu{
+                entries = {
+                    GuardedEntry("Expand", function()
+                        element.popup = nil
+                        g_card.Expand(rec, ops)
+                    end),
+                    GuardedEntry(ops.closeText, function()
+                        element.popup = nil
+                        ops.close(rec)
+                    end),
+                },
+            }
+        end,
+
+        --its name along the bottom, with the map or scene icon.
+        gui.Panel{
+            bgimage = "panels/square.png",
+            bgcolor = "#16171bee",
+            floating = true,
+            halign = "left",
+            valign = "bottom",
+            width = "100%",
+            height = 22,
+            flow = "horizontal",
+            interactable = false,
+            gui.Panel{
+                bgimage = ops.icon,
+                bgcolor = "#ffffffc0",
+                width = 12,
+                height = 12,
+                valign = "center",
+                lmargin = 7,
+                rmargin = 5,
+                interactable = false,
+            },
+            gui.Label{
+                text = g_card.Name(rec),
+                fontSize = 11,
+                color = "#ffffffe8",
+                width = g_card.width - 34,
+                height = "auto",
+                valign = "center",
+                textWrap = false,
+                interactable = false,
+            },
+        },
+        expand,
+    }
+    --cropped to the card's shape: a map's snapshot has its window's shape;
+    --anything else is measured.
+    if type(image) == "string" and string.sub(image, 1, 13) == "#MapSnapshot:" then
+        card.selfStyle.imageRect = g_card.Crop(rec.width / math.max(1, rec.height))
+    elseif type(image) == "string" and string.sub(image, 1, 1) ~= "#" and not placeholder then
+        gui.GetImageDimensionsCallback(image, function(dims)
+            if card.valid and dims ~= nil and (dims.width or 0) > 0 and (dims.height or 0) > 0 then
+                card.selfStyle.imageRect = g_card.Crop(dims.width / dims.height)
+            end
+        end)
+    end
+    local layer = g_buttonLayer --[[@as Panel]]
+    layer:AddChild(card)
+    card.selfStyle.pivot = {x = 0, y = 1}
+    card.selfStyle.uiscale = scale
+    return card
+end
+
 --Builds (or rebuilds) a minimized window's floating button on the table.
 --A docked window has no floating button: the rail draws it.
 --What the button shows and does comes from rec.buttonOps (a scene window
@@ -2407,7 +2623,7 @@ end
 --restore(rec), close(rec), closeText, hover(rec, element), chatItems(rec)
 --(links for a drop on the chat), badge {icon, color} and badgeShown(rec).
 local function UpdateTableButton(rec)
-    local want = rec.minimized == true and not IsDocked(rec) and g_buttonLayer ~= nil and g_buttonLayer.valid
+    local want = rec.minimized == true and (rec.card or not IsDocked(rec)) and g_buttonLayer ~= nil and g_buttonLayer.valid
     if not want then
         if rec.button ~= nil and rec.button.valid then
             rec.button:DestroySelf()
@@ -2416,7 +2632,12 @@ local function UpdateTableButton(rec)
         return
     end
     if rec.button ~= nil and rec.button.valid then
-        return
+        --a button that became a card (or a card a button) is rebuilt.
+        if rec.buttonIsCard == (rec.card == true) then
+            return
+        end
+        rec.button:DestroySelf()
+        rec.button = nil
     end
 
     local ops = rec.buttonOps or {
@@ -2436,6 +2657,11 @@ local function UpdateTableButton(rec)
     }
 
     local scale = ButtonScale()
+    rec.buttonIsCard = rec.card == true
+    if rec.card then
+        rec.button = g_card.Button(rec, ops, scale)
+        return
+    end
     local button
     button = gui.Panel{
         classes = {"iconRailButton", "tabletopTableButton"},
@@ -4040,12 +4266,16 @@ end
 --The Director's Screen's view of a map or scene window: the window, or its
 --button on the table while minimized. store and share are its share store
 --and share control; apply re-applies its hidden state.
-g_sharing.ScreenWindowItem = function(rec, store, share, apply)
+--minimize and restore collapse the window into its button (a card, with
+--rec.card set) and grow it back: the screen shrinks a window dropped on it
+--into a card, and grows a card dragged off it (shrink, grow).
+g_sharing.ScreenWindowItem = function(rec, store, share, apply, minimize, restore)
     local rect = nil
-    local size = BUTTON_SIZE * ButtonScale()
+    local size = g_card.Size(rec)
     if rec.minimized then
-        if not IsDocked(rec) then
-            rect = {x = rec.iconX or 0, y = rec.iconY or 0, w = size, h = size}
+        if rec.card or not IsDocked(rec) then
+            local w, h = g_card.Size(rec)
+            rect = {x = rec.iconX or 0, y = rec.iconY or 0, w = w, h = h}
         end
     elseif not rec.maximized then
         rect = {x = rec.x, y = rec.y, w = rec.width, h = rec.height}
@@ -4054,15 +4284,52 @@ g_sharing.ScreenWindowItem = function(rec, store, share, apply)
         key = g_sharing.ScreenKey(rec),
         rect = rect,
         maximized = rec.maximized == true and not rec.minimized,
-        move = function(x)
+        card = rec.minimized == true and rec.card == true,
+        onButtonLayer = rec.minimized == true,
+        --into a card at (x, y), on the screen: a window collapses into it, a
+        --plain button becomes one.
+        shrink = function(x, y)
+            if minimize == nil or (rec.maximized and not rec.minimized) then
+                return
+            end
+            rec.card = true
+            rec.iconX, rec.iconY = x, y
+            if rec.minimized then
+                UpdateTableButton(rec)
+            else
+                minimize(rec)
+            end
+            SaveSoon()
+        end,
+        --a card grows back into its window at (x, y), at its full size.
+        grow = function(x, y)
+            if restore == nil or not rec.card then
+                return
+            end
+            rec.card = nil
+            if rec.minimized then
+                rec.x, rec.y = ClampWindow(rec, x, y)
+                restore(rec)
+            else
+                UpdateTableButton(rec)
+            end
+            SaveSoon()
+        end,
+        --free: not kept on the table (the Director's Screen carries the
+        --items on it off the table's side with its edge).
+        move = function(x, free)
             if rec.minimized then
                 local w = LayerSize()
-                rec.iconX = math.max(0, math.min(x, w - size))
+                rec.iconX = free and x or math.max(0, math.min(x, w - size))
                 if rec.button ~= nil and rec.button.valid then
                     rec.button.x = rec.iconX
                 end
             elseif not rec.maximized then
-                rec.x, rec.y = ClampWindow(rec, x, rec.y)
+                if free then
+                    rec.x = x
+                else
+                    rec.x, rec.y = ClampWindow(rec, x, rec.y)
+                end
                 if rec.panel ~= nil and rec.panel.valid then
                     rec.panel.x = rec.x
                     rec.panel.y = rec.y
@@ -4101,7 +4368,7 @@ end
 
 g_sharing.screenKinds[#g_sharing.screenKinds+1] = function(list)
     for _, rec in ipairs(g_windows) do
-        list[#list+1] = g_sharing.ScreenWindowItem(rec, g_sharing.MapStore(rec.mapid), rec.share, Tabletop.ApplyCollapsed)
+        list[#list+1] = g_sharing.ScreenWindowItem(rec, g_sharing.MapStore(rec.mapid), rec.share, Tabletop.ApplyCollapsed, Minimize, RestoreWindow)
     end
 end
 
@@ -5168,6 +5435,9 @@ local function BuildCard(card)
         cornerRadius = card.shadowRadius * card.scale,
         flow = "none",
         draggable = true,
+        --stays among the table items while dragged, so the Director's
+        --Screen can lie over it (DirectorScreen KeepOnTop).
+        dragInPlace = true,
         swallowPress = true,
         --placement mode reads the focused panel's charid (CharacterPanel's
         --dmhub.GetSelectedCharacters) while the Director drags the card.
@@ -5374,9 +5644,10 @@ g_sharing.ScreenCardItem = function(key, card, store)
     return {
         key = key,
         rect = {x = card.x, y = card.y, w = w * s, h = h * s},
-        move = function(x)
+        --free: not kept on the table (see ScreenWindowItem's move).
+        move = function(x, free)
             local lw = LayerSize()
-            card.x = math.max(0, math.min(x, lw - 60))
+            card.x = free and x or math.max(0, math.min(x, lw - 60))
             if card.panel ~= nil and card.panel.valid then
                 card.panel.x = card.x
             end
@@ -7068,6 +7339,9 @@ do
             bgimage = "panels/square.png",
             bgcolor = "clear",
             draggable = true,
+            --stays among the table items while dragged, so the Director's
+            --Screen can lie over it (DirectorScreen KeepOnTop).
+            dragInPlace = true,
             swallowPress = true,
             hover = function(element)
                 item.cardHovered = true
@@ -7735,6 +8009,9 @@ local function DefineTableItems()
             bgimage = "panels/square.png",
             bgcolor = "clear",
             draggable = true,
+            --stays among the table items while dragged, so the Director's
+            --Screen can lie over it (DirectorScreen KeepOnTop).
+            dragInPlace = true,
             swallowPress = true,
             hover = function(element)
                 item.cardHovered = true
@@ -8130,7 +8407,7 @@ local function DefineSceneWindows()
             local store = g_sharing.DocStore(SceneItemId(sceneid), function()
                 return {kind = "scene", sceneid = sceneid}
             end)
-            list[#list+1] = g_sharing.ScreenWindowItem(rec, store, rec.share, ApplySceneCollapsed)
+            list[#list+1] = g_sharing.ScreenWindowItem(rec, store, rec.share, ApplySceneCollapsed, MinimizeScene, RestoreScene)
         end
     end
 
@@ -8407,6 +8684,9 @@ local function DefineSceneWindows()
             bgimage = "panels/square.png",
             swallowPress = true,
             draggable = true,
+            --stays among the table items while dragged, so the Director's
+            --Screen can lie over it (DirectorScreen KeepOnTop).
+            dragInPlace = true,
             dragging = function(element)
                 if not rec.maximized then
                     DirectorScreen.ItemDragging(g_sharing.ScreenKey(rec), element.xdrag, rec.width)
@@ -9140,6 +9420,7 @@ local function DefineSceneWindows()
                 minimized = rec.minimized == true,
                 iconX = rec.iconX,
                 iconY = rec.iconY,
+                card = rec.card == true or nil,
                 fromShare = rec.fromShare,
             }
         end
@@ -9180,6 +9461,7 @@ local function DefineSceneWindows()
                     minimized = saved.minimized == true,
                     iconX = tonumber(saved.iconX),
                     iconY = tonumber(saved.iconY),
+                    card = saved.card == true or nil,
                     buttonOps = g_sceneButtonOps,
                     fromShare = saved.fromShare == true or nil,
                 }
@@ -10085,6 +10367,7 @@ local function InitForGame()
                     minimized = saved.minimized == true,
                     iconX = tonumber(saved.iconX),
                     iconY = tonumber(saved.iconY),
+                    card = saved.card == true or nil,
                 }
                 --a window can't be resized below the minimum, so a smaller
                 --saved size was made against an unlaid-out layer (see
