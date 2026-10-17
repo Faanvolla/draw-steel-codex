@@ -1723,6 +1723,12 @@ local function CreateHeroCard(entry, opts)
             end,
         }
     end
+    --PROTOTYPE: the card's back and the hover button that turns the card
+    --over to it (HeroCardBack.lua).
+    local cardBack = rawget(_G, "HeroCardBack")
+    if cardBack ~= nil then
+        cardBack.Decorate(cardArgs, charid, CARD_WIDTH, cardHeight)
+    end
     if opts.click ~= nil then
         cardArgs.click = function(element)
             opts.click(element, OpenCharacterPanel)
