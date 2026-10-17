@@ -3564,6 +3564,10 @@ function ActivatedAbility:DescribeTarget(casterToken)
                 result = string.format("%s or %s", result, cond(count <= 1, "object", "objects"))
             end
         end
+
+        if self.forceCasterTarget then
+            result = "Self and " .. result
+        end
     elseif self.targetType == "self" then
         result = "None/self"
     elseif self.targetType == "emptyspace" then
