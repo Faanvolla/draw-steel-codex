@@ -15,6 +15,7 @@ local mod = dmhub.GetModLoading()
 
 ---@class EotwHeroSheet
 ---@field debugNeededLine string|nil test switch: shows this line on the gold you're-needed bar in a game
+---@field themeHandler {Deregister: fun()}|nil the colour scheme handler, kept so a reload can drop it
 --Kept across a reload of this file alone: EotwHeroSheetData.lua adds to the same table.
 EotwHeroSheet = rawget(_G, "EotwHeroSheet") or {}
 
@@ -201,6 +202,24 @@ local function Contrast(a, b)
     return (math.max(x, y) + 0.05) / (math.min(x, y) + 0.05)
 end
 
+--True if two scheme colours are the same colour. Compared parsed, not as text:
+--saved user schemes write "#1A1A1EFF" where Default has "#1A1A1E".
+---@param a any
+---@param b any
+---@return boolean
+local function SameColour(a, b)
+    local x, y = ParseHex(a), ParseHex(b)
+    if x == nil or y == nil then
+        return string.lower(tostring(a)) == string.lower(tostring(b))
+    end
+    for i = 1, 3 do
+        if math.floor(x[i] + 0.5) ~= math.floor(y[i] + 0.5) then
+            return false
+        end
+    end
+    return math.floor(x[4] * 255 + 0.5) == math.floor(y[4] * 255 + 0.5)
+end
+
 --The palette for a scheme's colour table (token -> hex). Default-coloured or
 --unreadable tables get the skin.
 ---@param colors table
@@ -212,7 +231,7 @@ local function BuildPalette(colors, defaults)
     local same = true
     for i = 1, DEFAULT_MATCH_KEYS do
         local key = SCHEME_KEYS[i]
-        if string.lower(tostring(colors[key])) ~= string.lower(tostring(defaults[key])) then
+        if not SameColour(colors[key], defaults[key]) then
             same = false
             break
         end
@@ -235,25 +254,38 @@ local function BuildPalette(colors, defaults)
     local opaque = ParseHex("#14130f") --[[@as number[] ]]
     local skelRow = ParseHex("#1c1b18") --[[@as number[] ]]
     local tile = ParseHex("#000000") --[[@as number[] ]]
-    --a light-surfaced scheme would wash the plates out: keep them warm-black
+    --a light-surfaced scheme would wash the plates out: keep them warm-black.
+    --Rows follow bgAlt, so a light bgAlt keeps the skin's rows the same way.
     local light = Luminance(s.bg) > LIGHT_BG_LUMINANCE
+    local lightAlt = light or Luminance(s.bgAlt) > LIGHT_BG_LUMINANCE
     if not light then
         plate = Mix(plate, s.bg, PLATE_TINT)
-        row = Mix(row, s.bgAlt, PLATE_TINT)
         opaque = Mix(opaque, s.bg, PLATE_TINT)
-        skelRow = Mix(skelRow, s.bgAlt, PLATE_TINT)
         tile = Mix(tile, s.bg, PLATE_TINT * 0.6)
+    end
+    if not lightAlt then
+        row = Mix(row, s.bgAlt, PLATE_TINT)
+        skelRow = Mix(skelRow, s.bgAlt, PLATE_TINT)
     end
 
     --a see-through scheme colour, as it shows on the plate
     local function Over(c)
         return Mix(plate, c, c[4])
     end
-    --the first candidate that reads on the plate, else the last (a skin colour)
+    --every surface text sits on: the plate, the rows and cards, the tiles
+    local surfaces = { plate, row, Mix(plate, row, 0.85), Mix(plate, tile, 0.22) }
+    --the first candidate that reads on every surface, else the last (a skin colour)
     local function Readable(...)
         local cands = { ... }
         for _,c in ipairs(cands) do
-            if Contrast(Over(c), plate) >= READABLE_CONTRAST then
+            local ok = true
+            for _,surface in ipairs(surfaces) do
+                if Contrast(Mix(surface, c, c[4]), surface) < READABLE_CONTRAST then
+                    ok = false
+                    break
+                end
+            end
+            if ok then
                 return Over(c)
             end
         end
@@ -278,7 +310,7 @@ local function BuildPalette(colors, defaults)
     p.FADE = ToHex(plate, 0.8)
     p.TILE = ToHex(tile, 0.22)
     p.SKEL_ROW = ToHex(skelRow, 0.76)
-    p.ROW = ToHex(row, 0.8)
+    p.ROW = ToHex(row, 0.85)
     p.CARD = ToHex(row)
     --the plate is the skin's, so there is nothing to blend the borders toward
     if not light then
@@ -1606,10 +1638,11 @@ local function FS(n)
 end
 
 --The sheet's rules after the hero card's, whose stamina bar the card reuses.
---Kept per font scale and palette so they are built and scaled only once: each
---rule's fontSize is scaled, everything else shared. ThemeEngine.MergeStyles
---does not cache, so every open still re-resolves them. Call RefreshPalette first.
----@type table<string, table[]>
+--Kept per font scale so they are built and scaled only once: each rule's
+--fontSize is scaled, everything else shared. A new palette empties the cache.
+--ThemeEngine.MergeStyles does not cache, so every open still re-resolves them.
+--Call RefreshPalette first.
+---@type table<number, table[]>
 local SHEET_RULES_BY_SCALE = {}
 --The unscaled rules for the palette that is current, and that palette.
 ---@type table[]|nil
@@ -1619,16 +1652,16 @@ local m_baseRulesSignature = nil
 ---@param scale number
 ---@return table[]
 local function ScaledRules(scale)
-    local key = string.format("%d|%s", math.floor(scale * 100 + 0.5), m_paletteSignature)
-    local rules = SHEET_RULES_BY_SCALE[key]
-    if rules ~= nil then
-        return rules
-    end
     if m_baseRules == nil or m_baseRulesSignature ~= m_paletteSignature then
         --a new palette: rules for the old ones are not coming back soon
         SHEET_RULES_BY_SCALE = {}
         m_baseRules = BuildRules()
         m_baseRulesSignature = m_paletteSignature
+    end
+    local key = math.floor(scale * 100 + 0.5)
+    local rules = SHEET_RULES_BY_SCALE[key]
+    if rules ~= nil then
+        return rules
     end
     rules = {}
     for _,list in ipairs({ EotwHeroCard.rules, m_baseRules }) do
@@ -1660,7 +1693,12 @@ local m_sheetCharid = nil
 ---@type fun()|nil
 local m_recolour = nil
 
-ThemeEngine.OnThemeChanged(mod, function()
+--Handlers only drop when the mod unloads, so a reload of this file alone
+--removes the last one first; otherwise each reload adds another.
+if EotwHeroSheet.themeHandler ~= nil then
+    EotwHeroSheet.themeHandler.Deregister()
+end
+EotwHeroSheet.themeHandler = ThemeEngine.OnThemeChanged(mod, function()
     if m_recolour ~= nil and m_sheet ~= nil and m_sheet.valid then
         m_recolour()
     end
@@ -3192,6 +3230,20 @@ local function TreasuresRegion(ctx)
 
     --the first row that wants equipping, for the call to action
     local todoRow = nil
+    --the item name labels whose slot is in the muted colour, so a colour
+    --scheme switch can redraw their text without rebuilding the rows
+    ---@type {label: Panel, it: table}[]
+    local tintedNames = {}
+
+    --an item's name, with its slot (if any) in the muted colour
+    ---@param it table
+    ---@return string
+    local function ItemNameText(it)
+        if it.body == nil then
+            return it.name
+        end
+        return string.format("%s  <color=%s>(%s)</color>", it.name, C.MUTED, it.body)
+    end
 
     --"{n} to equip": scrolls the list to the first treasure to equip
     local ctaLabel = Text("", { "eotwsCtaText" })
@@ -3242,6 +3294,7 @@ local function TreasuresRegion(ctx)
         local away = ctx.AwayParty()
         local awayTip = "Not while away with a party."
         todoRow = nil
+        tintedNames = {}
 
         local function Row(it)
             local right = {}
@@ -3343,9 +3396,20 @@ local function TreasuresRegion(ctx)
 
             --name and slot in one label, so a long name ends in "..." before
             --it can push the buttons out of the row
-            local nameText = it.name
+            local nameLabel = Text(ItemNameText(it), { "eotwsItemName", "row", "eotwsFocusable" }, {
+                canFocus = true,
+                data = {},
+                hover = function(element)
+                    HoverCard(element, function() return CardFrame(ItemCard(it, tok), true) end)
+                end,
+                dehover = LeaveCard,
+                click = function(element)
+                    LeaveCard(element)
+                    PinPanel(element, function() return CardFrame(ItemCard(it, tok), true) end)
+                end,
+            })
             if it.body ~= nil then
-                nameText = string.format("%s  <color=%s>(%s)</color>", it.name, C.MUTED, it.body)
+                tintedNames[#tintedNames+1] = { label = nameLabel, it = it }
             end
             local row = gui.Panel{
                 classes = { "eotwsItem", cond(todo, "todo", "done") },
@@ -3355,18 +3419,7 @@ local function TreasuresRegion(ctx)
                 flow = "horizontal",
                 --the item card hangs off the name, so the buttons and the
                 --No benefit chip keep their own tooltips
-                Text(nameText, { "eotwsItemName", "row", "eotwsFocusable" }, {
-                    canFocus = true,
-                    data = {},
-                    hover = function(element)
-                        HoverCard(element, function() return CardFrame(ItemCard(it, tok), true) end)
-                    end,
-                    dehover = LeaveCard,
-                    click = function(element)
-                        LeaveCard(element)
-                        PinPanel(element, function() return CardFrame(ItemCard(it, tok), true) end)
-                    end,
-                }),
+                nameLabel,
                 gui.Panel{
                     width = "auto",
                     height = "auto",
@@ -3481,6 +3534,13 @@ local function TreasuresRegion(ctx)
         flow = "vertical",
         eotwsState = Rebuild,
         eotwsData = Rebuild,
+        eotwsRecolour = function(element)
+            for _,entry in ipairs(tintedNames) do
+                if entry.label.valid then
+                    entry.label.text = ItemNameText(entry.it)
+                end
+            end
+        end,
         --another Hero starts at the top of their list
         eotwsSwitch = function(element)
             todoRow = nil
@@ -4469,6 +4529,8 @@ local function StatsRegion(ctx)
         children = skeleton,
         eotwsState = Fill,
         eotwsData = Fill,
+        --the skill group names carry the label colour in their markup
+        eotwsRecolour = Fill,
     })
 end
 
@@ -5652,8 +5714,10 @@ function EotwHeroSheet.Show(args)
         --new styles alone do not repaint what is already drawn
         themeTick = not themeTick
         root:SetClassTree("eotwsThemeTick", themeTick)
+        --only colours baked into text need redrawing; eotwsData would rebuild
+        --whole lists and destroy the row a pinned card hangs off
         if ctx.state == "ready" and ctx.data ~= nil then
-            root:FireEventTree("eotwsData")
+            root:FireEventTree("eotwsRecolour")
         end
         RefreshPin()
     end
