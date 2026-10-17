@@ -449,18 +449,60 @@ local OFFICIAL_MODULE = "mcdm-encounteroftheweek"
 --dialog, and the choice travels as an encounter KEY: the map name for one of
 --the official module's maps ("Encounter: Goblin Ambush"), or
 --"<moduleid>|<map name>" for a community Encounter of the Week module's
---(map ids change with every publish; names do not). Returns moduleid, map
---name; nil or "" is the official default map. A copy of the titlescreen's
---EncounterOfTheWeek.ParseEncounterKey -- keep the two in step.
+--(map ids change with every publish; names do not). A SERIES (one map
+--played as several encounters, see "Encounter series" in the design doc)
+--names its later parts with a "#<n>" suffix: "Encounter: The Crypt#2". Part
+--1 is the bare key. Map names can never hold "#", so the suffix is never
+--part of a name. Returns moduleid, map name, part; nil or "" is the official
+--default map. A copy of the titlescreen's EncounterOfTheWeek.ParseEncounterKey
+---- keep the two in step.
 local function ParseEncounterKey(key)
     if type(key) ~= "string" or key == "" then
-        return OFFICIAL_MODULE, DEFAULT_ENCOUNTER_MAP
+        return OFFICIAL_MODULE, DEFAULT_ENCOUNTER_MAP, 1
+    end
+    local part = 1
+    local base, number = key:match("^(.-)#(%d+)$")
+    if base ~= nil then
+        key = base
+        part = math.max(1, tonumber(number) or 1)
     end
     local moduleid, mapName = key:match("^([^|]+)|(.+)$")
     if moduleid == nil then
-        return OFFICIAL_MODULE, key
+        return OFFICIAL_MODULE, key, part
     end
-    return moduleid, mapName
+    return moduleid, mapName, part
+end
+
+--The part an authoring test plays while it sets up (before data.test holds
+--it), and the encounter key this client arrived with (before the host has
+--stamped one). See ActivePart.
+local m_testPart = nil
+local m_arrivalKey = nil
+
+--Which part of a series this game plays: the test's choice, else the part in
+--the game's encounter key (the host's stamp, else the key this client
+--arrived with). 1 for every encounter that is not a series. The script, its
+--encounter island, and so the region and start area all follow it.
+function EncounterOfTheWeekGame.ActivePart()
+    if m_testPart ~= nil then
+        return m_testPart
+    end
+    local data = nil
+    pcall(function() data = mod:GetDocumentSnapshot(STATE_DOC_ID).data end)
+    if data ~= nil then
+        if type(data.test) == "table" and tonumber(data.test.part) ~= nil then
+            return math.floor(tonumber(data.test.part) or 1)
+        end
+        if type(data.encounterMap) == "string" and data.encounterMap ~= "" then
+            local _, _, part = ParseEncounterKey(data.encounterMap)
+            return part
+        end
+    end
+    if type(m_arrivalKey) == "string" and m_arrivalKey ~= "" then
+        local _, _, part = ParseEncounterKey(m_arrivalKey)
+        return part
+    end
+    return 1
 end
 
 local function FindMapByName(name)
@@ -798,13 +840,33 @@ end
 --becomes a starting area", EncounterZones.UnlockedStartZones): their tiles
 --join the result, so the confinement and its outline grow to cover them.
 --Pass baseOnly = true for the Start zone alone (where heroes are placed).
+--
+--The encounter's own play area comes first (EncounterOfTheWeekGame.PlayArea):
+--hero start tiles drawn in the encounter builder replace the Start zone, and
+--a region keeps only the zone tiles inside it. That is how each part of a
+--series starts in its own corner of a shared map.
 local function StartZoneLocs(baseOnly)
     local map = game.currentMap
     if map == nil then
         return {}
     end
 
+    local area = nil
+    pcall(function() area = EncounterOfTheWeekGame.PlayArea() end)
+    local function InRegion(x, y)
+        local region = area ~= nil and area.region or nil
+        return region == nil or (x >= region.x1 and x <= region.x2 and y >= region.y1 and y <= region.y2)
+    end
+
     local startNames = { start = true }
+    local result = {}
+    if area ~= nil and #area.startLocs > 0 then
+        --the builder's start tiles stand in for the Start zone.
+        startNames = {}
+        for _, l in ipairs(area.startLocs) do
+            result[#result+1] = l
+        end
+    end
     if not baseOnly then
         local zones = rawget(_G, "EncounterZones")
         if zones ~= nil and zones.UnlockedStartZones ~= nil then
@@ -821,7 +883,6 @@ local function StartZoneLocs(baseOnly)
         end
     end
 
-    local result = {}
     for _,floor in ipairs(map.floors or {}) do
         local zones = nil
         local floorIndex = nil
@@ -836,7 +897,10 @@ local function StartZoneLocs(baseOnly)
                    and (startIds[record.keyword]
                         or (record.keywordName ~= nil and startNames[string.lower(record.keywordName)])) then
                     for _,l in ipairs(record.locs or {}) do
-                        result[#result+1] = core.Loc{ x = math.floor(l.x), y = math.floor(l.y), floorIndex = floorIndex }
+                        local x, y = math.floor(l.x), math.floor(l.y)
+                        if InRegion(x, y) then
+                            result[#result+1] = core.Loc{ x = x, y = y, floorIndex = floorIndex }
+                        end
                     end
                 end
             end
@@ -1040,6 +1104,13 @@ local function UpdateStartZoneConfinement()
         if zones ~= nil and zones.UnlockedStartZones ~= nil then
             zonesSeq = tostring(zonesSeq) .. "|" .. table.concat(zones.UnlockedStartZones(), ",")
         end
+    end)
+    --and so does the play area (a series' part, its region and start tiles).
+    pcall(function()
+        local area = EncounterOfTheWeekGame.PlayArea()
+        local r = area.region
+        zonesSeq = string.format("%s|p%d|%s|%d", tostring(zonesSeq), area.part,
+            r ~= nil and string.format("%d,%d,%d,%d", r.x1, r.y1, r.x2, r.y2) or "-", #area.startLocs)
     end)
 
     if m_restrictionInstalled then
@@ -1655,6 +1726,15 @@ local function UpdateEncounterConclusion()
             pcall(function()
                 local _, name = ParseEncounterKey(mod:GetDocumentSnapshot(STATE_DOC_ID).data.encounterMap)
                 title = string.match(name or "", "^[^:]+:%s*(.+)$")
+                --a series names the part: "The Crypt -- Part 2: The Ossuary".
+                local part = script ~= nil and script.parse ~= nil and script.parse.part or nil
+                if part ~= nil then
+                    local partName = string.format("Part %d", part.number)
+                    if part.title ~= nil then
+                        partName = partName .. ": " .. part.title
+                    end
+                    title = cond(title ~= nil, (title or "") .. " -- " .. partName, partName)
+                end
             end)
             local ok, err = pcall(stage.ShowStoryScreen, {
                 outcome = m_outcomeKind,
@@ -2203,7 +2283,26 @@ end)
 --ones are kept only when the document lives in the map's own journal folder
 --(parentFolder chain rooted at the map id), so a rules doc that happens to
 --embed an encounter can never be picked up.
+--
+--On a SERIES map every part has its own script and its own island, so only
+--the documents of the part being played count (EncounterMontage.ScriptDocuments),
+--and info-bubble encounters never do. FindMapScript itself falls back on this
+--for a map with no script document, hence the re-entry guard.
+local m_findingMapEncounter = false
 local function FindMapEncounter()
+    local partDocs = nil
+    local montage = rawget(_G, "EncounterMontage")
+    if not m_findingMapEncounter and montage ~= nil and montage.ScriptDocuments ~= nil then
+        m_findingMapEncounter = true
+        pcall(function()
+            local script = montage.FindMapScript()
+            if #(script.seriesParts or {}) > 0 then
+                partDocs = montage.ScriptDocuments(script)
+            end
+        end)
+        m_findingMapEncounter = false
+    end
+
     --hostAccess: EotW games are directorless, so the host's dmhub.isDM is false
     --and the map's journal folder is not in their viewing roots -- without this
     --the encounter is invisible to the very client that has to spawn it.
@@ -2211,10 +2310,13 @@ local function FindMapEncounter()
     local mapid = game.currentMapId
     local docsTable = dmhub.GetTable("documents") or {}
     for _,entry in ipairs(entries) do
-        if entry.bubbleid ~= nil then
+        if partDocs ~= nil then
+            if entry.docid ~= nil and partDocs[entry.docid] then
+                return entry
+            end
+        elseif entry.bubbleid ~= nil then
             return entry
-        end
-        if entry.docid ~= nil then
+        elseif entry.docid ~= nil then
             local doc = docsTable[entry.docid]
             if doc ~= nil and CustomDocument.IsDocInAccessibleRoot(doc, { [mapid] = true }) then
                 return entry
@@ -2224,6 +2326,88 @@ local function FindMapEncounter()
     return nil
 end
 EncounterOfTheWeekGame.FindMapEncounter = FindMapEncounter
+
+--- the play area -----------------------------------------------------
+
+--Where this encounter is played, from its island's encounter as drawn in the
+--encounter builder: `region`, the rectangle of the map the fight is bounded
+--to ({x1, y1, x2, y2}, tiles, inclusive), and `startLocs`, the tiles heroes
+--start on (core.Loc on the current map). Either may be nil/empty: no region
+--= the whole map; no start tiles = the map's Start zone. This is what lets a
+--series play its parts on different parts of one map. Cached for a couple of
+--seconds -- the 1s drivers ask -- and keyed by map and part.
+---@class EotwPlayArea
+---@field mapid string|nil
+---@field part integer
+---@field at number when it was worked out (dmhub.Time)
+---@field region EncounterRegion|nil
+---@field startLocs Loc[]
+---@field encounter Encounter|nil the part's island encounter
+
+---@type EotwPlayArea|nil
+local m_playArea = nil
+local PLAY_AREA_CACHE_SECONDS = 2
+
+--- @return EotwPlayArea
+function EncounterOfTheWeekGame.PlayArea()
+    local mapid = game.currentMapId
+    local part = EncounterOfTheWeekGame.ActivePart()
+    local now = dmhub.Time()
+    if m_playArea ~= nil and m_playArea.mapid == mapid and m_playArea.part == part
+        and now - m_playArea.at < PLAY_AREA_CACHE_SECONDS then
+        return m_playArea
+    end
+
+    ---@type EotwPlayArea
+    local area = { mapid = mapid, part = part, at = now, region = nil, startLocs = {} }
+    pcall(function()
+        local entry = FindMapEncounter()
+        if entry == nil or entry.encounter == nil then
+            return
+        end
+        area.encounter = entry.encounter
+        area.region = entry.encounter:GetRegion()
+        area.startLocs = Encounter.StartLocsOnCurrentMap(entry.encounter:GetHeroStartLocs())
+    end)
+    m_playArea = area
+    return area
+end
+
+--Is the tile inside the play area's region (always true with no region)?
+function EncounterOfTheWeekGame.InPlayRegion(x, y)
+    local region = EncounterOfTheWeekGame.PlayArea().region
+    if region == nil then
+        return true
+    end
+    return x >= region.x1 and x <= region.x2 and y >= region.y1 and y <= region.y2
+end
+
+--Host (or the authoring test): bound the map to the play area's region for
+--the whole game, not just from combat on, so the heroes never see or reach
+--the rest of the map. The core restores the original bounds only when told
+--(hold) -- an EotW game is thrown away afterwards; an authoring test puts
+--them back at its end (ReleasePlayRegion).
+local function ApplyPlayRegion()
+    local area = EncounterOfTheWeekGame.PlayArea()
+    if area.region == nil or area.encounter == nil then
+        return
+    end
+    ElevateToHostPermissions()
+    local ok, err = pcall(Encounter.ApplyRegion, area.encounter, { hold = true, anyMap = true })
+    DropHostPermissions()
+    if ok then
+        printf("EotW: the map is bounded to the encounter's region (%d,%d)-(%d,%d)",
+            area.region.x1, area.region.y1, area.region.x2, area.region.y2)
+    else
+        printf("EotW: could not bound the map to the encounter's region: %s", tostring(err))
+    end
+end
+EncounterOfTheWeekGame.ApplyPlayRegion = ApplyPlayRegion
+
+local function ReleasePlayRegion()
+    pcall(Encounter.RestoreRegionBounds, game.currentMapId)
+    m_playArea = nil
+end
 
 --- monster spawning ---------------------------------------------------
 
@@ -4258,6 +4442,9 @@ function EncounterOfTheWeekGame.SetupOnArrival(args)
         --what KeepMyArrivalRecorded restores belongs to this game only.
         m_myExpectedUsers = nil
         m_myPlacedHeroes = nil
+        --a series' part rides the key; until the host stamps it, this is
+        --where ActivePart reads it (a member placing heroes early).
+        m_arrivalKey = args.encounterMap
 
         if IsDMOrPlayerHost() and args.fastLaunch then
             --ready-game goes out as soon as the stage is up; have the lobby
@@ -4300,6 +4487,10 @@ function EncounterOfTheWeekGame.SetupOnArrival(args)
             --and every resume, land on the same map.
             RecordEncounterMap(encounterKey, encounterMapId)
             RecordPracticeMode(args.practice)
+
+            --the encounter's region bounds the map from now on (a series'
+            --part plays in its own corner of the map). Before any hero lands.
+            ApplyPlayRegion()
 
             --an opening montage goes up before the heroes land, so it is
             --the stage that the held loading screen reveals.
@@ -4462,9 +4653,28 @@ function EncounterOfTheWeekGame.TestStartBeat(script, modeid)
     return nil, "this map's script has no # Encounter beat"
 end
 
+--The current map's series parts, { {number, title}, ... } in order, or an
+--empty list when it is not a series (EncounterMontage.FindMapScript).
+function EncounterOfTheWeekGame.SeriesParts()
+    local parts = {}
+    pcall(function() parts = EncounterMontage.FindMapScript().seriesParts or {} end)
+    return parts
+end
+
 --May the local user start a test of this mode on the current map? true, or
---false + a reason (the menu rows hide on false).
-function EncounterOfTheWeekGame.CanStartTest(modeid)
+--false + a reason (the menu rows hide on false). part: a series' part to
+--test (default 1).
+function EncounterOfTheWeekGame.CanStartTest(modeid, part)
+    if part ~= nil and EncounterOfTheWeekGame.GetTest() == nil then
+        --the script that would play is that part's.
+        m_testPart = tonumber(part) or 1
+        local ok, a, b = pcall(EncounterOfTheWeekGame.CanStartTest, modeid)
+        m_testPart = nil
+        if not ok then
+            return false, tostring(a)
+        end
+        return a, b
+    end
     if not dmhub.isDM then
         return false, "only the Director can test an encounter"
     end
@@ -4542,10 +4752,11 @@ function EncounterOfTheWeekGame.HeroesOnMap()
 end
 
 --Start a test: options = { mode = "start"|"montage"|"combat", heroes = {
---charid, ... } } (characters from TestCandidates). Returns true, or false +
---a reason. The game refreshes into player-host mode; the setup runs after.
+--charid, ... }, part = n (a series' part; default 1) } (characters from
+--TestCandidates). Returns true, or false + a reason. The game refreshes into
+--player-host mode; the setup runs after.
 function EncounterOfTheWeekGame.StartTest(options)
-    local ok, reason = EncounterOfTheWeekGame.CanStartTest(options.mode)
+    local ok, reason = EncounterOfTheWeekGame.CanStartTest(options.mode, options.part)
     if not ok then
         return false, reason
     end
@@ -4558,10 +4769,11 @@ function EncounterOfTheWeekGame.StartTest(options)
     _G.EotwPendingTest = {
         gameid = dmhub.gameid,
         mode = options.mode,
+        part = tonumber(options.part) or 1,
         heroes = options.heroes,
         at = dmhub.Time(),
     }
-    printf("EotW test: starting a %s test with %d heroes", tostring(options.mode), #options.heroes)
+    printf("EotW test: starting a %s test of part %d with %d heroes", tostring(options.mode), tonumber(options.part) or 1, #options.heroes)
     --the Director becomes a player host. This forces a refresh; the 1s
     --driver of the reloaded game picks the request up.
     dmhub.playerHostModeForced = true
@@ -4704,6 +4916,9 @@ end
 local function TestArrival(pending)
     local userid = dmhub.loginUserid
     local montage = EncounterMontage
+    --a series: the part under test picks the script (and so the island,
+    --region and start tiles) until data.test carries it.
+    m_testPart = tonumber(pending.part) or 1
     local script = montage.FindMapScript(true)
     local index, beat = EncounterOfTheWeekGame.TestStartBeat(script, pending.mode)
     if index == nil then
@@ -4739,10 +4954,16 @@ local function TestArrival(pending)
             by = userid,
             startedAt = dmhub.serverTime,
             mapid = game.currentMapId,
+            part = m_testPart,
             heroes = pending.heroes,
             saved = saved,
         }
     end, "Encounter test: setting up")
+    m_testPart = nil
+
+    --bounded to the encounter's region like a real game (released at the
+    --end of the test).
+    ApplyPlayRegion()
 
     --copies of the chosen heroes, pasted into the Start zone and claimed as
     --this user's own -- the real arrival's pregen path.
@@ -4915,6 +5136,12 @@ local function TestTeardown()
     --the script's state, its allies and spawns, the traps and zones, malice
     --(and it detaches the map script).
     EncounterMontage.ResetTest()
+
+    --the map's own bounds back, if the encounter's region shrank them.
+    ElevateToHostPermissions()
+    ReleasePlayRegion()
+    DropHostPermissions()
+    m_testPart = nil
 
     --the hero copies, and the settings and hero tokens the test overrode.
     local copies = {}

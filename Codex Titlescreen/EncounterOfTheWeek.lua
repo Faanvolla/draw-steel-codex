@@ -518,16 +518,44 @@ function EncounterOfTheWeek.EncounterKey(moduleid, mapName)
     return moduleid .. "|" .. mapName
 end
 
---key -> moduleid, map name. nil or "" is the official module's default map.
+--A SERIES is one encounter map played as several encounters, unlocked one
+--after another ("# Part N" scripts; see "Encounter series" in
+--EncounterOfTheWeek.md). Its parts are keyed off the map's key: part 1 is the
+--bare key, a later part adds "#<n>" ("Encounter: The Crypt#2"). Map names
+--can never hold "#". The bare key also names the whole series: the schedule,
+--the Danger Rooms rows, votes and nominations all use it.
+--key -> the series' key (the bare key), part number (1 when none).
+function EncounterOfTheWeek.SplitPartKey(key)
+    if type(key) ~= "string" then
+        return key, 1
+    end
+    local base, number = key:match("^(.-)#(%d+)$")
+    if base == nil then
+        return key, 1
+    end
+    return base, math.max(1, tonumber(number) or 1)
+end
+
+--The key of a series' part n.
+function EncounterOfTheWeek.PartKey(seriesKey, n)
+    if n == nil or n <= 1 then
+        return seriesKey
+    end
+    return string.format("%s#%d", seriesKey, n)
+end
+
+--key -> moduleid, map name, part. nil or "" is the official module's default map.
 function EncounterOfTheWeek.ParseEncounterKey(key)
     if type(key) ~= "string" or key == "" then
-        return STARTING_MODULE, ENCOUNTER_MAP_NAME
+        return STARTING_MODULE, ENCOUNTER_MAP_NAME, 1
     end
+    local part
+    key, part = EncounterOfTheWeek.SplitPartKey(key)
     local moduleid, mapName = key:match("^([^|]+)|(.+)$")
     if moduleid == nil then
-        return STARTING_MODULE, key
+        return STARTING_MODULE, key, part
     end
-    return moduleid, mapName
+    return moduleid, mapName, part
 end
 
 --"Encounter: Goblin Ambush" -> "Goblin Ambush". The bare default map reads
@@ -542,12 +570,19 @@ end
 --A key as a player should read it: the official module's map names as they
 --always were, and "<title> (<module name>)" for a community encounter. Uses
 --the module id when the pool has not loaded (or no longer lists it).
+--A series' part reads "<that> -- Part 2: The Ossuary".
 function EncounterOfTheWeek.EncounterDisplayName(key)
     local moduleid, mapName = EncounterOfTheWeek.ParseEncounterKey(key)
-    if moduleid == STARTING_MODULE then
-        return mapName
+    local seriesKey = EncounterOfTheWeek.SplitPartKey(key)
+    local partName = EncounterOfTheWeek.PartName(key)
+    local suffix = ""
+    if partName ~= nil then
+        suffix = " -- " .. partName
     end
-    local entry = m_encounterByKey[key]
+    if moduleid == STARTING_MODULE then
+        return mapName .. suffix
+    end
+    local entry = m_encounterByKey[seriesKey]
     local moduleName = moduleid
     if entry ~= nil and entry.moduleName ~= nil and entry.moduleName ~= "" then
         moduleName = entry.moduleName
@@ -555,9 +590,115 @@ function EncounterOfTheWeek.EncounterDisplayName(key)
     local title = EncounterOfTheWeek.MapTitle(mapName)
     --a module named after its one encounter would read "X (X)".
     if moduleName == title then
-        return title
+        return title .. suffix
     end
-    return string.format("%s (%s)", title, moduleName)
+    return string.format("%s (%s)%s", title, moduleName, suffix)
+end
+
+--The parts of a series map from its module record's eotwEncounters entry:
+--{ {number, title, townGate}, ... } sorted by number, or nil when the map is
+--not a series. Read leniently: Firebase may hand a list back keyed "0", "1".
+local function ReadSeriesParts(story)
+    if type(story) ~= "table" or type(story.parts) ~= "table" then
+        return nil
+    end
+    local parts = {}
+    for _, p in pairs(story.parts) do
+        if type(p) == "table" and tonumber(p.number) ~= nil then
+            local title, townGate = nil, nil
+            if type(p.title) == "string" and p.title ~= "" then
+                title = p.title
+            end
+            if type(p.townGate) == "string" and p.townGate ~= "" then
+                townGate = p.townGate
+            end
+            parts[#parts+1] = { number = math.floor(tonumber(p.number) or 0), title = title, townGate = townGate }
+        end
+    end
+    if #parts == 0 then
+        return nil
+    end
+    table.sort(parts, function(a, b) return a.number < b.number end)
+    return parts
+end
+
+--A series' part n as the pool lists it ({number, title, townGate}), or nil.
+--key may name any part of the series; n defaults to the part it names.
+function EncounterOfTheWeek.GetPart(key, n)
+    local seriesKey, part = EncounterOfTheWeek.SplitPartKey(key)
+    local entry = m_encounterByKey[seriesKey or ""]
+    if entry == nil or entry.parts == nil then
+        return nil
+    end
+    for _, p in ipairs(entry.parts) do
+        if p.number == (n or part) then
+            return p
+        end
+    end
+    return nil
+end
+
+--"Part 2: The Ossuary" (or "Part 2") for a key naming a series' part --
+--part 1 too, which shares the series' bare key -- else nil (not a series,
+--or the pool has not loaded).
+function EncounterOfTheWeek.PartName(key)
+    local p = EncounterOfTheWeek.GetPart(key)
+    if p == nil then
+        return nil
+    end
+    if p.title ~= nil then
+        return string.format("Part %d: %s", p.number, p.title)
+    end
+    return string.format("Part %d", p.number)
+end
+
+--May this account form a party for this key? Part 1 of a series (and any
+--encounter that is not a series) always; part n once the account has won
+--part n-1 ON THE SAME BOARD: at the Town Gate any of its heroes' wins
+--(EotwRoster.AccountCompleted), in the Danger Rooms its practice wins
+--(EotwRoster.PracticeWon). A Danger Room win does not carry over to the Gate.
+--Returns true, or false + the reason to show.
+function EncounterOfTheWeek.PartUnlocked(key)
+    local seriesKey, part = EncounterOfTheWeek.SplitPartKey(key)
+    if part <= 1 then
+        return true
+    end
+    if EncounterOfTheWeek.PartWon(EncounterOfTheWeek.PartKey(seriesKey, part - 1)) then
+        return true
+    end
+    return false, string.format("Win Part %d to unlock this part.", part - 1)
+end
+
+--Has this account won this part on the board it is played from?
+function EncounterOfTheWeek.PartWon(key)
+    local seriesKey = EncounterOfTheWeek.SplitPartKey(key)
+    if EncounterOfTheWeek.IsDangerRoomEncounter(seriesKey) then
+        return EotwRoster.PracticeWon(key)
+    end
+    return EotwRoster.AccountCompleted(key)
+end
+
+--The part a party for this series should set out for by default: the first
+--unlocked part this account has not won yet, else the last unlocked one. key
+--may name any part; returns a part key (key itself when not a series).
+function EncounterOfTheWeek.NextPartKey(key)
+    local seriesKey = EncounterOfTheWeek.SplitPartKey(key)
+    local entry = m_encounterByKey[seriesKey or ""]
+    if entry == nil or entry.parts == nil then
+        return key
+    end
+    local last = seriesKey
+    for _, p in ipairs(entry.parts) do
+        local partKey = EncounterOfTheWeek.PartKey(seriesKey, p.number)
+        if not EncounterOfTheWeek.PartUnlocked(partKey) then
+            break
+        end
+        last = partKey
+        if not EncounterOfTheWeek.PartWon(partKey) then
+            return partKey
+        end
+    end
+    return last
 end
 
 --The pool entries one module record offers, default map first, then by title.
@@ -585,6 +726,8 @@ local function ModuleEncounters(info, moduleid)
                     if type(story) == "table" and type(story.townGate) == "string" and story.townGate ~= "" then
                         townGate = story.townGate
                     end
+                    --a series lists its parts (nil otherwise).
+                    local parts = ReadSeriesParts(story)
                     result[#result+1] = {
                         key = EncounterOfTheWeek.EncounterKey(moduleid, item),
                         moduleid = moduleid,
@@ -595,6 +738,7 @@ local function ModuleEncounters(info, moduleid)
                         author = author,
                         townGate = townGate,
                         ours = ours,
+                        parts = parts,
                     }
                 end
             end
@@ -791,12 +935,13 @@ function EncounterOfTheWeek.GetEncounters()
     return m_encounters
 end
 
---The pool entry for a key, or nil (not loaded, pulled, or unknown).
+--The pool entry for a key, or nil (not loaded, pulled, or unknown). A
+--series' part key gives the series' entry.
 function EncounterOfTheWeek.GetEncounter(key)
     if key == nil or key == "" then
         key = ENCOUNTER_MAP_NAME
     end
-    return m_encounterByKey[key]
+    return m_encounterByKey[EncounterOfTheWeek.SplitPartKey(key)]
 end
 
 --Every community EotW module the last fetch saw, pulled ones included:
@@ -807,7 +952,12 @@ end
 
 --An encounter's backstory (its script's "# Town Gate" text), or nil. key is
 --an encounter key as the party record carries it; "" or nil is the default map.
+--A series' part has its own; the bare key is part 1's.
 function EncounterOfTheWeek.GetTownGateText(key)
+    local part = EncounterOfTheWeek.GetPart(key)
+    if part ~= nil then
+        return part.townGate
+    end
     local entry = EncounterOfTheWeek.GetEncounter(key)
     if entry == nil then
         return nil
@@ -825,12 +975,13 @@ end
 --Codex menu's "Encounter of the Week..." dialog, or with the city's
 --/admin/city/blackbottom/week route.
 
---A key as the schedule stores it: "" / nil is the official default map.
+--A key as the schedule stores it: "" / nil is the official default map, and
+--a series' part is its series (the schedule holds whole series).
 local function NormalizeKey(key)
     if key == nil or key == "" then
         return ENCOUNTER_MAP_NAME
     end
-    return key
+    return (EncounterOfTheWeek.SplitPartKey(key))
 end
 
 --The schedule, or nil before the city has one (or before the town connected).
@@ -2364,7 +2515,7 @@ CreateScreen = function(args)
     local m_partyUI = { gate = {}, danger = {} }
 
     local resultPanel = nil
-    ---@type fun(key: string)
+    ---@type fun(key: string, explicitPart?: boolean)
     local ShowCreateDialog = nil
     ---@type fun()
     local ShowPastEncountersDialog = nil
@@ -4052,6 +4203,112 @@ CreateScreen = function(args)
         return rowPanel
     end
 
+    --A series' parts as a row of chips: "Part 1: The Gate", a tick on each part
+    --this account has won (on this board), a lock on each it may not play yet.
+    --With onPick, the unlocked chips are buttons (onPick(partKey)) and
+    --currentKey's chip is marked; without it they only show progress. An
+    --empty, collapsed panel when parts is nil (not a series), so it can sit
+    --in a children list.
+    local SeriesPartChips = function(seriesKey, parts, currentKey, onPick)
+        if parts == nil then
+            return gui.Panel{ classes = { "collapsed" }, width = 0, height = 0 }
+        end
+        local chips = {}
+        for _,p in ipairs(parts) do
+            local partKey = EncounterOfTheWeek.PartKey(seriesKey, p.number)
+            local unlocked, why = EncounterOfTheWeek.PartUnlocked(partKey)
+            local won = EncounterOfTheWeek.PartWon(partKey)
+            local text = string.format("Part %d", p.number)
+            if p.title ~= nil then
+                text = text .. ": " .. p.title
+            end
+            local icon = nil
+            if won then
+                icon = "phosphor/check-bold.png"
+            elseif not unlocked then
+                icon = "phosphor/lock-simple-fill.png"
+            end
+            chips[#chips+1] = gui.Panel{
+                classes = { "seriesPart", cond(onPick ~= nil and partKey == currentKey, "selected", nil),
+                    cond(not unlocked, "locked", nil) },
+                width = "auto",
+                height = 34,
+                hpad = 12,
+                borderBox = true,
+                hmargin = 4,
+                vmargin = 3,
+                flow = "horizontal",
+                bgimage = "panels/square.png",
+                hover = function(element)
+                    local tip = why
+                    if tip == nil and won then
+                        tip = "Your party has won this part."
+                    end
+                    if tip ~= nil then
+                        gui.Tooltip(tip)(element)
+                    end
+                end,
+                press = function(element)
+                    if onPick == nil or not unlocked or partKey == currentKey then
+                        return
+                    end
+                    audio.FireSoundEvent("Mouse.Click")
+                    onPick(partKey)
+                end,
+                gui.Panel{
+                    classes = { cond(icon == nil, "collapsed", nil) },
+                    interactable = false,
+                    bgimage = icon or "panels/square.png",
+                    bgcolor = "#f6ead0",
+                    width = 16,
+                    height = 16,
+                    valign = "center",
+                    rmargin = 6,
+                },
+                gui.Label{
+                    interactable = false,
+                    text = text,
+                    fontSize = 16,
+                    color = "#f6ead0",
+                    width = "auto",
+                    height = "auto",
+                    valign = "center",
+                },
+            }
+        end
+        return gui.Panel{
+            width = "100%",
+            height = "auto",
+            halign = "center",
+            flow = "horizontal",
+            wrap = true,
+            vmargin = 4,
+            styles = {
+                {
+                    selectors = { "seriesPart" },
+                    bgcolor = "#ffffff0e",
+                    borderWidth = 1,
+                    borderColor = "#8f8a7f88",
+                    cornerRadius = 6,
+                },
+                {
+                    selectors = { "seriesPart", "hover" },
+                    borderColor = "#e6dcc6",
+                },
+                {
+                    selectors = { "seriesPart", "selected" },
+                    bgcolor = "#5a4a2acc",
+                    borderColor = "#f6ead0",
+                },
+                {
+                    selectors = { "seriesPart", "locked" },
+                    opacity = 0.5,
+                },
+            },
+            children = chips,
+        }
+    end
+
     --A small cream overline ("THIS WEEK'S ENCOUNTER").
     local Overline = function(text)
         return gui.Label{
@@ -4068,6 +4325,7 @@ CreateScreen = function(args)
     --"# Town Gate" text, published with the module) and who made it.
     local WeekBanner = function()
         local key = EncounterOfTheWeek.CurrentEncounterKey()
+        ---@type Panel[]
         local children = { Overline("This Week's Encounter") }
         if key == nil then
             children[#children+1] = gui.Label{
@@ -4098,6 +4356,9 @@ CreateScreen = function(args)
                     height = "auto",
                 }
             end
+            --a series: its parts and how far this account has got.
+            local entry = EncounterOfTheWeek.GetEncounter(key)
+            children[#children+1] = SeriesPartChips(key, entry ~= nil and entry.parts or nil)
             local backstory = EncounterOfTheWeek.GetTownGateText(key)
             children[#children+1] = gui.Label{
                 text = backstory or "",
@@ -4181,6 +4442,7 @@ CreateScreen = function(args)
                     width = "100%",
                     height = "auto",
                 },
+                SeriesPartChips(entry.key, entry.parts),
                 gui.Label{
                     text = entry.townGate or "",
                     fontSize = 16,
@@ -4728,7 +4990,9 @@ CreateScreen = function(args)
     --engine, then confirm the gameid so the lobby publishes the roster
     --record, and claim the host's first hero slot.
 
-    ShowCreateDialog = function(encounterKey)
+    --explicitPart: encounterKey names the part to play. Otherwise a series'
+    --key opens on the next part this account has to play (NextPartKey).
+    ShowCreateDialog = function(encounterKey, explicitPart)
         if m_conn == nil or resultPanel == nil or not resultPanel.valid then
             return
         end
@@ -4738,6 +5002,16 @@ CreateScreen = function(args)
         if encounterKey == nil or encounterKey == "" then
             return
         end
+
+        --A series sets out for one of its parts. The part chips below re-open
+        --this dialog on the part clicked; a locked part cannot be chosen.
+        local seriesEntry = EncounterOfTheWeek.GetEncounter(encounterKey)
+        local seriesParts = seriesEntry ~= nil and seriesEntry.parts or nil
+        local seriesKey = EncounterOfTheWeek.SplitPartKey(encounterKey)
+        if seriesParts ~= nil and not explicitPart then
+            encounterKey = EncounterOfTheWeek.NextPartKey(encounterKey)
+        end
+        local partUnlocked, partLockedWhy = EncounterOfTheWeek.PartUnlocked(encounterKey)
 
         local m_public = true
         local m_busy = false
@@ -4774,6 +5048,10 @@ CreateScreen = function(args)
 
         local DoCreate = function()
             if m_busy or m_conn == nil then
+                return
+            end
+            if not partUnlocked then
+                SetDialogStatus(partLockedWhy or "That part is locked.", true)
                 return
             end
             local name = (nameInput.text or ""):match("^%s*(.-)%s*$")
@@ -4917,6 +5195,14 @@ CreateScreen = function(args)
                 textWrap = true,
                 vmargin = 2,
             },
+            --a series: which part (won parts say so; locked ones cannot be picked).
+            SeriesPartChips(seriesKey, seriesParts, m_encounter, function(partKey)
+                if dlg ~= nil and dlg.valid then
+                    dlg:DestroySelf()
+                end
+                m_modalDialog = nil
+                ShowCreateDialog(partKey, true)
+            end),
             gui.Panel{
                 classes = { cond(backstory == nil, "collapsed", nil) },
                 width = 520,
@@ -5138,6 +5424,7 @@ CreateScreen = function(args)
                         width = "100%",
                         height = "auto",
                     },
+                    SeriesPartChips(key, (EncounterOfTheWeek.GetEncounter(key) or {}).parts),
                     gui.Label{
                         classes = { cond(backstory == nil, "collapsed", nil) },
                         text = backstory or "",
@@ -5307,6 +5594,8 @@ CreateScreen = function(args)
     end
 
     local m_debriefOpen = false
+    --{gameid -> true}: Danger Room wins sent this session (record-practice-win).
+    local m_practiceWinSent = {}
 
     local ShowDebriefDialog = function(entry)
         local m_vote = 0
@@ -5515,7 +5804,8 @@ CreateScreen = function(args)
                         m_conn:Request{
                             action = "danger-feedback",
                             args = {
-                                encounter = entry.encounter,
+                                --a series is voted on as a whole: its bare key.
+                                encounter = (EncounterOfTheWeek.SplitPartKey(entry.encounter)),
                                 gameid = entry.gameid,
                                 vote = m_vote,
                                 feedback = m_feedback,
@@ -5583,6 +5873,25 @@ CreateScreen = function(args)
             return
         end
         m_debriefOpen = true
+        --a won Danger Room counts for the account, whatever the player does
+        --with the debrief: it unlocks a series' next part there. Idempotent.
+        if entry.result == "victory" and not m_practiceWinSent[entry.gameid] then
+            m_practiceWinSent[entry.gameid] = true
+            m_conn:Request{
+                action = "record-practice-win",
+                args = { encounter = entry.encounter, gameid = entry.gameid },
+                success = function(result)
+                    EotwRoster.SetPracticeWins(result.practiceWins)
+                    if RefreshGames ~= nil then
+                        RefreshGames()
+                    end
+                end,
+                error = function(message)
+                    m_practiceWinSent[entry.gameid] = nil
+                    printf("EotW: could not record the Danger Room win: %s", tostring(message))
+                end,
+            }
+        end
         EncounterOfTheWeek.RefreshPool(function()
             if mod.unloaded or resultPanel == nil or not resultPanel.valid then
                 m_debriefOpen = false

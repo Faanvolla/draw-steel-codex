@@ -660,10 +660,27 @@ local function MapScriptCandidates(mapid)
     return candidates
 end
 
+--Which part of a series the game is playing (EncounterOfTheWeekGame.ActivePart:
+--the part in the game's encounter key, or the one an authoring test picked).
+--1 when nothing says otherwise, which is also every map that is not a series.
+local function ActivePart()
+    local part = 1
+    local eotw = rawget(_G, "EncounterOfTheWeekGame")
+    if eotw ~= nil and eotw.ActivePart ~= nil then
+        pcall(function() part = eotw.ActivePart() end)
+    end
+    return math.floor(tonumber(part) or 1)
+end
+EncounterMontage.ActivePart = ActivePart
+
 --Parse every candidate and pick the map's script: the first (by name) that
 --declares beats and is not part of another, preferring an explicit one.
---Returns best (nil if none), allIncluded ({docid -> true}).
-local function ChooseMapScript(candidates, mapid)
+--A map whose scripts say "# Part N" is a SERIES: each part is its own
+--script and `part` picks which one plays (nil best when it has no such part;
+--documents without a part heading are then notes, never the script).
+--Returns best (nil if none), allIncluded ({docid -> true}), parts (the
+--series' part scripts sorted by number then name; empty when not a series).
+local function ChooseMapScript(candidates, mapid, part)
     local loaded = {}
     local allIncluded = {}
     for _, c in ipairs(candidates) do
@@ -672,6 +689,30 @@ local function ChooseMapScript(candidates, mapid)
         for docid in pairs(script ~= nil and script.parse.included or {}) do
             allIncluded[docid] = true
         end
+    end
+
+    local parts = {}
+    for _, script in ipairs(loaded) do
+        if script ~= nil and not allIncluded[script.docid] and script.parse.part ~= nil then
+            parts[#parts + 1] = script
+        end
+    end
+    if #parts > 0 then
+        --stable: candidates are already in name order.
+        table.sort(parts, function(a, b)
+            if a.parse.part.number ~= b.parse.part.number then
+                return a.parse.part.number < b.parse.part.number
+            end
+            return (a.doc.description or "") < (b.doc.description or "")
+        end)
+        local best = nil
+        for _, script in ipairs(parts) do
+            if script.parse.part.number == part and #script.parse.beats > 0 then
+                best = script
+                break
+            end
+        end
+        return best, allIncluded, parts
     end
 
     local best = nil
@@ -685,18 +726,29 @@ local function ChooseMapScript(candidates, mapid)
             end
         end
     end
-    return best, allIncluded
+    return best, allIncluded, parts
+end
+
+--{ {number, title}, ... } for a series' part scripts (see ChooseMapScript).
+local function PartSummaries(parts)
+    local result = {}
+    for _, script in ipairs(parts or {}) do
+        result[#result + 1] = { number = script.parse.part.number, title = script.parse.part.title }
+    end
+    return result
 end
 
 --The script of any map in the game, not just the current one, for the
 --publish dialog's Encounter of the Week module type (ModShare.lua). Uncached
 --and with no info-bubble fallback (that reads the current map only).
 --Returns { script = { docid, doc, parse, text } or nil, documents = {docid ->
---true} }, documents being every document the script could be built from:
---the map's journal documents and everything they include.
+--true}, parts }, documents being every document the script could be built
+--from: the map's journal documents and everything they include. For a
+--series, script is part 1's and parts lists every part's script (sorted by
+--number; a repeated number appears twice so the publisher can refuse it).
 function EncounterMontage.ScriptForMap(mapid)
     local candidates = MapScriptCandidates(mapid)
-    local best, allIncluded = ChooseMapScript(candidates, mapid)
+    local best, allIncluded, parts = ChooseMapScript(candidates, mapid, 1)
     local documents = {}
     for _, c in ipairs(candidates) do
         documents[c.docid] = true
@@ -704,15 +756,17 @@ function EncounterMontage.ScriptForMap(mapid)
     for docid in pairs(allIncluded) do
         documents[docid] = true
     end
-    return { script = best, documents = documents }
+    return { script = best, documents = documents, parts = parts }
 end
 
 function EncounterMontage.FindMapScript(force)
     local mapid = game.currentMapId
     local docsTable = dmhub.GetTable("documents") or {}
     local candidates = MapScriptCandidates(mapid)
+    local part = ActivePart()
 
     if m_scriptCache ~= nil and not force and m_scriptCache.docid ~= nil and m_scriptCache.mapid == mapid
+        and m_scriptCache.part == part
         and m_scriptCache.signature == ScriptSignature(candidates, m_scriptCache.allIncluded) then
         if m_scriptCache.docid ~= nil then
             m_scriptCache.doc = docsTable[m_scriptCache.docid] or m_scriptCache.doc
@@ -720,9 +774,14 @@ function EncounterMontage.FindMapScript(force)
         return m_scriptCache
     end
 
-    local best, allIncluded = ChooseMapScript(candidates, mapid)
+    local best, allIncluded, parts = ChooseMapScript(candidates, mapid, part)
 
-    if best == nil then
+    if best == nil and #parts > 0 then
+        --a series with no script for this part: nothing to play (and no
+        --info-bubble fallback, which would play some other part's fight).
+        printf("EotW: this map is a series but has no script for part %d", part)
+        best = { docid = nil, doc = nil, parse = { beats = {}, warnings = {}, hasEncounterTag = false }, text = "" }
+    elseif best == nil then
         --no document script: an info-bubble encounter is still an encounter.
         local entry = nil
         local eotw = rawget(_G, "EncounterOfTheWeekGame")
@@ -736,10 +795,28 @@ function EncounterMontage.FindMapScript(force)
         best = { docid = nil, doc = nil, parse = { beats = beats, warnings = {}, hasEncounterTag = entry ~= nil }, text = "" }
     end
     best.mapid = mapid
+    best.part = part
+    --{ {number, title}, ... } when the map is a series, else empty.
+    best.seriesParts = PartSummaries(parts)
     best.allIncluded = allIncluded
     best.signature = ScriptSignature(candidates, allIncluded)
     m_scriptCache = best
     return best
+end
+
+--The documents the current script is made of (its own and every document
+--it includes), as {docid -> true}; empty when the map has no script
+--document. Where a series' encounter islands are looked for.
+function EncounterMontage.ScriptDocuments(script)
+    local result = {}
+    if script == nil or script.docid == nil then
+        return result
+    end
+    result[script.docid] = true
+    for docid in pairs(script.parse.included or {}) do
+        result[docid] = true
+    end
+    return result
 end
 
 --The first montage beat's scene image (a RichScene annotation's coverart),

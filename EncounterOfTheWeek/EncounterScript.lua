@@ -17,7 +17,11 @@
 --    warnings = { "line N: ...", ... },
 --    hasEncounterTag = bool,    -- a [[encounter]] island anywhere in the text
 --    story = { towngate = storySection, conclusion = ..., defeat = ... },
+--    part = nil | { number, title (nil if untitled), line },
 --  }
+--  part: a "# Part 2: The Ossuary" heading makes the document one part of a
+--    SERIES -- several encounters on one map, unlocked one after another.
+--    Not a beat. See "Encounter series" in EncounterOfTheWeek.md.
 --  storySection = { kind = "story", key, title, line, text, tags,
 --                   sceneTag, sceneLine }
 --    The "# Town Gate", "# Conclusion" and "# Defeat" sections. They are
@@ -2791,6 +2795,22 @@ function EncounterScript.AnnotationKey(text, tagText, line)
     return tagText .. "-" .. count
 end
 
+--"Part 2: The Ossuary" (a "#" heading's text) -> 2, "The Ossuary"; "Part 3"
+---> 3, nil. nil when the heading is not a part heading. A series is one
+--encounter map played as several encounters, unlocked in order; each part
+--is its own script document in the map's journal folder.
+function EncounterScript.ParsePartHeading(title)
+    local number, rest = string.match(title or "", "^[Pp][Aa][Rr][Tt]%s+(%d+)(.*)$")
+    if number == nil then
+        return nil, nil
+    end
+    rest = trim(string.gsub(rest, "^%s*[:%-]?", "", 1))
+    if rest == "" then
+        rest = nil
+    end
+    return tonumber(number), rest
+end
+
 --The story sections ("# Town Gate", "# Conclusion", "# Defeat"): lowered
 --heading -> the key they are stored under in parse.story.
 EncounterScript.STORY_SECTIONS = {
@@ -2874,6 +2894,10 @@ function EncounterScript.Parse(text)
         if beat.kind == "story" then
             beat.text = cond(beat.text == "", text, beat.text .. "\n\n" .. text)
             AddSpan(beat, "textLines")
+            return
+        end
+        if beat.kind == "part" then
+            beat.text = cond(beat.text == "", text, beat.text .. "\n\n" .. text)
             return
         end
         if beat.kind == "narrative" then
@@ -3163,12 +3187,15 @@ function EncounterScript.Parse(text)
             local kind = lower(title)
             local delveName = string.match(title, "^[Dd]elve:%s*(.+)$")
             local storyKey = EncounterScript.STORY_SECTIONS[kind]
+            local partNumber, partTitle = EncounterScript.ParsePartHeading(title)
             if delveName ~= nil then
                 kind = "delve"
             elseif storyKey ~= nil then
                 kind = "story"
+            elseif partNumber ~= nil then
+                kind = "part"
             elseif kind ~= "montage" and kind ~= "encounter" and kind ~= "narrative" then
-                Warn(i, "unknown beat '%s' (expected Montage, Narrative, Encounter, Delve: <name>, Town Gate, Conclusion or Defeat); ignored", title)
+                Warn(i, "unknown beat '%s' (expected Montage, Narrative, Encounter, Delve: <name>, Part <n>: <title>, Town Gate, Conclusion or Defeat); ignored", title)
                 kind = "unknown"
             end
             beat = { kind = kind, title = title, line = i, tags = {} }
@@ -3202,6 +3229,17 @@ function EncounterScript.Parse(text)
                     Warn(i, "a second '# %s'; only the first is used", title)
                 else
                     result.story[storyKey] = beat
+                end
+            elseif kind == "part" then
+                --not a beat: it says which part of a series this script is.
+                --Prose under it is the author's own notes.
+                beat.number = partNumber
+                beat.name = partTitle
+                beat.text = ""
+                if result.part ~= nil then
+                    Warn(i, "a second '# %s'; a script is one part, so only '# Part %d' counts (give each part its own document)", title, result.part.number)
+                else
+                    result.part = { number = partNumber, title = partTitle, line = i }
                 end
             else
                 result.beats[#result.beats + 1] = beat

@@ -41,6 +41,7 @@ Not beats (can sit anywhere, including in a sub-document):
 | `# Conclusion` | story screen after a victory, before "Return to Blackbottom" |
 | `# Defeat` | story screen after a defeat |
 | `# Delve: <Name>` | a delve entered from a montage option (see Delves) |
+| `# Part <n>: <Title>` | marks the document as one part of a series (see Series) |
 
 Any other `#` heading warns and is ignored. A document with no beats but an
 `[[encounter]]` island plays as a plain fight.
@@ -529,6 +530,42 @@ Trap: Place 4 Snare Trap objects in Trap zones and delete the other Trap zones.
     round 4). A section with no `Arrive:` or no island warns and never comes.
   - `/eotwreinforce` lists what the script will send and what has arrived;
     `/eotwreinforce arrive 1` brings section 1's next group in now.
+
+## Series: several encounters on one map
+
+A **series** is one encounter map played as several encounters, each on its
+own part of the map, unlocked one after another: a party plays Part 1; once the
+player's account has won it, Part 2 opens; and so on. Every part is a separate
+game (the map starts fresh each time).
+
+- **One script document per part**, all in the map's Map Documents folder, each
+  starting with a part heading: `# Part 1: The Antechamber`, `# Part 2: The
+  Ossuary`, `# Part 3` (the title is optional). It is not a beat. Number the
+  parts 1, 2, 3... with no gaps or repeats (publishing refuses otherwise).
+  Once any document on the map has a part heading, documents without one are
+  never the script.
+- Each part is a whole script: its own beats, its own `# Encounter` and
+  `[[encounter]]` island, and its own `# Town Gate` / `# Conclusion` /
+  `# Defeat`. Sub-documents work as usual, per part.
+- **Where each part is played: the encounter's region.** In the encounter
+  builder, draw the encounter's **region** (the rectangle of the map it takes
+  place in) and its **hero start zone**, then load that saved encounter into
+  the part's `[[encounter]]` island ("Load saved..."). The game bounds the map
+  to the region from the moment the party arrives (players cannot see or walk
+  out of it) and places the heroes on the start tiles. With no start tiles,
+  heroes start on the map's `Start` zone tiles inside the region, so a shared
+  map can carry one Start zone per part. Trap zones and reinforcement `Enter:`
+  zones only count inside the region too.
+- The validator panel says which part a document is, and flags a part whose
+  encounter has no region.
+- **Testing**: Test Encounter has a **Part** dropdown on a series map. The test
+  bounds the map like a real game and puts the bounds back at End Test.
+- **In town**: the series is one entry (it is scheduled, voted on and nominated
+  as a whole). Form a Party opens on the next part the player has to play, with
+  a chip per part: won parts are ticked, locked ones greyed. At the Town Gate a
+  part unlocks when any of the account's heroes has won the part before it;
+  in the Danger Rooms, when the account has won it there. Danger Room wins do
+  not carry over to the Gate. Each part is worth its own Victory at the Gate.
 
 ## Full worked example (master + one sub-document)
 

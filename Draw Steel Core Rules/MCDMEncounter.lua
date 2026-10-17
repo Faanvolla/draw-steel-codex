@@ -3838,15 +3838,24 @@ end
 --bounds in a shared document so they come back once the encounter is over
 --(see RestoreEndedRegionBounds). Done when prep begins and again, harmlessly,
 --when combat starts.
+--options (all optional):
+--  hold: keep the region until Encounter.RestoreRegionBounds is called,
+--        rather than restoring it once combat ends. For a caller that owns
+--        the map's whole session (Encounter of the Week bounds a game to its
+--        encounter's region from arrival on).
+--  anyMap: apply it even when the encounter names a different map (the
+--        caller knows the encounter belongs to this one).
 --- @param encounter Encounter
-function Encounter.ApplyRegion(encounter)
+--- @param options nil|{hold: boolean|nil, anyMap: boolean|nil}
+function Encounter.ApplyRegion(encounter, options)
+    options = options or {}
     local mapid = game.currentMapId
     local region = encounter:GetRegion()
     local map = game.currentMap
     if region == nil or map == nil then
         return
     end
-    if encounter.mapid ~= "" and encounter.mapid ~= mapid then
+    if not options.anyMap and encounter.mapid ~= "" and encounter.mapid ~= mapid then
         --the region was drawn on another map.
         return
     end
@@ -3861,6 +3870,9 @@ function Encounter.ApplyRegion(encounter)
         doc.data[mapid] = saved
     end
     saved.appliedAt = dmhub.serverTime
+    if options.hold then
+        saved.held = true
+    end
     doc:CompleteChange("Encounter region", { undoable = false })
 
     WriteMapBounds(map, region, "Encounter region")
@@ -3885,6 +3897,9 @@ local function RestoreEndedRegionBounds()
             local inCombat = queue ~= nil and not queue.hidden
             if inCombat then
                 m_combatSeen[mapid] = true
+            elseif saved.held then
+                --held by its caller (ApplyRegion's hold) until it calls
+                --Encounter.RestoreRegionBounds.
             elseif Encounter.GetPrep(mapid) ~= nil then
                 --still preparing the encounter: the region stays until it
                 --starts (or the prep is cancelled, which clears the record).

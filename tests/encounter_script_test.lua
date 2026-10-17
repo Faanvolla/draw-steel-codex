@@ -2026,4 +2026,41 @@ end)()
     check(EncounterScript.MainTestSkill(listed, {}, {}) == nil, "no skill, no Skilled bonus")
 end)()
 
+--series: a "# Part N: Title" heading says which part of a series a script
+--is. It is not a beat, and prose under it is not text anywhere.
+;(function()
+    local n, t = EncounterScript.ParsePartHeading("Part 2: The Ossuary")
+    check(n == 2 and t == "The Ossuary", "part heading with a title")
+    n, t = EncounterScript.ParsePartHeading("part 3")
+    check(n == 3 and t == nil, "part heading without a title")
+    n, t = EncounterScript.ParsePartHeading("Part 1 - The Gate")
+    check(n == 1 and t == "The Gate", "a dash works like a colon")
+    check(EncounterScript.ParsePartHeading("Partisans") == nil, "not a part heading")
+    check(EncounterScript.ParsePartHeading("Montage") == nil, "a beat is not a part")
+
+    local parse = EncounterScript.Parse([==[
+# Part 2: The Ossuary
+
+Notes for the author.
+
+# Town Gate
+
+The bones remember.
+
+# Encounter
+
+[[encounter]]
+]==])
+    check(parse.part ~= nil and parse.part.number == 2 and parse.part.title == "The Ossuary", "parse.part is set")
+    check(#parse.beats == 1 and parse.beats[1].kind == "encounter", "the part heading is not a beat")
+    check(parse.story.towngate ~= nil and parse.story.towngate.text == "The bones remember.", "story sections still work")
+    check(#parse.warnings == 0, "a part script has no warnings: " .. table.concat(parse.warnings, "; "))
+
+    local two = EncounterScript.Parse("# Part 1\n\n# Part 2\n\n# Encounter\n\n[[encounter]]\n")
+    check(two.part.number == 1 and #two.warnings == 1, "a second part heading warns and the first counts")
+
+    local plain = EncounterScript.Parse("# Encounter\n\n[[encounter]]\n")
+    check(plain.part == nil, "a plain script is not a part")
+end)()
+
 print(string.format("encounter_script_test: %d checks passed", passed))

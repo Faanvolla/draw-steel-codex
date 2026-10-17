@@ -452,6 +452,11 @@ function dmhub.OpenTextFileInConnectedEditor(contents, callback) end
 --- @return string|nil
 function dmhub.ReadTextFile(path, errorCallback) end
 
+--- Unpacks a .zip archive into a fresh engine-owned temporary folder on a worker thread, then calls back. Folder entries, macOS resource forks (__MACOSX) and entries that would land outside the folder are skipped. Archives with more than 5000 files or over 2 GB unpacked are refused. Unpacked folders are deleted a day later.
+--- @param path string The .zip file.
+--- @param callback fun(files: nil|{path: string, name: string}[], error: nil|string) Called on the main thread once the archive is unpacked: files lists every extracted file (path is where it now is on disk, name is its path inside the archive with / separators), or error says why the archive could not be read.
+function dmhub.ExtractZip(path, callback) end
+
 --- Writes a text file to the user data directory. Only .txt and .json files are allowed. Returns the full path of the written file, or nil if the write failed.
 --- @param directory? string
 --- @param filename? string

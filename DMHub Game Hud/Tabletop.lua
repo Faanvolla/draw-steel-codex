@@ -85,7 +85,6 @@ local g_surfaceSetting = setting{
     description = "Table Background",
     help = "What the table behind the map windows looks like.",
     storage = "preference",
-    section = "General",
     editor = "dropdown",
     default = "leather",
     enumCalc = function()

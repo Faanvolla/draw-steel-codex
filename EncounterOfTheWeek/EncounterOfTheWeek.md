@@ -51,6 +51,11 @@ pregens through dev drivers), so the open risk is in the multi-client paths:
 a second player's turns, rolls and votes, late joiners, and the beat
 handovers on a non-host screen.
 
+**Encounter series (2026-10-17):** one map, several encounters unlocked in
+order, each bounded to its encounter's region. Built across the parser, game,
+town, both publishers and the City; nothing run, not deployed, uncommitted.
+See "Encounter series".
+
 ## Committed, deployed, published
 
 - **Codex (Lua).** EotW work is committed on `draw-steel-codex` `main` up to
@@ -1459,6 +1464,172 @@ restart does that), so reach the titlescreen with a plain start instead.
 5. Rotate to The Dwarvish Bandits from the admin dialog: both boards update
    live, Goblin Ambush moves to Past Encounters, the Bandits leave the
    Danger Rooms. Rotate back if wanted.
+
+# Encounter series (BUILT 2026-10-17; nothing run yet)
+
+User direction (2026-10-17): an Encounter of the Week can be several
+encounters on different parts of ONE map, played in order: win the first to
+unlock the second, win that to unlock the third. It works the same in the
+Danger Rooms and, once it becomes the Encounter of the Week, at the Town Gate.
+Decisions taken with the user:
+
+- **The unlock is per account**, not per hero or per party.
+- **One Victory per part** (each part has its own encounter key, so the
+  existing one-Victory-per-hero-per-key rule gives this for free).
+- **Danger Room wins do not carry over** to the Gate: a series promoted to the
+  Encounter of the Week starts again from Part 1 there.
+- **Votes and nominations are for the whole series** (its bare key, which is
+  also Part 1's).
+- **Each part is bounded by its encounter's region** (the encounter builder's
+  region rectangle, see `MCDMEncounter.lua` "Encounter region and hero start
+  zone"), which hard-restricts the heroes to that part of the map.
+
+Each part is a separate game: the map starts fresh, nothing that happened in
+Part 1 carries into Part 2 except through the story text.
+
+## Authoring
+
+- One script document per part in the map's journal folder, each with a
+  `# Part N` / `# Part N: Title` heading (`EncounterScript.ParsePartHeading`;
+  `parse.part = {number, title, line}`; not a beat, prose under it is notes; a
+  second part heading in one document warns). Grammar in the /eotw skill's
+  `script-reference.md`, "Series".
+- `ChooseMapScript` (`EncounterMontage.lua`): once any candidate declares a
+  part the map is a series, and the script is the candidate whose part number
+  is `EncounterMontage.ActivePart()` (documents without a part heading are
+  ignored). `FindMapScript` caches by part and stamps `script.part` and
+  `script.seriesParts` (`{ {number, title} }`). A series with no script for
+  the part gets an empty script (no info-bubble fallback).
+  `ScriptForMap` (the publisher's) also returns `parts`.
+- Each part's `[[encounter]]` island is loaded from a saved encounter that has
+  its region and hero start zone drawn. `FindMapEncounter` on a series looks
+  only at the active part's documents (`EncounterMontage.ScriptDocuments`) and
+  never at info bubbles (re-entry guard: FindMapScript falls back on it).
+- The validator panel names the part and flags a part whose island encounter
+  has no region. Test Encounter has a Part dropdown on a series map
+  (`StartTest{part}`, `CanStartTest(mode, part)`, `EncounterOfTheWeekGame.SeriesParts()`).
+  Parts can differ in beats, so a Game menu row shows when ANY part has its
+  mode, the dialog opens on the first such part, and its Start at choices
+  are rebuilt for the chosen part (`EncounterTest.lua` `TestableParts`,
+  `ModeOptionsForPart`; verified live 2026-10-17).
+
+## Keys
+
+Part 1 is the map's bare key; part n >= 2 is `<key>#<n>`
+(`Encounter: The Crypt#2`, `<moduleid>|Encounter: The Crypt#3`). Map names
+can never hold `#` (the publisher refuses them), so the suffix is
+unambiguous, and the bare key keeps meaning the whole series for the
+schedule, the Danger Rooms rows, votes and nominations. Both
+`ParseEncounterKey` copies return `moduleid, mapName, part`; the town adds
+`SplitPartKey`, `PartKey`, `GetPart`, `PartName`, `PartUnlocked`, `PartWon`,
+`NextPartKey`. `NormalizeKey` (the schedule's) strips the part, so
+`IsScheduledEncounter` / `IsDangerRoomEncounter` treat a part as its series.
+The party record, `eotwstate.encounterMap`, the pending outcome and
+`city_completions` all carry the PART key: that is what makes one Victory
+per part and what the Gate's unlock reads.
+
+## Game side (`EncounterOfTheWeek.lua`)
+
+- `EncounterOfTheWeekGame.ActivePart()`: the test's part (`m_testPart` while
+  a test sets up, then `data.test.part`), else the part in
+  `eotwstate.encounterMap`, else the key this client arrived with
+  (`m_arrivalKey`, for a member placing heroes before the host's stamp), else 1.
+- `EncounterOfTheWeekGame.PlayArea()` (cached 2 s, keyed by map + part):
+  `{region, startLocs, encounter}` from the active island's encounter.
+  `InPlayRegion(x, y)`.
+- The host's setup calls `ApplyPlayRegion()` right after `RecordEncounterMap`
+  and before any hero lands: `Encounter.ApplyRegion(encounter, {hold = true,
+  anyMap = true})`. **Core change** (`MCDMEncounter.lua`): `ApplyRegion` takes
+  options; `hold` stamps `saved.held` in `encounterRegionBounds` and the
+  restore driver skips held maps until `Encounter.RestoreRegionBounds`
+  (a real EotW game never restores -- it is thrown away; the authoring test's
+  teardown does, `ReleasePlayRegion`). Combat start's own `ApplyRegion` leaves
+  the held record alone. This applies to ANY EotW encounter whose island has
+  a region, not only a series.
+- `StartZoneLocs`: the island encounter's hero start tiles replace the
+  `Start` zone when it has any; otherwise `Start` (and unlocked extra start
+  zone) tiles inside the region. The confinement cache key includes the part,
+  region and start-tile count.
+- `EncounterZones.ZoneRecords` keeps only zones with a tile in the region
+  (`TouchesPlayRegion`), and trap placement and reinforcement `Enter:` tiles
+  only draw tiles inside it (`EncounterZones.InPlayRegion`).
+- The story screen's title names the part ("The Crypt -- Part 2: The Ossuary").
+
+## Publishing
+
+`publishingProperties.eotwEncounters[<map name>]` gains `parts = { {number,
+title, townGate}, ... }` for a series; its `townGate` is Part 1's (a town
+that knows nothing of parts still shows something). ModShare's
+`CheckEncounterModule` checks each part like an encounter and errors on a gap
+or a repeated number (warns on a one-part series); the Python publisher
+(`tools/eotw_publish`, `documents.series_parts`) writes the same shape and
+stops on bad numbering. The town reads `parts` leniently (a list may come back
+keyed "0", "1").
+
+## Town side
+
+- Pool entries carry `parts` (`ReadSeriesParts`). `GetEncounter(partKey)` is
+  the series' entry; `GetTownGateText(partKey)` the part's own text.
+- `SeriesPartChips` (a chip per part: tick = won on this board, lock =
+  not yet playable) under the Gate's week banner, on each Danger Rooms row and
+  in Past Encounters.
+- **Form a Party** (`ShowCreateDialog(key, explicitPart)`): a series key opens
+  on `NextPartKey` (the first unlocked part not yet won, else the last
+  unlocked); the chips re-open the dialog on another unlocked part; Create
+  refuses a locked part. The party record carries the part key.
+- **Unlock rule** (`PartUnlocked`): part 1 always; part n once `PartWon(part
+  n-1)`: at the Gate `EotwRoster.AccountCompleted` (list-heroes'
+  `unlocks.completed`, every key any of the account's heroes has won,
+  dismissed and fallen heroes included); in the Danger Rooms
+  `EotwRoster.PracticeWon` (`unlocks.practiceWins`).
+- **Danger Room wins**: `MaybeShowDebrief` sends `record-practice-win
+  {encounter = part key, gameid}` for a pending debrief whose result is
+  `victory`, before (and whatever happens to) the debrief dialog; the answer's
+  list goes to `EotwRoster.SetPracticeWins` and the boards re-render. The
+  debrief's vote goes to the series' bare key.
+
+## City (`cloudflare-game-server`)
+
+Table `city_practice_wins(userid, encounter, gameid, at)`, PK (userid,
+encounter); action `record-practice-win` (write bucket; idempotent; no
+schedule check); `accountUnlocks` adds `completed` and `practiceWins`;
+`dev-reset-account` deletes practice wins. Unit-tested
+(`test/city-core.test.ts`, "encounter series unlocks"). **Not deployed.**
+
+## Not done / known gaps
+
+- **Nothing has run.** Needs: the City deployed to staging, the Lua deployed
+  and an app restart, then an authored series to try (no series exists yet).
+- No server-side enforcement: a modified client could create a party for a
+  locked part (the City does not check `create-game`'s key). Practice wins are
+  client-reported, like every town roll.
+- The unlock is read when the town lists heroes; a part won in a game unlocks
+  the next once the roster is listed again after coming home (the outcome
+  apply already re-lists), or at once in the Danger Rooms (the
+  record-practice-win answer).
+- The part chips show this account's progress only; a party view does not
+  show which part the party is on beyond the encounter name.
+- Sub-documents shared between parts are fine; a part's Town Gate text in a
+  sub-document is found by the Lua publisher but not by the Python one (it
+  reads the part document alone).
+
+## To test
+
+1. Author a three-part series in an authoring game: one map `Encounter: <X>`,
+   three saved encounters each with a region and start zone in a different
+   part of the map, three documents `# Part 1..3` each with `# Encounter`,
+   the island loaded from its saved encounter, and `# Town Gate` text.
+2. Validator: each document says its part; remove a region and see the
+   problem row.
+3. Test Encounter -> Part 2: the map shrinks to Part 2's region, heroes land on
+   its start tiles, its monsters spawn; End Test puts the map's bounds back.
+4. Publish (Unlisted): the record's `eotwEncounters` entry has `parts`.
+5. Danger Rooms: the row shows three chips, 2 and 3 locked; Form a Party opens
+   on Part 1 and refuses Part 2. Win Part 1: back in town the debrief appears,
+   Part 2 unlocks (tick on Part 1), Form a Party opens on Part 2.
+6. Rotate it to the Encounter of the Week: the Gate opens on Part 1 again
+   (Danger Room wins do not count); win Part 1 at the Gate: a Victory, and
+   Part 2 opens. A hero who won Part 1 shows "Already Completed" only for Part 1.
 
 ---
 
@@ -5395,6 +5566,16 @@ requirement picker data; [x] B3 window shell (open, load, write, watch,
 undo); [x] B4 board; [x] B5 entry editor; [~] B6 scene editor (line rows);
 [x] B7 delve editor; [~] B8 inline validation + authoring-test launch; [ ] B9 the rest of
 the script (narratives, encounter setup, reinforcements, story sections).
+
+**Phase 18 -- encounter series (built 2026-10-17).** [x] S1 design with the
+user (account unlock, a Victory per part, no carry-over, series votes,
+region-bounded parts); [x] S2 parser `# Part N` + tests; [x] S3 part-aware
+script choice, island lookup, play area (region held from arrival, start
+tiles, zone filtering), core `ApplyRegion{hold, anyMap}`; [x] S4 test Part
+dropdown + validator rows; [x] S5 ModShare + Python publisher `parts`; [x] S6
+town keys, part chips, part-aware Form a Party, unlock rule, practice wins
+from the debrief; [~] S7 City `record-practice-win` + unlocks -- unit-tested,
+NOT deployed; [ ] S8 the section's "To test" (author a series first).
 
 **Launch readiness (not started).** [ ] lobby on the release worker and games on
 release DOs, [ ] non-owner module access verified, [ ] disconnected-player
