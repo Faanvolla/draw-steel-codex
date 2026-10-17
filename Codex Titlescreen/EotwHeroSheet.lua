@@ -1606,9 +1606,9 @@ local function FS(n)
 end
 
 --The sheet's rules after the hero card's, whose stamina bar the card reuses.
---Built once per font scale and palette so the theme's merge cache (keyed by
---table) is hit every open: each rule's fontSize is scaled, everything else
---shared. Call RefreshPalette first.
+--Kept per font scale and palette so they are built and scaled only once: each
+--rule's fontSize is scaled, everything else shared. ThemeEngine.MergeStyles
+--does not cache, so every open still re-resolves them. Call RefreshPalette first.
 ---@type table<string, table[]>
 local SHEET_RULES_BY_SCALE = {}
 --The unscaled rules for the palette that is current, and that palette.
@@ -1812,6 +1812,9 @@ end
 --pinned card before it closes the sheet.
 ---@type Panel|nil
 local m_pinned = nil
+--Builds the pinned card again, so a colour scheme switch can redraw it.
+---@type (fun(): Panel|nil)|nil
+local m_pinnedBuild = nil
 
 --A hover or pinned card beside its row. The codex's ability card draws its
 --own background, so it shows bare, as the action bar shows it (James
@@ -1869,16 +1872,21 @@ local function LeaveCard(element)
     element.data.cardGen = (element.data.cardGen or 0) + 1
 end
 
---Pins `popup` open beside `element` until the player clicks elsewhere or
---presses Escape.
+--Pins the card build() makes open beside `element` until the player clicks
+--elsewhere or presses Escape. build is kept for RefreshPin.
 ---@param element Panel
----@param popup Panel
-local function PinPanel(element, popup)
+---@param build fun(): Panel|nil
+local function PinPanel(element, build)
+    local popup = build()
+    if popup == nil then
+        return
+    end
     audio.FireSoundEvent("Mouse.Click")
     element.tooltip = nil
     element.popupPositioning = "panel"
     element.popup = popup
     m_pinned = element
+    m_pinnedBuild = build
 end
 
 --Click handler for a text tooltip (data.tip): keep it open.
@@ -1888,15 +1896,17 @@ local function PinTip(element)
     if tip == nil or tip == "" then
         return
     end
-    PinPanel(element, gui.TooltipFrame(gui.Label{
-        text = tip,
-        width = "auto",
-        height = "auto",
-        maxWidth = 460,
-        textWrap = true,
-        fontSize = 15,
-        color = "white",
-    }, { halign = "right", valign = "center" }))
+    PinPanel(element, function()
+        return gui.TooltipFrame(gui.Label{
+            text = tip,
+            width = "auto",
+            height = "auto",
+            maxWidth = 460,
+            textWrap = true,
+            fontSize = 15,
+            color = "white",
+        }, { halign = "right", valign = "center" })
+    end)
 end
 
 --Closes a pinned card; true if there was one.
@@ -1904,11 +1914,25 @@ end
 local function ClosePin()
     local pinned = m_pinned
     m_pinned = nil
+    m_pinnedBuild = nil
     if pinned ~= nil and pinned.valid and pinned.popup ~= nil then
         pinned.popup = nil
         return true
     end
     return false
+end
+
+--Redraws a pinned card that is still open (after a colour scheme switch:
+--cards are built with the palette as it was).
+local function RefreshPin()
+    local pinned, build = m_pinned, m_pinnedBuild
+    if pinned == nil or build == nil or not pinned.valid or pinned.popup == nil then
+        return
+    end
+    local popup = build()
+    if popup ~= nil then
+        pinned.popup = popup
+    end
 end
 
 
@@ -2030,7 +2054,7 @@ local function LevelRow(d, fallen, epicFeature)
                 click = function(element)
                     if epicFeature ~= nil then
                         LeaveCard(element)
-                        PinPanel(element, CardFrame(EpicCardContent(epicFeature), true))
+                        PinPanel(element, function() return CardFrame(EpicCardContent(epicFeature), true) end)
                     end
                 end,
             }),
@@ -3340,7 +3364,7 @@ local function TreasuresRegion(ctx)
                     dehover = LeaveCard,
                     click = function(element)
                         LeaveCard(element)
-                        PinPanel(element, CardFrame(ItemCard(it, tok), true))
+                        PinPanel(element, function() return CardFrame(ItemCard(it, tok), true) end)
                     end,
                 }),
                 gui.Panel{
@@ -3408,7 +3432,7 @@ local function TreasuresRegion(ctx)
                 dehover = LeaveCard,
                 click = function(element)
                     LeaveCard(element)
-                    PinPanel(element, CardFrame(ItemCard(it, tok), true))
+                    PinPanel(element, function() return CardFrame(ItemCard(it, tok), true) end)
                 end,
                 children = parts,
             }
@@ -4597,11 +4621,11 @@ local function AbilityRow(item, getTok, compact)
         dehover = LeaveCard,
         click = function(element)
             LeaveCard(element)
-            local it = element.data.item
-            local card = AbilityCardContent(it, getTok())
-            if card ~= nil then
-                PinPanel(element, CardFrame(card, it.ability == nil))
-            end
+            PinPanel(element, function()
+                local it = element.data.item
+                local card = AbilityCardContent(it, getTok())
+                return card ~= nil and CardFrame(card, it.ability == nil) or nil
+            end)
         end,
         children = children,
     }
@@ -5613,7 +5637,15 @@ function EotwHeroSheet.Show(args)
     --open sheet in place: new rules, then a repaint for colours baked into text
     local themeTick = false
     m_recolour = function()
-        if root == nil or not root.valid or not RefreshPalette() then
+        if root == nil or not root.valid then
+            return
+        end
+        --a Transparent UI / High Contrast or Font Size change rebuilds the whole
+        --sheet on its next think (with the new palette), so recolouring first is wasted
+        if SeeThrough() ~= ctx.transparent or FontScale() ~= ctx.fontScale then
+            return
+        end
+        if not RefreshPalette() then
             return
         end
         root.styles = ThemeEngine.MergeStyles(ScaledRules(ctx.fontScale))
@@ -5623,6 +5655,7 @@ function EotwHeroSheet.Show(args)
         if ctx.state == "ready" and ctx.data ~= nil then
             root:FireEventTree("eotwsData")
         end
+        RefreshPin()
     end
 
     --open: fade (not on a switch between Heroes, not under Reduce Motion)
