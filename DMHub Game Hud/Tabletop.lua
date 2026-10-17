@@ -664,43 +664,53 @@ local g_windowStyles = {
     },
 }
 
+--Titlebars and the strip follow the colour scheme: the bar is the scheme's
+--nested surface, its text the fg ladder (g_chrome.Themed re-applies these
+--when the scheme changes). The caption controls keep the app title bar's
+--neutral OS-furniture colours, as CodexTitleBar's own do.
 local g_titleStyles = {
     {
         selectors = {"tabletopTitle"},
-        bgcolor = "#1d1915ff",
+        bgcolor = "@bgAlt",
     },
     {
         selectors = {"tabletopTitleText"},
-        color = "#d9d1c4",
+        color = "@fg",
         fontSize = 14,
     },
     --the window's name, and the quieter details after it (a frozen map's
     --round, the live map's floor and position).
     {
         selectors = {"tabletopTitleName"},
-        color = "#ece4d6",
+        color = "@fgStrong",
         fontSize = 14,
         bold = true,
     },
     {
         selectors = {"tabletopTitleDetail"},
-        color = "#a99d8b",
+        color = "@fgMuted",
         fontSize = 13,
     },
     --a hairline between the groups of a titlebar.
     {
         selectors = {"tabletopTitleSep"},
-        bgcolor = "#ffffff1f",
+        bgcolor = "@border",
     },
     --the maximized window's strip: the titlebar's look, slightly see-through
-    --over the map, with a gold hairline along its foot.
+    --over the map, with an accent hairline along its foot. The see-through
+    --and the fades are white alpha masks on the panels (g_chrome.AlphaMask),
+    --tinted by these colours.
     {
         selectors = {"tabletopStripBody"},
-        bgcolor = "#1d1915ee",
+        bgcolor = "@bgAlt",
+    },
+    {
+        selectors = {"tabletopStripFade"},
+        bgcolor = "@bgAlt",
     },
     {
         selectors = {"tabletopStripLine"},
-        bgcolor = "#b8925a73",
+        bgcolor = "@accent",
     },
     --caption controls, in the native style of the app's own title bar
     --(CodexTitleBar's CreateWindowControl and its titleBarStyleExtras).
@@ -752,13 +762,13 @@ local g_titleStyles = {
     },
     {
         selectors = {"tabletopFloorText"},
-        color = "#d9d1c4",
+        color = "@fg",
         fontSize = 12,
     },
     --a frozen window's map is in combat.
     {
         selectors = {"tabletopCombatBadge"},
-        bgcolor = "#e0503f",
+        bgcolor = "@danger",
     },
 }
 
@@ -817,6 +827,52 @@ local g_overlayStyles = {
 --the name, then the details (a map's floor, position and round; a scene's
 --presentation), with the share and window controls at the right. Maximized,
 --the same two rows move into the strip under the app title bar.
+
+--The panels that root g_titleStyles (titlebars, the strip), given the
+--styles again when the colour scheme changes. Pruned as they go.
+g_chrome.themed = {}
+
+--Restyles a panel built with styles = ThemeEngine.MergeStyles(g_titleStyles)
+--whenever the colour scheme changes. Call it from the panel's create.
+--- @param panel Panel
+function g_chrome.Themed(panel)
+    local list = {}
+    for _, p in ipairs(g_chrome.themed) do
+        if p ~= panel and p.valid then
+            list[#list+1] = p
+        end
+    end
+    list[#list+1] = panel
+    g_chrome.themed = list
+end
+
+ThemeEngine.OnThemeChanged(mod, function()
+    local list = {}
+    for _, p in ipairs(g_chrome.themed) do
+        if p.valid then
+            list[#list+1] = p
+            p.styles = ThemeEngine.MergeStyles(g_titleStyles)
+            p:UpdateStyle()
+        end
+    end
+    g_chrome.themed = list
+end)
+
+--A horizontal white fade for a panel's gradient: alpha only, so the panel's
+--bgcolor (a themed colour, from its class) tints it.
+--- @param stops {position: number, alpha: string}[] alpha as two hex digits
+function g_chrome.AlphaMask(stops)
+    local out = {}
+    for _, stop in ipairs(stops) do
+        out[#out+1] = {position = stop.position, color = "#ffffff" .. stop.alpha}
+    end
+    return gui.Gradient{
+        type = "linear",
+        point_a = {x = 0, y = 0},
+        point_b = {x = 1, y = 0},
+        stops = out,
+    }
+end
 
 --The window's name in its titlebar.
 function g_chrome.NameLabel(text)
@@ -898,6 +954,9 @@ function g_chrome.Titlebar(rec, lead, controls, leadThink)
         width = "100%",
         height = TITLE_HEIGHT,
         bgimage = "panels/square.png",
+        create = function(element)
+            g_chrome.Themed(element)
+        end,
         rec.leadSlot,
         rec.controlsSlot,
     }
@@ -937,21 +996,19 @@ function Tabletop.CreateChromeLayer()
         height = TITLE_HEIGHT,
         halign = "right",
         valign = "top",
+        create = function(element)
+            g_chrome.Themed(element)
+        end,
         --the fade: the strip's colour thinning out to nothing over the map.
         gui.Panel{
+            classes = {"tabletopStripFade"},
             width = 110,
             height = "100%",
             bgimage = "panels/square.png",
-            bgcolor = "white",
             interactable = false,
-            gradient = gui.Gradient{
-                type = "linear",
-                point_a = {x = 0, y = 0},
-                point_b = {x = 1, y = 0},
-                stops = {
-                    {position = 0, color = "#1d191500"},
-                    {position = 1, color = "#1d1915ee"},
-                },
+            gradient = g_chrome.AlphaMask{
+                {position = 0, alpha = "00"},
+                {position = 1, alpha = "ee"},
             },
         },
         gui.Panel{
@@ -960,28 +1017,27 @@ function Tabletop.CreateChromeLayer()
             flow = "horizontal",
             width = "auto",
             height = "100%",
+            gradient = g_chrome.AlphaMask{
+                {position = 0, alpha = "ee"},
+                {position = 1, alpha = "ee"},
+            },
             g_chrome.leadSlot,
             g_chrome.Sep(),
             g_chrome.controlsSlot,
         },
-        --the gold hairline along the foot, fading in with the strip.
+        --the accent hairline along the foot, fading in with the strip.
         gui.Panel{
+            classes = {"tabletopStripLine"},
             floating = true,
             width = "100%",
             height = 1,
             valign = "bottom",
             bgimage = "panels/square.png",
-            bgcolor = "white",
             interactable = false,
-            gradient = gui.Gradient{
-                type = "linear",
-                point_a = {x = 0, y = 0},
-                point_b = {x = 1, y = 0},
-                stops = {
-                    {position = 0, color = "#b8925a00"},
-                    {position = 0.3, color = "#b8925a73"},
-                    {position = 1, color = "#b8925a73"},
-                },
+            gradient = g_chrome.AlphaMask{
+                {position = 0, alpha = "00"},
+                {position = 0.3, alpha = "73"},
+                {position = 1, alpha = "73"},
             },
         },
     }
@@ -5162,20 +5218,20 @@ local function BuildMapDropPreview(mapid, width, height)
         borderColor = "#b8925acc",
         boxShadow = TABLE_SHADOWS.lifted,
         gui.Panel{
+            styles = ThemeEngine.MergeStyles(g_titleStyles),
+            classes = {"tabletopTitle"},
             flow = "horizontal",
             width = "100%",
             height = TITLE_HEIGHT,
             bgimage = "panels/square.png",
-            bgcolor = "#1d1915ff",
             gui.Label{
+                classes = {"tabletopTitleText"},
                 width = "auto",
                 height = "100%",
                 halign = "left",
                 valign = "center",
                 hmargin = 8,
                 textWrap = false,
-                color = "#d9d1c4",
-                fontSize = 14,
                 text = MapName(mapid),
             },
         },
@@ -8020,20 +8076,20 @@ local function DefineSceneWindows()
             borderColor = "#b8925acc",
             boxShadow = TABLE_SHADOWS.lifted,
             gui.Panel{
+                styles = ThemeEngine.MergeStyles(g_titleStyles),
+                classes = {"tabletopTitle"},
                 flow = "horizontal",
                 width = "100%",
                 height = TITLE_HEIGHT,
                 bgimage = "panels/square.png",
-                bgcolor = "#1d1915ff",
                 gui.Label{
+                    classes = {"tabletopTitleText"},
                     width = "auto",
                     height = "100%",
                     halign = "left",
                     valign = "center",
                     hmargin = 8,
                     textWrap = false,
-                    color = "#d9d1c4",
-                    fontSize = 14,
                     text = Scenes.Name(sceneid),
                 },
             },
