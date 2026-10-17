@@ -25693,6 +25693,12 @@ end
 --Tear down and rebuild both rails from the saved layout (after a button
 --drag rearranges them). Open windows are untouched.
 RebuildIconRails = function()
+    --Diagnostic: a rebuild with no rails up is building the FIRST rails
+    --for a game, ahead of EnsureIconRail. Logs who, since that ordering is
+    --what once skipped the pinned-window restore (RailRestoreOpenWindows).
+    if g_iconRails.left == nil or not g_iconRails.left.valid then
+        print("RAILGEOM:: rebuild with no rails up\n" .. debug.traceback("", 2))
+    end
     DestroyIconRails()
     --map windows' rails rebuild with these (MapRail.Signature).
     MapRail.version = (MapRail.version or 0) + 1
@@ -26378,6 +26384,70 @@ function PanelDocument.CreateMapRails()
     return result
 end
 
+--Reopen this game's popped-out panels and recorded/pinned rail windows.
+--The full rail build always calls it (force); the rails-already-up path
+--calls it unforced, which only does anything the first time per game id.
+--State lives in a do-block so it costs no top-level local (this chunk is
+--at Lua's 200-local limit).
+do
+    local restoredGameId = nil
+    PanelDocument.RailRestoreOpenWindows = function(force)
+        if not force and restoredGameId == dmhub.gameid then
+            return
+        end
+        restoredGameId = dmhub.gameid
+
+        --restore popped-out panels first: a panel living in its own OS
+        --window must not also restore an in-app rail window below. Only
+        --records stamped by THIS app run reopen -- that is what brings
+        --popouts back after a Lua reload (the unload sweep destroys the
+        --hosts; the records survive it) without windows from a previous
+        --launch reappearing at startup; stale records are pruned.
+        local session = PanelDocument.PopoutSessionId()
+        local popouts = DeepCopy(dmhub.GetSettingValue("popoutwindows") or {})
+        for key, p in pairs(popouts) do
+            if p.session ~= session then
+                PanelDocument.PopoutForgetWindow(key)
+            elseif not PanelDocument.IsPoppedOut(key) then
+                OpenPanelPopout(key, {
+                    x = p.x, y = p.y, width = p.width, height = p.height,
+                    --the scale the recorded size was measured at, so the
+                    --window comes back the same number of SCREEN pixels even
+                    --if Font Size moved while it was down.
+                    scale = p.scale,
+                })
+            end
+        end
+
+        --restore the recorded windows, plus any pinned panel that is not in
+        --the record (a pinned window is always meant to be up).
+        local restore = DeepCopy(RailRestoreWindows())
+        for key in pairs(dmhub.GetSettingValue("iconrailpanelpinned") or {}) do
+            if restore[key] == nil then
+                restore[key] = {}
+            end
+        end
+        for key, p in pairs(restore) do
+            --a panel already restored into its own OS window above must not
+            --also be opened as a rail window here.
+            if PanelDocument.FindHostDialog(key) == nil and not PanelDocument.IsPoppedOut(key) then
+                --come back on the tab the window was left on. A remembered
+                --tab that has since been refiled into some OTHER folder is
+                --ignored: opening it would restore that folder's window
+                --instead of this one.
+                local open = key
+                if p.tab ~= nil and PanelDocument.WindowOwner(p.tab) == key then
+                    open = p.tab
+                end
+                print(string.format("RAILGEOM:: restore key=%s x=%s y=%s w=%s h=%s | %s",
+                    tostring(key), tostring(p.x), tostring(p.y),
+                    tostring(p.width), tostring(p.height), PanelDocument.RailGeomEnv()))
+                OpenIconRailWindow(open, { x = p.x, y = p.y, width = p.width, height = p.height })
+            end
+        end
+    end
+end
+
 --Create or destroy the rails to match the setting; restore pinned windows
 --when they come up. Safe to call any time.
 function EnsureIconRail()
@@ -26470,6 +26540,10 @@ function EnsureIconRail()
 
     local existing = g_iconRails.left
     if existing ~= nil and existing.valid then
+        --rails built by someone else first (entering a game from the title
+        --screen: the lobby game's module stays loaded and a rebuild beats
+        --EnterGame here) still owe this game its windows.
+        PanelDocument.RailRestoreOpenWindows(false)
         if mapStripped and not renamed and RebuildIconRails ~= nil then
             RebuildIconRails()
         end
@@ -26553,54 +26627,7 @@ function EnsureIconRail()
     --stale squeeze left from before the rail owned this.
     dmhub.UpdateScreenHudArea(1)
 
-    --restore popped-out panels first: a panel living in its own OS
-    --window must not also restore an in-app rail window below. Only
-    --records stamped by THIS app run reopen -- that is what brings
-    --popouts back after a Lua reload (the unload sweep destroys the
-    --hosts; the records survive it) without windows from a previous
-    --launch reappearing at startup; stale records are pruned.
-    local session = PanelDocument.PopoutSessionId()
-    local popouts = DeepCopy(dmhub.GetSettingValue("popoutwindows") or {})
-    for key, p in pairs(popouts) do
-        if p.session ~= session then
-            PanelDocument.PopoutForgetWindow(key)
-        elseif not PanelDocument.IsPoppedOut(key) then
-            OpenPanelPopout(key, {
-                x = p.x, y = p.y, width = p.width, height = p.height,
-                --the scale the recorded size was measured at, so the
-                --window comes back the same number of SCREEN pixels even
-                --if Font Size moved while it was down.
-                scale = p.scale,
-            })
-        end
-    end
-
-    --restore the recorded windows, plus any pinned panel that is not in
-    --the record (a pinned window is always meant to be up).
-    local restore = DeepCopy(RailRestoreWindows())
-    for key in pairs(dmhub.GetSettingValue("iconrailpanelpinned") or {}) do
-        if restore[key] == nil then
-            restore[key] = {}
-        end
-    end
-    for key, p in pairs(restore) do
-        --a panel already restored into its own OS window above must not
-        --also be opened as a rail window here.
-        if PanelDocument.FindHostDialog(key) == nil and not PanelDocument.IsPoppedOut(key) then
-            --come back on the tab the window was left on. A remembered
-            --tab that has since been refiled into some OTHER folder is
-            --ignored: opening it would restore that folder's window
-            --instead of this one.
-            local open = key
-            if p.tab ~= nil and PanelDocument.WindowOwner(p.tab) == key then
-                open = p.tab
-            end
-            print(string.format("RAILGEOM:: restore key=%s x=%s y=%s w=%s h=%s | %s",
-                tostring(key), tostring(p.x), tostring(p.y),
-                tostring(p.width), tostring(p.height), PanelDocument.RailGeomEnv()))
-            OpenIconRailWindow(open, { x = p.x, y = p.y, width = p.width, height = p.height })
-        end
-    end
+    PanelDocument.RailRestoreOpenWindows(true)
 end
 
 --A Lua reload starts a fresh module generation: the previous one's rails
