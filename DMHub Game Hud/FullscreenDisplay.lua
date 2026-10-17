@@ -330,6 +330,10 @@ function FullscreenDisplay.Create(options)
             local data = mod:GetDocumentSnapshot(FullscreenDisplay.docid).data or {}
             local hide = not FullscreenDisplay.IsShowingHere(belowui)
             element:SetClass("hidden", hide)
+            --under the UI on the tabletop it is the table's background: the
+            --mouse goes through to the table layer behind it, so things
+            --dropped on it land on the table (Tabletop.CreateLayer).
+            view.interactable = not (belowui and Tabletop.IsActive())
             if not hide then
                 view:FireEvent("showScene", {
                     image = data.coverart,

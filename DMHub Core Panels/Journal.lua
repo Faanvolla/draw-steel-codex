@@ -422,7 +422,7 @@ end
 function JournalEntryDropped(entryid)
     local surface = dmhub.panelDropSurface
     if surface == "table" then
-        Tabletop.OpenDocItem(entryid, {screen = dmhub.mouseScreenPosition})
+        Tabletop.OpenDocItem(entryid, {screen = dmhub.mouseScreenPosition, placed = true})
     elseif surface == "map" and dmhub.isDM then
         InfoDocument.PlaceLinkedBubble(entryid)
     end
