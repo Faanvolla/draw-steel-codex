@@ -4005,5 +4005,20 @@ function ActivatedAbility:Cast(casterToken, targets, options)
         end
     end
 
+    --The caster is always the last target, however the ability was cast.
+    if self.forceCasterTarget and self.targetType == "target" and casterToken ~= nil then
+        local hasCaster = false
+        for _, target in ipairs(targets or {}) do
+            if target.token ~= nil and target.token.charid == casterToken.charid then
+                hasCaster = true
+                break
+            end
+        end
+        if not hasCaster then
+            targets = table.shallow_copy(targets or {})
+            targets[#targets + 1] = { loc = casterToken.loc, token = casterToken }
+        end
+    end
+
     return g_baseActivatedAbilityCast(self, casterToken, targets, options)
 end

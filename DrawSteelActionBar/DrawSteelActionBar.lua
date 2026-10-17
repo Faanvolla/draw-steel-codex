@@ -9484,6 +9484,11 @@ local function CreateTargetInfo(spell)
                 end
             end
 
+            --The caster is added when the ability is cast, so clicking them does nothing.
+            if g_currentAbility.forceCasterTarget and targetToken.id == g_token.charid then
+                return
+            end
+
             local exists = list_contains(g_targetsChosen, targetToken.id)
 
             for i, effect in ipairs(info.targetEffect or {}) do
@@ -14265,7 +14270,9 @@ local function CalculateSpellTargetFocusing(symbols)
                     -- candidates even when the ability is not selfTarget (e.g. a compelled free
                     -- strike that may hit an adjacent creature OR itself). TargetPassesFilter
                     -- (called below) also waives the allegiance filter for the flagged self target.
-                    if spell.selfTarget == false and g_creature:CalculateNamedCustomAttribute("Can Target Self") <= 0 then
+                    -- Always Targets Self abilities show the caster too, so the player can see they are included.
+                    if spell.selfTarget == false and not spell.forceCasterTarget
+                        and g_creature:CalculateNamedCustomAttribute("Can Target Self") <= 0 then
                         canTarget = false
                     end
                 end
@@ -14400,6 +14407,10 @@ local function CalculateSpellTargetFocusing(symbols)
                         if tooltipReason ~= nil and (string.starts_with(tooltipReason, "Out of range")
                             or string.find(tooltipReason, "Line of Effect", 1, true) ~= nil) then
                             tooltipReason = nil
+                        end
+                        --Tell the player why the caster is marked as a target.
+                        if tooltipReason == nil and spell.forceCasterTarget and targetToken.charid == g_token.charid then
+                            tooltipReason = string.format("Automatically targeted: %s always targets its user, in addition to the targets you choose.", spell.name)
                         end
                         targetToken.sheet:FireEvent('target', { valid = valid, classes = classes, reason = tooltipReason })
 

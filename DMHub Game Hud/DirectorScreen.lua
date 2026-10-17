@@ -31,8 +31,18 @@ local mod = dmhub.GetModLoading()
 --    (DirectorScreen.ItemPlaced).
 --  - The items on the table when the layout loads keep their shares: an
 --    unshared one is held back (faded), not shared.
---  - Resizing the screen never shares or unshares: items on it are pushed
---    along to stay on it, and items on the table are pushed off it as it
+--  - Items on the screen are stuck to its edge (Venla, 2026-10-17): when the
+--    edge moves (a resize, or opening and closing it) they move with it by
+--    the same amount, even off the table's right side, like the art on it.
+--    Each one's distance from the edge is saved with the layout, so a reload
+--    puts it back where the screen carried it.
+--  - A map or scene window dropped on the screen shrinks to a card (Venla,
+--    2026-10-17): its picture and name at a fixed size. Double-click it or
+--    its hover button to expand it there, still private; minimizing it again
+--    makes the card. Dragged off the screen, a card grows back into its
+--    window at full size where it was dropped, and is shared.
+--  - Resizing the screen never shares or unshares: items on it go along with
+--    the edge (above), and items on the table are pushed off it as it
 --    widens. One that cannot get off (the screen is the whole table) goes
 --    behind it, unshared.
 --  - Nothing on it is ever shared: an item on it that gets shared some other
@@ -50,8 +60,17 @@ local mod = dmhub.GetModLoading()
 --    it came from the screen; shared that way, it leaves the screen, and is
 --    moved off it when restored.
 --
---GameHud mounts two layers: the band itself under the windows (CreateLayer),
---and the tab and the drop hint over them (CreateTabLayer). Neither takes the
+--  - The screen is always over everything shared (Venla, 2026-10-17): a
+--    window or card on the table that reaches onto it goes under it, and
+--    only the items on the screen lie on top. The band lives in the
+--    documents layer, among the windows, and KeepOnTop keeps their order:
+--    shared items, the screen, the icon rails, the screen's own items. A
+--    shared minimized button (on the button layer, over every window) cannot
+--    go under it, so it is nudged off the screen instead.
+--
+--GameHud mounts two layers: the band's (CreateLayer; the band itself is
+--moved into the documents layer, see KeepOnTop), and the tab and the drop
+--hint over the windows (CreateTabLayer). Neither takes the
 --mouse except at the edge grip and the tab, so the table, the maps and the
 --windows under the band work as before.
 
@@ -62,7 +81,7 @@ DirectorScreen = {}
 --- @class DirectorScreenItem
 --- @field key string unique among the items ("map:<window id>", "card:<charid>"...)
 --- @field rect nil|{x: number, y: number, w: number, h: number} where it lies on the table (documents-layer units); nil when it has no spot (maximized, docked on a rail)
---- @field move fun(x: number) moves it so its left edge is at x (kept on the table)
+--- @field move fun(x: number, free?: boolean) moves it so its left edge is at x (kept on the table, unless free)
 --- @field store TabletopShareStore its share
 --- @field changed fun() call after its share was changed here
 --- @field stow fun(stowed: boolean) hides it (the screen is closed) or shows it
@@ -70,6 +89,10 @@ DirectorScreen = {}
 --- @field shareButton fun(): Panel|nil its share button (hidden while it is on the screen)
 --- @field showBehind fun(behind: boolean) whether it lies behind the screen (hides its grey not-shared frame)
 --- @field maximized nil|boolean a maximized window (never faded; keeps its share button)
+--- @field card nil|boolean a window shrunk to a card (see Tabletop's g_card)
+--- @field onButtonLayer nil|boolean a minimized window's button or card, drawn over every window (KeepOnTop cannot put it under the screen)
+--- @field shrink nil|fun(x: number, y: number) shrinks a map or scene window (or its button) to a card at (x, y)
+--- @field grow nil|fun(x: number, y: number) grows a card back into its window at (x, y); nothing for anything else
 
 --Sizes in documents-layer units (the table is ~1048 high).
 local TAB_WIDTH = 14
@@ -147,6 +170,9 @@ end
 --the players (unshared; drawn faded).
 --known: key -> true for every item seen since the layout loaded; nil until
 --the first look, which only records them (no item is new then).
+--offsets: key -> how far right of the edge each item on the screen lies (its
+--left edge minus the screen's), so it can follow the edge (FollowEdge).
+--lastEdge: the edge FollowEdge last saw; nil until the first layout.
 --pushed: key -> true for a shared item the last look moved off the screen
 --(if it is still on it, it cannot get off).
 --faded: panel -> whether its fade is on (weak keys), so each look writes
@@ -156,12 +182,16 @@ end
 --drag: {key, centre, seen} while the Director drags an item; key is nil and
 --fresh is true for something new dragged from a panel (NewItemDragging).
 --resize: {offset, startX, moved} while the edge or the tab is dragged.
+--preview: {key, mode, overlay} while a dragged item shows what dropping it
+--would do (SetPreview).
 --passUntil: while a drag reports in (ItemDragging, NewItemDragging), the
 --grip and the tab let the mouse through until this time (LetDragsThrough).
 local g = {
     fraction = DEFAULT_FRACTION,
     lastFraction = DEFAULT_FRACTION,
     members = {},
+    offsets = {},
+    lastEdge = nil,
     heldBack = {},
     known = nil,
     pushed = {},
@@ -170,6 +200,7 @@ local g = {
     placed = {},
     drag = nil,
     resize = nil,
+    preview = nil,
     passUntil = 0,
     passing = false,
     nextLook = 0,
@@ -265,6 +296,11 @@ end
 local g_styles = {
     {
         selectors = {"directorScreenBand"},
+        --a soft shadow cast leftwards onto the table, so the screen reads as
+        --standing above it. On the band, not the divider: the band clips its
+        --children, so a shadow on the divider never reaches the table. Full
+        --alpha on purpose: like the cover veil, lower alphas barely show here.
+        boxShadow = {x = -10, blur = 48, color = "#000000ff"},
         bgcolor = "#16171bcc",
     },
     {
@@ -328,6 +364,24 @@ local g_styles = {
 
 --Puts the band, its edge and the tab where the screen's size says. Cheap
 --when nothing changed (the table resizing changes it too).
+--Moves the items on the screen along with its edge: each keeps its distance
+--from it (g.offsets), even past the table's right side. Cheap when the edge
+--has not moved.
+--- @param edge number
+local function FollowEdge(edge)
+    local last = g.lastEdge
+    g.lastEdge = edge
+    if last == nil or last == edge or next(g.offsets) == nil then
+        return
+    end
+    for _, item in ipairs(Tabletop.ScreenItems()) do
+        local offset = g.offsets[item.key]
+        if offset ~= nil and g.members[item.key] and item.rect ~= nil then
+            item.move(edge + offset, true)
+        end
+    end
+end
+
 local function Layout(force)
     local band = g.band
     local tab = g.tab
@@ -355,6 +409,7 @@ local function Layout(force)
     end
     band.x = edge
     band.selfStyle.width = math.max(1, w - edge)
+    FollowEdge(edge)
 
     local cover = g.cover
     if cover ~= nil and cover.valid then
@@ -481,11 +536,11 @@ local function SetLit(lit)
     end
 end
 
---- The band under the windows: GameHud puts it straight before the
---- documents layer. Only its edge takes the mouse.
+--Builds the band: its art, its edge and grip, and its caption. KeepOnTop
+--adds it straight into the documents layer, among the windows, so it can lie
+--over the shared ones. Only its edge takes the mouse.
 --- @return Panel
-function DirectorScreen.CreateLayer()
-    g.signature = nil
+local function BuildBand()
     --the band's grey over the art, so the art only partly shows through. It is
     --the art's child: a sibling drawn after it still ends up under the image.
     g.coverVeil = gui.Panel{
@@ -509,8 +564,12 @@ function DirectorScreen.CreateLayer()
         interactable = false,
         children = {g.coverVeil},
     }
+    --the band carries its own styles: it lives in the documents layer
+    --(KeepOnTop), away from the layer that would otherwise style it.
     g.band = gui.Panel{
         classes = {"directorScreenBand", "collapsed"},
+        styles = ThemeEngine.MergeTokens(g_styles),
+        floating = true,
         halign = "left",
         valign = "top",
         width = 1,
@@ -584,6 +643,16 @@ function DirectorScreen.CreateLayer()
             },
         },
     }
+    return g.band
+end
+
+--- The screen's own layer, under the documents layer. The band is not in it
+--- (see BuildBand); it holds the styles for nothing but keeps GameHud's
+--- layer order as it was.
+--- @return Panel
+function DirectorScreen.CreateLayer()
+    g.signature = nil
+    g.band = nil
     g.layer = gui.Panel{
         id = "directorScreenLayer",
         styles = ThemeEngine.MergeTokens(g_styles),
@@ -591,7 +660,6 @@ function DirectorScreen.CreateLayer()
         height = "100%",
         flow = "none",
         interactable = false,
-        children = {g.band},
         create = function(element)
             Layout(true)
         end,
@@ -697,6 +765,137 @@ end
 --While the Director drags an item: the band lights when the drop would put
 --it behind the screen, the edge turns the share colour when the drop would
 --share it, and a note by the mouse says which.
+----------------------------------------------------------------------
+--What a drag will do, and what a drop did (Venla, 2026-10-17). While an item
+--is dragged across the edge it shows its fate: a glow in the share colour
+--(the players will see it) or darkened (going behind the screen). The look
+--stops the moment it is released; a line saying what happened then shows on
+--it for a moment and fades. Both
+--are a panel laid over the item's own panel (a child, so it moves with it),
+--never the item's own styles: Present fades held-back items through those.
+
+--how long a drop's flash holds before it fades, and how long the fade takes.
+local FLASH_HOLD = 0.6
+local FLASH_FADE = 0.5
+
+--The share colour, with an alpha (two hex digits) on the end.
+--- @param alpha string
+--- @return string
+local function ShareColor(alpha)
+    return ThemeEngine.ResolveTokens("@share") .. alpha
+end
+
+--A panel to lay over an item's panel. mode "share": a glow in the share
+--colour; "hide": darkened. label: a line in its middle, or nil. bare: no
+--glow or darkening, just the label (a drop's flash: the glow stops on
+--release).
+--- @param mode string
+--- @param label nil|string
+--- @param think nil|fun(element: Panel)
+--- @param bare nil|boolean
+--- @return Panel
+local function Overlay(mode, label, think, bare)
+    local share = mode == "share"
+    local children = {}
+    if label ~= nil then
+        children[1] = gui.Label{
+            text = label,
+            halign = "center",
+            valign = "center",
+            width = "auto",
+            height = "auto",
+            hpad = 12,
+            vpad = 6,
+            borderBox = true,
+            bgimage = "panels/square.png",
+            bgcolor = "#101114f8",
+            cornerRadius = 6,
+            fontSize = 16,
+            bold = true,
+            color = cond(share, ShareColor("ff"), "#ffffffe0"),
+            interactable = false,
+        }
+    end
+    return gui.Panel{
+        floating = true,
+        halign = "left",
+        valign = "top",
+        width = "100%",
+        height = "100%",
+        flow = "none",
+        bgimage = "panels/square.png",
+        --share: a faint wash under the glow; hide: dimmed, with a pale outline
+        --so it still reads on a dark map.
+        bgcolor = cond(bare, "clear", cond(share, ShareColor("22"), "#08090cc8")),
+        borderWidth = cond(bare, 0, 2),
+        borderColor = cond(share, ShareColor("ff"), "#ffffff40"),
+        boxShadow = cond(share and not bare, {blur = 12, spread = 0, color = ShareColor("ff")}, false),
+        interactable = false,
+        thinkTime = cond(think ~= nil, 0.05, nil),
+        think = think,
+        children = children,
+    }
+end
+
+--Ends the drag's preview (g.preview), if one is showing.
+local function ClearPreview()
+    local preview = g.preview
+    g.preview = nil
+    if preview ~= nil and preview.overlay.valid then
+        preview.overlay:DestroySelf()
+    end
+end
+
+--Shows on the dragged item what dropping it now would do: mode "share",
+--"hide", or nil for nothing (it would stay on its side).
+--- @param key nil|string
+--- @param mode nil|string
+local function SetPreview(key, mode)
+    local preview = g.preview
+    if preview ~= nil and preview.key == key and preview.mode == mode and preview.overlay.valid then
+        return
+    end
+    ClearPreview()
+    if key == nil or mode == nil then
+        return
+    end
+    local item = FindItem(key)
+    local panel = nil
+    if item ~= nil then
+        panel = item.panel()
+    end
+    if panel == nil or not panel.valid then
+        return
+    end
+    local overlay = Overlay(mode, nil, nil)
+    panel:AddChild(overlay)
+    g.preview = {key = key, mode = mode, overlay = overlay}
+end
+
+--Says on a dropped item what the drop did, in a line that fades out.
+--- @param item DirectorScreenItem
+--- @param shared boolean
+local function Flash(item, shared)
+    local panel = item.panel()
+    if panel == nil or not panel.valid then
+        return
+    end
+    local start = dmhub.Time()
+    local fading = false
+    local label = cond(shared, "Shared with the players", "Hidden from the players")
+    local overlay = Overlay(cond(shared, "share", "hide"), label, function(element)
+        local t = dmhub.Time() - start
+        if t > FLASH_HOLD + FLASH_FADE + 0.1 then
+            element:DestroySelf()
+        elseif t > FLASH_HOLD and not fading then
+            fading = true
+            element.selfStyle.transitionTime = FLASH_FADE
+            element.selfStyle.groupOpacity = 0
+        end
+    end, true)
+    panel:AddChild(overlay)
+end
+
 local function UpdateDropHint()
     local hint = g.hint
     if hint == nil or not hint.valid then
@@ -729,6 +928,14 @@ local function UpdateDropHint()
             sharing = true
         end
     end
+
+    --the dragged item itself shows its fate (not something new from a panel:
+    --it has no item yet).
+    local previewKey = nil
+    if drag ~= nil and not drag.fresh and text ~= nil then
+        previewKey = drag.key
+    end
+    SetPreview(previewKey, cond(sharing, "share", "hide"))
 
     local band = g.band
     if band ~= nil and band.valid then
@@ -856,6 +1063,37 @@ local function SetBehind(item, behind)
     Tabletop.SaveLayoutSoon()
 end
 
+--Shrinks a window dropped on the screen to a card, or grows a card dropped
+--off it back into its window, then says what the drop did once the window
+--or card has appeared (after Tabletop's collapse animation).
+--- @param item DirectorScreenItem
+--- @param onScreen boolean
+local function ReshapeAndFlash(item, onScreen)
+    local rect = item.rect
+    local reshaped = false
+    if rect ~= nil and onScreen and item.shrink ~= nil and not item.card then
+        item.shrink(math.max(rect.x, Edge() + 12), rect.y)
+        reshaped = true
+    elseif rect ~= nil and not onScreen and item.grow ~= nil then
+        reshaped = item.card == true
+        item.grow(rect.x, rect.y)
+    end
+    if not reshaped then
+        Flash(item, not onScreen)
+        return
+    end
+    local key = item.key
+    dmhub.Schedule(0.32, function()
+        if mod.unloaded then
+            return
+        end
+        local now = FindItem(key)
+        if now ~= nil then
+            Flash(now, not onScreen)
+        end
+    end)
+end
+
 --- Called when the Director drops an item on the table, after its new spot
 --- is recorded. Moving it onto the screen stops sharing it; moving it off
 --- shares it with every player. A nil key just ends the drag's hint.
@@ -880,6 +1118,7 @@ function DirectorScreen.ItemDropped(key)
         return
     end
     SetBehind(item, onScreen)
+    ReshapeAndFlash(item, onScreen)
 end
 
 --The rule for an item a drop made or moved (ItemPlaced), once it is on the
@@ -893,7 +1132,9 @@ local function SettlePlaced(item)
     if item.rect == nil then
         return
     end
-    SetBehind(item, OnScreen(item.rect))
+    local onScreen = OnScreen(item.rect)
+    SetBehind(item, onScreen)
+    ReshapeAndFlash(item, onScreen)
 end
 
 --- Called when the Director drops something onto the table that makes an
@@ -984,6 +1225,16 @@ function DirectorScreen.Members()
     return SortedKeys(g.members)
 end
 
+--- Where the screen's edge is (documents-layer units), or nil while it is
+--- closed or gone.
+--- @return number|nil
+function DirectorScreen.EdgeX()
+    if not Active() or not Shown() then
+        return nil
+    end
+    return Edge()
+end
+
 --- The keys of the items held back on the table (unshared, faded), for tests.
 --- @return string[]
 function DirectorScreen.HeldBack()
@@ -1045,7 +1296,11 @@ local function KeepToItsSide(item, first)
             --shared another way: nothing on the screen is shared, so it
             --comes off it, to just left of the edge.
             g.members[key] = nil
-            if rect ~= nil then
+            if rect ~= nil and item.card and item.grow ~= nil then
+                --a card grows back into its window first; the next look moves
+                --the window off (it is shared and on the screen).
+                item.grow(rect.x, rect.y)
+            elseif rect ~= nil then
                 item.move(math.min(edge, w - RailReserve()) - rect.w - 16)
             end
             return true
@@ -1083,6 +1338,13 @@ local function KeepToItsSide(item, first)
         return true
     end
     g.pushed[key] = nil
+
+    --a shared button or card reaching onto the open screen: it is drawn over
+    --every window, so it cannot go under the screen (KeepOnTop). Off it goes.
+    if open and item.onButtonLayer and rect ~= nil and rect.x + rect.w > edge then
+        item.move(edge - rect.w - 8)
+        return true
+    end
 
     if isNew then
         --new on the table: shared, unless it is one the saved layout held back.
@@ -1126,11 +1388,27 @@ local function LookOverItems()
         if g.placed[key] ~= nil then
             SettlePlaced(item)
         end
+        --the first look after a load: an item on the screen goes back to where
+        --the screen carried it (the table's load keeps windows on the table).
+        local offset = g.offsets[key]
+        if first and g.members[key] and offset ~= nil and item.rect ~= nil then
+            item.move(Edge() + offset, true)
+            item.rect.x = Edge() + offset
+        end
         --left alone while dragged, and while a share it was just given is on
         --its way back from the server.
         local dragged = g.drag ~= nil and g.drag.key == key
+        local moved = false
         if not dragged and (g.grace[key] or 0) < now then
-            if KeepToItsSide(item, first) then
+            moved = KeepToItsSide(item, first)
+            changed = changed or moved
+        end
+        --how far right of the edge it lies, for FollowEdge (not when this look
+        --just moved it: its rect is from before the move).
+        if g.members[key] and item.rect ~= nil and not moved then
+            local current = item.rect.x - Edge()
+            if offset == nil or math.abs(current - offset) > 0.5 then
+                g.offsets[key] = current
                 changed = true
             end
         end
@@ -1148,6 +1426,11 @@ local function LookOverItems()
             end
         end
     end
+    for key, _ in pairs(g.offsets) do
+        if not g.members[key] then
+            g.offsets[key] = nil
+        end
+    end
     for key, _ in pairs(g.grace) do
         if not present[key] then
             g.grace[key] = nil
@@ -1163,9 +1446,101 @@ local function LookOverItems()
     end
 end
 
+--Keeps the screen over everything shared: puts the band into the documents
+--layer (once per layer), and whenever a shared item has been raised over it
+--(focusing a window raises it) or one of its own items has sunk under it,
+--restores the order: everything else, the band, the icon rails, then the
+--screen's own items. Dialogs that were above the band stay above it.
+local function KeepOnTop()
+    local hud = GameHud.instance
+    local docs = hud ~= nil and hud.documentsPanel or nil
+    if docs == nil or not docs.valid then
+        return
+    end
+    --built straight into the layer (a panel made without a parent is lost),
+    --and built again if it ever leaves it (something resetting the layer's
+    --children would otherwise leave it out for good).
+    local band = g.band
+    if band == nil or not band.valid or band.parent ~= docs then
+        if band ~= nil and band.valid then
+            band:DestroySelf()
+        end
+        band = BuildBand()
+        docs:AddChild(band)
+        band:SetAsFirstSibling()
+        g.signature = nil
+    end
+    if not Shown() then
+        return
+    end
+
+    --which panels are items, and whose: the screen's own, or shared.
+    local own = {}
+    local items = {}
+    local drag = g.drag
+    for _, item in ipairs(Tabletop.ScreenItems()) do
+        local panel = item.panel()
+        if panel ~= nil and panel.valid then
+            items[panel] = true
+            local mine = g.members[item.key] == true and not item.maximized
+            --while dragged (in place, see Tabletop's dragInPlace), its side is
+            --where its middle is now: under the screen until it crosses the
+            --edge, then over it, as dropping it there would hide it.
+            if drag ~= nil and drag.key == item.key and drag.centre ~= nil then
+                mine = drag.centre >= Edge()
+            end
+            if mine then
+                own[panel] = true
+            end
+        end
+    end
+
+    local children = docs.children
+    local bandIndex = nil
+    for i, child in ipairs(children) do
+        if child == band then
+            bandIndex = i
+            break
+        end
+    end
+    if bandIndex == nil then
+        return
+    end
+    local wrong = false
+    for i, child in ipairs(children) do
+        if own[child] then
+            wrong = wrong or i < bandIndex
+        elseif items[child] or child:HasClass("iconRail") then
+            --a shared item over the band, or a rail under it.
+            wrong = wrong or (items[child] and i > bandIndex) or (not items[child] and i < bandIndex)
+        end
+    end
+    if not wrong then
+        return
+    end
+
+    local rails, mine, above = {}, {}, {}
+    for i, child in ipairs(children) do
+        if own[child] then
+            mine[#mine+1] = child
+        elseif child:HasClass("iconRail") then
+            rails[#rails+1] = child
+        elseif i > bandIndex and not items[child] then
+            above[#above+1] = child
+        end
+    end
+    band:SetAsLastSibling()
+    for _, list in ipairs({rails, mine, above}) do
+        for _, child in ipairs(list) do
+            child:SetAsLastSibling()
+        end
+    end
+end
+
 --- The tabletop's think calls this (every 0.05 s).
 function DirectorScreen.Sync()
     Layout()
+    KeepOnTop()
     if g.passing and dmhub.Time() > g.passUntil then
         SetPassing(false)
     end
@@ -1191,6 +1566,7 @@ function DirectorScreen.Save()
         fraction = g.fraction,
         lastFraction = g.lastFraction,
         members = DirectorScreen.Members(),
+        offsets = g.offsets,
         heldBack = DirectorScreen.HeldBack(),
     }
 end
@@ -1199,6 +1575,8 @@ end
 --- @param saved table|nil
 function DirectorScreen.Load(saved)
     g.members = {}
+    g.offsets = {}
+    g.lastEdge = nil
     g.heldBack = {}
     g.known = nil
     g.pushed = {}
@@ -1218,6 +1596,13 @@ function DirectorScreen.Load(saved)
                     if type(key) == "string" then
                         g[field][key] = true
                     end
+                end
+            end
+        end
+        if type(saved.offsets) == "table" then
+            for key, offset in pairs(saved.offsets) do
+                if type(key) == "string" and type(offset) == "number" and g.members[key] then
+                    g.offsets[key] = offset
                 end
             end
         end
