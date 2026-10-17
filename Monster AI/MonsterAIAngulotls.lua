@@ -1364,14 +1364,22 @@ MonsterAI:RegisterMaliceAbility{
     abilities = {"Rainfall"},
     description = "Spend 7 Malice to soak the encounter when several enemies are dry, especially alongside clawfish or a daybringer saving It Is Day.",
     score = function(self, ai, token, ability, context)
+        --Rainfall only soaks creatures exposed to the sky (not under a ceiling
+        --or a Tree Canopy zone), so only those count.
         local dryEnemies = 0
         for _,enemy in ipairs(context.enemyTokens or {}) do
             if LiveCreature(enemy) and not IsWet(enemy) then
-                dryEnemies = dryEnemies + 1
+                local exposed = true
+                pcall(function()
+                    exposed = creature.lookupSymbols["exposedtosky"](enemy.properties) == true
+                end)
+                if exposed then
+                    dryEnemies = dryEnemies + 1
+                end
             end
         end
         if dryEnemies < 3 then
-            return nil, "fewer than three enemies are still dry"
+            return nil, "fewer than three dry enemies are exposed to the sky"
         end
 
         local clawfish = 0
