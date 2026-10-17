@@ -132,6 +132,10 @@ end
 --before this file and resolves the export at click time.
 g_drawSteelPromptEndCombat = PromptEndCombat
 
+--Exported for EncounterPanel.lua's "New Encounter" choice, which ends the
+--running combat (no Victory Screen) before starting another encounter.
+g_drawSteelEndCombat = PerformEndCombat
+
 local g_triggeredResourceId = "b9bc06dd-80f1-4f33-bc55-25c114e3300c"
 
 --DJ delegation (audio): these game-scoped audio settings are operated by the
