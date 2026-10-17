@@ -397,6 +397,16 @@ mod.shared.ShowCreateMapDialog = function(options)
         return SameMap(a, b) and a.variantIndex == b.variantIndex
     end
 
+    --id of the markup set the pack makes this map's default, "" for none.
+    local DefaultMarkupOf = function(entry)
+        if entry == nil then
+            return ""
+        end
+        --engine field added with default markup; the generated stub gains it on the next regen.
+        ---@diagnostic disable-next-line: undefined-field
+        return entry.defaultMarkup or ""
+    end
+
     --"12 walls, 3 zones, 2 footstep regions, 1 prop" for a shared markup set.
     local MarkupPartsText = function(info)
         local parts = {}
@@ -467,7 +477,8 @@ mod.shared.ShowCreateMapDialog = function(options)
                 flow = "horizontal",
                 gui.Label{
                     classes = {"mapPackMarkupAuthor"},
-                    text = cond(info.author ~= "", info.author, "Anonymous"),
+                    text = cond(info.author ~= "", info.author, "Anonymous")
+                        .. cond(info.id ~= "" and info.id == DefaultMarkupOf(m_packEntry), " (Default)", ""),
                 },
                 gui.Label{
                     classes = {"mapPackMarkupParts"},
@@ -557,6 +568,14 @@ mod.shared.ShowCreateMapDialog = function(options)
                 if #list == 0 then
                     return
                 end
+                --the pack's default set for this map starts checked, so the
+                --dialog adds what an encounter or a drop would.
+                local defaultId = DefaultMarkupOf(entry)
+                for _, info in ipairs(list) do
+                    if info.id == defaultId then
+                        m_markupId = defaultId
+                    end
+                end
                 local rows = {}
                 for _, info in ipairs(list) do
                     rows[#rows + 1] = MarkupRow(info)
@@ -564,6 +583,9 @@ mod.shared.ShowCreateMapDialog = function(options)
                 markupList.children = rows
                 markupHeading:SetClass("hidden", false)
                 markupStatus:SetClass("hidden", false)
+                markupStatus.text = cond(m_markupId ~= nil,
+                    "The map's default markup is checked. Choose another set, or uncheck it for the plain map.",
+                    "Choose a set to add the map with that markup, or none for the plain map.")
                 RefreshMarkupStatus()
             end,
             error = function(msg)
@@ -1469,6 +1491,12 @@ mod.shared.ShowCreateMapDialog = function(options)
                 local entry = m_packEntry
                 local name = m_mapName
                 local markupId = m_markupId
+                --with nothing checked the user wants the plain map; when the
+                --map has a default set the engine would add that instead
+                --unless told "none".
+                if markupId == nil and DefaultMarkupOf(entry) ~= "" then
+                    markupId = "none"
+                end
                 gui.CloseModal()
                 AddPackMap(entry, name, markupId)
                 return
