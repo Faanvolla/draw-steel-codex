@@ -5640,7 +5640,7 @@ end
 --forward). options.x/y place the card (documents-layer units), moving it if
 --it is already on the table;
 --options.shared marks a card that arrived from the Director's share;
---options.placed marks a drop, which shares the card unless it lands on the
+--options.placed marks a drop, which unshares the card if it lands on the
 --Director's Screen (DirectorScreen.ItemPlaced).
 function Tabletop.OpenCard(charid, options)
     options = options or {}
@@ -6381,8 +6381,8 @@ function Tabletop.MapRowDropped(mapid, options)
             frame = {}
         end
     end
-    --dropped on the Director's Screen it stays private; anywhere else on the
-    --table it is shared with the players (DirectorScreen.lua).
+    --dropped on the Director's Screen it stays private; anywhere else its
+    --share is left as it is (DirectorScreen.lua).
     DirectorScreen.ItemPlaced(g_sharing.ScreenKey(rec))
 
     if frame ~= nil then
@@ -7578,7 +7578,7 @@ do
     --item (moving it if it is already on the table); options.at: the same in
     --the table's own units ({x, y}); options.scale: a new item's size;
     --options.shared marks an item that arrived from the Director's share;
-    --options.placed marks a drop, which shares the item unless it lands on
+    --options.placed marks a drop, which unshares the item if it lands on
     --the Director's Screen (DirectorScreen.ItemPlaced).
     function Tabletop.OpenDocItem(entryid, options)
         options = options or {}
@@ -9436,8 +9436,8 @@ local function DefineSceneWindows()
         end
         local x, y = SceneDropRect(sceneid)
         Tabletop.OpenScene(sceneid, {x = x, y = y})
-        --dropped on the Director's Screen it stays private; anywhere else on
-        --the table it is shared with the players (DirectorScreen.lua).
+        --dropped on the Director's Screen it stays private; anywhere else its
+        --share is left as it is (DirectorScreen.lua).
         local rec = SceneWindowFor(sceneid)
         if rec ~= nil then
             DirectorScreen.ItemPlaced(g_sharing.ScreenKey(rec))
@@ -9456,7 +9456,7 @@ local function DefineSceneWindows()
         local x = math.max(0, math.min(math.floor(mx - width / 2), tw - width))
         local y = math.max(0, math.min(math.floor(my - height / 2), th - height))
         Tabletop.OpenScene(sceneid, {x = x, y = y})
-        --a drop: shared unless it lands on the Director's Screen.
+        --a drop: private if it lands on the Director's Screen.
         local rec = SceneWindowFor(sceneid)
         if rec ~= nil then
             DirectorScreen.ItemPlaced(g_sharing.ScreenKey(rec))
@@ -10774,7 +10774,7 @@ function Tabletop.AddFilesAsMap(paths, mx, my, options)
             EnsureBuilt(rec)
             Focus(rec)
             SaveSoon()
-            --a drop: shared unless it lands on the Director's Screen.
+            --a drop: private if it lands on the Director's Screen.
             DirectorScreen.ItemPlaced(g_sharing.ScreenKey(rec))
             if options.created ~= nil then
                 options.created(mapid)
