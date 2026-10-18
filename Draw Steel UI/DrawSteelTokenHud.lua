@@ -394,7 +394,7 @@ TokenHud.RegisterPanel{
                                     element.interactable = false
 
                                     local attacker = token.properties:try_get("_tmp_lastattacker")
-                                    --Some writers store a GenerateSymbols function here; resolve it to the creature.
+                                    --Defensive: a symbols function can end up here; resolve it to the creature.
                                     if type(attacker) == "function" then
                                         attacker = attacker("self")
                                     end
