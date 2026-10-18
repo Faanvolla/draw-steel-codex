@@ -6071,6 +6071,15 @@ end
 --damage path skip creature-only outcomes such as the hero "dying" branch.
 creature.isMapObject = false
 
+--Ability symbols can hand us a GenerateSymbols function instead of a creature.
+--Calling it with "self" returns the creature; anything else passes through.
+local function ResolveSymbolCreature(v)
+    if type(v) == "function" then
+        return v("self")
+    end
+    return v
+end
+
 function creature.TakeDamage(self, amount, note, info)
     info = info or {}
     if type(amount) == 'string' then
@@ -6256,10 +6265,10 @@ function creature.TakeDamage(self, amount, note, info)
         end
 
         if eventArg.attacker == nil or dmhub.LookupTokenId(eventArg.attacker) == dmhub.LookupTokenId(self) then
-            self._tmp_lastattacker = eventArg.pusher
+            self._tmp_lastattacker = ResolveSymbolCreature(eventArg.pusher)
             print("ATTACKER::", dmhub.LookupTokenId(self:try_get("_tmp_lastattacker")))
         else
-            self._tmp_lastattacker = eventArg.attacker
+            self._tmp_lastattacker = ResolveSymbolCreature(eventArg.attacker)
             print("ATTACKER::", dmhub.LookupTokenId(self:try_get("_tmp_lastattacker")))
         end
         self._tmp_lastdamagetype = eventArg.damagetype
@@ -6583,10 +6592,10 @@ function creature.TakeDamage(self, amount, note, info)
     end
 
     if eventArg.attacker == nil or dmhub.LookupTokenId(eventArg.attacker) == dmhub.LookupTokenId(self) then
-        self._tmp_lastattacker = eventArg.pusher
+        self._tmp_lastattacker = ResolveSymbolCreature(eventArg.pusher)
         print("ATTACKER::", dmhub.LookupTokenId(self:try_get("_tmp_lastattacker")))
     else
-        self._tmp_lastattacker = eventArg.attacker
+        self._tmp_lastattacker = ResolveSymbolCreature(eventArg.attacker)
         print("ATTACKER::", dmhub.LookupTokenId(self:try_get("_tmp_lastattacker")))
     end
 
