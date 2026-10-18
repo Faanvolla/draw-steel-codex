@@ -17,11 +17,6 @@ local function IsMinion(token)
     return token.properties:try_get("minion", false) == true
 end
 
-local function IsUndead(token)
-    local keywords = token.properties:try_get("keywords")
-    return type(keywords) == "table" and keywords["Undead"] == true
-end
-
 local function LocKey(loc)
     return loc.xyfloorOnly.str
 end
@@ -60,14 +55,45 @@ local function CanSee(token, target)
     return token:GetLineOfSight(target, token.properties:GetPierceWalls()) > 0
 end
 
-local function FreeStrikeReach(token)
-    local reach = 1
+local function FindAbility(token, name)
     for _,ability in ipairs(token.properties:GetActivatedAbilities()) do
-        if ability.name == "Melee Free Strike" or ability.name == "Ranged Free Strike" then
-            reach = math.max(reach, ability:GetRange(token.properties))
+        if ability.name == name then
+            return ability
         end
     end
-    return reach
+end
+
+--Reading a creature's abilities copies every one of them, which is slow, so remember the answer for a few seconds.
+local g_strikeProfiles = {time = 0, byCharid = {}}
+
+--Every creature has a ranged free strike, so without the melee check melee undead would shoot from afar instead of closing in.
+local function StrikeProfile(token)
+    if dmhub.Time() - g_strikeProfiles.time > 5 then
+        g_strikeProfiles = {time = dmhub.Time(), byCharid = {}}
+    end
+    local profile = g_strikeProfiles.byCharid[token.charid]
+    if profile ~= nil then
+        return profile
+    end
+
+    local freeStrikeReach = 1
+    local melee = true
+    local foundSignature = false
+    for _,ability in ipairs(token.properties:GetActivatedAbilities()) do
+        if ability.name == "Melee Free Strike" or ability.name == "Ranged Free Strike" then
+            freeStrikeReach = math.max(freeStrikeReach, ability:GetRange(token.properties))
+        elseif ability.categorization == "Signature Ability" and not foundSignature then
+            foundSignature = true
+            melee = ability:HasKeyword("Melee") and not ability:HasKeyword("Ranged")
+        end
+    end
+    profile = {
+        freeStrikeReach = freeStrikeReach,
+        melee = melee,
+        reach = cond(melee, 1, freeStrikeReach),
+    }
+    g_strikeProfiles.byCharid[token.charid] = profile
+    return profile
 end
 
 local function NearestEnemyDistance(token, enemies)
@@ -102,7 +128,7 @@ local function ReserveLanding(token, loc, reserved)
 end
 
 --Without this, the move and free strike prompts of marching undead go to the Director.
-local function WithControlOf(ai, tokens, fn)
+local function RunWithControlOf(ai, tokens, fn)
     local controls = {}
     for _,tok in ipairs(tokens) do
         if LiveCreature(tok) then
@@ -115,9 +141,85 @@ local function WithControlOf(ai, tokens, fn)
             ai:EndTokenControl(control.token, control.info)
         end)
     end
-    if not ok then
-        error(err)
+    return ok, err
+end
+
+local function MarchCandidates(token, ability, context)
+    local enemies = {}
+    for _,enemy in ipairs(context.enemyTokens or {}) do
+        if LiveCreature(enemy) then
+            enemies[#enemies+1] = enemy
+        end
     end
+    if #enemies == 0 then
+        return {}, 0
+    end
+
+    local acting = {}
+    for _,actor in ipairs(context.actingTokens or {}) do
+        acting[actor.charid] = true
+    end
+
+    local candidates = {}
+    local reachable = 0
+    for _,undead in ipairs(FriendlyCreatures(token)) do
+        --The march is refused if the caster cannot see every undead, so leave unseen ones out.
+        if not undead.playerControlled
+            and ability:TargetPassesFilter(token, undead, {})
+            and (undead.charid == token.charid or CanSee(token, undead)) then
+            local speed = undead.properties:CurrentMovementSpeed() or 0
+            local nearest = NearestEnemyDistance(undead, enemies)
+            --A rough straight-line guess; the move prompt finds the real path.
+            local canReach = nearest <= speed + StrikeProfile(undead).freeStrikeReach
+            local value = 0.1
+            if canReach then
+                reachable = reachable + 1
+                value = cond(IsMinion(undead), 1, 1.5) + cond(acting[undead.charid], 0, 0.2)
+            end
+            candidates[#candidates+1] = {token = undead, value = value, nearest = nearest, canReach = canReach}
+        end
+    end
+    table.sort(candidates, function(a, b)
+        if a.value ~= b.value then
+            return a.value > b.value
+        end
+        return a.nearest < b.nearest
+    end)
+    return candidates, reachable
+end
+
+local function MarchPlan(token, ability, context)
+    local candidates, reachable = MarchCandidates(token, ability, context)
+    local extraMalice = math.max(0, (context.malice or 0) - dreadMarchBaseCost)
+    local count = math.max(dreadMarchBaseUndead, reachable)
+    count = math.min(count, dreadMarchBaseUndead + extraMalice, #candidates)
+    local chosen = {}
+    local reaching = 0
+    for i=1,count do
+        chosen[#chosen+1] = candidates[i].token
+        if candidates[i].canReach then
+            reaching = reaching + 1
+        end
+    end
+    return {
+        undead = chosen,
+        reaching = reaching,
+        charges = math.max(0, count - dreadMarchBaseUndead),
+    }
+end
+
+local function MarchIsViable(token, context)
+    local march = FindAbility(token, "Dread March")
+    if march == nil then
+        return false
+    end
+    return MarchPlan(token, march, context).reaching >= 3
+end
+
+--While Dread March would be worth it, cheaper features only spend Malice the march does not need.
+local function SavingForMarch(token, cost, context)
+    local malice = context.malice or CharacterResource.GetMalice()
+    return malice - cost < dreadMarchBaseCost and MarchIsViable(token, context)
 end
 
 local g_hordeRoundByEncounter = {}
@@ -165,6 +267,9 @@ MonsterAI:RegisterMaliceAbility{
         if #targets == 0 then
             return nil, "every hero already has an enemy beside them"
         end
+        if SavingForMarch(token, 2, context) then
+            return nil, "saving Malice for Dread March"
+        end
         return {score = math.min(0.95, 0.62 + 0.07*#targets), heroes = #targets}
     end,
     execute = function(self, ai, token, scoringInfo, ability, context)
@@ -184,85 +289,6 @@ MonsterAI:RegisterMaliceAbility{
 
 local g_march = nil
 
-local function MarchCandidates(token, ability, context)
-    local enemies = {}
-    for _,enemy in ipairs(context.enemyTokens or {}) do
-        if LiveCreature(enemy) then
-            enemies[#enemies+1] = enemy
-        end
-    end
-    if #enemies == 0 then
-        return {}, 0
-    end
-
-    local acting = {}
-    for _,actor in ipairs(context.actingTokens or {}) do
-        acting[actor.charid] = true
-    end
-
-    local candidates = {}
-    local reachable = 0
-    for _,undead in ipairs(FriendlyCreatures(token)) do
-        --The march is refused if the caster cannot see every undead, so leave unseen ones out.
-        if IsUndead(undead) and not undead.playerControlled
-            and ability:TargetPassesFilter(token, undead, {})
-            and (undead.charid == token.charid or CanSee(token, undead)) then
-            local speed = undead.properties:CurrentMovementSpeed() or 0
-            local nearest = NearestEnemyDistance(undead, enemies)
-            --A rough straight-line guess; the move prompt finds the real path.
-            local canReach = nearest <= speed + FreeStrikeReach(undead)
-            local value = 0.1
-            if canReach then
-                reachable = reachable + 1
-                value = cond(IsMinion(undead), 1, 1.5) + cond(acting[undead.charid], 0, 0.2)
-            end
-            candidates[#candidates+1] = {token = undead, value = value, nearest = nearest, canReach = canReach}
-        end
-    end
-    table.sort(candidates, function(a, b)
-        if a.value ~= b.value then
-            return a.value > b.value
-        end
-        return a.nearest < b.nearest
-    end)
-    return candidates, reachable
-end
-
-local function MarchPlan(token, ability, context)
-    local candidates, reachable = MarchCandidates(token, ability, context)
-    local extraMalice = math.max(0, (context.malice or 0) - dreadMarchBaseCost)
-    local count = math.max(dreadMarchBaseUndead, reachable)
-    count = math.min(count, dreadMarchBaseUndead + extraMalice, #candidates)
-    local chosen = {}
-    local reaching = 0
-    for i=1,count do
-        chosen[#chosen+1] = candidates[i].token
-        if candidates[i].canReach then
-            reaching = reaching + 1
-        end
-    end
-    return {
-        undead = chosen,
-        reaching = reaching,
-        charges = math.max(0, count - dreadMarchBaseUndead),
-    }
-end
-
---Every creature has a ranged free strike, so without this melee undead would shoot from afar instead of closing in.
-local function MarchProfile(token)
-    local melee = true
-    for _,ability in ipairs(token.properties:GetActivatedAbilities()) do
-        if ability.categorization == "Signature Ability" then
-            melee = ability:HasKeyword("Melee") and not ability:HasKeyword("Ranged")
-            break
-        end
-    end
-    if melee then
-        return {melee = true, reach = 1}
-    end
-    return {melee = false, reach = FreeStrikeReach(token)}
-end
-
 local function MarchMovePrompt(ai, invokerToken, casterToken, abilityClone, symbols, options)
     if g_march == nil or not g_march.participants[casterToken.charid]
         or casterToken.playerControlled then
@@ -272,18 +298,22 @@ local function MarchMovePrompt(ai, invokerToken, casterToken, abilityClone, symb
     if #enemies == 0 then
         return {targets = {}}
     end
-    local profile = MarchProfile(casterToken)
+    local profile = StrikeProfile(casterToken)
     local reach = profile.reach
 
-    local function SquareUtility(loc, target, nearest)
-        local utility = -nearest
-        if nearest <= reach then
-            utility = 10 + MonsterAI.TargetStaminaBias(target)
-            if not profile.melee and nearest <= 1 then
-                utility = utility - 3
-            end
+    local canStrikeHere = false
+    local adjacentHere = false
+    for _,enemy in ipairs(enemies) do
+        local dist = MonsterAI.TargetDistance(casterToken, enemy)
+        if dist <= 1 then
+            adjacentHere = true
         end
-        return utility
+        if dist <= reach and CanSee(casterToken, enemy) then
+            canStrikeHere = true
+        end
+    end
+    if canStrikeHere and (profile.melee or not adjacentHere) then
+        return {targets = {}}
     end
 
     local function NearestAt(loc)
@@ -299,11 +329,19 @@ local function MarchMovePrompt(ai, invokerToken, casterToken, abilityClone, symb
         return target, nearest
     end
 
-    local here, hereDist = NearestAt(casterToken.loc)
-    local hereUtility = SquareUtility(casterToken.loc, here, hereDist)
-    if hereDist <= reach and CanSee(casterToken, here) and (profile.melee or hereDist > 1) then
-        return {targets = {}}
+    local function SquareUtility(target, nearest)
+        local utility = -nearest
+        if nearest <= reach then
+            utility = 10 + MonsterAI.TargetStaminaBias(target)
+            if not profile.melee and nearest <= 1 then
+                utility = utility - 3
+            end
+        end
+        return utility
     end
+
+    local here, hereDist = NearestAt(casterToken.loc)
+    local hereUtility = SquareUtility(here, hereDist)
 
     local range = abilityClone:GetRange(casterToken.properties, symbols)
     local reserved = g_march.reserved
@@ -316,29 +354,37 @@ local function MarchMovePrompt(ai, invokerToken, casterToken, abilityClone, symb
                 loc = loc,
                 target = target,
                 inReach = nearest <= reach,
-                utility = SquareUtility(loc, target, nearest) - (info.cost or 0)*0.002,
+                utility = SquareUtility(target, nearest) - (info.cost or 0)*0.002,
             }
         end
     end
     table.sort(candidates, function(a, b) return a.utility > b.utility end)
 
     local best = nil
-    for i=1,math.min(10, #candidates) do
-        local candidate = candidates[i]
-        if not candidate.inReach then
-            best = best or candidate
-            break
+    local approach = nil
+    local checks = 0
+    for _,candidate in ipairs(candidates) do
+        if candidate.inReach then
+            if checks < 10 then
+                checks = checks + 1
+                local usable = false
+                ai:ExecuteWithTheoreticalMovementLoc(casterToken, candidate.loc, function()
+                    usable = MonsterAI.TargetDistance(casterToken, candidate.target) <= reach
+                        and CanSee(casterToken, candidate.target)
+                end)
+                if usable then
+                    best = candidate
+                    break
+                end
+            end
+        elseif approach == nil then
+            approach = candidate
+            if checks >= 10 then
+                break
+            end
         end
-        local visible = false
-        ai:ExecuteWithTheoreticalMovementLoc(casterToken, candidate.loc, function()
-            visible = CanSee(casterToken, candidate.target)
-        end)
-        if visible then
-            best = candidate
-            break
-        end
-        best = best or candidate
     end
+    best = best or approach
     if best == nil or best.utility <= hereUtility then
         return {targets = {}}
     end
@@ -428,16 +474,14 @@ MonsterAI:RegisterMaliceAbility{
         --Its target count is "Charges + 4", which the AI would read as 4, so set it on a copy.
         local march = ability:MakeTemporaryClone()
         march.numTargets = tostring(#targets)
+        local marched = false
+        march.OnFinishCast = function(_, options)
+            marched = not options.abort and not options.atexit
+        end
 
-        local maliceBefore = CharacterResource.GetMalice()
         g_march = {participants = participants, reserved = {}}
-        local ok, err = ai:RunYieldingFunction(function()
-            WithControlOf(ai, plan.undead, function()
-                ai:ExecuteAbility(token, march, targets, {
-                    symbols = {charges = plan.charges},
-                    sleep = abilityPause,
-                })
-            end)
+        local ok, err = RunWithControlOf(ai, plan.undead, function()
+            ai:ExecuteAbility(token, march, targets, {sleep = abilityPause})
         end)
         g_march = nil
         if not ok then
@@ -445,9 +489,9 @@ MonsterAI:RegisterMaliceAbility{
         end
 
         --AI casts only pay the base 7 Malice, so pay for the extra undead here.
-        local malice = CharacterResource.GetMalice()
-        if plan.charges > 0 and malice <= maliceBefore - dreadMarchBaseCost then
-            CharacterResource.SetMalice(malice - plan.charges,
+        if marched and plan.charges > 0 then
+            local malice = CharacterResource.GetMalice()
+            CharacterResource.SetMalice(math.max(0, malice - plan.charges),
                 string.format("Dread March: %d extra undead", plan.charges))
         end
     end,
@@ -456,11 +500,32 @@ MonsterAI:RegisterMaliceAbility{
 --The arms reach one square past the 3x3 block, so anything within 2 of the centre gets grabbed, undead too.
 local graspingReach = 2
 
+--Where this encounter's arms already are, so a new patch is not wasted on enemies they already reach.
+local g_graspingByEncounter = {}
+
+local function ExistingArms(context)
+    local queue = context.initiativeQueue
+    if queue == nil then
+        return {}
+    end
+    g_graspingByEncounter[queue.guid] = g_graspingByEncounter[queue.guid] or {}
+    return g_graspingByEncounter[queue.guid]
+end
+
 local function GraspingPlan(token, context)
+    local arms = ExistingArms(context)
     local enemies = {}
     for _,enemy in ipairs(context.enemyTokens or {}) do
         if LiveCreature(enemy) then
-            enemies[#enemies+1] = enemy
+            local alreadyGrabbed = false
+            for _,center in ipairs(arms) do
+                if enemy:Distance(center) <= graspingReach then
+                    alreadyGrabbed = true
+                end
+            end
+            if not alreadyGrabbed then
+                enemies[#enemies+1] = enemy
+            end
         end
     end
     local allies = FriendlyCreatures(token)
@@ -516,7 +581,10 @@ MonsterAI:RegisterMaliceAbility{
     score = function(self, ai, token, ability, context)
         local plan = GraspingPlan(token, context)
         if plan == nil or plan.value < 1.5 then
-            return nil, "no spot catches two enemies without catching undead"
+            return nil, "no spot catches two new enemies without catching undead"
+        end
+        if SavingForMarch(token, 5, context) then
+            return nil, "saving Malice for Dread March"
         end
         return {
             score = math.min(0.9, 0.58 + 0.07*plan.value),
@@ -539,10 +607,15 @@ MonsterAI:RegisterMaliceAbility{
         for _,square in ipairs(plan.squares) do
             targets[#targets+1] = {loc = square}
         end
+        local maliceBefore = CharacterResource.GetMalice()
         ai:ExecuteAbility(token, ability, targets, {
             sleep = abilityPause,
             symbols = {targetArea = area},
             targetArea = area,
         })
+        if CharacterResource.GetMalice() < maliceBefore then
+            local arms = ExistingArms(context)
+            arms[#arms+1] = plan.center
+        end
     end,
 }
