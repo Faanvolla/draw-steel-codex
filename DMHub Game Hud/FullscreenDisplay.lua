@@ -13,6 +13,7 @@ FullscreenDisplay.docid = "fullscreen_display"
 --  coverartCredit  the "Art by" creator id, or false
 --  caption, subtitle   text drawn over the picture, or false
 --  sceneid         the Scenes library scene on show (ScenesPanel.lua), or false
+--  fit             {image, mode}: mode "contain" shows all of that image, letterboxed; otherwise it fills and crops
 --Game Controls, [[scene]] journal tags and maximized tabletop scene windows
 --all write it; GameHud mounts one display under the UI and one over it.
 
@@ -335,6 +336,11 @@ function FullscreenDisplay.Create(options)
             --dropped on it land on the table (Tabletop.CreateLayer).
             view.interactable = not (belowui and Tabletop.IsActive())
             if not hide then
+                local fit = "cover"
+                if type(data.fit) == "table" and data.fit.image == data.coverart and data.fit.mode == "contain" then
+                    fit = "contain"
+                end
+                view:FireEvent("setFit", fit)
                 view:FireEvent("showScene", {
                     image = data.coverart,
                     caption = data.caption,
