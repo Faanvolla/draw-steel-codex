@@ -3148,6 +3148,16 @@ local function TeamLeaderChildren(m)
     return children
 end
 
+local function DiceLanded(d)
+    local n = 0
+    for _, r in ipairs((d or {}).rolls or {}) do
+        if r.total ~= nil then
+            n = n + 1
+        end
+    end
+    return n
+end
+
 local function TurnSignature(m)
     local t = m.turn or {}
     local a = t.assist or {}
@@ -3163,7 +3173,93 @@ local function TurnSignature(m)
         tostring(m.teamLeader ~= nil), tostring(m.perkSeq),
         --an item used here can reveal an option or open a knack.
         tostring(m.consumeSeq),
+        tostring((m.dice or {}).seq), tostring(DiceLanded(m.dice)),
     }, "|")
+end
+
+--The montage dice that are out (m.dice: a table roll, a recovery loss),
+--one line per roll with its result once it lands, and for a table roll the
+--table itself with the rows the dice landed on lit.
+local function DiceCard(m, beat)
+    local d = m.dice or {}
+    ---@type Panel[]
+    local children = {
+        gui.Label{ classes = {"eotwOptionName"}, text = d.entryName or "Dice", interactable = false },
+    }
+    local tableKey = nil
+    for _, r in ipairs(d.rolls or {}) do
+        local result = "rolling..."
+        if r.total ~= nil then
+            result = tostring(r.total)
+        elseif r.userid == dmhub.loginUserid then
+            result = "your roll"
+        end
+        children[#children + 1] = gui.Label{
+            classes = {"eotwOptionRoll"},
+            text = string.format("%s: %s (%s) -- %s", r.heroName or "A hero", r.label or "Roll", r.dice or "?", result),
+            interactable = false,
+        }
+        if r.kind == "table" then
+            tableKey = r.tableKey
+        end
+    end
+    local entry = tableKey ~= nil and EncounterScript.FindEntry(beat, d.entryId) or nil
+    local tableRoll = entry ~= nil and (entry.tables or {})[tableKey] or nil
+    if tableRoll ~= nil then
+        local lit = {}
+        local any = false
+        for _, r in ipairs(d.rolls or {}) do
+            if r.kind == "table" and r.total ~= nil then
+                local row = EncounterScript.ChestRow(tableRoll, r.total)
+                if row ~= nil then
+                    lit[row] = true
+                    any = true
+                end
+            end
+        end
+        for _, row in ipairs(tableRoll.rows or {}) do
+            local range = cond(row.lo == row.hi, tostring(row.lo), string.format("%d-%d", row.lo, row.hi))
+            local landed = lit[row] == true
+            local dim = any and not landed
+            children[#children + 1] = gui.Panel{
+                width = "100%",
+                height = "auto",
+                flow = "horizontal",
+                vmargin = 1,
+                interactable = false,
+                gui.Label{ classes = Classes("eotwTierRange", landed and "landed", dim and "dim"), text = range, interactable = false },
+                gui.Label{ classes = Classes("eotwTierText", landed and "landed", dim and "dim"), text = EncounterScript.VisibleText(row.text), interactable = false },
+            }
+        end
+    end
+    return gui.Panel{
+        classes = {"eotwOptionCard"},
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        pad = 10,
+        borderBox = true,
+        vmargin = 5,
+        bgimage = "panels/square.png",
+        children = children,
+    }
+end
+
+--"Roll your dice." or who the table is waiting on.
+local function DiceHint(m)
+    local waiting = {}
+    for _, r in ipairs((m.dice or {}).rolls or {}) do
+        if r.total == nil then
+            if r.userid == dmhub.loginUserid then
+                return "Roll your dice."
+            end
+            waiting[#waiting + 1] = r.heroName or "a hero"
+        end
+    end
+    if #waiting == 0 then
+        return "The dice are in."
+    end
+    return string.format("Waiting on the dice for %s...", table.concat(waiting, ", "))
 end
 
 --- the scene stage -------------------------------------------------------------------
@@ -4464,6 +4560,11 @@ local function CreateSceneStage()
         elseif t.status == "delvechoice" then
             m_detailDefault = { HaulCard(t) }
             boxExtra.children = DelveChoiceButtons(m, t)
+        elseif t.status == "dice" then
+            m_detailDefault = { DiceCard(m, beat) }
+            boxExtra.children = {
+                gui.Label{ classes = {"eotwSceneHint"}, text = DiceHint(m) },
+            }
         else
             if option ~= nil then
                 m_detailDefault = { OptionCard(here, option, t.optionIndex, m) }
@@ -4595,6 +4696,11 @@ local function BuildTurnChildren(m, beat)
             Add(gui.Label{ classes = {"eotwTurnText"}, text = "Consequence: " .. EncounterScript.VisibleText(entry.consequence.text), bold = true })
         else
             Add(gui.Label{ classes = {"eotwTurnHint"}, text = "No consequence is written for this threat." })
+        end
+        if m.dice ~= nil then
+            Add(DiceCard(m, beat))
+            Add(gui.Label{ classes = {"eotwTurnHint"}, text = DiceHint(m) })
+            return children
         end
         Add(gui.Button{
             text = "Continue",

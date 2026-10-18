@@ -5227,6 +5227,14 @@ function creature:PumpRemoteInvokes()
 			dmhub.Coroutine(function()
 				invoke:Invoke()
 			end)
+		else
+			--Dropped as stale: release any Monster AI reaction marker waiting on
+			--it, or the AI would sit on the marker until it expired.
+			local activityId = invoke:try_get("aiActivityId")
+			local reactionId = invoke:try_get("aiReactionId")
+			if type(activityId) == "string" and type(reactionId) == "string" then
+				self:CompletePendingAIActivityReaction(activityId, reactionId)
+			end
 		end
 	end
 end
@@ -11160,7 +11168,16 @@ ActiveTrigger.expiryTimestamp = 0
 --clients without keeping the prompt card alive after the player has made a
 --choice. The activity is a monster move (opportunity attacks) or an ability
 --cast (Repulsive Ward and other prompts its damage or effects provoke).
-function creature:BeginPendingAIActivityReaction(activityId, reactionId, abilityName)
+--state defaults to "awaiting_choice", which expects a prompt card keyed by
+--reactionId in availableTriggers. Pass "resolving" for a reaction the player
+--already chose without one -- a power-roll trigger accepted on the monster's
+--roll whose effect resolves after the roll -- so the AI does not report the
+--marker as having no matching prompt.
+--- @param activityId string
+--- @param reactionId string
+--- @param abilityName string|nil
+--- @param state nil|"awaiting_choice"|"resolving"
+function creature:BeginPendingAIActivityReaction(activityId, reactionId, abilityName, state)
     if type(activityId) ~= "string" or activityId == "" or type(reactionId) ~= "string" or reactionId == "" then
         return
     end
@@ -11185,7 +11202,7 @@ function creature:BeginPendingAIActivityReaction(activityId, reactionId, ability
             pendingReactions[reactionId] = {
                 activityId = activityId,
                 timestamp = ServerTimestamp(),
-                state = "awaiting_choice",
+                state = state or "awaiting_choice",
                 ability = abilityName,
             }
         end,

@@ -652,20 +652,14 @@ local function BringToFront(rec)
     end
 end
 
---Briefly lights a window's border: the engine moved us to a map that was
---already open in it (a token travelled there, a journal link...).
+--The engine moved us to a map that was already open in a window (a token
+--travelled there, a journal link...): bring it out from behind the screen.
 local function Highlight(rec)
     local panel = rec.panel
     if panel == nil or not panel.valid then
         return
     end
     DirectorScreen.Reveal(g_sharing.ScreenKey(rec))
-    panel:SetClass("tabletopHighlight", true)
-    dmhub.Schedule(1.2, function()
-        if panel.valid then
-            panel:SetClass("tabletopHighlight", false)
-        end
-    end)
 end
 
 --A panel's styles reach every panel below it, so the window's styles are
@@ -692,15 +686,6 @@ local g_windowStyles = {
         borderWidth = 2,
         borderColor = "#00000099",
         boxShadow = TABLE_SHADOWS.rest,
-    },
-    {
-        selectors = {"tabletopWindow", "focused"},
-        borderColor = "#b8925acc",
-    },
-    {
-        selectors = {"tabletopWindow", "tabletopHighlight"},
-        borderColor = "#ffd27aff",
-        transitionTime = 0.25,
     },
     --"dragging" is set by the engine while the window is dragged.
     {
@@ -836,6 +821,56 @@ local g_titleStyles = {
     },
 }
 
+--The focused map window's titlebar fills with the accent colour, so its own
+--text and caption icons flip to the inverse ink, as on a drop target. Keyed
+--by a g_titleStyles rule's selectors joined with ",".
+g_chrome.focusedTitleOverrides = {
+    tabletopTitle = {bgcolor = "@accent"},
+    tabletopTitleText = {color = "@fgInverse"},
+    tabletopTitleName = {color = "@fgInverse"},
+    tabletopTitleDetail = {color = "@fgInverse", opacity = 0.7},
+    tabletopTitleSep = {bgcolor = "@fgInverse", opacity = 0.25},
+    ["tabletopControl,hover"] = {bgcolor = "#0000001f"},
+    ["tabletopControl,press"] = {bgcolor = "#00000033"},
+    tabletopControlIcon = {bgcolor = "@fgInverse"},
+    tabletopFloorText = {color = "@fgInverse"},
+}
+
+--The merged titlebar styles, in their focused (accent) version or not.
+--- @param focused boolean
+function g_chrome.TitleStyles(focused)
+    if not focused then
+        return ThemeEngine.MergeStyles(g_titleStyles)
+    end
+    local list = {}
+    for _, rule in ipairs(g_titleStyles) do
+        local override = g_chrome.focusedTitleOverrides[table.concat(rule.selectors, ",")]
+        if override ~= nil then
+            local copy = {}
+            for k, v in pairs(rule) do
+                copy[k] = v
+            end
+            for k, v in pairs(override) do
+                copy[k] = v
+            end
+            rule = copy
+        end
+        list[#list+1] = rule
+    end
+    return ThemeEngine.MergeStyles(list)
+end
+
+--Shows a map window's titlebar as focused or not (g_chrome.TitleStyles).
+function g_chrome.SetTitleFocused(rec, focused)
+    local bar = rec.titlebar
+    if bar == nil or not bar.valid or bar:HasClass("tabletopTitleFocused") == focused then
+        return
+    end
+    bar:SetClass("tabletopTitleFocused", focused)
+    bar.styles = g_chrome.TitleStyles(focused)
+    bar:UpdateStyle()
+end
+
 local g_frozenStyles = {
     --the snapshot of the map as this window last showed it, drawn as it is:
     --a window that is not live looks just like the live one.
@@ -915,7 +950,7 @@ ThemeEngine.OnThemeChanged(mod, function()
     for _, p in ipairs(g_chrome.themed) do
         if p.valid then
             list[#list+1] = p
-            p.styles = ThemeEngine.MergeStyles(g_titleStyles)
+            p.styles = g_chrome.TitleStyles(p:HasClass("tabletopTitleFocused"))
             p:UpdateStyle()
         end
     end
@@ -2396,7 +2431,7 @@ local function AnimateGhost(rec, from, to, done)
         bgimage = image,
         bgcolor = cond(placeholder, "#1b1814ff", "white"),
         borderWidth = 2,
-        borderColor = "#b8925acc",
+        borderColor = "#00000099",
         cornerRadius = 6,
         thinkTime = 0.01,
         think = function(element)
@@ -3203,6 +3238,7 @@ Refresh = function()
         if panel ~= nil and panel.valid then
             local live = rec.id == g_liveId
             panel:SetClass("focused", rec.id == g_focusedId)
+            g_chrome.SetTitleFocused(rec, rec.id == g_focusedId)
 
             --a window that stops being live: its live body stays on screen for
             --the frame its collapse takes to apply, so it shows the map's
@@ -3427,6 +3463,7 @@ ToggleMaximize = function(rec)
     if IsForcedHere(rec) then
         return
     end
+    local view = Tabletop.CaptureView(rec)
     rec.maximized = not rec.maximized
     if rec.maximized then
         --one maximized window at a time
@@ -3440,6 +3477,7 @@ ToggleMaximize = function(rec)
         end
     end
     PlaceWindow(rec)
+    Tabletop.KeepView(rec, view)
     --the Director's maximize is forced on the tables of the map's players.
     Tabletop.SetForced(rec.mapid, rec.maximized == true)
     Focus(rec)
@@ -4543,22 +4581,53 @@ local function OpenSharedMap(mapid)
     Refresh()
 end
 
+--The maps a game mode forces on this client right now: mapid -> true. The
+--active custom interface's forcedMap (GameHud.RegisterCustomInterface) is
+--held the way a Director's maximized, shared map is held on a player's
+--table, but for a Director too, and with no share or token needed.
+g_sharing.LocalForcedMaps = function()
+    local result = {}
+    local mapid = nil
+    pcall(function()
+        mapid = GameHud.CustomInterfaceForcedMap()
+    end)
+    if mapid ~= nil then
+        result[mapid] = true
+    end
+    return result
+end
+
+--What the interface forced when last applied, so a change (a test starting
+--or ending, the map loading) applies on the frame it happens rather than at
+--the next once-a-second recheck.
+g_sharing.localForcedSignature = ""
+
 --Forces (or releases) the Director's maximized maps on this player's
 --table: a map shared with them (Player Viewable) with one of their tokens
 --on it is opened, maximized and focused, and cannot be restored, minimized
 --or closed while forced. Maximizing never shares a map (David, 2026-10-16):
 --an unshared one is not forced, until the Director shares it.
+--A game mode's custom interface can also force a map on this client,
+--Director or not (GameHud forcedMap; Encounter of the Week does).
 local function ApplyForced(forced)
-    if dmhub.isDM then
-        return
-    end
-    if type(forced) ~= "table" then
+    if type(forced) ~= "table" or dmhub.isDM then
         forced = {}
     end
+    local localForced = g_sharing.LocalForcedMaps()
     local function Forces(mapid)
+        if localForced[mapid] == true then
+            return MapExists(mapid)
+        end
         return forced[mapid] == true and MapExists(mapid) and LocalPlayerHasTokenOn(mapid) and IsShared(mapid)
     end
+    local candidates = {}
     for mapid, _ in pairs(forced) do
+        candidates[mapid] = true
+    end
+    for mapid, _ in pairs(localForced) do
+        candidates[mapid] = true
+    end
+    for mapid, _ in pairs(candidates) do
         if Forces(mapid) then
             local rec = WindowForMap(mapid)
             if rec == nil then
@@ -4567,6 +4636,9 @@ local function ApplyForced(forced)
                 EnsureBuilt(rec)
             end
             if not rec.forced then
+                --the map fills the screen as it filled the window; a window
+                --that was not showing its map live shows the whole map.
+                local view = Tabletop.CaptureView(rec)
                 rec.forced = true
                 rec.prevMaximized = rec.maximized == true
                 rec.minimized = false
@@ -4579,16 +4651,22 @@ local function ApplyForced(forced)
                 end
                 rec.maximized = true
                 PlaceWindow(rec)
+                Tabletop.KeepView(rec, view)
                 Focus(rec)
+                if view == nil then
+                    Tabletop.FrameWhenLive(rec, mapid, {})
+                end
             end
         end
     end
     for _, rec in ipairs(g_windows) do
         if rec.forced and not Forces(rec.mapid) then
+            local view = Tabletop.CaptureView(rec)
             rec.forced = false
             rec.maximized = rec.prevMaximized == true
             rec.prevMaximized = nil
             PlaceWindow(rec)
+            Tabletop.KeepView(rec, view)
             Refresh()
         end
     end
@@ -4748,8 +4826,22 @@ end
 --The forced state also depends on where this player's tokens are, which
 --changes without the document changing; re-checked once a second.
 local function RecheckForced()
-    if not dmhub.isDM then
-        ApplyForced(ShareDoc().data.forced)
+    ApplyForced(ShareDoc().data.forced)
+end
+
+--Every frame: re-applies when what the interface forces has changed.
+g_sharing.SyncLocalForced = function()
+    local ids = {}
+    for mapid, _ in pairs(g_sharing.LocalForcedMaps()) do
+        if MapExists(mapid) then
+            ids[#ids+1] = mapid
+        end
+    end
+    table.sort(ids)
+    local signature = table.concat(ids, ",")
+    if signature ~= g_sharing.localForcedSignature then
+        g_sharing.localForcedSignature = signature
+        RecheckForced()
     end
 end
 
@@ -6093,7 +6185,7 @@ local function BuildMapDropPreview(mapid, width, height, options)
         bgimage = "panels/square.png",
         bgcolor = "#100d0bff",
         borderWidth = 2,
-        borderColor = "#b8925acc",
+        borderColor = "#00000099",
         --a loading stand-in rests on the table; a drag preview is lifted.
         boxShadow = cond(options.loading, TABLE_SHADOWS.rest, TABLE_SHADOWS.lifted),
         gui.Panel{
@@ -6371,6 +6463,41 @@ function Tabletop.FrameWhenLive(rec, mapid, area)
             end
             dmhub.FrameMapArea({x1 = area.x1, y1 = area.y1, x2 = area.x2, y2 = area.y2})
         end)
+    end)
+end
+
+--- What a window shows of its map (world units), read before the window is
+--- resized so Tabletop.KeepView can show the same area once it has its new
+--- size. nil when the window is not showing its map live.
+--- @param rec table the window record
+--- @return nil|{mapid: string, x1: number, y1: number, x2: number, y2: number}
+function Tabletop.CaptureView(rec)
+    if rec.minimized or Tabletop.LiveWindowId() ~= rec.id then
+        return nil
+    end
+    local b = dmhub.cameraUsableBounds
+    if b == nil then
+        return nil
+    end
+    return {mapid = game.currentMapId, x1 = b.x1, y1 = b.y1, x2 = b.x2, y2 = b.y2}
+end
+
+--- Zooms a resized window to the area Tabletop.CaptureView read, so the map
+--- fills it as much as it did before (David, 2026-10-17): maximizing a window
+--- framed on the whole map shows the whole map full screen, with bars only
+--- where the shapes differ.
+--- @param rec table the window record
+--- @param view nil|{mapid: string, x1: number, y1: number, x2: number, y2: number}
+function Tabletop.KeepView(rec, view)
+    if view == nil then
+        return
+    end
+    --a frame for the window's new size to reach the camera.
+    dmhub.Schedule(0.1, function()
+        if mod.unloaded or Tabletop.LiveWindowId() ~= rec.id or game.currentMapId ~= view.mapid then
+            return
+        end
+        dmhub.FrameMapArea({world = {x1 = view.x1, y1 = view.y1, x2 = view.x2, y2 = view.y2}})
     end)
 end
 
@@ -9210,7 +9337,7 @@ local function DefineSceneWindows()
             bgimage = "panels/square.png",
             bgcolor = "#100d0bff",
             borderWidth = 2,
-            borderColor = "#b8925acc",
+            borderColor = "#00000099",
             boxShadow = TABLE_SHADOWS.lifted,
             gui.Panel{
                 styles = ThemeEngine.MergeStyles(g_titleStyles),
@@ -10455,6 +10582,7 @@ local function Sync()
         g_tableItems.Teardown()
         TeardownSceneWindows()
         g_gameid = dmhub.gameid
+        g_sharing.localForcedSignature = ""
         InitForGame()
         IconRailRebuildSoon()
     end
@@ -10464,6 +10592,7 @@ local function Sync()
     end
 
     SyncShares()
+    g_sharing.SyncLocalForced()
     g_sharing.SyncViewableMaps()
     g_sharing.SyncCurrentMapAccess()
     SyncCards()
@@ -10686,18 +10815,33 @@ local function TableFilesDropped(allPaths, screenPos)
     local mx, my = ScreenToLayer(mouse.x, mouse.y)
 
     --audio files become audio widgets there (Audio.lua) with no question;
-    --images and videos go on to the scene-or-map dialog.
+    --documents (PDF, Markdown, text, .zip) go into the journal and their
+    --main entry onto the table there (DocumentImport.lua); images and videos
+    --go on to the scene-or-map dialog.
     local paths = {}
     local sounds = {}
+    local documents = {}
     for _, path in ipairs(allPaths) do
         if FileDrops.IsAudio(path) then
             sounds[#sounds+1] = path
+        elseif FileDrops.IsDocument(path) then
+            documents[#documents+1] = path
         else
             paths[#paths+1] = path
         end
     end
     if #sounds > 0 and rawget(_G, "AudioDroppedOnTable") ~= nil then
         AudioDroppedOnTable(sounds, mouse.x, mouse.y)
+    end
+    if #documents > 0 and rawget(_G, "DocumentImport") ~= nil then
+        DocumentImport.ImportFiles(documents, {
+            ready = function(entryid, index)
+                --several files step down-right from the drop point (the
+                --documents block's DOC.cascade).
+                local step = (index - 1) * 24
+                Tabletop.OpenDocItem(entryid, {at = {x = mx + step, y = my + step}, placed = true})
+            end,
+        })
     end
     if not dmhub.isDM or #paths == 0 then
         return
@@ -10938,10 +11082,14 @@ function Tabletop.CreateLayer()
             ShowTableMenu()
         end,
 
-        --files dragged in from the desktop (see TableFilesDropped): pictures
-        --and videos for the Director, audio for whoever controls the audio.
+        --files dragged in from the desktop (see TableFilesDropped): documents
+        --for anyone, pictures and videos for the Director, audio for whoever
+        --controls the audio.
         dragAndDropExtensions = (function()
             local exts = {}
+            for _, ext in ipairs(FileDrops.DOCUMENT_EXTENSIONS) do
+                exts[#exts+1] = ext
+            end
             if dmhub.isDM then
                 for _, ext in ipairs(FileDrops.MEDIA_EXTENSIONS) do
                     exts[#exts+1] = ext

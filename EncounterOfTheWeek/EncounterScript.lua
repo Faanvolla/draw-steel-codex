@@ -122,6 +122,7 @@
 --                      effects = { effect, ... } }
 --  effect = { kind = "item"|"stamina"|"heal"|"temphp"|"surges"|"recovery"|
 --                    "loserecovery"|"herotoken"|"intelligence"|"malice"|
+--                    "immunityboon" (damageType = "poison", ...)|
 --                    "ally"|"vanquish"|
 --                    "initiative"|"nosurprise"|"fairinitiative"|
 --                    "knowstamina"|"revealzones"|"unlock"|"testmod"|
@@ -458,6 +459,14 @@ local function ParseClause(clause)
         return { kind = "maxstamina", target = staminaTarget, qty = staminaQty, text = clause }
     end
 
+    --"you gain poison immunity 2": damage immunity until the next respite.
+    --Before the item rule, which would read "you gain 2 poison immunity" as
+    --two items called "poison immunity".
+    local immunityQty, immunityType, immunityTarget = EncounterScript.ParseDamageImmunityClause(lower(clause))
+    if immunityQty ~= nil then
+        return { kind = "immunityboon", target = immunityTarget, qty = immunityQty, damageType = immunityType, text = clause }
+    end
+
     --"you lose a consumable": one consumable item, picked at random from the
     --hero's inventory. A hero with none loses a Recovery instead, quietly.
     local consumableQty, consumableTarget = EncounterScript.ParseLoseConsumableClause(lower(clause))
@@ -529,6 +538,14 @@ local function ParseClause(clause)
         word, target = MatchSelfOrParty(lc, "lose", "(%S+) " .. noun)
         if word ~= nil and EncounterScript.ParseQuantity(word) ~= nil then
             return { kind = "loserecovery", target = target, qty = EncounterScript.ParseQuantity(word), text = clause }
+        end
+        --"each party member loses 1d3 recoveries": dice, rolled for each
+        --hero separately when it applies. qty is the most it can take.
+        local dice = word ~= nil and string.match(word, "^(%d*d%d+)$") or nil
+        if dice ~= nil then
+            local count, sides = string.match(dice, "^(%d*)d(%d+)$")
+            return { kind = "loserecovery", target = target, dice = dice,
+                qty = math.max(1, tonumber(count) or 1) * math.max(1, tonumber(sides) or 1), text = clause }
         end
     end
 
@@ -946,6 +963,49 @@ function EncounterScript.ParseDamageBoonClause(lc)
         local n = SignedQuantity(string.match(lc, p))
         if n ~= nil then
             return n, "party"
+        end
+    end
+    return nil
+end
+
+--Draw Steel's damage types, the only words a "<type> immunity N" boon takes.
+EncounterScript.DAMAGE_TYPES = { "acid", "cold", "corruption", "fire", "holy", "lightning", "poison", "psychic", "sonic" }
+
+--"You gain poison immunity 2" and its spellings: damage immunity N to one
+--damage type until the next respite. Returns the amount, the damage type
+--(lower case) and "self" / "party", or nil.
+--  "you gain poison immunity 2" / "you gain 2 poison immunity"
+--  "each party member gains fire immunity 1"
+function EncounterScript.ParseDamageImmunityClause(lc)
+    lc = StripEncounterTiming(lc)
+    local function Read(rest)
+        local damageType, n = string.match(rest, "^(%a+) immunity (%S+)$")
+        if damageType == nil then
+            n, damageType = string.match(rest, "^(%S+) (%a+) immunity$")
+        end
+        n = SignedQuantity(n)
+        if n == nil or n <= 0 then
+            return nil
+        end
+        for _, known in ipairs(EncounterScript.DAMAGE_TYPES) do
+            if damageType == known then
+                return n, damageType
+            end
+        end
+        return nil
+    end
+    local rest = string.match(lc, "^you gain (.+)$")
+    if rest ~= nil then
+        local n, damageType = Read(rest)
+        if n ~= nil then
+            return n, damageType, "self"
+        end
+    end
+    rest = string.match(lc, "^each party members? gains? (.+)$")
+    if rest ~= nil then
+        local n, damageType = Read(rest)
+        if n ~= nil then
+            return n, damageType, "party"
         end
     end
     return nil
@@ -4435,6 +4495,9 @@ function EncounterScript.DescribeEffect(effect)
     elseif effect.kind == "recovery" then
         return string.format("%s recovery value is increased by %d until the next respite", cond(effect.target == "party", "every hero's", "the hero's"), effect.qty)
     elseif effect.kind == "loserecovery" then
+        if effect.dice ~= nil then
+            return string.format("%s loses %s recoveries (rolled for each hero)", cond(effect.target == "party", "every hero", "the hero"), effect.dice)
+        end
         return string.format("%s loses %s", cond(effect.target == "party", "every hero", "the hero"), EncounterScript.Plural(effect.qty, "recovery", "recoveries"))
     elseif effect.kind == "herotoken" then
         return string.format("the party gains %s", EncounterScript.Plural(effect.qty, "hero token"))
@@ -4464,6 +4527,8 @@ function EncounterScript.DescribeEffect(effect)
         return string.format("roll %s on '%s'", cond(effect.qty == 1, "once", tostring(effect.qty) .. " times"), effect.name)
     elseif effect.kind == "damageboon" then
         return string.format("%s rolled damage +%d until the next respite", cond(effect.target == "party", "every hero's", "the hero's"), effect.qty)
+    elseif effect.kind == "immunityboon" then
+        return string.format("%s %s immunity %d until the next respite", cond(effect.target == "party", "every hero gains", "the hero gains"), effect.damageType, effect.qty)
     elseif effect.kind == "maxstamina" then
         return string.format("%s maximum stamina -%d until the next respite", cond(effect.target == "party", "every hero's", "the hero's"), effect.qty)
     elseif effect.kind == "loseconsumable" then

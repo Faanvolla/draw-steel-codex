@@ -69,7 +69,8 @@ dialog, log). Use it for hidden mechanics.
 | `you gain 5 temporary stamina` / `each party member gains ...` | temporary Stamina (the higher of old and new) |
 | `you gain 2 surges` / `[at the start of the next combat] each party member gains 1 surge` | surges, banked and paid when combat starts |
 | `your recovery value is increased by 2` / `+2 recovery value` / `each party member's recovery value is increased by 2` | Recovery Value boon until the next respite |
-| `you lose a recovery` / `each party member loses two recoveries` | recoveries lost (no Stamina back) |
+| `you lose a recovery` / `each party member loses two recoveries` / `each party member loses 1d3 recoveries` | recoveries lost (no Stamina back). Dice are rolled on screen by each hero's own player, separately |
+| `you gain poison immunity 2` / `each party member gains fire immunity 1` | damage immunity N to that damage type (acid, cold, corruption, fire, holy, lightning, poison, psychic, sonic) until the next respite |
 | `+1 hero token` / `you gain 2 hero tokens` / `the party gains 1 hero token` | party Hero Token pool |
 | `+2 intelligence` / `the party gains 1 intelligence` | Intelligence pool (needs `Unlock: Intelligence` somewhere; warns otherwise) |
 | `+2 malice` / `gain 2 malice` | Director's Malice pool (carries into combat) |
@@ -237,8 +238,11 @@ any of its tiers or rows:
 |6: You gain 2 Healing Potions
 ```
 
-The roll happens on the host; the party sees "Tinkerer's Wares: rolled 4"
-then what the row gave. A table header straight after a roll block ends the
+The acting hero's player rolls the dice on screen (one roll per "roll on",
+so "roll twice" is two rolls), with the table shown and the landed rows lit;
+the party then sees "Tinkerer's Wares: rolled 4" and what the row gave. A
+roll nobody makes within 45 seconds is rolled by the host. A hidden
+(`{...}`) roll clause is rolled quietly on the host instead. A table header straight after a roll block ends the
 roll block (a blank line between them is still tidier). A `roll on` that
 names no table of its entry warns.
 

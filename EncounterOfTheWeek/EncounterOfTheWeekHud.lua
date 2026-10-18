@@ -938,24 +938,26 @@ local function HeroSheetFor(token)
     return sheet
 end
 
+--Is the EotW interface up on this client: a real EotW game or an authoring
+--test, unless the Director-UI escape hatch (or a --director debug window)
+--restores the whole normal interface for debugging/manual recovery.
+local function IsInterfaceActive()
+    local eotw = rawget(_G, "EncounterOfTheWeekGame")
+    if eotw == nil or not eotw.IsEotwGame() then
+        return false
+    end
+    if eotw.ShowDirectorUI ~= nil then
+        return not eotw.ShowDirectorUI()
+    end
+    return dmhub.GetSettingValue("eotw:showdirectorui") ~= true
+end
+
 --pcall: an older core codex without the hook just shows the normal hud.
 pcall(function()
     GameHud.RegisterCustomInterface{
         id = "eotw",
 
-        active = function()
-            local eotw = rawget(_G, "EncounterOfTheWeekGame")
-            if eotw == nil or not eotw.IsEotwGame() then
-                return false
-            end
-            --the Director-UI escape hatch (or a --director debug window)
-            --restores the whole normal interface for debugging/manual
-            --recovery.
-            if eotw.ShowDirectorUI ~= nil then
-                return not eotw.ShowDirectorUI()
-            end
-            return dmhub.GetSettingValue("eotw:showdirectorui") ~= true
-        end,
+        active = IsInterfaceActive,
 
         suppressRails = true,
 
@@ -1007,6 +1009,13 @@ pcall(function()
                 return false
             end
             return presence.ConfirmExit(kind, proceed)
+        end,
+
+        --the encounter's map is held maximized for the whole game, test
+        --included: no restore, minimize or close, the same as a player whose
+        --Director holds a shared map maximized (Tabletop.lua).
+        forcedMap = function()
+            return game.currentMapId
         end,
 
         suppressPanel = { ["Compendium"] = true },

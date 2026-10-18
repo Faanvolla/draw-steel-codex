@@ -1588,6 +1588,16 @@ do
     e = one("each party member's stamina maximum is reduced by 3")
     check(e.kind == "maxstamina" and e.qty == 3 and e.target == "party", "party max stamina curse")
 
+    e = one("You gain poison immunity 2 until the next respite")
+    check(e.kind == "immunityboon" and e.qty == 2 and e.damageType == "poison" and e.target == "self", "poison immunity boon")
+    e = one("Each party member gains 1 fire immunity")
+    check(e.kind == "immunityboon" and e.qty == 1 and e.damageType == "fire" and e.target == "party", "party fire immunity boon")
+    e = one("You gain 2 Healing Potions")
+    check(e.kind == "item", "an item is not an immunity")
+    e = one("Each party member loses 1d3 recoveries")
+    check(e.kind == "loserecovery" and e.dice == "1d3" and e.qty == 3 and e.target == "party", "dice recovery loss")
+    check(EncounterScript.DescribeEffect(e) == "every hero loses 1d3 recoveries (rolled for each hero)", "dice recovery loss description")
+
     e = one("You lose a consumable item")
     check(e.kind == "loseconsumable" and e.qty == 1 and e.target == "self", "lose a consumable")
     e = one("Each party member loses a consumable")

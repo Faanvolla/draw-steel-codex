@@ -56,6 +56,10 @@ order, each bounded to its encounter's region. Built across the parser, game,
 town, both publishers and the City; nothing run, not deployed, uncommitted.
 See "Encounter series".
 
+**Forced-maximized map (2026-10-17):** the encounter's map is held maximized
+with no restore/minimize/close, in games and tests. Written, type-checks,
+NOT run, uncommitted. See "The EotW interface".
+
 ## Committed, deployed, published
 
 - **Codex (Lua).** EotW work is committed on `draw-steel-codex` `main` up to
@@ -3836,6 +3840,20 @@ The EotW provider (`EncounterOfTheWeekHud.lua`), active in an EotW game
   collapsed while a stage beat is up. Clicking a card opens the character
   panel beside it, **read-only for everyone**.
 - Unnamed heroes read "Unnamed Hero" everywhere.
+- **The map is held maximized** (user direction 2026-10-17), in a real game
+  and in an authoring test alike: the encounter's map window (the client's
+  `game.currentMapId`) is opened, maximized and focused, and its restore,
+  minimize and close buttons are gone, exactly as for a player whose
+  Director holds a shared map maximized. The provider's `forcedMap` field
+  (a new `GameHud.RegisterCustomInterface` field, read through
+  `GameHud.CustomInterfaceForcedMap`) feeds Tabletop's existing forced-window
+  machinery (`ApplyForced` / `rec.forced` in `DMHub Game Hud/Tabletop.lua`),
+  so every guard that keeps a Director-forced window up applies. Unlike the
+  Director's force it needs no share or token and binds a Director client
+  too; it is re-checked every frame (`g_sharing.SyncLocalForced`), so End
+  Test or the Director-UI hatch releases it at once and the window goes back
+  to its previous maximized/windowed state. Written 2026-10-17, NOT run
+  (needs a restart: `Hud.lua`, `Tabletop.lua`, `EncounterOfTheWeekHud.lua`).
 
 Gotchas from building it: `positionInScreenSpace` is in the documents layer's
 units (origin bottom-left), not screen pixels, and is the *pivot's* position.
@@ -4502,6 +4520,34 @@ The grammar is in the /eotw skill's `script-reference.md`; in short:
   Maximum -N", attribute `hitpoints` add -N), both until the next respite and
   pre-created by `PrepareBoonAssets`; `loseconsumable` (random consumable,
   silent fallback to 1 Recovery); `startzone`; `revealobject`.
+- **2026-10-17 (Aixco Hollow montage)**: `immunityboon` ("you gain poison
+  immunity 2", any Draw Steel damage type in `EncounterScript.DAMAGE_TYPES`):
+  "Montage Boon: Poison Immunity N", a `resistance` modifier (Damage
+  Reduction N to that type), until the next respite, pre-created by
+  `PrepareBoonAssets`. `loserecovery` takes dice ("each party member loses
+  1d3 recoveries"): `effect.dice` is rolled for each target separately, and
+  `effect.qty` holds the most it can take.
+- **Montage dice are rolled by the players (2026-10-17, user direction).**
+  Before a landed tier (`ApplyResolution`, non-delve) or a consequence
+  (`ApplyConsequence`, the "continue" request) applies,
+  `EncounterMontage.PendingDice(effects, ctx)` lists the dice its clauses
+  need: each `roll on <table>` (key `t:<clause>:<n>`, rolled by the acting
+  player) and each hero's share of a dice `loserecovery` (key
+  `r:<clause>:<charid>`, rolled by that hero's owner). If any, `OpenDice` puts
+  `m.dice` out (the turn waits in status `"dice"`; a consequence hides its
+  Continue). `ClientTick` rolls each of this user's dice with `dmhub.Roll`,
+  ONE AT A TIME (the next goes once the host has recorded the last, since
+  `SendRequest` keeps one request slot per user), and sends `diceRolled
+  { diceSeq, key, total }` -- `diceSeq`, never `seq`, which is SendRequest's
+  own request counter (a `seq` arg overwrites it and the host drops the
+  request as old). When every total is in, `ResumeDice` re-runs the
+  resolution/consequence with `ctx.diceTotals`, which `ApplyEffects` reads
+  before falling back to `RollDiceExpression`. `DICE_ROLL_SECONDS` (45) rolls
+  for anyone who never does. Stage: `DiceCard` (one line per roll, the table
+  with landed rows lit) and `DiceHint`; `TurnSignature` includes the dice seq
+  and landed count. Hidden clauses, delve obstacles, chest rows and
+  narratives still roll silently on the host. Verified live 2026-10-17
+  (Flotsam x2, Rising Waters 1d3 x4, the 45s fallback).
 - **Riders**: `movement` (climb = `IsClimber`, fly/swim/burrow speed > 0,
   teleport) and `wealth` (`CalculateNamedCustomAttribute("Wealth") >= N`)
   requirement kinds; `(Round N)` in a rider label (`rider.round`) gates it on

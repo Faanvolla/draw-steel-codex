@@ -747,6 +747,19 @@ local function CreateReadOnlyRollInfo(shareData)
         }
     end
 
+    -- The landed dice, matching the faces the roller sees in their dialog.
+    -- Only a "finished" broadcast carries them; a re-roll goes back through
+    -- "rolling", which rebuilds this card, so they never go stale.
+    if ds.rollState == "finished" and ds.dice ~= nil then
+        local diceRow = RollDiceFaces.Panel(ds.dice, ds.diceStyle, {
+            height = 64,
+            vmargin = 4,
+        })
+        if diceRow ~= nil then
+            sections[#sections+1] = diceRow
+        end
+    end
+
     -- Power roll tier table with dice animation support.
     -- Uses gui.Table / gui.TableRow to match the interactive power table
     -- in MCDMAbilityRollBehavior.lua so that style selectors ("row" and

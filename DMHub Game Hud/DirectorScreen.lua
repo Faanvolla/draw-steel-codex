@@ -64,7 +64,9 @@ local mod = dmhub.GetModLoading()
 --    window or card on the table that reaches onto it goes under it, and
 --    only the items on the screen lie on top. The band lives in the
 --    documents layer, among the windows, and KeepOnTop keeps their order:
---    shared items, the screen, the icon rails, the screen's own items. A
+--    shared items (with the journal windows and table items, which stack
+--    with them by focus), the screen, the icon rails, the screen's own
+--    items, then any dialog. A
 --    shared minimized button (on the button layer, over every window) cannot
 --    go under it, so it is nudged off the screen instead.
 --
@@ -1495,6 +1497,18 @@ local function KeepOnTop()
         end
     end
 
+    --journal and panel windows and the table's own items (audio cards...)
+    --are not shared, but they lie on the table among the shared windows and
+    --raise over them on a click, so they go under the screen too. Treated as
+    --dialogs above it instead, a focused map window would sink under them.
+    --A maximized journal covers the table, so it stays over the screen.
+    local function OnTable(child)
+        if child:HasClass("tabletopItem") then
+            return true
+        end
+        return child:HasClass("journalViewer") and not child:HasClass("journalMaximized")
+    end
+
     local children = docs.children
     local bandIndex = nil
     for i, child in ipairs(children) do
@@ -1510,6 +1524,8 @@ local function KeepOnTop()
     for i, child in ipairs(children) do
         if own[child] then
             wrong = wrong or i < bandIndex
+        elseif OnTable(child) then
+            wrong = wrong or i > bandIndex
         elseif items[child] or child:HasClass("iconRail") then
             --a shared item over the band, or a rail under it.
             wrong = wrong or (items[child] and i > bandIndex) or (not items[child] and i < bandIndex)
@@ -1525,7 +1541,7 @@ local function KeepOnTop()
             mine[#mine+1] = child
         elseif child:HasClass("iconRail") then
             rails[#rails+1] = child
-        elseif i > bandIndex and not items[child] then
+        elseif i > bandIndex and not items[child] and not OnTable(child) then
             above[#above+1] = child
         end
     end

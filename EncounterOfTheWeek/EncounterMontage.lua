@@ -40,7 +40,7 @@
 --                                              two in round 1)
 --    turn = nil | { seq, userid, heroid, entryId,
 --                   status = "gathering"|"scene"|"choosing"|"assist"|"assisting"|"rolling"
---                            |"perk"|"pardon"|"resolved",
+--                            |"perk"|"pardon"|"dice"|"resolved",
 --                   companions = { { heroid, heroName, userid }, ... },
 --                                           -- heroes who went along ("gathering":
 --                                              they join until the approaching
@@ -99,6 +99,20 @@
 --                   pardon = nil | { userid, heroid, heroName, rollSeq, startedAt },
 --                   -- "pardon": a companion with Pardon My Friend is re-rolling
 --                      the failed Presence test in the hero's place. }
+--    dice = nil | { seq, purpose = "turn"|"consequence", entryName, entryId,
+--                   tier, userid (turn: what ApplyResolution resumes with),
+--                   consequenceIndex (consequence: which one it is for),
+--                   rolls = { { key, kind = "table"|"recovery", dice, label,
+--                               heroid, heroName, userid, total }, ... },
+--                   openedAt }
+--                  -- the dice a landed tier or a consequence needs before it
+--                     applies ("roll on Flotsam", "loses 1d3 recoveries"):
+--                     each is rolled on the screen by the player of its hero
+--                     (EncounterMontage.ClientTick), then the effects apply
+--                     with those totals (ApplyEffects' ctx.diceTotals). The
+--                     turn waits in status "dice"; a consequence waits with
+--                     its Continue hidden. DICE_ROLL_SECONDS rolls for anyone
+--                     who never does.
 --    consequences = { entryId, ... }, consequenceIndex, lastApplied = {...},
 --    requests = { [userid] = { seq, kind, ... } }, handled = { [userid] = seq },
 --    log = { { round, heroid, heroName, entryId, entryName, optionName, tier, applied,
@@ -167,6 +181,9 @@ local DONE_LINGER_SECONDS = 6
 --away) before the claim is handed back. Generous: once the dice land the
 --table may stop to talk (and ping) over whether to spend a hero token.
 local ASSIST_ROLL_SECONDS = 300
+--how long a montage dice roll (a table roll, a hero's share of "loses 1d3
+--recoveries") waits on its player before the host rolls it for them.
+local DICE_ROLL_SECONDS = 45
 
 --The fixed tier table of an assist roll (user direction 2026-09-18). It is
 --not authored: every assist, whatever the test, offers the same three
@@ -2015,6 +2032,40 @@ local function EnsureMaxStaminaCurseEffect(amount)
     return dmhub.SetAndUploadTableItem("characterOngoingEffects", effect)
 end
 
+--The ongoing effect behind "you gain poison immunity 2": damage immunity N
+--to one damage type, the same resistance modifier a treasure's immunity uses.
+local function EnsureImmunityBoonEffect(damageType, amount)
+    local name = string.format("Montage Boon: %s Immunity %d", damageType:sub(1, 1):upper() .. damageType:sub(2), amount)
+    local t = dmhub.GetTable("characterOngoingEffects") or {}
+    for id, effect in pairs(t) do
+        if NameMatches(effect.name, name) then
+            return id
+        end
+    end
+    local effect = CharacterOngoingEffect.Create{
+        name = name,
+        source = "Montage",
+        description = string.format("You have %s immunity %d.", damageType, amount),
+        custom = true,
+    }
+    effect.modifiers = {
+        CharacterModifier.new{
+            behavior = "resistance",
+            name = name,
+            source = "Montage",
+            guid = dmhub.GenerateGuid(),
+            resistances = {
+                ResistanceEntry.new{
+                    apply = "Damage Reduction",
+                    damageType = damageType,
+                    dr = amount,
+                },
+            },
+        },
+    }
+    return dmhub.SetAndUploadTableItem("characterOngoingEffects", effect)
+end
+
 --Put one of the montage's ongoing effects on a hero until the next respite.
 --Same cache caveat as the Recovery Value boon (see GrantRecoveryBoon).
 local function ApplyMontageEffect(token, effectid, description)
@@ -2116,6 +2167,7 @@ function EncounterMontage.PrepareBoonAssets(beat)
     local amounts = {}
     local damageAmounts = {}
     local staminaAmounts = {}
+    local immunities = {}
     local any = false
     local function Collect(effects)
         for _, effect in ipairs(effects or {}) do
@@ -2127,6 +2179,9 @@ function EncounterMontage.PrepareBoonAssets(beat)
                 any = true
             elseif effect.kind == "maxstamina" then
                 staminaAmounts[effect.qty] = true
+                any = true
+            elseif effect.kind == "immunityboon" then
+                immunities[effect.damageType .. ":" .. tostring(effect.qty)] = effect
                 any = true
             end
         end
@@ -2162,6 +2217,9 @@ function EncounterMontage.PrepareBoonAssets(beat)
         end
         for amount, _ in pairs(staminaAmounts) do
             EnsureMaxStaminaCurseEffect(amount)
+        end
+        for _, effect in pairs(immunities) do
+            EnsureImmunityBoonEffect(effect.damageType, effect.qty)
         end
     end)
     DropHostPermissions()
@@ -2281,9 +2339,13 @@ function EncounterMontage.ApplyEffects(effects, ctx)
     --on.
     local runIndex, runText, runSep = nil, nil, ""
 
+    --dice the players rolled for this pass (EncounterMontage.PendingDice
+    --names the keys); anything without one is rolled here.
+    local diceTotals = ctx.diceTotals or {}
+
     ElevateToHostPermissions()
     local ok, err = pcall(function()
-        for _, effect in ipairs(effects or {}) do
+        for effectIndex, effect in ipairs(effects or {}) do
             --a clause the author wrapped in "{...}" is applied exactly as
             --written, but the party is never told: whatever it appends to
             --`applied` below is taken back off at the end of this pass, so
@@ -2368,7 +2430,13 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                 local amounts = {}
                 local nothing = {}
                 for _, target in ipairs(Targets(effect)) do
-                    local callOk, lost = pcall(LoseRecoveries, target.token, effect.qty, SourceLabel(ctx))
+                    --"loses 1d3 recoveries": each hero rolls their own.
+                    local count = effect.qty
+                    if effect.dice ~= nil then
+                        count = tonumber(diceTotals[string.format("r:%d:%s", effectIndex, target.charid)])
+                            or RollDiceExpression(effect.dice)
+                    end
+                    local callOk, lost = pcall(LoseRecoveries, target.token, count, SourceLabel(ctx))
                     lost = cond(callOk, lost or 0, 0)
                     if lost > 0 then
                         if byAmount[lost] == nil then
@@ -2667,8 +2735,9 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                 elseif (ctx.tableDepth or 0) >= 2 then
                     printf("EotW montage: '%s' rolls on a table from inside a table roll; ignored", tostring(effect.text))
                 else
-                    for _ = 1, effect.qty do
-                        local total = RollDiceExpression(tableRoll.dice)
+                    for n = 1, effect.qty do
+                        local total = tonumber(diceTotals[string.format("t:%d:%d", effectIndex, n)])
+                            or RollDiceExpression(tableRoll.dice)
                         local row = EncounterScript.ChestRow(tableRoll, total)
                         applied[#applied + 1] = string.format("%s: rolled %d", tableRoll.name, total)
                         if row ~= nil then
@@ -2677,6 +2746,8 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                                 subCtx[k] = v
                             end
                             subCtx.tableDepth = (ctx.tableDepth or 0) + 1
+                            --the row's own clauses count from 1 again.
+                            subCtx.diceTotals = nil
                             local rowApplied, rowAllies = EncounterMontage.ApplyEffects(row.effects, subCtx)
                             for _, text in ipairs(rowApplied) do
                                 applied[#applied + 1] = text
@@ -2701,6 +2772,21 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                     applied[#applied + 1] = string.format("Every hero gains +%d to rolled damage until the next respite", effect.qty)
                 elseif #names > 0 then
                     applied[#applied + 1] = string.format("%s +%d to rolled damage until the next respite", Subject(names, "gains", "gain"), effect.qty)
+                end
+            elseif effect.kind == "immunityboon" then
+                local names = {}
+                local effectid = EnsureImmunityBoonEffect(effect.damageType, effect.qty)
+                for _, target in ipairs(Targets(effect)) do
+                    local grantOk, granted = pcall(ApplyMontageEffect, target.token, effectid,
+                        string.format("Montage: %s immunity %d", effect.damageType, effect.qty))
+                    if grantOk and granted then
+                        names[#names + 1] = target.name
+                    end
+                end
+                if effect.target == "party" then
+                    applied[#applied + 1] = string.format("Every hero gains %s immunity %d until the next respite", effect.damageType, effect.qty)
+                elseif #names > 0 then
+                    applied[#applied + 1] = string.format("%s %s immunity %d until the next respite", Subject(names, "gains", "gain"), effect.damageType, effect.qty)
                 end
             elseif effect.kind == "maxstamina" then
                 local names = {}
@@ -3282,6 +3368,134 @@ local function BuildScenePart(m, t, entry, option, part, tier)
     return #steps
 end
 
+--- dice the players roll ---------------------------------------------------------------
+--"Roll on Flotsam" and "each party member loses 1d3 recoveries" are rolled on
+--the screen by the players (user direction 2026-10-17), the way a delve's
+--chest is, not quietly on the host. Before a landed tier or a consequence
+--applies, PendingDice lists the rolls its clauses need; the turn (or the
+--consequence) waits in m.dice while each hero's player rolls, then the
+--effects apply with those totals.
+
+--The player who rolls for a hero: its owner, or `fallback` for a hero the
+--whole party shares.
+local function RollerFor(heroEntry, fallback)
+    local owner = heroEntry ~= nil and heroEntry.ownerId or nil
+    if owner == nil or owner == "" or owner == "PARTY" then
+        return fallback
+    end
+    return owner
+end
+
+--The dice `effects` need, in the order ApplyEffects uses them: key
+--"t:<clause>:<n>" for the nth roll on a table, "r:<clause>:<charid>" for a
+--hero's share of a dice recovery loss. ctx is ApplyEffects' context. Hidden
+--"{...}" clauses still roll quietly on the host: dice on the screen would
+--give them away.
+function EncounterMontage.PendingDice(effects, ctx)
+    local rolls = {}
+    for effectIndex, effect in ipairs(effects or {}) do
+        if not effect.hidden then
+            if effect.kind == "rolltable" then
+                local tableRoll = ctx.entry ~= nil and (ctx.entry.tables or {})[effect.key] or nil
+                local hero = ctx.heroEntry
+                if tableRoll ~= nil and hero ~= nil then
+                    for n = 1, effect.qty do
+                        rolls[#rolls + 1] = {
+                            key = string.format("t:%d:%d", effectIndex, n),
+                            kind = "table",
+                            tableKey = effect.key,
+                            dice = tableRoll.dice,
+                            label = tableRoll.name,
+                            heroid = hero.charid,
+                            heroName = hero.name,
+                            userid = ctx.userid or RollerFor(hero, dmhub.loginUserid),
+                        }
+                    end
+                end
+            elseif effect.kind == "loserecovery" and effect.dice ~= nil then
+                local targets = {}
+                if effect.target == "party" then
+                    targets = EncounterMontage.Heroes()
+                elseif ctx.heroEntry ~= nil then
+                    targets = { ctx.heroEntry }
+                end
+                for _, hero in ipairs(targets) do
+                    rolls[#rolls + 1] = {
+                        key = string.format("r:%d:%s", effectIndex, hero.charid),
+                        kind = "recovery",
+                        dice = effect.dice,
+                        label = "Recoveries lost",
+                        heroid = hero.charid,
+                        heroName = hero.name,
+                        userid = RollerFor(hero, ctx.userid or dmhub.loginUserid),
+                    }
+                end
+            end
+        end
+    end
+    return rolls
+end
+
+--The lowest and highest a plain dice expression ("1d3", "2d6") can roll.
+local function DiceRange(dice)
+    local count, sides = string.match(string.lower(dice or ""), "^(%d*)d(%d+)$")
+    local n = math.max(1, tonumber(count) or 1)
+    return n, n * math.max(1, tonumber(sides) or 1)
+end
+
+--Put dice out for the players: d = { purpose, entryName, entryId, rolls, ... }.
+local function OpenDice(m, d)
+    m.seq = (m.seq or 0) + 1
+    d.seq = m.seq
+    d.openedAt = dmhub.serverTime
+    m.dice = d
+    printf("EotW montage: %s waits on %d dice", tostring(d.entryName), #d.rolls)
+end
+
+--Apply the consequence the montage is on (m.consequenceIndex) and step on.
+--`totals` are the dice its players rolled; nil the first time, when any dice
+--it needs are put out instead (the consequence then waits in m.dice).
+local function ApplyConsequence(m, doc, beat, userid, totals)
+    local idx = m.consequenceIndex or 1
+    local entryId = (m.consequences or {})[idx]
+    if entryId == nil then
+        m.phase = "done"
+        return "montage done"
+    end
+    local entry = EncounterScript.FindEntry(beat, entryId)
+    local applied = {}
+    if entry ~= nil and entry.consequence ~= nil then
+        local ctx = {
+            heroEntry = nil,
+            userid = userid,
+            entryName = entry.name,
+            entryId = entry.id,
+            entry = entry,
+            montage = m,
+            doc = doc,
+        }
+        if totals == nil then
+            local rolls = EncounterMontage.PendingDice(entry.consequence.effects, ctx)
+            if #rolls > 0 then
+                OpenDice(m, { purpose = "consequence", entryName = entry.name, entryId = entry.id,
+                    consequenceIndex = idx, userid = userid, rolls = rolls })
+                return string.format("consequence of %s waits on the dice", entryId)
+            end
+        end
+        ctx.diceTotals = totals
+        applied = EncounterMontage.ApplyEffects(entry.consequence.effects, ctx)
+    end
+    m.lastApplied = { entryId = entryId, entryName = entry ~= nil and entry.name or "", applied = applied }
+    m.log = m.log or {}
+    m.log[#m.log + 1] = { consequence = true, entryId = entryId, entryName = entry ~= nil and entry.name or "", applied = applied }
+    m.consequenceIndex = idx + 1
+    if m.consequences[idx + 1] == nil then
+        m.phase = "done"
+        m.doneAt = dmhub.serverTime
+    end
+    return string.format("consequence of %s applied", entryId)
+end
+
 --Apply the landed tier of a turn's chosen option and close the turn out:
 --effects, allies, the acted/taken bookkeeping, and the log line. Shared by
 --the plain "rolled" path and the assisted one, which arrives here with the
@@ -3297,7 +3511,8 @@ local function ApplyResolution(m, doc, t, entry, option, tierIndex, heroes, user
         return
     end
     local hero = HeroByCharid(heroes, t.heroid)
-    local applied, newAllies = EncounterMontage.ApplyEffects(EncounterMontage.VersionEffects(option, tierIndex), {
+    local effects = EncounterMontage.VersionEffects(option, tierIndex)
+    local ctx = {
         heroEntry = hero,
         userid = userid,
         entryName = entry.name,
@@ -3305,7 +3520,21 @@ local function ApplyResolution(m, doc, t, entry, option, tierIndex, heroes, user
         entry = entry,
         montage = m,
         doc = doc,
-    })
+    }
+    --dice the tier needs go out to the players first; this runs again with
+    --their totals once every roll is in (ResumeDice).
+    if t.diceTotals == nil then
+        local rolls = EncounterMontage.PendingDice(effects, ctx)
+        if #rolls > 0 then
+            OpenDice(m, { purpose = "turn", entryName = entry.name, entryId = entry.id,
+                tier = tierIndex, userid = userid, rolls = rolls })
+            t.status = "dice"
+            return
+        end
+    end
+    ctx.diceTotals = t.diceTotals
+    t.diceTotals = nil
+    local applied, newAllies = EncounterMontage.ApplyEffects(effects, ctx)
     if #newAllies > 0 then
         doc.data.allies = doc.data.allies or {}
         doc.data.allies[t.heroid] = doc.data.allies[t.heroid] or {}
@@ -3348,6 +3577,38 @@ local function ApplyResolution(m, doc, t, entry, option, tierIndex, heroes, user
         companions = CompanionNames(t),
         assists = AssistSummary(t),
     }
+end
+
+--Every die is in (or the wait ran out): the turn or the consequence that
+--was waiting applies with the totals the players rolled.
+local function ResumeDice(m, doc, beat, heroes)
+    local d = m.dice
+    m.dice = nil
+    if d == nil then
+        return
+    end
+    local totals = {}
+    for _, r in ipairs(d.rolls or {}) do
+        totals[r.key] = r.total
+    end
+    if d.purpose == "consequence" then
+        if m.phase == "consequences" and (m.consequenceIndex or 1) == d.consequenceIndex then
+            ApplyConsequence(m, doc, beat, d.userid, totals)
+        end
+        return
+    end
+    local t = m.turn
+    if t == nil or t.status ~= "dice" then
+        return
+    end
+    local entry = EncounterMontage.TurnEntry(beat, t)
+    local option = EncounterMontage.TurnOption(entry, t)
+    if entry == nil or option == nil then
+        t.status = "choosing"
+        return
+    end
+    t.diceTotals = totals
+    ApplyResolution(m, doc, t, entry, option, d.tier, heroes, d.userid)
 end
 
 --A test has landed on its final tier (after any perk): play the option's
@@ -5354,34 +5615,40 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         if m.phase ~= "consequences" then
             return "ignored continue"
         end
-        local idx = m.consequenceIndex or 1
-        local entryId = (m.consequences or {})[idx]
-        if entryId == nil then
-            m.phase = "done"
-            return "montage done"
+        if m.dice ~= nil then
+            return "ignored continue: the dice are out"
         end
-        local entry = EncounterScript.FindEntry(beat, entryId)
-        local applied = {}
-        if entry ~= nil and entry.consequence ~= nil then
-            applied = EncounterMontage.ApplyEffects(entry.consequence.effects, {
-                heroEntry = nil,
-                userid = userid,
-                entryName = entry.name,
-                entryId = entry.id,
-                entry = entry,
-                montage = m,
-                doc = doc,
-            })
+        return ApplyConsequence(m, doc, beat, userid, nil)
+    elseif kind == "diceRolled" then
+        --a player's dice for a table roll or a recovery loss have landed.
+        local d = m.dice
+        if d == nil or d.seq ~= req.diceSeq then
+            return "ignored dice: stale"
         end
-        m.lastApplied = { entryId = entryId, entryName = entry ~= nil and entry.name or "", applied = applied }
-        m.log = m.log or {}
-        m.log[#m.log + 1] = { consequence = true, entryId = entryId, entryName = entry ~= nil and entry.name or "", applied = applied }
-        m.consequenceIndex = idx + 1
-        if m.consequences[idx + 1] == nil then
-            m.phase = "done"
-            m.doneAt = dmhub.serverTime
+        for _, r in ipairs(d.rolls or {}) do
+            if r.key == req.key then
+                if r.total ~= nil then
+                    return "ignored dice: already rolled"
+                end
+                if r.userid ~= userid then
+                    return "ignored dice: not your roll"
+                end
+                local lo, hi = DiceRange(r.dice)
+                r.total = math.max(lo, math.min(hi, math.floor(tonumber(req.total) or lo)))
+                local line = string.format("%s rolls %d (%s, %s)", tostring(r.heroName), r.total, tostring(r.label), tostring(r.dice))
+                local all = true
+                for _, other in ipairs(d.rolls) do
+                    if other.total == nil then
+                        all = false
+                    end
+                end
+                if all then
+                    ResumeDice(m, doc, beat, heroes)
+                end
+                return line
+            end
         end
-        return string.format("consequence of %s applied", entryId)
+        return "ignored dice: unknown roll"
     elseif kind == "reset" then
         --dev: restart the montage from round 1 (state only; effects already
         --applied are not undone).
@@ -5821,6 +6088,20 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
         end
     end
 
+    --dice nobody rolls: the host rolls them, and the wait is over.
+    if m.dice ~= nil then
+        local age = dmhub.serverTime - (tonumber(m.dice.openedAt) or dmhub.serverTime)
+        if age >= DICE_ROLL_SECONDS then
+            for _, r in ipairs(m.dice.rolls or {}) do
+                if r.total == nil then
+                    r.total = RollDiceExpression(r.dice)
+                    printf("EotW montage: nobody rolled %s for %s; the host rolled %d", tostring(r.label), tostring(r.heroName), r.total)
+                end
+            end
+            ResumeDice(m, doc, beat, heroes)
+        end
+    end
+
     --round progression. A resolved turn is over as far as the round is
     --concerned (its result is in the log); it leaves with the round.
     if m.phase == "rounds" and EncounterMontage.TurnOver(m) and RoundComplete(m, beat, heroes) then
@@ -5883,6 +6164,37 @@ end
 
 --the roll the local client has already launched, so a turn is rolled once.
 local m_launchedRollSeq = nil
+--the montage dice roll ("<seq>:<key>", see m.dice) this client has out.
+local m_launchedDice = nil
+
+--Roll this user's next montage die (a table roll, a hero's share of a
+--recovery loss), one at a time: the next goes out once the host has
+--recorded the last, so no request overwrites another.
+local function LaunchMontageDice(d)
+    for _, r in ipairs(d.rolls or {}) do
+        if r.total == nil and r.userid == dmhub.loginUserid then
+            local mark = string.format("%s:%s", tostring(d.seq), tostring(r.key))
+            if m_launchedDice == mark then
+                return
+            end
+            m_launchedDice = mark
+            local seq, key = d.seq, r.key
+            dmhub.Roll{
+                roll = r.dice or "1d6",
+                description = string.format("%s: %s", r.heroName or "Hero", r.label or "Montage"),
+                tokenid = r.heroid,
+                complete = function(rollInfo)
+                    if mod.unloaded then
+                        return
+                    end
+                    --diceSeq, not seq: SendRequest numbers its requests in "seq".
+                    EncounterMontage.SendRequest("diceRolled", { diceSeq = seq, key = key, total = rollInfo.total })
+                end,
+            }
+            return
+        end
+    end
+end
 
 --Show a montage roll dialog. Everything both montage rolls share: the wait
 --for a free roll surface, the synthetic test ability in the timeline
@@ -6294,6 +6606,12 @@ end
 --dialog once per rollSeq. Called from the per-client driver and the stage.
 function EncounterMontage.ClientTick()
     local m = EncounterMontage.GetState()
+    --montage dice (a table roll, a recovery loss) come before anything else:
+    --nothing else rolls while they are out.
+    if m ~= nil and m.dice ~= nil then
+        LaunchMontageDice(m.dice)
+        return
+    end
     if m == nil or m.turn == nil then
         m_launchedRollSeq = nil
         return
