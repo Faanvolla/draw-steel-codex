@@ -1294,12 +1294,13 @@ function dmhub.UploadPlayerInfo(userid) end
 --- @param callback function
 function dmhub.RegisterRemoteEvent(eventid, callback) end
 
---- This broadcasts an event to connected computers using the peer-to-peer mechanism. By default delivery is best-effort UDP -- good for transient information like mouse positions or highlights where a dropped packet doesn't matter. If multiple messages using the same sessionid arrive out of order, the old messages will be discarded and not processed. Pass reliable = true to route via the game server's WebSocket when the event drives a state change that must not be lost.
+--- This broadcasts an event to connected computers using the peer-to-peer mechanism. By default delivery is best-effort UDP -- good for transient information like mouse positions or highlights where a dropped packet doesn't matter. If multiple messages using the same sessionid arrive out of order, the old messages will be discarded and not processed. Pass reliable = true to route via the game server's WebSocket when the event drives a state change that must not be lost. Only computers on the sender's current map receive the event unless allMaps is true.
 --- @param eventid string A unique eventid identifying the event.
 --- @param sessionid string A unique id identifying a 'session' which can receive multiple messages. If you want to broadcast multiple events concerning the same topic, use the same sessionid.
 --- @param args any
 --- @param reliable nil|boolean Optional. If true, route the message through the game server (TCP) so it can't be dropped by UDP. Requires a Durable Objects or Local game; silently ignored on Firebase-backed games (falls back to UDP). Defaults to false.
-function dmhub.BroadcastRemoteEvent(eventid, sessionid, args, reliable) end
+--- @param allMaps nil|boolean Optional. If true, the event reaches every connected computer whatever map it is on. By default it only reaches computers on the sender's current map.
+function dmhub.BroadcastRemoteEvent(eventid, sessionid, args, reliable, allMaps) end
 
 --- Registers a named priority for escape listening. The named key is associated with the given priority level.
 --- @param key? string

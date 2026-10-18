@@ -5012,6 +5012,12 @@ local function CardFace(charid, tok)
     })
 end
 
+--Scene cards (SceneElements.lua) are the table's cards: the same face, at
+--the same size, with the same styles.
+Tabletop.CardFace = CardFace
+Tabletop.CardSize = CardSize
+Tabletop.CardStyles = CardStyles
+
 local CloseCard
 
 --Puts a card's resize grip on its edge or corner of the card's current size,
@@ -5582,6 +5588,18 @@ local function BuildCard(card)
             --dropped on the chat: a link to the character; the card stays.
             local toChat = ChatItemLinks.Dropped()
             local drag = g_cardDrag
+            --dropped on a scene, or on the bare table while a scene is its
+            --background: the card moves into the scene (SceneElements.lua).
+            local intoScene = (toChat and SceneElements.TookCharacter(card.charid))
+                or (not toChat and dmhub.panelDropSurface == "table" and SceneElements.DropOnBackground({card.charid}))
+            if intoScene then
+                if drag ~= nil and drag.card == card then
+                    element:SetClass("tabletopCardOverMap", false)
+                    EndCardDrag(drag, element)
+                end
+                CloseCard(card)
+                return
+            end
             if drag ~= nil and drag.card == card then
                 element:SetClass("tabletopCardOverMap", false)
                 EndCardDrag(drag, element)
@@ -5857,6 +5875,16 @@ local function DropPlacement(screenx, screeny, i)
     return math.floor(x - w / 2) + (i - 1) * CARD_GAP, math.floor(y - h / 2) + (i - 1) * CARD_GAP
 end
 
+--- Where the i-th card of a drop at a screen point goes (documents-layer
+--- units): a scene card dragged out onto the table (SceneElements.lua).
+--- @param screenx number
+--- @param screeny number
+--- @param i integer
+--- @return number, number
+function Tabletop.CardDropPlacement(screenx, screeny, i)
+    return DropPlacement(screenx, screeny, i)
+end
+
 ----------------------------------------------------------------------
 --A character or bestiary row dragged out of its panel (CharacterPanel.lua
 --calls these from the row's drag events). Over the bare table it shows as
@@ -5899,6 +5927,15 @@ local function BuildPreviewCard(charid, options)
     --engine's table-drop test) or take the drop.
     panel:MakeNonInteractiveRecursive()
     return panel
+end
+
+--- The card a character dropped on the table would make, on the table and
+--- taking no input, for a drag to move about (Tabletop.CardDropPlacement)
+--- and destroy. A scene card dragged out of its scene shows it.
+--- @param charid string
+--- @return nil|Panel
+function Tabletop.BuildCardPreview(charid)
+    return BuildPreviewCard(charid)
 end
 
 function Tabletop.CharacterRowDragEnded(row)
@@ -5958,6 +5995,7 @@ local function BestiaryCardFace(tok)
     EotwHeroCard.ApplyPortrait(face, tok, w / h)
     return face
 end
+Tabletop.BestiaryCardFace = BestiaryCardFace
 
 local function BuildBestiaryPreviewCard(monsterid)
     local layer = DocumentsLayer()
@@ -6566,6 +6604,27 @@ dmhub.RegisterEventHandler("tabletopCreatureDropped", function(info)
     end
     local screenx = tonumber(info.screenx) or 0
     local screeny = tonumber(info.screeny) or 0
+    local monsterids = info.monsterids
+    if type(monsterids) ~= "table" then
+        monsterids = {info.monsterid}
+    end
+    --on a scene that is the table's background: into the scene.
+    local intoScene = false
+    if type(info.charids) == "table" then
+        local charids = {}
+        for _, charid in ipairs(info.charids) do
+            if g_cardDrag == nil or g_cardDrag.card.charid ~= charid then
+                charids[#charids+1] = charid
+            end
+        end
+        intoScene = #charids > 0 and SceneElements.DropOnBackground(charids)
+    elseif dmhub.isDM then
+        intoScene = SceneElements.DropOnBackground(nil, monsterids)
+    end
+    if intoScene then
+        gui.SetFocus(nil)
+        return
+    end
     if type(info.charids) == "table" then
         for i, charid in ipairs(info.charids) do
             --a card the Director dragged back onto the table has moved
@@ -6576,10 +6635,6 @@ dmhub.RegisterEventHandler("tabletopCreatureDropped", function(info)
             end
         end
     elseif dmhub.isDM then
-        local monsterids = info.monsterids
-        if type(monsterids) ~= "table" then
-            monsterids = {info.monsterid}
-        end
         for i, monsterid in ipairs(monsterids) do
             local tok = game.SpawnTokenFromBestiaryLocally(monsterid, nil)
             if tok ~= nil then
@@ -6620,6 +6675,10 @@ dmhub.RegisterEventHandler("tabletopTokenDropped", function(info)
     local charids = info.charids
     if type(charids) ~= "table" then
         charids = {info.charid}
+    end
+    --on a scene that is the table's background: into the scene.
+    if SceneElements.DropOnBackground(charids) then
+        return
     end
     for i, charid in ipairs(charids) do
         local x, y = DropPlacement(screenx, screeny, i)
@@ -8525,6 +8584,12 @@ local function DefineSceneWindows()
         if panel:HasClass("collapsed") ~= covered then
             panel:SetClass("collapsed", covered)
         end
+        --maximized under the UI it is the table's background: its cards'
+        --layer lets the mouse through, and the table passes it the drops
+        --(SceneElements.DropOnBackground).
+        if rec.view ~= nil and rec.view.valid then
+            rec.view:FireEvent("setBackground", rec.maximized == true and not covered and panel.parent == g_layer)
+        end
     end
 
     g_sharing.screenKinds[#g_sharing.screenKinds+1] = function(list)
@@ -8725,6 +8790,44 @@ local function DefineSceneWindows()
                 end,
             }
             controls[#controls+1] = share.button
+            --who besides the Director may change the cards in the scene
+            --(SceneElements.lua). Its icon follows the scene's document.
+            local editControl = WindowControl{
+                icon = SceneElements.EditModeInfo(rec.sceneid).icon,
+                iconSize = 14,
+                hover = function(element)
+                    gui.Tooltip("Who can change this scene: " .. SceneElements.EditModeInfo(rec.sceneid).tip)(element)
+                end,
+                click = function(element)
+                    local current = SceneElements.EditMode(rec.sceneid)
+                    local entries = {}
+                    for _, info in ipairs(SceneElements.EDIT_MODES) do
+                        local mode = info.id
+                        entries[#entries+1] = {
+                            text = info.text,
+                            check = current == mode,
+                            click = function()
+                                GuardClicks()
+                                element.popup = nil
+                                SceneElements.SetEditMode(rec.sceneid, mode)
+                            end,
+                        }
+                    end
+                    element.tooltip = nil
+                    element.popup = gui.ContextMenu{entries = entries}
+                end,
+            }
+            controls[#controls+1] = gui.Panel{
+                width = "auto",
+                height = "100%",
+                valign = "center",
+                flow = "horizontal",
+                monitorGame = SceneElements.DocPath(rec.sceneid),
+                refreshGame = function(element)
+                    editControl:FireEventTree("setIcon", SceneElements.EditModeInfo(rec.sceneid).icon)
+                end,
+                editControl,
+            }
             controls[#controls+1] = WindowControl{
                 icon = "phosphor/gear-six-fill.png",
                 iconSize = 14,
