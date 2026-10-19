@@ -1273,9 +1273,9 @@ earlier ones, but this week's is the default and focus. User-made encounters
 never appear at the Gate: they play in a new town location, the **Danger
 Rooms** -- experimental, no Victories, no treasure, nothing durable, otherwise
 a normal encounter (a practice ground). After a Danger Room game each player
-can up- or downvote it, write feedback for its creator, and nominate their
-overall choice for next week's Encounter of the Week; the team assesses that
-weekly and picks the next one. The Danger Rooms are locked until the player
+can up- or downvote it and write feedback for its creator (a nomination for
+next week was dropped 2026-10-18); the team assesses that weekly and picks
+the next one. The Danger Rooms are locked until the player
 first defeats the Encounter of the Week, then open for good. The background
 is the cover side of the Draw Steel: Monsters cover PSD. Goblin Ambush is the
 first Encounter of the Week; Angry Dwarves is retired.
@@ -1296,7 +1296,7 @@ first Encounter of the Week; Angry Dwarves is retired.
   makes userids self-reported, so there the gate is a courtesy.
 - **Rotating** (any one of):
   - the admin's Codex menu -> **Encounter of the Week...** (town open):
-    every pool encounter except the current, most nominated first, with
+    every pool encounter except the current, best net vote first, with
     votes, plays and all feedback, each with "Make Encounter of the Week"
     (second click confirms);
   - Lua, anywhere (titlescreen or a game; over MCP):
@@ -1364,7 +1364,7 @@ first Encounter of the Week; Angry Dwarves is retired.
 - **Board** (`PartyBoard("danger")`): the practice note, the resume row,
   Danger Room parties forming / underway, then **Encounters to Try**: one
   row per Danger Room encounter (title, "<module> by <author>", "N up, M
-  down -- played P times", "your nomination this week", the blurb, Form a
+  down -- played P times", the blurb, Form a
   Party). Votes come from `danger-stats` when the location opens.
 - **Feedback on Your Encounters** (bottom button, shown when the pool holds
   a module this account published -- `ourModule`): votes and every
@@ -1398,10 +1398,16 @@ first Encounter of the Week; Angry Dwarves is retired.
 - Back in town, once connected (`MaybeShowDebrief` on `/` and on connect),
   the **Danger Rooms Debrief** dialog: the encounter's title, the result and
   "It was practice: nothing was awarded", **Upvote / Downvote** toggles
-  (`phosphor/thumbs-up-fill.png` / `thumbs-down-fill.png`), a multiline **feedback for its creator** (2000
-  chars), and **Your pick for next week's Encounter of the Week** (a
-  dropdown of every Danger Room encounter, preselected with this week's
-  nomination). **Send** -> `danger-feedback`; **Skip** or Escape clears it.
+  (`phosphor/thumbs-up-fill.png` / `thumbs-down-fill.png`) and a multiline
+  **feedback for its creator** (2000 chars). **Send** -> `danger-feedback`;
+  **Skip** or Escape clears it.
+- **No nomination** (2026-10-18, user direction after a playtest: "just
+  upvote/downvote and a comment is all we need"). The debrief's "Your pick
+  for next week's Encounter of the Week" dropdown is gone, and so are
+  "your nomination this week" on the board, the nomination count and
+  most-nominated-first order in the admin dialog (now best net vote first)
+  and the practice blurb's mention. The City still accepts `nominate?` and
+  still reports `nominations`; the client just never sends one.
 - City: `danger-feedback {encounter, gameid, vote, feedback, nominate?}`
   stores one row per (player, encounter, game) and one nomination per
   (player, week) (a new one replaces the old; rotation starts a new week).
@@ -1462,8 +1468,8 @@ restart does that), so reach the titlescreen with a plain start instead.
    Bandits under Encounters to Try; Form a Party shows the practice note; the
    party appears on the Danger Rooms board, not the Gate's.
 4. Play it: no Victory award, "Danger Rooms: practice only" on the cards, no
-   treasure; back in town the debrief appears; send a vote, feedback and a
-   nomination; the row's counts update; Feedback on Your Encounters (as the
+   treasure; back in town the debrief appears; send a vote and feedback;
+   the row's counts update; Feedback on Your Encounters (as the
    module's publisher) shows it; the admin dialog shows it all.
 5. Rotate to The Dwarvish Bandits from the admin dialog: both boards update
    live, Goblin Ambush moves to Past Encounters, the Bandits leave the

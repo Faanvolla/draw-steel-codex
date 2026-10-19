@@ -523,7 +523,7 @@ end
 --EncounterOfTheWeek.md). Its parts are keyed off the map's key: part 1 is the
 --bare key, a later part adds "#<n>" ("Encounter: The Crypt#2"). Map names
 --can never hold "#". The bare key also names the whole series: the schedule,
---the Danger Rooms rows, votes and nominations all use it.
+--the Danger Rooms rows and votes all use it.
 --key -> the series' key (the bare key), part number (1 when none).
 function EncounterOfTheWeek.SplitPartKey(key)
     if type(key) ~= "string" then
@@ -2196,9 +2196,9 @@ function EncounterOfTheWeek.ShowPoolDialog()
 end
 
 --Admin: the weekly assessment and the rotation. Lists every encounter in the
---pool that is not this week's, Danger Room votes, plays, nominations and
---feedback beside each, most nominated first, each with "Make Encounter of the
---Week" (a second click confirms). Mounted over the town screen.
+--pool that is not this week's, Danger Room votes, plays and feedback beside
+--each, best net vote first, each with "Make Encounter of the Week" (a second
+--click confirms). Mounted over the town screen.
 function EncounterOfTheWeek.ShowWeekDialog()
     if m_screen == nil or not m_screen.valid then
         return
@@ -2252,11 +2252,6 @@ function EncounterOfTheWeek.ShowWeekDialog()
         for _,e in ipairs(report ~= nil and report.encounters or {}) do
             byKey[e.encounter] = e
         end
-        local nominated = {}
-        for _,n in ipairs(report ~= nil and report.nominations or {}) do
-            nominated[n.encounter] = n.count or 0
-        end
-
         local entries = {}
         for _,entry in ipairs(EncounterOfTheWeek.GetEncounters() or {}) do
             if entry.key ~= current then
@@ -2264,10 +2259,6 @@ function EncounterOfTheWeek.ShowWeekDialog()
             end
         end
         table.sort(entries, function(a, b)
-            local na, nb = nominated[a.key] or 0, nominated[b.key] or 0
-            if na ~= nb then
-                return na > nb
-            end
             local ea, eb = byKey[a.key], byKey[b.key]
             local va = ea ~= nil and ((ea.up or 0) - (ea.down or 0)) or 0
             local vb = eb ~= nil and ((eb.up or 0) - (eb.down or 0)) or 0
@@ -2297,10 +2288,9 @@ function EncounterOfTheWeek.ShowWeekDialog()
                 },
                 Small(string.format("%s -- %s%s", kind, entry.moduleName or entry.moduleid,
                     cond(entry.author ~= nil and entry.author ~= "", " by " .. tostring(entry.author), ""))),
-                Small(string.format("%d up, %d down, %d play%s, %d nomination%s",
+                Small(string.format("%d up, %d down, %d play%s",
                     stats ~= nil and stats.up or 0, stats ~= nil and stats.down or 0,
-                    stats ~= nil and stats.plays or 0, cond(stats ~= nil and stats.plays == 1, "", "s"),
-                    nominated[entry.key] or 0, cond(nominated[entry.key] == 1, "", "s")), "#e6dcc6"),
+                    stats ~= nil and stats.plays or 0, cond(stats ~= nil and stats.plays == 1, "", "s")), "#e6dcc6"),
             }
             for _,f in ipairs(stats ~= nil and stats.feedback or {}) do
                 if f.feedback ~= nil and f.feedback ~= "" or (f.vote or 0) ~= 0 then
@@ -2522,9 +2512,8 @@ CreateScreen = function(args)
     ---@type fun()
     local ShowCreatorFeedbackDialog = nil
     --Danger Room votes from the city's danger-stats, { [key] = {up, down,
-    --plays} }, and this account's nomination this week (a key or nil).
+    --plays} }.
     local m_dangerStats = {}
-    local m_myNomination = nil
 
     --When set, the games area shows this game's lobby view (slots + your
     --heroes) instead of the games list, and the chat column switches to
@@ -2926,7 +2915,7 @@ CreateScreen = function(args)
     end
 
     --What the Danger Rooms mean for the heroes, wherever a party forms there.
-    local PRACTICE_TEXT = "The Danger Rooms are practice. Heroes earn no Victories, keep no treasure and carry nothing else home. Afterwards you can vote on the encounter, leave feedback for its creator and nominate next week's Encounter of the Week."
+    local PRACTICE_TEXT = "The Danger Rooms are practice. Heroes earn no Victories, keep no treasure and carry nothing else home. Afterwards you can vote on the encounter and leave feedback for its creator."
 
     local PracticeNote = function(width)
         return gui.Label{
@@ -4397,9 +4386,6 @@ CreateScreen = function(args)
             statsText = string.format("%d up, %d down -- played %d time%s", stats.up or 0, stats.down or 0,
                 stats.plays or 0, cond(stats.plays == 1, "", "s"))
         end
-        if m_myNomination == entry.key then
-            statsText = statsText .. " -- your nomination this week"
-        end
         local byline = entry.moduleName or entry.moduleid
         if entry.author ~= nil and entry.author ~= "" then
             byline = string.format("%s by %s", byline, entry.author)
@@ -5535,7 +5521,7 @@ CreateScreen = function(args)
         }
     end
 
-    --The Danger Rooms' votes so far (and our nomination), for the board.
+    --The Danger Rooms' votes so far, for the board.
     local FetchDangerStats = function()
         if m_conn == nil or not m_conn.connected then
             return
@@ -5547,7 +5533,6 @@ CreateScreen = function(args)
                     return
                 end
                 m_dangerStats = result.stats or {}
-                m_myNomination = result.nomination
                 RefreshGames()
             end,
             error = function(message)
@@ -5558,8 +5543,8 @@ CreateScreen = function(args)
 
     --- the Danger Rooms debrief -------------------------------------------
     --After a Danger Rooms game the game side leaves eotw:pendingDebrief; back
-    --in town the player is asked to vote, give the creator feedback and
-    --nominate next week's Encounter of the Week. Sending or skipping clears it.
+    --in town the player is asked to vote and give the creator feedback.
+    --Sending or skipping clears it.
 
     local ReadPendingDebrief = function()
         local text = dmhub.GetSettingValue("eotw:pendingDebrief")
@@ -5600,7 +5585,6 @@ CreateScreen = function(args)
     local ShowDebriefDialog = function(entry)
         local m_vote = 0
         local m_feedback = ""
-        local m_nominate = ""
         local m_sending = false
         local voteButtons = {}
         ---@type Label
@@ -5683,14 +5667,6 @@ CreateScreen = function(args)
             return button
         end
 
-        --next week's candidates: every Danger Room encounter (this one too).
-        local options = { { id = "", text = "No nomination" } }
-        for _,e in ipairs(EncounterOfTheWeek.GetDangerRoomEncounters()) do
-            options[#options+1] = { id = e.key, text = EncounterOfTheWeek.EncounterDisplayName(e.key) }
-        end
-        ---@type Dropdown
-        local nominateDropdown = nil
-
         local resultText = cond(entry.result == "victory", "Your party survived the Danger Room.",
             cond(entry.result == "defeat", "The Danger Room got the better of your party.", "Your party left the Danger Room."))
 
@@ -5751,28 +5727,6 @@ CreateScreen = function(args)
                         m_feedback = element.text or ""
                     end,
                 },
-                Label("Your pick for next week's Encounter of the Week", 18),
-                gui.Dropdown{
-                    width = 520,
-                    height = 36,
-                    fontSize = 18,
-                    halign = "center",
-                    --The open list (dropdownBorder/dropdownMenu/dropdownOption)
-                    --inherits the host's cascade, and the titlescreen's
-                    --legacy Styles.Default does not style it: without the
-                    --themed sheet it renders as bare labels over the dialog.
-                    styles = ThemeEngine.GetStyles(),
-                    options = options,
-                    idChosen = "",
-                    create = function(element)
-                        ---@cast element Dropdown
-                        nominateDropdown = element
-                    end,
-                    change = function(element)
-                        ---@cast element Dropdown
-                        m_nominate = tostring(element.idChosen or "")
-                    end,
-                },
                 gui.Label{
                     text = "",
                     fontSize = 16,
@@ -5809,7 +5763,6 @@ CreateScreen = function(args)
                                 gameid = entry.gameid,
                                 vote = m_vote,
                                 feedback = m_feedback,
-                                nominate = cond(m_nominate ~= "", m_nominate, nil),
                             },
                             success = function()
                                 ClearPendingDebrief(entry.gameid)
@@ -5836,31 +5789,13 @@ CreateScreen = function(args)
                 },
             },
         }
-        if dlg == nil or m_conn == nil then
-            m_debriefOpen = dlg ~= nil
-            return
+        if dlg == nil then
+            m_debriefOpen = false
         end
-
-        --pre-select this week's nomination, if the player already made one.
-        m_conn:Request{
-            action = "danger-stats",
-            args = { encounters = {} },
-            success = function(result)
-                if nominateDropdown == nil or not nominateDropdown.valid or type(result.nomination) ~= "string" then
-                    return
-                end
-                for _,option in ipairs(options) do
-                    if option.id == result.nomination and m_nominate == "" then
-                        m_nominate = result.nomination
-                        nominateDropdown.idChosen = result.nomination
-                    end
-                end
-            end,
-        }
     end
 
     --Ask for a Danger Rooms debrief owed from the last game, once the town is
-    --connected and the pool (the nomination choices) has loaded.
+    --connected and the pool (which names the encounter) has loaded.
     local MaybeShowDebrief = function()
         if m_debriefOpen or m_conn == nil or not m_conn.connected then
             return

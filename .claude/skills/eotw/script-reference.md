@@ -564,8 +564,8 @@ game (the map starts fresh each time).
   encounter has no region.
 - **Testing**: Test Encounter has a **Part** dropdown on a series map. The test
   bounds the map like a real game and puts the bounds back at End Test.
-- **In town**: the series is one entry (it is scheduled, voted on and nominated
-  as a whole). Form a Party opens on the next part the player has to play, with
+- **In town**: the series is one entry (it is scheduled and voted on as a
+  whole). Form a Party opens on the next part the player has to play, with
   a chip per part: won parts are ticked, locked ones greyed. At the Town Gate a
   part unlocks when any of the account's heroes has won the part before it;
   in the Danger Rooms, when the account has won it there. Danger Room wins do

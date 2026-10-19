@@ -3194,6 +3194,28 @@ local function ExpireTemporaryEntries(m, doc, beat, userid)
     end
 end
 
+--What the montage's last turn did, for the card that follows it (the "over"
+--card or the first consequence), in m.lastApplied's shape. Without it the
+--last turn's rewards were applied in the same tick the montage ended and
+--never shown (2026-10-18 playtest). nil when there is nothing to say.
+local function LastTurnResult(m)
+    local last = (m.log or {})[#(m.log or {})]
+    if last == nil or last.consequence or last.passed then
+        return nil
+    end
+    local lines = {}
+    for _, line in ipairs(last.applied or {}) do
+        lines[#lines + 1] = line
+    end
+    if #lines == 0 and type(last.tierText) == "string" and last.tierText ~= "" then
+        lines[1] = last.tierText
+    end
+    if #lines == 0 then
+        return nil
+    end
+    return { entryId = last.entryId, entryName = last.entryName or "", applied = lines }
+end
+
 --Every hero has acted, or nobody can act (nothing left to approach).
 local function RoundComplete(m, beat, heroes)
     if #heroes == 0 then
@@ -6127,7 +6149,7 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
             end
             m.consequences = list
             m.consequenceIndex = 1
-            m.lastApplied = nil
+            m.lastApplied = LastTurnResult(m)
             if #list == 0 then
                 m.phase = "done"
                 m.doneAt = dmhub.serverTime
@@ -6154,7 +6176,12 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
     if resetRequested then
         return "running"
     end
-    if doc.data.montage ~= nil and doc.data.montage.phase == "done" then
+    --a montage that ended this tick lingers like one that ended earlier (the
+    --check at the top of the tick): returning "done" at once started the next
+    --beat in the same tick, so nobody saw the "over" card or the last results.
+    local final = doc.data.montage
+    if final ~= nil and final.phase == "done"
+        and dmhub.serverTime - (tonumber(final.doneAt) or 0) >= DONE_LINGER_SECONDS then
         return "done"
     end
     return "running"

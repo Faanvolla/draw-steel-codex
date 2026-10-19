@@ -1,6 +1,6 @@
 ---
 name: eotw
-description: Build and publish an Encounter of the Week (EotW) encounter, guiding the author step by step in the running DMHub app -- name the encounter map, paint the hero Start zone (and hidden Trap zones), build and position the monsters, write the script document (narratives, montages with tests, riders, scenes, delves, traps, Town Gate / Conclusion / Defeat story text), validate and playtest it, then publish it as an "Encounter of the Week" module so it joins the encounter pool and plays in the town's Danger Rooms (where players vote on it and nominate the next Encounter of the Week). Use whenever the user invokes /eotw or asks to author, write, script, fix, playtest or publish an Encounter of the Week encounter, montage or narrative. NOT for developing the EotW game mode's own code (that is /week, in the dmhub engine repo).
+description: Build and publish an Encounter of the Week (EotW) encounter, guiding the author step by step in the running DMHub app -- name the encounter map, paint the hero Start zone (and hidden Trap zones), build and position the monsters, write the script document (narratives, montages with tests, riders, scenes, delves, traps, Town Gate / Conclusion / Defeat story text), validate and playtest it, then publish it as an "Encounter of the Week" module so it joins the encounter pool and plays in the town's Danger Rooms (where players vote on it and leave its author feedback). Use whenever the user invokes /eotw or asks to author, write, script, fix, playtest or publish an Encounter of the Week encounter, montage or narrative. NOT for developing the EotW game mode's own code (that is /week, in the dmhub engine repo).
 ---
 
 # /eotw -- authoring an Encounter of the Week encounter
@@ -10,8 +10,7 @@ EotW encounter in their running DMHub app, check each step yourself through the
 DMHub MCP server (`execute_lua`), write script text with them, and finish by
 publishing it into the encounter pool. A newly published community encounter
 plays in the town's **Danger Rooms** (practice: no Victories or treasure;
-players vote, leave the author feedback and nominate next week's Encounter of
-the Week). It reaches the Town Gate only when an admin makes it the Encounter
+players vote and leave the author feedback). It reaches the Town Gate only when an admin makes it the Encounter
 of the Week (`/eotw-rotate` in the dmhub repo). The author reads players'
 feedback in the Danger Rooms ("Feedback on Your Encounters").
 
