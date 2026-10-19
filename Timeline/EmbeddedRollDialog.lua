@@ -1353,6 +1353,16 @@ function GameHud.CreateEmbeddedRollDialog()
 
     local rollDisabledLabel
     local rollDiceButton
+    local rollAllPromptsCheck
+
+    --The roller asked for "Roll all prompts" (see rollAllPromptsCheck): tell
+    --the request listener so its remaining prompts for this request follow suit.
+    local NotifyRollAllPrompts = function()
+        if rollAllPrompts ~= nil and rollAllPromptsCheck ~= nil
+           and rollAllPromptsCheck.value and not rollAllPromptsCheck:HasClass("collapsed") then
+            rollAllPrompts()
+        end
+    end
     local proceedAfterRollButton
     local rollAgainButton
     local m_triggerProgressDice
@@ -4574,6 +4584,7 @@ function GameHud.CreateEmbeddedRollDialog()
         end
         RemoveTargetHints()
         if cancelRoll ~= nil then
+            NotifyRollAllPrompts()
             cancelRoll()
         end
         resultPanel:SetClass('hidden', true)
@@ -4988,6 +4999,19 @@ function GameHud.CreateEmbeddedRollDialog()
         valign = "top",
     }
 
+    --One player asked to roll the same request for several creatures (a
+    --resistance roll hitting four heroes): ticked, rolling or cancelling this
+    --one does the same to the rest. Shown only when options.numPrompts > 1.
+    rollAllPromptsCheck = gui.Check {
+        classes = { "collapsedWhenRolling", "hideWhenAI", "hideWhenMinimized", "collapsed" },
+        text = "Roll all prompts",
+        value = true,
+        halign = "left",
+        valign = "top",
+        tmargin = 4,
+        bmargin = 4,
+    }
+
     --pingButtons: another player clicked a ghost copy of one of these
     --buttons, so the real one pulses in their colour.
     local pingWatcher = gui.Panel {
@@ -5233,6 +5257,7 @@ function GameHud.CreateEmbeddedRollDialog()
             m_rollResults,
             triggersWithTabContainer,
             rollDisabledLabel,
+            rollAllPromptsCheck,
             buttonPanel,
             intelRerollButton,
         }
@@ -6640,6 +6665,14 @@ function GameHud.CreateEmbeddedRollDialog()
                 rollInput:SetClass("manualEdit", false)
 
                 rollAllPrompts = options.rollAllPrompts
+                if options.numPrompts ~= nil and options.numPrompts > 1 and rollAllPrompts ~= nil then
+                    rollAllPromptsCheck.value = true
+                    rollAllPromptsCheck.data.SetText(string.format("Roll all %d prompts", options.numPrompts))
+                    rollAllPromptsCheck:SetClass("collapsed", false)
+                else
+                    rollAllPromptsCheck.value = false
+                    rollAllPromptsCheck:SetClass("collapsed", true)
+                end
                 rollActive = options.rollActive
                 beginRoll = options.beginRoll
                 completeRoll = options.completeRoll
@@ -6996,6 +7029,8 @@ function GameHud.CreateEmbeddedRollDialog()
                 local dmonly = rollVisibility == "dm"
                 local dicetower = rollVisibility == "dicetower"
                 local instant = false
+
+                NotifyRollAllPrompts()
 
                 --we must save off anything from the surrounding scope since this dialog might be reused after this.
                 local activeRollFn = rollActive

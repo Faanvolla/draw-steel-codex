@@ -481,6 +481,7 @@ end
 --keeps the old dialog. Move one type over at a time.
 local g_timelineRollTypes = {
     opposed_power_roll = true,
+    resistance_power_roll = true,
 }
 
 --Wraps the old floating dialog so callers can treat both dialogs the same way.
@@ -522,9 +523,11 @@ local function ShowTimelinePrompt(check, dialogParams)
         casterToken = dmhub.GetTokenById(checkOptions.casterid)
     end
 
+    --cardAbility: a roll whose `ability` option feeds modifier filters (a
+    --resistance roll) passes the card to show separately.
     local mount = CharacterPanel.EmbedPromptRollDialog{
         token = casterToken,
-        ability = checkOptions.ability,
+        ability = checkOptions.cardAbility or checkOptions.ability,
     }
 
     if mount == nil or mount.dialog == nil or not mount.dialog.valid
@@ -534,9 +537,15 @@ local function ShowTimelinePrompt(check, dialogParams)
 
     --The Timeline roller shows no title of its own, so hand it the same two
     --lines the old dialog printed above the roll.
+    --The title ("... for <creature>") names who is rolling, which matters when
+    --one player rolls the same request for several heroes.
     local headerLines = {}
-    if dialogParams.description ~= nil and dialogParams.description ~= "" then
-        headerLines[#headerLines+1] = string.format("<b>%s</b>", dialogParams.description)
+    local headline = dialogParams.title
+    if headline == nil or headline == "" then
+        headline = dialogParams.description
+    end
+    if headline ~= nil and headline ~= "" then
+        headerLines[#headerLines+1] = string.format("<b>%s</b>", headline)
     end
     if dialogParams.explanation ~= nil and dialogParams.explanation ~= "" then
         headerLines[#headerLines+1] = dialogParams.explanation
@@ -662,6 +671,15 @@ local function ShowRollPrompt(check, dialogParams)
 
     local customInfo = check:CustomInfo()
     if customInfo ~= nil and customInfo.ShowDialog ~= nil then
+        --A custom check moved to the Timeline exposes PrepareDialog: it fills in
+        --the options its ShowDialog would, without showing the old dialog.
+        if g_timelineRollTypes[check.type] and customInfo.PrepareDialog ~= nil then
+            customInfo.PrepareDialog(check, dialogParams)
+            local handle = ShowTimelinePrompt(check, dialogParams)
+            if handle ~= nil then
+                return handle
+            end
+        end
         return LegacyPromptHandle(customInfo.ShowDialog(check, dialogParams))
     end
 
@@ -2111,11 +2129,11 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 	local iscomplete = false
 
 	local closeButton = gui.Button{
+			classes = {"sizeS"},
 			text = 'Cancel',
-			floating = true,
 			halign = 'right',
 			valign = 'bottom',
-			margin = 24,
+			margin = 12,
 			click = function(element)
 				resultTable.result = iscomplete
 				resultTable.action = dmhub.GetPlayerActionRequest(actionid)
@@ -2150,7 +2168,15 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 
 	local summaryPanel = gui.Label{
 		text = string.format("Requested a %s", action.info:Describe()),
-		classes = {"modalTitle"},
+		classes = {"sizeL"},
+		bold = true,
+		width = "100%",
+		height = "auto",
+		textAlignment = "center",
+		tmargin = 14,
+		bmargin = 6,
+		hpad = 16,
+		borderBox = true,
 		interactable = false,
 	}
 
@@ -2188,7 +2214,7 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
             local checkInfo = action.info.checks[1]
 
 			local outcomeLabel = gui.Label{
-				classes = {"sizeL", "resultOutcomeLabel"},
+				classes = {"sizeM", "resultOutcomeLabel"},
 				text = "",
 			}
 
@@ -2203,7 +2229,8 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 					classes = {"sizeS"},
 					text = "Re-roll",
 					halign = "right",
-					margin = 16,
+					valign = "center",
+					hmargin = 6,
 					data = {
 						takeroll = false,
 					},
@@ -2236,7 +2263,8 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 				classes = {"sizeS", "hidden"},
 				text = "Remove",
 				halign = "right",
-				margin = 16,
+				valign = "center",
+				hmargin = 6,
 				click = function(element)
 					action:BeginChanges()
 					action.info.tokens[k] = nil
@@ -2254,9 +2282,11 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 			local waitingLabel = gui.Label{
 				classes = {"sizeS", "hidden"},
 				text = "Waiting...",
-				halign = "right",
+				width = "auto",
+				height = "auto",
+				halign = "left",
 				valign = "center",
-				rmargin = 100,
+				lmargin = 8,
 			}
 
 			panel = gui.Panel{
@@ -2267,10 +2297,18 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 					height = 32,
 					halign = "left",
 					valign = "center",
+					rmargin = 8,
 				}),
 
+				--Status and result on the first line, what it did to the creature below.
+				gui.Panel{
+					classes = {"resultInfoColumn"},
+
+				gui.Panel{
+					classes = {"resultStatusRow"},
+
 				gui.Label{
-					classes = {"sizeL", "resultStatusLabel"},
+					classes = {"sizeM", "resultStatusLabel"},
 					create = function(element)
 						element:FireEvent('refreshAction')
 					end,
@@ -2413,13 +2451,15 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 
 				outcomeLabel,
 
+				waitingLabel,
+				},
+
 				consequencesTable,
+				},
 
 				againButton,
 
 				removeButton,
-
-				waitingLabel,
 			}
 
 			resultsPanels[#resultsPanels+1] = panel
@@ -2430,6 +2470,18 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
     ---@cast g_requireRollDialog -nil
     if numLocal == 1 and numTokens == 1 then
         g_requireRollDialog.parent:SetClass("hidden", true)
+    end
+
+    --The summary is a status panel, not the Director's full Request Rolls
+    --window: keep it narrow and park it on the left, beside the icon rail, so
+    --the map and the roll sidebar on the right stay visible.
+    g_requireRollDialog.selfStyle.width = 440
+    g_requireRollDialog.selfStyle.height = "auto"
+    local window = g_requireRollDialog.parent
+    if window ~= nil then
+        window.selfStyle.halign = "left"
+        window.selfStyle.valign = "center"
+        window.selfStyle.lmargin = 76
     end
 
 	local resultPanelScroll = gui.Panel{
@@ -2443,16 +2495,33 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 			{
 				selectors = {"resultPanelScroll"},
 				width = "94%",
-				height = 340,
-				valign = "center",
+				height = "auto",
+				maxHeight = 360,
+				valign = "top",
 				flow = "vertical",
 			},
 			{
 				selectors = {"resultPanel"},
 				flow = "horizontal",
 				width = "100%",
-				height = 70,
+				height = "auto",
+				vpad = 6,
+				hpad = 4,
+				borderBox = true,
 				valign = "top",
+			},
+			{
+				selectors = {"resultInfoColumn"},
+				flow = "vertical",
+				width = "100% available",
+				height = "auto",
+				valign = "center",
+			},
+			{
+				selectors = {"resultStatusRow"},
+				flow = "horizontal",
+				width = "100%",
+				height = "auto",
 			},
 			{
 				selectors = {"resultStatusLabel"},
@@ -2464,10 +2533,8 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 			},
 			{
 				selectors = {"resultOutcomeLabel"},
-				-- fontSize = 14,
-				-- color = "@fgStrong",
-				width = 100,
-				lmargin = 12,
+				width = "auto",
+				lmargin = 8,
 				textAlignment = "left",
 				height = "auto",
 				halign = "left",
@@ -2475,14 +2542,14 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 			},
 			{
 				selectors = {"resultConsequencesTable"},
-				width = 140,
+				width = "100%",
 				flow = "vertical",
 				height = "auto",
-				valign = "center",
+				halign = "left",
 			},
 			{
 				selectors = {"consequenceLabel"},
-				width = 140,
+				width = "100%",
 				fontSize = 14,
 				color = "@danger",
 				height = "auto",
@@ -2520,11 +2587,13 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 	}
 
 	local consequencesLabel = gui.Label{
-		width = "55%",
+		width = "100%",
 		height = "auto",
 		fontSize = 14,
-		halign = "left",
-		hmargin = 80,
+		halign = "center",
+		hpad = 16,
+		tmargin = 6,
+		borderBox = true,
 		text = "",
 		refreshAction = function(element)
 			local checkInfo = action.info.checks[1]

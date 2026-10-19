@@ -2384,6 +2384,16 @@ local function TypeNameOf(obj)
     return name
 end
 
+--True for an ActivatedAbility or any type built on it (MaliceAbility, ...).
+local function IsActivatedAbility(obj)
+    if TypeNameOf(obj) == nil then
+        return false
+    end
+    local result = false
+    pcall(function() result = obj.IsDerivedFrom("ActivatedAbility") end)
+    return result == true
+end
+
 --A leftover roll dialog we are allowed to throw away: it is not on screen, and
 --no live ability cast still owns it. Mirrors the classification in
 --AcquireAbilityRollDialog.
@@ -2468,7 +2478,7 @@ function CharacterPanel.EmbedPromptRollDialog(args)
     if displayed == nil then
         --Nothing on the sidebar: put the ability card up ourselves, and lock it
         --so a stray hover cannot yank it out from under the roll.
-        if ability == nil or TypeNameOf(ability) ~= "ActivatedAbility" or token == nil or not token.valid then
+        if ability == nil or not IsActivatedAbility(ability) or token == nil or not token.valid then
             return nil
         end
 
