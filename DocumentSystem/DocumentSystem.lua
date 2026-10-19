@@ -15633,6 +15633,20 @@ function RailRightColumnWidth()
     return result
 end
 
+--Whether a rail side ("left" or "right") shows anything: panel buttons, or
+--a custom-interface widget (assumed present whenever one is active). An
+--empty rail still has a wrapper with a width, so RailRightColumnWidth alone
+--cannot tell.
+--- @param side string
+--- @return boolean
+function RailSideOccupied(side)
+    if GameHud.CustomInterface() ~= nil then
+        return true
+    end
+    local sides = RailLayout()
+    return #(sides[side] or {}) > 0
+end
+
 --Whether a registered panel currently has a rail button.
 function RailHasPanel(name)
     local key = string.lower(name)
