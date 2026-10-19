@@ -48,8 +48,9 @@ local mod = dmhub.GetModLoading()
 --  - Nothing on it is ever shared: an item on it that gets shared some other
 --    way (Map Settings) is moved off it.
 --  - The screen resizes from its left edge or its tab, from the full width of
---    the table down to just the tab in the bottom-right corner. A click on the
---    tab opens or closes it. Closed, the items on it are hidden (stowed), and
+--    the table down to just the tab in the bottom-right corner; let go near
+--    the right side and it slides shut. A click on the tab slides it open or
+--    shut (Venla, 2026-10-18). Closed, the items on it are hidden (stowed), and
 --    focusing a stowed map window opens the screen again (Reveal).
 --  - Its size and its items are saved with the table layout (per user, per
 --    game). Players have no screen.
@@ -104,6 +105,14 @@ local GRIP_WIDTH = 12
 local MIN_OPEN = 90
 --how much of the table a screen opened for the first time takes.
 local DEFAULT_FRACTION = 0.22
+--the widest the screen gets, as a fraction of the table: all of it
+--(Venla, 2026-10-19; a 0.7 cap that kept a players' side was dropped).
+local MAX_FRACTION = 1
+--let go of the edge closer than this (past the rail) to the table's right
+--side and the screen slides shut.
+local SNAP_CLOSE = 200
+--how long opening or closing the screen slides.
+local SLIDE_SECONDS = 0.22
 --after the Director moves an item across the edge, its share takes a moment
 --to come back from the server; meanwhile the item is not moved off the screen.
 local GRACE_SECONDS = 2.5
@@ -181,7 +190,8 @@ end
 --placed: key -> time until which a drop's item is awaited (ItemPlaced).
 --drag: {key, centre, seen} while the Director drags an item; key is nil and
 --fresh is true for something new dragged from a panel (NewItemDragging).
---resize: {offset, startX, moved} while the edge or the tab is dragged.
+--resize: {offset, startX, moved, before} while the edge or the tab is dragged.
+--slide: {from, to, start} while the screen slides open or shut (SlideTo).
 --preview: {key, mode, overlay} while a dragged item shows what dropping it
 --would do (SetPreview).
 --passUntil: while a drag reports in (ItemDragging, NewItemDragging), the
@@ -200,6 +210,7 @@ local g = {
     placed = {},
     drag = nil,
     resize = nil,
+    slide = nil,
     preview = nil,
     passUntil = 0,
     passing = false,
@@ -435,36 +446,82 @@ local function Layout(force)
 end
 
 local function SetFraction(fraction)
-    g.fraction = math.max(0, math.min(1, fraction))
+    g.fraction = math.max(0, math.min(MAX_FRACTION, fraction))
     Layout()
+end
+
+--Slides the screen to a size (0 closes it): Slide, each frame, moves it
+--along; the items on it ride along with the edge (FollowEdge).
+--- @param fraction number
+local function SlideTo(fraction)
+    fraction = math.max(0, math.min(MAX_FRACTION, fraction))
+    if fraction == g.fraction then
+        g.slide = nil
+        return
+    end
+    g.slide = {from = g.fraction, to = fraction, start = dmhub.Time()}
+end
+
+--Moves a slide on (ease out cubic); the tab layer's think calls it.
+local function Slide()
+    local slide = g.slide
+    if slide == nil then
+        return
+    end
+    local t = math.min(1, (dmhub.Time() - slide.start) / SLIDE_SECONDS)
+    local e = 1 - (1 - t) ^ 3
+    SetFraction(slide.from + (slide.to - slide.from) * e)
+    if t >= 1 then
+        g.slide = nil
+        SetFraction(slide.to)
+        Tabletop.SaveLayoutSoon()
+    end
+end
+
+--Where the screen is going: a slide's end, or where it is.
+local function Target()
+    if g.slide ~= nil then
+        return g.slide.to
+    end
+    return g.fraction
 end
 
 --Opens the screen to the size it last had.
 local function Open()
-    if IsOpen() then
+    if Target() > 0 then
         return
     end
-    SetFraction(g.lastFraction or DEFAULT_FRACTION)
-    Tabletop.SaveLayoutSoon()
+    SlideTo(g.lastFraction or DEFAULT_FRACTION)
 end
 
 local function Close()
-    if not IsOpen() then
+    if Target() == 0 then
         return
     end
-    g.lastFraction = g.fraction
-    SetFraction(0)
-    Tabletop.SaveLayoutSoon()
+    if g.slide == nil then
+        g.lastFraction = g.fraction
+    end
+    SlideTo(0)
 end
 
 --The edge and the tab resize the screen: the edge follows the mouse. Below
 --MIN_OPEN past the rail it shows closed, and is closed on release.
 local function BeginResize()
+    --a drag takes over from a slide.
+    if g.slide ~= nil then
+        SetFraction(g.slide.to)
+        g.slide = nil
+    end
     local mx = MouseOnTable()
     local w = TableSize()
     --closed, the edge is where the tab is drawn, so a pull starts from there.
     local edge = math.min(Edge(), w - RailReserve())
-    g.resize = {offset = edge - mx, startX = mx, moved = false}
+    --before: the size to open to again if this drag ends by snapping shut.
+    local before = g.lastFraction or DEFAULT_FRACTION
+    if IsOpen() then
+        before = g.fraction
+    end
+    g.resize = {offset = edge - mx, startX = mx, moved = false, before = before}
 end
 
 local function Resizing()
@@ -495,7 +552,13 @@ local function EndResize()
     if resize == nil or not resize.moved then
         return false
     end
-    if IsOpen() then
+    local w = TableSize()
+    if IsOpen() and w * g.fraction < RailReserve() + SNAP_CLOSE then
+        --let go near the right side: it slides shut, and opens again to the
+        --size it had before this drag.
+        g.lastFraction = resize.before
+        SlideTo(0)
+    elseif IsOpen() then
         g.lastFraction = g.fraction
     end
     Tabletop.SaveLayoutSoon()
@@ -708,7 +771,7 @@ function DirectorScreen.CreateTabLayer()
             SetLit(false)
         end,
         click = function(element)
-            if IsOpen() then
+            if Target() > 0 then
                 Close()
             else
                 Open()
@@ -757,6 +820,11 @@ function DirectorScreen.CreateTabLayer()
         children = {g.tabFace, g.tab, g.hint},
         create = function(element)
             Layout(true)
+        end,
+        --every frame: a slide in progress moves on (Slide).
+        thinkTime = 0.01,
+        think = function(element)
+            Slide()
         end,
     }
     return g.tabLayer
@@ -1584,11 +1652,12 @@ function DirectorScreen.Load(saved)
     g.placed = {}
     g.drag = nil
     g.resize = nil
+    g.slide = nil
     g.fraction = DEFAULT_FRACTION
     g.lastFraction = DEFAULT_FRACTION
     if type(saved) == "table" then
-        g.fraction = math.max(0, math.min(1, tonumber(saved.fraction) or DEFAULT_FRACTION))
-        g.lastFraction = math.max(0.05, math.min(1, tonumber(saved.lastFraction) or DEFAULT_FRACTION))
+        g.fraction = math.max(0, math.min(MAX_FRACTION, tonumber(saved.fraction) or DEFAULT_FRACTION))
+        g.lastFraction = math.max(0.05, math.min(MAX_FRACTION, tonumber(saved.lastFraction) or DEFAULT_FRACTION))
         for _, field in ipairs({"members", "heldBack"}) do
             local list = saved[field]
             if type(list) == "table" then
