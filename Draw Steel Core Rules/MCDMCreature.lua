@@ -1451,29 +1451,44 @@ function character:IsHero()
     return true
 end
 
+--Where a token stands, as a cache key for the location caches below. Moving
+--(walking, forced movement, teleport) does not Invalidate the properties, so
+--these caches are keyed on the square instead: unkeyed, a pushed hero went on
+--provoking opportunity attacks from the squares around her old spot.
+--- @param token CharacterToken
+--- @return string
+local function TokenLocKey(token)
+    local loc = token.loc
+    return string.format("%d,%d,%d,%g,%d", loc.x, loc.y, loc.floor, token.floorAltitude, token.tileSize)
+end
+
+--The returned array is shared by every caller: copy it before changing it.
 --- @return Loc[]
 function creature:OccupiedLocs()
-    if rawget(self, "_tmp_occupiedLocs") == nil then
-        local token = dmhub.LookupToken(self)
-        if token ~= nil then
-            self._tmp_occupiedLocs = token.locsOccupying
-        else
-            self._tmp_occupiedLocs = {}
-        end
+    local token = dmhub.LookupToken(self)
+    if token == nil then
+        return {}
+    end
+    local key = TokenLocKey(token)
+    if rawget(self, "_tmp_occupiedLocs") == nil or rawget(self, "_tmp_occupiedLocsKey") ~= key then
+        self._tmp_occupiedLocs = token.locsOccupying
+        self._tmp_occupiedLocsKey = key
     end
 
     return self._tmp_occupiedLocs
 end
 
+--The returned array is shared by every caller: copy it before changing it.
 --- @return Loc[]
 function creature:AdjacentLocations()
-    if rawget(self, "_tmp_adjacentLocs") == nil then
-        local token = dmhub.LookupToken(self)
-        if token ~= nil then
-            self._tmp_adjacentLocs = MCDMLocUtils.GetTokenAdjacentLocsInOpposingPairs(token)
-        else
-            self._tmp_adjacentLocs = {}
-        end
+    local token = dmhub.LookupToken(self)
+    if token == nil then
+        return {}
+    end
+    local key = TokenLocKey(token)
+    if rawget(self, "_tmp_adjacentLocs") == nil or rawget(self, "_tmp_adjacentLocsKey") ~= key then
+        self._tmp_adjacentLocs = MCDMLocUtils.GetTokenAdjacentLocsInOpposingPairs(token)
+        self._tmp_adjacentLocsKey = key
     end
 
     return self._tmp_adjacentLocs

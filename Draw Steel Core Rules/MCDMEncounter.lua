@@ -5332,7 +5332,55 @@ end
 --map's own journal folder -- where the encounter lives -- is not in their
 --accessible roots; setup code that must find the encounter to run it passes
 --this. Director-facing UI does not.
+
+--Does the document store any RichEncounter annotation at all? Parsing a
+--document (GetReferencedAnnotations) is expensive -- it runs every `???`
+--query line -- and only RichEncounter annotations can contribute, so a
+--document without one is skipped unparsed. Most journals hold ~100 such docs.
+local function HasEncounterAnnotation(markdownDoc)
+    local annotations = markdownDoc:try_get("annotations")
+    if annotations == nil then
+        return false
+    end
+    for _, annotation in pairs(annotations) do
+        if type(annotation) == "table" and annotation.typeName == "RichEncounter" then
+            return true
+        end
+    end
+    return false
+end
+
+--DIAG (HarvestBurst): GetEncountersOnCurrentMap walks the whole journal, so a
+--caller running it every frame or two made the map stutter during the Draw
+--Steel banner (2026-10-18 playtest, caller never identified). Logs who calls it
+--when it runs more than HARVEST_BURST_CALLS times in HARVEST_BURST_WINDOW
+--seconds, at most once per HARVEST_BURST_LOG_GAP seconds.
+local HARVEST_BURST_CALLS = 4
+local HARVEST_BURST_WINDOW = 2
+local HARVEST_BURST_LOG_GAP = 10
+local g_harvestCallTimes = {}
+local g_harvestLastBurstLog = -1000
+
+local function NoteHarvestCall(elapsedMs, parsedDocs)
+    local now = dmhub.Time()
+    local recent = {}
+    for _, t in ipairs(g_harvestCallTimes) do
+        if now - t < HARVEST_BURST_WINDOW then
+            recent[#recent + 1] = t
+        end
+    end
+    recent[#recent + 1] = now
+    g_harvestCallTimes = recent
+    if #recent > HARVEST_BURST_CALLS and now - g_harvestLastBurstLog > HARVEST_BURST_LOG_GAP then
+        g_harvestLastBurstLog = now
+        printf("PERF:: Encounter.GetEncountersOnCurrentMap called %d times in %ds (last %.1f ms, %d docs parsed); caller:\n%s",
+            #recent, HARVEST_BURST_WINDOW, elapsedMs, parsedDocs, debug.traceback("", 3))
+    end
+end
+
 function Encounter.GetEncountersOnCurrentMap(hostAccess)
+    local startTime = os.clock()
+    local parsedDocs = 0
     local result = {}
     local seenDocs = {}
 
@@ -5347,6 +5395,11 @@ function Encounter.GetEncountersOnCurrentMap(hostAccess)
             end
             seenDocs[docid] = true
         end
+
+        if not HasEncounterAnnotation(markdownDoc) then
+            return
+        end
+        parsedDocs = parsedDocs + 1
 
         for _, ref in ipairs(markdownDoc:GetReferencedAnnotations()) do
             local annotation = ref.annotation
@@ -5406,6 +5459,7 @@ function Encounter.GetEncountersOnCurrentMap(hostAccess)
         end
     end
 
+    NoteHarvestCall((os.clock() - startTime)*1000, parsedDocs)
     return result
 end
 

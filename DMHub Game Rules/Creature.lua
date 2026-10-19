@@ -6749,11 +6749,14 @@ function creature:OnMove(path)
             occupyingLocationMap[#allTokensFiltered] = occupying
             altitudeMap[#allTokensFiltered] = otherTokenAltitude
             tileSizeMap[#allTokensFiltered] = otherTokenTileSize
+            --adj is the creature's cached array (AdjacentLocations): extend a
+            --copy, or every move check grows the cache.
+            local adjAndOccupied = table.shallow_copy(adj)
             for _,loc in ipairs(occupying) do
-                adj[#adj+1] = loc
+                adjAndOccupied[#adjAndOccupied+1] = loc
             end
 
-            adjacentLocationMap[#allTokensFiltered] = adj
+            adjacentLocationMap[#allTokensFiltered] = adjAndOccupied
         end
     end
 
