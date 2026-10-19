@@ -766,6 +766,8 @@ local function BuildBand()
                         valign = "center",
                         interactable = false,
                     },
+                    --add dice behind the screen (TableDice.lua).
+                    rawget(_G, "TableDice") ~= nil and TableDice.CreateScreenButton() or nil,
                 },
             },
         },

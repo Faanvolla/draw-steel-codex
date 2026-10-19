@@ -15,6 +15,11 @@ function dice:Effect(table) end
 --- @param table table The dice set properties including id, model, color, etc.
 function dice:Set(table) end
 
+--- Creates a 3D die resting on the tabletop (see TableDieLua): faces is the die type (3, 4, 6, 8, 10, 12, 20), model the dice set id (as in GetAvailableDice; nil = the default set). It appears at (x, y) screen pixels from the top-left showing face. Nil if there is no such die.
+--- @param args {faces: number, model: nil|string, x: number, y: number, face: nil|number, yaw: nil|number, scale: nil|number}
+--- @return nil|TableDieLua
+function dice.CreateTableDie(args) end
+
 --- Returns a list of dice sets available to the current user, including owned dice from the shop.
 --- @return table
 function dice.GetAvailableDice() end
