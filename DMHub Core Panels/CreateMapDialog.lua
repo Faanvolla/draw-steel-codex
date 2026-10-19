@@ -5188,6 +5188,51 @@ mod.shared.ShowFloorAlignmentDialog = function(info)
     gui.ShowModal(dialogPanel)
 end
 
+--The grid this map uses. Hex maps from the import wizard are saved as Custom,
+--so their tile shape says which kind of hex they are.
+local function CurrentWizardTileType()
+    local tiletype = dmhub.GetSettingValue("maplayout:tiletype")
+    if tiletype == "custom" then
+        local stagger = dmhub.GetSettingValue("maplayout:stagger")
+        if stagger == "vertical" then
+            return "flattop"
+        elseif stagger == "horizontal" then
+            return "pointtop"
+        end
+        return "squares"
+    end
+
+    if tiletype == "flattop" or tiletype == "pointtop" then
+        return tiletype
+    end
+
+    return "squares"
+end
+
+local ReimportTileTypeNames = {
+    squares = "Squares",
+    flattop = "Flat Top Hexes",
+    pointtop = "Pointy Top Hexes",
+}
+
+--Only change settings that differ, since each change redraws the map.
+--Custom goes last so the map never shows a half-finished hex grid.
+local function ApplyMapLayoutSettings(settings)
+    local keys = {"maplayout:stagger", "maplayout:tilewidth", "maplayout:tileheight", "maplayout:hexslant"}
+    if settings["maplayout:tiletype"] == "custom" then
+        keys[#keys + 1] = "maplayout:tiletype"
+    else
+        table.insert(keys, 1, "maplayout:tiletype")
+    end
+
+    for _, key in ipairs(keys) do
+        local value = settings[key]
+        if value ~= nil and dmhub.GetSettingValue(key) ~= value then
+            dmhub.SetSettingValue(key, value)
+        end
+    end
+end
+
 -- Reimport map sizing: re-run the grid calibration on an existing map object.
 -- floor: the MapFloorLua that contains the map object
 -- mapObj: the LuaObjectInstance with a Map component
@@ -5217,7 +5262,9 @@ mod.shared.ReimportMapSizing = function(floor, mapObj)
     -- Build a reimport dialog using gui.MapImport with imageFromId.
     local resultPanel
     local importPanel
+    local gridlessChoice
     local gridlessInitApplied = false
+    local startTileType = CurrentWizardTileType()
 
     local confirmButton = gui.Button{
         classes = {"sizeL", "hidden"},
@@ -5248,6 +5295,21 @@ mod.shared.ReimportMapSizing = function(floor, mapObj)
             mapObj:Upload()
 
             printf("REIMPORT:: Applied new calibration to object %s", mapObj.id)
+
+            --Update the map's grid too. Reimporting used to fix the image but
+            --leave an old, squashed grid behind.
+            local oldTileType = CurrentWizardTileType()
+            if calibration.mapSettings ~= nil then
+                ApplyMapLayoutSettings(calibration.mapSettings)
+            end
+
+            if oldTileType ~= calibration.tileType then
+                printf("REIMPORT:: Map tiling changed from %s to %s", oldTileType, tostring(calibration.tileType))
+                gui.ModalMessage{
+                    title = "Map Tiling Changed",
+                    message = string.format("This map now uses %s. Undo won't change this back, but you can change it in Map Settings.", ReimportTileTypeNames[calibration.tileType] or "a new grid"),
+                }
+            end
 
             -- Refit the map bounds to the recalibrated image (and any other floors'
             -- images), once the engine reports the new calibration is rendered.
@@ -5298,7 +5360,24 @@ mod.shared.ReimportMapSizing = function(floor, mapObj)
         valign = "top",
     }
 
-    local gridlessChoice = gui.EnumeratedSliderControl{
+    --Changing the grid type starts the grid sizing over.
+    local tileTypeChoice = gui.EnumeratedSliderControl{
+        options = {
+            {id = "squares", text = "Squares"},
+            {id = "flattop", text = "Flat Top"},
+            {id = "pointtop", text = "Pointy Top"},
+        },
+        width = 400,
+        valign = "top",
+        value = startTileType,
+        change = function(element)
+            importPanel.tileType = element.value
+            gridlessChoice.value = true
+        end,
+        vmargin = 8,
+    }
+
+    gridlessChoice = gui.EnumeratedSliderControl{
         options = {
             {id = true, text = "Grid"},
             {id = false, text = "Gridless"},
@@ -5334,6 +5413,7 @@ mod.shared.ReimportMapSizing = function(floor, mapObj)
         flow = "vertical",
         halign = "left",
         valign = "top",
+        tileTypeChoice,
         instructionsText,
         gridlessChoice,
     }
@@ -5417,7 +5497,7 @@ mod.shared.ReimportMapSizing = function(floor, mapObj)
         halign = "right",
         valign = "top",
         y = 26,
-        tileType = "squares",
+        tileType = startTileType,
         imageFromId = imageId,
 
         thinkTime = 0.05,
