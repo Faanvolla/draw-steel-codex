@@ -3727,6 +3727,11 @@ end
 --HOST too, so the rules bind every human in the game. The Monster AI is
 --unaffected: its capability paths read IsDMOrPlayerHost.
 --
+--Automatic Rule Adjudication sits in the same section but is not a
+--restriction: the game makes table calls (e.g. Black Ash Teleport's "do you
+--have cover to hide?") itself, for everyone, so a directorless game never
+--leaves them to the players' honour.
+--
 --Monster stamina: players always see every monster's stamina BAR, but
 --not the exact amount. The "lifebar" status bar reaches a player through
 --its showToEnemies rung (TokenUI.lua ShouldShowElement), which
@@ -3751,6 +3756,7 @@ local g_forcedGameSettings = {
     { id = "strict:resources", value = true },     --Strictly Enforce Action Economy and Resource Costs
     { id = "strict:inventory", value = true },     --Strict Inventory Management
     { id = "strict:rolls", value = true },         --Strictly Enforce Rolls
+    { id = "strict:autoadjudicate", value = true }, --Automatic Rule Adjudication
     { id = "enemystambardisplay", value = "bar" }, --enemy stamina bars: bar only, no value
     { id = "hpbarsonlyincombat", value = false },  --stamina bars shown outside combat too
     { id = "monsterinfo", value = true },          --Monster Info: players learn monster stat blocks

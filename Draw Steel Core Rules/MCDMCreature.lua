@@ -3883,10 +3883,11 @@ local g_coverFromEnemiesCacheSeconds = 0.5
 --dmhub.GetCoverInfo(enemyToken, selfToken, pierce) is non-nil (nil means no
 --cover); the observing enemy is the attacker, and pierce follows the
 --RuleUtils.HasLineOfEffect idiom of using the attacker's PierceWalls.
-function creature:CalculateCoverFromEnemies()
+--Pass fresh = true to skip the cache, e.g. right after the creature moved.
+function creature:CalculateCoverFromEnemies(fresh)
     local now = dmhub.Time()
     local cached = self:try_get("_tmp_coverFromEnemies")
-    if cached ~= nil and (now - cached.time) < g_coverFromEnemiesCacheSeconds then
+    if (not fresh) and cached ~= nil and (now - cached.time) < g_coverFromEnemiesCacheSeconds then
         return cached
     end
 
@@ -3957,6 +3958,38 @@ creature.RegisterSymbol {
         desc = "True if at least one living enemy has cover to this creature (in combat, only enemies in the initiative queue count; out of combat, all enemy tokens on the map count), or if the creature has the Has Cover custom attribute. False when there are no relevant enemies and the attribute is absent.",
         seealso = {"Cover From All Enemies", "Concealed"},
         examples = {"Concealed or Cover From Any Enemy"},
+    }
+}
+
+--Concealed and CoverFromAllEnemies are cached (per game update / for half a
+--second), so straight after a teleport they can still describe the square the
+--creature left. This answers the same question measured at its current square.
+--Not for modifier filterConditions: IsConcealed reads the modifier list.
+creature.RegisterSymbol {
+    symbol = "canhidehere",
+    lookup = function(c)
+        return c:IsConcealed() or c:CalculateCoverFromEnemies(true).all
+    end,
+    help = {
+        name = "CanHideHere",
+        type = "boolean",
+        desc = "True if the creature has concealment, or cover from every relevant enemy, at the square it stands on right now -- the cover or concealment the Hide maneuver needs. Measured fresh, so it is correct straight after the creature moves or teleports. Use it in ability filters, not in modifier conditions.",
+        seealso = {"Concealed", "Cover From All Enemies", "Automatic Rule Adjudication"},
+        examples = {"AutomaticRuleAdjudication and CanHideHere"},
+    }
+}
+
+creature.RegisterSymbol {
+    symbol = "automaticruleadjudication",
+    lookup = function(c)
+        return AutomaticRuleAdjudication()
+    end,
+    help = {
+        name = "AutomaticRuleAdjudication",
+        type = "boolean",
+        desc = "True when the game's Automatic Rule Adjudication setting is on (always on in Encounter of the Week). Content uses it to decide a rules question automatically instead of prompting the player.",
+        seealso = {"CanHideHere"},
+        examples = {"AutomaticRuleAdjudication and CanHideHere"},
     }
 }
 
