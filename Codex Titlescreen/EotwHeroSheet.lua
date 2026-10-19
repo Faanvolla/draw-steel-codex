@@ -3622,8 +3622,6 @@ local function HasRoll(charid)
         if type(turn) == "table" then
             if turn.status == "rolling" and turn.heroid == charid then
                 return true
-            elseif turn.status == "assisting" and turn.assist ~= nil and turn.assist.heroid == charid then
-                return true
             elseif turn.status == "pardon" and turn.pardon ~= nil and turn.pardon.heroid == charid then
                 return true
             end

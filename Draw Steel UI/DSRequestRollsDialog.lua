@@ -728,6 +728,15 @@ local function ShouldPromptForToken(tok, info, havePlayersOnline)
 		or (dmhub.playerHostMode == true and tok.ownerId == dmhub.loginUserid)
 end
 
+--The creature a request names. Off the current map (a hero on a table card or
+--in a scene, or a player with no map open) it is the off-board character, so
+--its controller is still prompted.
+--- @param tokid string
+--- @return CharacterToken|nil
+local function RequestedToken(tokid)
+	return dmhub.GetTokenById(tokid) or dmhub.GetCharacterById(tokid)
+end
+
 --this is a hidden panel which just listens for required rolls.
 function GameHud:RequireRollListenerPanel()
 
@@ -817,7 +826,7 @@ function GameHud:RequireRollListenerPanel()
 						local tokid = tokid_tmp
 						local info = info_tmp
 						if info.status == nil then
-							local tok = dmhub.GetTokenById(tokid)
+							local tok = RequestedToken(tokid)
 							local rollid = k .. tokid
 							if ShouldPromptForToken(tok, info, havePlayersOnline) and not currentRolls[rollid] then
 								numPrompts = numPrompts+1
@@ -830,7 +839,7 @@ function GameHud:RequireRollListenerPanel()
 						local tokid = tokid_tmp
 						local info = info_tmp
 						if info.status == nil then
-							local tok = dmhub.GetTokenById(tokid)
+							local tok = RequestedToken(tokid)
 							local rollid = k .. tokid
 							if ShouldPromptForToken(tok, info, havePlayersOnline) and not currentRolls[rollid] then
 								---@cast tok -nil
@@ -1081,6 +1090,8 @@ end
 function GameHud:CreatePartyTokenPoolSelector(args)
 	local initiative = args.initiative
 	args.initiative = nil
+	local offBoardHeroes = args.offBoardHeroes
+	args.offBoardHeroes = nil
 	local resultPanel
 	local tokenPanels = {}
 
@@ -1105,11 +1116,33 @@ function GameHud:CreatePartyTokenPoolSelector(args)
 
 	local candidateTokens = dmhub.GetTokens{ playerControlled = true, haveProperties = true }
 
+	--Heroes with a card on the table or in an open scene, though not on this
+	--map. They are off-board wrappers, so compare them by charid, never with ==.
+	if offBoardHeroes then
+		local have = {}
+		for _,tok in ipairs(candidateTokens) do
+			have[tok.charid] = true
+		end
+		local charids = Tabletop.TableCardCharids()
+		for _,target in ipairs(SceneElements.CreatureCardTargets(false, nil)) do
+			charids[#charids+1] = target.charid
+		end
+		for _,charid in ipairs(charids) do
+			if not have[charid] then
+				have[charid] = true
+				local tok = dmhub.GetCharacterById(charid)
+				if tok ~= nil and tok.properties ~= nil and tok.playerControlled then
+					candidateTokens[#candidateTokens+1] = tok
+				end
+			end
+		end
+	end
+
 	local selectedTokens = dmhub.selectedTokens
 	for _,tok in ipairs(selectedTokens) do
 		local found = false
 		for _,existing in ipairs(candidateTokens) do
-			if existing == tok then
+			if existing.charid == tok.charid then
 				found = true
 			end
 
@@ -1153,7 +1186,7 @@ function GameHud:CreatePartyTokenPoolSelector(args)
 	for i,tok in ipairs(candidateTokens) do
 		tokenPanels[#tokenPanels+1] = CreateTokenPanel(tok)
 		for i,selectedTok in ipairs(selectedTokens) do
-			if selectedTok == tok then
+			if selectedTok.charid == tok.charid then
 				startingSelection[#startingSelection+1] = tokenPanels[#tokenPanels]
 			end
 		end
@@ -1959,6 +1992,7 @@ function ShowRequireRollDialog(args)
 				gamehud:CreatePartyTokenPoolSelector{
 					poolWidth = TOKEN_POOL_WIDTH,
 					initiative = (args.checkType == "Initiative"),
+					offBoardHeroes = true,
 					changeSelection = function(element, tokenids)
 						tokenIdsSelected = tokenids
 						---@cast g_requireRollDialog -nil

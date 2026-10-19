@@ -1865,43 +1865,13 @@ function EncounterScript.OptionTakeable(option)
     return option ~= nil and (option.roll ~= nil or option.free ~= nil or option.delve ~= nil)
 end
 
---- assisting a test -----------------------------------------------------------
---
---Each skill a test lists can be used once per test: by the hero making it
---(their Skilled bonus) or by one companion assisting it (user direction
---2026-10-08). A companion may never take the LAST listed skill the hero
---making the test is trained in, so that hero always keeps a skill of their
---own; a hero trained in none of them reserves nothing.
-
---The skills a companion may assist with, in the roll's order.
+--The listed skill the hero making the test rolls with: the first they are
+--trained in, or nil.
 --  listed        the roll's skill ids, in order
 --  mainTrained   { [skillid] = true } the hero making the test is trained in
---  claimed       { [skillid] = true } other companions have already used
---  helperTrained { [skillid] = true } the companion is trained in
-function EncounterScript.AssistSkillChoices(listed, mainTrained, claimed, helperTrained)
-    mainTrained = mainTrained or {}
-    claimed = claimed or {}
-    helperTrained = helperTrained or {}
-    local mainLeft = 0
+function EncounterScript.MainTestSkill(listed, mainTrained)
     for _, id in ipairs(listed or {}) do
-        if mainTrained[id] and not claimed[id] then
-            mainLeft = mainLeft + 1
-        end
-    end
-    local out = {}
-    for _, id in ipairs(listed or {}) do
-        if helperTrained[id] and not claimed[id] and (not mainTrained[id] or mainLeft >= 2) then
-            out[#out + 1] = id
-        end
-    end
-    return out
-end
-
---The listed skill the hero making the test rolls with: the first they are
---trained in that no companion has used, or nil.
-function EncounterScript.MainTestSkill(listed, mainTrained, claimed)
-    for _, id in ipairs(listed or {}) do
-        if (mainTrained or {})[id] and not (claimed or {})[id] then
+        if (mainTrained or {})[id] then
             return id
         end
     end

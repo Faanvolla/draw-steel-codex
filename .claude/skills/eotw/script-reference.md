@@ -275,14 +275,9 @@ rules, and the authoring STANDARD are in `EncounterOfTheWeek/KNACKS_REFERENCE.md
 - The validator's **Knack coverage** section checks the standard: every test
   has a knack, opportunities have secret options, each pregen meets 3+.
 
-**Companions and assists** need no authoring. When a hero approaches an
-entry, other heroes may go along (once a round each). Their knack versions,
-secret options and languages count for the turn; edge and bane riders read
-only the hero making the test, so if a companion's language should help,
-write it as a knack version or a secret option, not as `Edge: you speak X`.
-Before a test is rolled, each companion may assist with a listed skill
-nobody has used (never the hero's last), adding an edge or bane. So list two
-or more skills on a test if you want it assistable.
+**Heroes act alone.** A hero approaches an entry by themselves: there are
+no companions and no assists, so every knack, secret option, language and
+rider reads only the hero making the test.
 
 **Party-size scaling.** Lines directly under `## Round N`:
 `<range> Players: -<n> Opportunity, -<n> Threat`, where range is `4`, `4-5`
@@ -356,8 +351,7 @@ PC turns back toward the light.
 Exhausted, PC staggers out.
 ```
 
-The whole delve is that hero's one turn; their companions go in with them
-(each may assist one obstacle test in the whole delve). They meet random
+The whole delve is that hero's one turn, and they go in alone. They meet random
 obstacles (shaped exactly like opportunities); a chest comes due every 1-2
 obstacles (dice table rows are clauses; unfound rows read `???`). Then "Press
 deeper (lose 1 Recovery)" or "Turn back" (`## Leave` or `## Turn Back`); at 0

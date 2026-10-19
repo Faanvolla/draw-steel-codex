@@ -5097,7 +5097,15 @@ function creature:RefreshToken(token)
             for k,v in pairs(self.inflictedConditions) do
                 local conditionInfo = conditionsTable[k]
                 if conditionInfo ~= nil and conditionInfo.sustainFormula ~= "" then
-                    local result = ExecuteGoblinScript(conditionInfo.sustainFormula, GenerateSymbols(self), 1, "Test ongoing effect sustains")
+                    --A caster deleted from the game would make ConditionCaster() return
+                    --nil, the formula error, and the error default keep the condition
+                    --forever (a grab outliving its grabber). End it instead.
+                    local casterInfo = v.casterInfo
+                    local casterGone = casterInfo ~= nil and type(casterInfo.tokenid) == "string" and dmhub.GetCharacterById(casterInfo.tokenid) == nil
+                    local result = 0
+                    if not casterGone then
+                        result = ExecuteGoblinScript(conditionInfo.sustainFormula, GenerateSymbols(self), 1, "Test ongoing effect sustains")
+                    end
                     if not GoblinScriptTrue(result) then
                         removes = removes or {}
                         removes[#removes+1] = k
@@ -9200,6 +9208,9 @@ creature.lookupSymbols = {
         end
     end,
 
+	--Casters are looked up with GetCharacterById, not GetTokenById: a dead
+	--creature is a despawned corpse, which GetTokenById cannot see, and
+	--formulas like "not Grabber.dead" need the dead caster to be found.
 	conditioncaster = function(c)
 		return function(condname)
 			condname = string.lower(condname)
@@ -9216,7 +9227,7 @@ creature.lookupSymbols = {
 					local cond = conditionsTable[ongoingEffectInfo.condition]
 					if (cond ~= nil and string.lower(cond.name) == condname) or string.lower(ongoingEffectInfo.name) == condname then
 						seqFound = effectInfo.seq
-						local casterTok = dmhub.GetTokenById(effectInfo.casterInfo.tokenid)
+						local casterTok = dmhub.GetCharacterById(effectInfo.casterInfo.tokenid)
 						if casterTok ~= nil then
 							result = GenerateSymbols(casterTok.properties)
 						end
@@ -9231,7 +9242,7 @@ creature.lookupSymbols = {
 			for key,entry in pairs(c:try_get("inflictedConditions") or {}) do
 				local cond = conditionsTable[key]
 				if cond ~= nil and string.lower(cond.name) == condname  and entry.casterInfo ~= nil then
-					local casterTok = dmhub.GetTokenById(entry.casterInfo.tokenid)
+					local casterTok = dmhub.GetCharacterById(entry.casterInfo.tokenid)
 					if casterTok ~= nil then
 						result = GenerateSymbols(casterTok.properties)
 					end

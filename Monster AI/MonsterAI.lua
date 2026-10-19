@@ -6515,8 +6515,14 @@ Commands.RegisterMacro{
             return
         end
 
-        local tokens = dmhub.selectedTokens
-        if tokens == nil or #tokens == 0 then
+        --the AI plans on the board: a creature selected off it does not count.
+        local tokens = {}
+        for _, tok in ipairs(dmhub.selectedTokens) do
+            if tok.onBoard then
+                tokens[#tokens+1] = tok
+            end
+        end
+        if #tokens == 0 then
             TestAIMessage("select a token first.")
             return
         end

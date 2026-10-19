@@ -307,8 +307,15 @@ give them to the party first):
    (unlocked once the account has won an Encounter of the Week): the
    encounter is listed under "Encounters to Try" with "<module> by <author>"
    and its backstory, and Form a Party works for it.
-6. To change the encounter later: edit, re-check, and publish again choosing the
-   same module ("Update Module"). New parties get the new version.
+6. To change the encounter later: edit, re-check, then **Codex menu -> Publish
+   Encounter Update** (`Commands.quickpublishencounters()` over MCP). It finds
+   the game's Encounter of the Week module, keeps last version's ticks, ticks
+   every encounter map plus its script documents and dependencies, and uploads
+   a new version with the same listing, cover and author -- no dialog pages. If
+   the type's checks fail it stops on page 1 with the errors shown. It does
+   NOT tick a new prose-named item or monster (step 3); for one of those,
+   publish through "Create Module..." choosing the same module instead. New
+   parties get the new version.
 
 Finish by summarizing what was built and published, and anything left open
 (e.g. untested branches, art still to set).

@@ -135,6 +135,26 @@ setting{
     storage = "preference",
 }
 
+--Handoff to the town after any finished EotW game (won, lost, abandoned)
+--while EotW is in beta: the town invites the player to the beta survey.
+--JSON text: { [userid] = {gameid, encounter, kind, outcome, minutes,
+--players, heroes} }, one game per player. Machine-local; the titlescreen
+--re-declares it.
+setting{
+    id = "eotw:pendingSurvey",
+    default = "",
+    storage = "preference",
+}
+
+--Seconds this machine has spent in each EotW game, across sittings, so a
+--resumed game counts its earlier play toward the survey's minimum.
+--JSON text: { [gameid] = {seconds, at} }; entries a month old are dropped.
+setting{
+    id = "eotw:playtime",
+    default = "",
+    storage = "preference",
+}
+
 --- Is the current game an Encounter of the Week game? ----------------------
 
 --Cached once true: a game cannot stop being an EotW game mid-session.
@@ -307,6 +327,7 @@ function EncounterOfTheWeekGame.IsPracticeGame()
     return practice
 end
 
+
 --Host only, at setup: the party's Hero Tokens for the session. Draw Steel
 --hands the party a number of Hero Tokens equal to the number of heroes at
 --the start of every game session, and one EotW game IS one session -- so
@@ -471,6 +492,47 @@ local function ParseEncounterKey(key)
         return OFFICIAL_MODULE, key, part
     end
     return moduleid, mapName, part
+end
+
+--What this game plays, for the Codex > About Encounter of the Week dialog
+--(EncounterOfTheWeekHud.lua): { title, mapid, moduleid }, or nil when no
+--encounter map is up. title is the map's name without "Encounter: ", plus the
+--part for a series. moduleid is the module the encounter came from (nil in an
+--authoring test, which plays the authoring game's own map).
+--- @return nil|{title: string, mapid: string, moduleid: nil|string}
+function EncounterOfTheWeekGame.EncounterInfo()
+    local mapid = game.currentMapId
+    local map = mapid ~= nil and game.GetMap(mapid) or nil
+    if map == nil then
+        return nil
+    end
+    local name = tostring(map.description or "")
+    local title = string.match(name, "^[^:]+:%s*(.+)$") or name
+
+    --a series names the part: "The Crypt -- Part 2: The Ossuary".
+    pcall(function()
+        local montage = rawget(_G, "EncounterMontage")
+        local script = montage ~= nil and montage.FindMapScript() or nil
+        local part = script ~= nil and script.parse ~= nil and script.parse.part or nil
+        if part ~= nil then
+            local partName = string.format("Part %d", part.number)
+            if part.title ~= nil then
+                partName = partName .. ": " .. part.title
+            end
+            title = title .. " -- " .. partName
+        end
+    end)
+
+    local moduleid = nil
+    if not EncounterOfTheWeekGame.IsTestRunning() then
+        pcall(function()
+            local key = mod:GetDocumentSnapshot(STATE_DOC_ID).data.encounterMap
+            if type(key) == "string" and key ~= "" then
+                moduleid = ParseEncounterKey(key)
+            end
+        end)
+    end
+    return { title = title, mapid = mapid, moduleid = moduleid }
 end
 
 --The part an authoring test plays while it sets up (before data.test holds
@@ -1569,6 +1631,130 @@ local function RecordPendingDebrief(outcome)
     printf("EotW: Danger Rooms debrief of %s waiting for the town", encounter)
 end
 
+--- the beta survey -------------------------------------------------------
+--While EotW is in beta, every finished game (won, lost or abandoned) of at
+--least SURVEY_MIN_SECONDS leaves eotw:pendingSurvey, and back in town the
+--player is invited to a short survey they can answer or decline (the town's
+--ShowSurveyDialog; the city keeps both). Set EOTW_BETA_SURVEY false to stop
+--inviting when EotW leaves beta.
+local EOTW_BETA_SURVEY = true
+local SURVEY_MIN_SECONDS = 10 * 60
+
+--Play clock: seconds spent in this game on this machine, banked into
+--eotw:playtime so a resumed game keeps counting from where it left off.
+local m_playClockAt = nil
+local m_playUnbanked = 0
+local PLAYTIME_BANK_SECONDS = 30
+local PLAYTIME_KEEP_SECONDS = 30 * 24 * 60 * 60
+
+local function ReadPlaytime()
+    local text = dmhub.GetSettingValue("eotw:playtime")
+    if type(text) ~= "string" or text == "" then
+        return {}
+    end
+    --FromJson answers {success, result}, not the decoded value.
+    local parsed = dmhub.FromJson(text)
+    if type(parsed) ~= "table" or not parsed.success or type(parsed.result) ~= "table" then
+        return {}
+    end
+    return parsed.result
+end
+
+local function BankPlaytime()
+    if m_playUnbanked <= 0 then
+        return
+    end
+    local all = ReadPlaytime()
+    local now = dmhub.serverTime
+    local entry = all[dmhub.gameid]
+    local seconds = (type(entry) == "table" and tonumber(entry.seconds) or 0) + m_playUnbanked
+    all[dmhub.gameid] = { seconds = seconds, at = now }
+    for gameid, e in pairs(all) do
+        if type(e) ~= "table" or (tonumber(e.at) or 0) < now - PLAYTIME_KEEP_SECONDS then
+            all[gameid] = nil
+        end
+    end
+    m_playUnbanked = 0
+    dmhub.SetSettingValue("eotw:playtime", dmhub.ToJson(all))
+end
+
+--Called from the 1s driver. Counts only real EotW games, never a test; a
+--long gap (the app frozen, or asleep) adds at most a few seconds.
+local function UpdatePlayClock()
+    if not EOTW_BETA_SURVEY or not EncounterOfTheWeekGame.IsEotwGame() or EncounterOfTheWeekGame.IsTestPlayer() then
+        m_playClockAt = nil
+        return
+    end
+    local now = dmhub.Time()
+    if m_playClockAt ~= nil then
+        m_playUnbanked = m_playUnbanked + math.min(math.max(0, now - m_playClockAt), 5)
+    end
+    m_playClockAt = now
+    if m_playUnbanked >= PLAYTIME_BANK_SECONDS then
+        BankPlaytime()
+    end
+end
+
+--Seconds this machine has spent in the current game, all sittings.
+function EncounterOfTheWeekGame.PlaySeconds()
+    local entry = ReadPlaytime()[dmhub.gameid]
+    return (type(entry) == "table" and tonumber(entry.seconds) or 0) + m_playUnbanked
+end
+
+--Leave a survey invitation for the town after this game. outcome is
+--"victory", "defeat" or "abandoned". Skipped in tests, outside EotW, and
+--for games shorter than SURVEY_MIN_SECONDS. A later game replaces it.
+function EncounterOfTheWeekGame.RecordPendingSurvey(outcome)
+    if not EOTW_BETA_SURVEY or not EncounterOfTheWeekGame.IsEotwGame() or EncounterOfTheWeekGame.IsTestPlayer() then
+        return
+    end
+    if outcome ~= "victory" and outcome ~= "defeat" and outcome ~= "abandoned" then
+        return
+    end
+    BankPlaytime()
+    local seconds = EncounterOfTheWeekGame.PlaySeconds()
+    if seconds < SURVEY_MIN_SECONDS then
+        printf("EotW: no survey for a %d second game", math.floor(seconds))
+        return
+    end
+
+    local encounter, players, heroes = "", 0, 0
+    pcall(function()
+        local data = mod:GetDocumentSnapshot(STATE_DOC_ID).data
+        if type(data.encounterMap) == "string" then
+            encounter = data.encounterMap
+        end
+        for _,_ in pairs(data.expectedUsers or {}) do
+            players = players + 1
+        end
+        for _,placed in pairs(data.placedHeroes or {}) do
+            for _,_ in pairs(placed) do
+                heroes = heroes + 1
+            end
+        end
+    end)
+
+    local all = {}
+    local text = dmhub.GetSettingValue("eotw:pendingSurvey")
+    if type(text) == "string" and text ~= "" then
+        local parsed = dmhub.FromJson(text)
+        if type(parsed) == "table" and parsed.success and type(parsed.result) == "table" then
+            all = parsed.result
+        end
+    end
+    all[dmhub.loginUserid] = {
+        gameid = dmhub.gameid,
+        encounter = encounter,
+        kind = cond(EncounterOfTheWeekGame.IsPracticeGame(), "danger", "week"),
+        outcome = outcome,
+        minutes = math.floor(seconds / 60 + 0.5),
+        players = players,
+        heroes = heroes,
+    }
+    dmhub.SetSettingValue("eotw:pendingSurvey", dmhub.ToJson(all))
+    printf("EotW: beta survey (%s, %d min) waiting for the town", outcome, math.floor(seconds / 60))
+end
+
 --The script's story section for an outcome ("# Conclusion" after a victory,
 --"# Defeat" after a defeat), or nil.
 local function OutcomeStory(outcome)
@@ -1676,6 +1862,7 @@ local function UpdateEncounterConclusion()
             OfferAbsentOutcomes(m_outcomeKind)
         end
         RecordPendingDebrief(m_outcomeKind)
+        EncounterOfTheWeekGame.RecordPendingSurvey(m_outcomeKind)
 
         --hand the finished game to the titlescreen: it destroys the game /
         --clears the account slot on its next refresh, so a decided
@@ -2197,6 +2384,7 @@ dmhub.Coroutine(function()
         pcall(UpdateArrangePanel)
         pcall(UpdateBusyMirror)
         pcall(UpdateEncounterConclusion)
+        pcall(UpdatePlayClock)
         pcall(function() EncounterOfTheWeekGame.EnsureMapScriptRunning() end)
         --an authoring test waiting to be set up after its player-host refresh.
         pcall(function() EncounterOfTheWeekGame.ConsumePendingTest() end)

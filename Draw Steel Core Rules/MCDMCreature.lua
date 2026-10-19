@@ -7625,6 +7625,27 @@ creature.RegisterSymbol {
     }
 }
 
+--Below the water's surface (diving), not just in water: the map water level's
+--deep water or painted water. Submerged creatures have cover, and others have
+--cover from them (globalrulemods/cover.yaml).
+creature.RegisterSymbol {
+    symbol = "underwater",
+
+    lookup = function(c)
+        if c:CurrentMoveType() ~= "swim" then
+            return false
+        end
+        local token = dmhub.LookupToken(c)
+        return token ~= nil and token.distanceBelowGround >= 1
+    end,
+    help = {
+        name = "Underwater",
+        type = "boolean",
+        desc = "True if this creature is swimming below the water's surface (at least 1 square under it). A creature floating on the surface is In Water but not Underwater.",
+        seealso = {"InWater", "Distance Below Ground"},
+    }
+}
+
 creature.RegisterSymbol {
     symbol = "onground",
 

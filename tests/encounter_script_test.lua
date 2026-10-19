@@ -2007,8 +2007,7 @@ end)()
     check(EncounterScript.ParseEffects("You gain an extra hero token")[1].kind == "herotoken", "'an extra hero token'")
 end)()
 
---assisting a test: each listed skill once, and never the last one the hero
---making the test is trained in.
+--the skill a test is made with: the first listed one the hero is trained in.
 ;(function()
     local listed = { "persuade", "lie", "flirt" }
     local function set(...)
@@ -2016,24 +2015,9 @@ end)()
         for _, v in ipairs({ ... }) do s[v] = true end
         return s
     end
-    local function ids(list) return table.concat(list, ",") end
-    local choices = EncounterScript.AssistSkillChoices
-    check(ids(choices(listed, set("persuade"), {}, set("lie"))) == "lie", "a skill the hero lacks is free")
-    check(ids(choices(listed, set("persuade"), {}, set("persuade"))) == "", "the hero's only skill is protected")
-    check(ids(choices(listed, set("persuade", "lie"), {}, set("persuade", "lie"))) == "persuade,lie",
-        "with two, either may go")
-    check(ids(choices(listed, set("persuade", "lie"), set("lie"), set("persuade"))) == "",
-        "once one is used the other is the hero's last")
-    check(ids(choices(listed, {}, {}, set("persuade", "flirt"))) == "persuade,flirt",
-        "a hero with no listed skill reserves nothing")
-    check(ids(choices({ "sneak" }, {}, {}, set("sneak"))) == "sneak", "a one-skill test the hero lacks can be assisted")
-    check(ids(choices(listed, {}, set("persuade"), set("persuade"))) == "", "a used skill is gone")
-    check(ids(choices(listed, set("flirt"), set("persuade"), set("persuade", "lie", "flirt"))) == "lie",
-        "used and protected skills are both skipped")
-    check(EncounterScript.MainTestSkill(listed, set("persuade", "lie"), set("persuade")) == "lie",
-        "the hero rolls with a skill nobody used")
-    check(EncounterScript.MainTestSkill(listed, set("persuade"), {}) == "persuade", "the hero's first skill")
-    check(EncounterScript.MainTestSkill(listed, {}, {}) == nil, "no skill, no Skilled bonus")
+    check(EncounterScript.MainTestSkill(listed, set("lie", "flirt")) == "lie", "the first listed skill the hero has")
+    check(EncounterScript.MainTestSkill(listed, set("persuade")) == "persuade", "the hero's first skill")
+    check(EncounterScript.MainTestSkill(listed, {}) == nil, "no skill, no Skilled bonus")
 end)()
 
 --series: a "# Part N: Title" heading says which part of a series a script

@@ -1363,6 +1363,19 @@ local function PushCasterToken(token)
     g_creature = g_token.properties
 end
 
+--The first of the selection with a token on the board. A creature selected
+--off the board (a tabletop card's) has no abilities to use here: casting and
+--moving need its token.
+--- @return nil|CharacterToken
+function DrawSteelActionBar._operate.SelectedBoardToken()
+    for _, tok in ipairs(dmhub.selectedOrPrimaryTokens) do
+        if tok.onBoard then
+            return tok
+        end
+    end
+    return nil
+end
+
 --The token the bar is bound to when no cast has pushed a caster: the object
 --being operated, else the selection.
 --- @return nil|CharacterToken
@@ -1370,7 +1383,7 @@ function DrawSteelActionBar._operate.BaseBarToken()
     if DrawSteelActionBar._operate.operation ~= nil then
         return DrawSteelActionBar._operate.operation.object
     end
-    return dmhub.selectedOrPrimaryTokens[1]
+    return DrawSteelActionBar._operate.SelectedBoardToken()
 end
 
 local function TryPopCasterToken()
@@ -3892,7 +3905,7 @@ local function CreateActionBar()
             if #g_casterTokenStack == 0 then
                 local selected = {}
                 for _, tok in ipairs(dmhub.selectedOrPrimaryTokens) do
-                    if tok ~= nil and tok.valid and tok.properties ~= nil then
+                    if tok ~= nil and tok.valid and tok.onBoard and tok.properties ~= nil then
                         selected[#selected + 1] = tok
                     end
                 end
@@ -12078,7 +12091,7 @@ CreateAbilityController = function()
             if options.sourceToken ~= nil and options.sourceToken.valid then
                 local shownToken = g_token
                 if #g_casterTokenStack == 0 then
-                    shownToken = dmhub.selectedOrPrimaryTokens[1]
+                    shownToken = DrawSteelActionBar._operate.SelectedBoardToken()
                 end
                 if shownToken == nil or not shownToken.valid then
                     PushCasterToken(options.sourceToken)
