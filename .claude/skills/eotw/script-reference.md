@@ -258,8 +258,10 @@ rules, and the authoring STANDARD are in `EncounterOfTheWeek/KNACKS_REFERENCE.md
 - **`Allow` makes the option SECRET**: a hero who does not meet it never sees
   it (nor does anyone watching that hero). It is not shown locked.
 - **`#### If <requirement>`** under an option is a KNACK VERSION of it for a
-  hero who meets the requirement: `|` clauses with no roll (the knack makes the
-  problem moot) or its own `|Name: Characteristic` roll (a better table).
+  hero who meets the requirement, normally with its own `|Name: Characteristic`
+  roll: a Better or Spicy table (KNACKS_REFERENCE.md section 4). `|` clauses
+  with no roll are allowed, but only for flavour: a knack never skips the
+  roll to win something.
   First knack met wins. Also `#### Instead, if ...:` / `#### Knack: ...`.
 - **Requirements** are INTENT, joined by `or`: `you can teleport` (a speed OR
   an ability such as Black Ash Teleport), `you can speak with animals`,

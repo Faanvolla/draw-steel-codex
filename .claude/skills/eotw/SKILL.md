@@ -203,9 +203,13 @@ Craft notes:
   `EncounterOfTheWeek/KNACKS_REFERENCE.md`: every test gets 1-2 edge riders keyed to
   hero intent (`you can teleport`, `you speak Zaliac`, `you were a Farmer`),
   every opportunity 1-2 secret options (`|Allow:`) or `#### If <requirement>`
-  knack versions, about half the threats a "trivialize" version with no roll.
-  Write intent, never a pregen's name; then check the validator's Knack
-  coverage (each pregen should meet 3 or more).
+  knack versions, and about half the threats a secret option or knack version.
+  A knack that wins something gets its OWN power roll, Better (gentler
+  tier 1, a bonus at tier 3) or Spicy (harsher tier 1, the entry's best
+  tier 3). It NEVER skips the roll to win: no-roll knacks are for flavour
+  only (no reward, no vanquish). See "Knack rolls: Better or Spicy" in
+  KNACKS_REFERENCE.md. Write intent, never a pregen's name; then check the
+  validator's Knack coverage (each pregen should meet 3 or more).
 - Scenes (`---` then cast lines) make entries come alive; cast names should be
   real bestiary monsters so the portraits resolve.
 - Scene art: a `[[scene:name]]` line plus its `RichScene` object, which you

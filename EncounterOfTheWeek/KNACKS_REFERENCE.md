@@ -57,7 +57,10 @@ requirement never sees it. The other spellings of `Allow` are `Secret`,
 
 PC lays a hand on a mossy stone and listens to it.
 
-|The old stones remember the dwarven road. The threat is vanquished.
+|Stone-Sense Test: Intuition (Navigate, History)
+|The stones lead you the long way round => You lose a recovery. The threat is vanquished.
+|The old stones remember the dwarven road => The threat is vanquished.
+|The stones show you a road no one has walked in a century => The threat is vanquished. +1 hero token.
 |Allow: you are a Dwarf
 ```
 
@@ -77,13 +80,17 @@ header, is taken **without a test**. Its clauses apply at once.
 - Lines below the rules are its outcome scene.
 - A rider line here can only be `Allow`/`Secret`. Edges have no roll to apply
   to, and the validator warns about them.
+- For a **knack** (a secret option, or a knack version), no roll is for
+  flavour only. A knack that wins something gets its own roll instead (see
+  section 4). Options that are not knacks can still have no roll: a
+  `Delve: <Name>` door, a free choice everyone sees.
 
 ### Knack versions: `#### If <requirement>`
 
 A `####` heading under an option starts an **alternative version** of that
-option, for a hero who meets the requirement. It can do one of two things.
-
-It can remove the roll:
+option, for a hero who meets the requirement. Normally it gives the hero
+their **own power roll**: a different test, which plays better or riskier
+(see "Knack rolls: Better or Spicy" in section 4):
 
 ```
 ### Find another crossing
@@ -95,18 +102,14 @@ It can remove the roll:
 
 PC: Hold this end of the rope.
 
-|You blink across the ford and haul the others over on the rope. The threat is vanquished.
+|Blink Test: Agility (Gymnastics, Alertness)
+|You blink short and drop into the ford => You lose two recoveries.
+|You blink across and haul the others over on the rope => The threat is vanquished.
+|You blink across before the sentries see you => The threat is vanquished. +1 hero token.
 ```
 
-Or it can give the hero a better power table:
-
-```
-#### If you can teleport
-|Blink Test: Agility (Sneak, Gymnastics)
-|A clumsy landing => +1 malice. The threat is vanquished.
-|Silenced => The threat is vanquished.
-|Gone before he blinks => The threat is vanquished. +1 hero token.
-```
+A knack version can also have no roll: `|` clauses and no test header. Use
+that **only for flavour**, as section 4 explains.
 
 - **Heading forms:** `#### If <req>`, `#### Instead, if <req>:` and
   `#### Knack: <req>`. `If PC can fly` reads the same as `If you can fly`.
@@ -257,9 +260,13 @@ Perk offers time out after 30 seconds.
   complication, a rare ancestry trait).
 - **Every opportunity** has 1-2 secret options or knack versions, at least
   one reachable by a pregen.
-- **About half the threats** have a secret option or knack, usually the
-  "trivialize" kind: no roll, a tier-2-sized result (vanquished, no hero
-  token), so it reads as "of course you can".
+- **About half the threats** have a secret option or knack version, with its
+  own **knack roll** (below): the knack's way through, not a free pass.
+- **A knack never skips the roll to win something.** Skipping the roll is
+  boring, even when the hero earned it. A knack with no roll is for flavour
+  only: its clauses give no reward and do not vanquish a threat or clear an
+  obstacle. One example is a secret option that only plays a scene: a
+  Revenant stops at a grave they remember.
 - **Every hero** of the week's pregen party meets 3 or more knacks across the
   montage, and no one requirement carries the montage.
 - **Drawbacks as banes** are cheap and make complications feel real (Revenant
@@ -273,9 +280,49 @@ Perk offers time out after 30 seconds.
 | A line in the scene | It colours the scene, nothing more |
 | Edge | The knack helps |
 | Double edge | The knack is exactly what the task needs (a Dwarf reading dwarven runes) |
-| Secret option, rolled | The hero has a different approach |
-| Knack version, better table | Same approach, easier for this hero |
-| Secret option / knack version, no roll | The knack makes the problem moot |
+| Secret option / knack version, **Better** roll | Same approach, easier for this hero |
+| Secret option / knack version, **Spicy** roll | The knack opens a bolder approach: more risk, more reward |
+
+The top rung used to be "no roll: the knack makes the problem moot". It is
+gone: a knack roll replaces it. A knack with no roll only adds flavour, like
+the first rung.
+
+### Knack rolls: Better or Spicy
+
+A knack roll is a separate test that matches the knack. It uses its own
+characteristic and skills: Psionics for telekinesis, Disguise for a Revenant
+walking among the dead, Empathize for talking to the dead. It does not
+inherit the base option's edges. Tier 2 should be about as good as the base
+option's tier 3, so taking the knack is always worth it. Then pick one shape:
+
+- **Better:** tier 1 hurts less than the base option's tier 1. Tier 3 adds
+  something the base option doesn't give (a hero token, an item, an edge on a
+  later test).
+- **Spicy:** tier 1 hurts as much as the base option's tier 1 or more (an
+  extra recovery, malice, the opportunity lost). Tier 3 is clearly the best
+  result in the entry: more Intelligence, `Reveal traps during the next
+  combat`, a surge, an item.
+
+Mix the two across a montage. Safe knacks reward the hero for being who they
+are; spicy ones give the table a moment.
+
+Put a campaign-wide or very strong reward, such as `You know the stamina of
+goblins`, on a written critical (a 4th tier line), not on tier 3.
+
+The teleport example in section 1 is Spicy. Here is a Better one, from the
+Goblin Ambush tomb. The base option, "Slip past them", is a Stealth test
+whose tier 1 costs two recoveries:
+
+```
+#### If you are a Revenant
+|Masquerade Test: Presence (Disguise, Lie, Read Person)
+|One of them hesitates, and you have to fight it => You lose a recovery. The dead fall behind you, spent.
+|They take you for one of their own => The dead sink back into their long sleep.
+|They kneel to you as to their old captain => The dead sink back into their long sleep. +1 hero token.
+```
+
+The Goblin Ambush montage has 13 knack rolls written this way, which are
+good to copy.
 
 **Checking it.** The Encounter Script validator (`/eotwvalidate`) has a
 **Knack coverage** section. It lists:
