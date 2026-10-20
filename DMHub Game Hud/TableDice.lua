@@ -60,6 +60,13 @@ local g = {
     ownSeq = {},
     --id -> {figure = TableFigureLua, seq = number, private = boolean, blob = string}
     figures = {},
+    --id -> tracker handle (BuildTracker). Their panels sit in the documents
+    --layer with the windows (TrackerLayers): shared ones in trackerLayer,
+    --under everything; the Director's private ones in trackerScreenLayer,
+    --over the Director's Screen.
+    trackers = {},
+    trackerLayer = nil,
+    trackerScreenLayer = nil,
 }
 
 ----------------------------------------------------------------------
@@ -215,7 +222,8 @@ local function Add(id, private, record, kind)
     doc:BeginChange()
     doc.data[kind] = doc.data[kind] or {}
     doc.data[kind][id] = record
-    doc:CompleteChange(cond(kind == "figures", "Add a table figure", "Add a table die"), {undoable = false})
+    local descriptions = {figures = "Add a table figure", trackers = "Add a table tracker"}
+    doc:CompleteChange(descriptions[kind] or "Add a table die", {undoable = false})
 end
 
 --Moves a record from one store to the other (dragged across the screen's edge).
@@ -477,6 +485,7 @@ end
 --- @field figureBlob nil|string a figure-library tile: the uploaded figure it places
 --- @field opens nil|string a tile that opens a row under the category ("figures")
 --- @field action nil|fun() a tile that does something other than place an item
+--- @field tracker nil|string a tracker tile: the medallion it shows (TableDice.TrackerToken)
 
 --- @class TableItemCategory
 --- @field id string
@@ -509,9 +518,16 @@ local CATEGORIES = {
         {id = "ruler", name = "Ruler", icon = "phosphor/ruler.png"},
     }},
     {id = "trackers", name = "Trackers", icon = "phosphor/plus-minus.png", test = "Something that holds a value people change.", items = {
-        {id = "malice", name = "Malice", note = "Director's pool", icon = "phosphor/fire.png"},
-        {id = "victories", name = "Victories", note = "Party", icon = "phosphor/trophy.png"},
-        {id = "counter", name = "Counter", note = "Any name", icon = "phosphor/plus-minus.png"},
+        {id = "malice", tracker = "malice", name = "Malice", note = "Director's pool", icon = "phosphor/fire.png", place = function(px, py, private)
+            TableDice.AddTracker("malice", px, py, private)
+        end},
+        {id = "herotokens", tracker = "herotokens", name = "Hero Tokens", note = "Party pool", icon = "phosphor/coin.png", place = function(px, py, private)
+            TableDice.AddTracker("herotokens", px, py, private)
+        end},
+        {id = "counter", tracker = "counter", name = "Counter", note = "Any name", icon = "phosphor/plus-minus.png", place = function(px, py, private)
+            TableDice.AddTracker("counter", px, py, private)
+        end},
+        {id = "victories", name = "Victories", note = "Per hero", icon = "phosphor/trophy.png"},
         {id = "sandtimer", name = "Sand timer", note = "Flip to start", icon = "phosphor/hourglass.png"},
         {id = "rounds", name = "Round tracker", icon = "phosphor/arrows-clockwise.png"},
         {id = "countdown", name = "Countdown", icon = "phosphor/timer.png"},
@@ -589,6 +605,12 @@ local g_drawerStyles = {
     {selectors = {"tableItemsButton", "hover"}, bgcolor = "@bgRaised"},
     {selectors = {"tableItemsButton", "selected"}, bgcolor = "@bgRaised", borderColor = "@fgMuted"},
     {selectors = {"tableItemsButtonIcon"}, bgcolor = "@fg"},
+    {selectors = {"tableTrackerValue"}, color = "white", bold = true},
+    {selectors = {"tableTrackerPlate"}, bgcolor = "@bg", borderColor = "@border", borderWidth = 1, cornerRadius = 6},
+    {selectors = {"tableTrackerName"}, color = "@fgStrong", fontSize = 13, width = "auto", height = "auto"},
+    {selectors = {"tableTrackerStep"}, bgcolor = "@bg", borderColor = "@border", borderWidth = 1, cornerRadius = 13},
+    {selectors = {"tableTrackerStep", "hover"}, bgcolor = "@bgRaised"},
+    {selectors = {"tableTrackerStepLabel"}, color = "@fgStrong", fontSize = 18, bold = true},
 }
 
 --The drawer while it exists. category is a category id, "recent" or
@@ -942,6 +964,45 @@ end
 local function BuildTile(item)
     local soon = item.place == nil and item.opens == nil and item.action == nil
     local open = item.opens ~= nil and g_drawer.openRow == item.opens
+    local icon
+    if item.tracker ~= nil then
+        --a tracker shows a small copy of its medallion, with the pool's
+        --current value for a live one.
+        local value = 0
+        if item.tracker == "malice" then
+            value = CharacterResource.GetGlobalResource(CharacterResource.maliceResourceId) or 0
+        elseif item.tracker == "herotokens" then
+            value = CharacterResource.GetGlobalResource(CharacterResource.heroTokenId) or 0
+        end
+        icon = gui.Panel{
+            width = 44,
+            height = 44,
+            halign = "center",
+            tmargin = 4,
+            interactable = false,
+            TableDice.TrackerToken(item.tracker, 44, gui.Label{
+                classes = {"tableTrackerValue"},
+                text = string.format("%d", math.floor(value)),
+                fontSize = 17,
+                width = "100%",
+                height = "100%",
+                textAlignment = "center",
+                interactable = false,
+            }),
+        }
+    else
+        --a real die rests here (SyncPreviews); other items show their icon.
+        icon = gui.Panel{
+            classes = {"tableDrawerTileIcon"},
+            bgimage = cond(item.dice ~= nil or item.figureBlob ~= nil, nil, item.icon),
+            bgcolor = cond(item.dice ~= nil or item.figureBlob ~= nil, "clear", nil),
+            width = 28,
+            height = cond(item.dice ~= nil or item.figureBlob ~= nil, 44, 28),
+            halign = "center",
+            tmargin = cond(item.dice ~= nil or item.figureBlob ~= nil, 4, 12),
+            interactable = false,
+        }
+    end
     return gui.Panel{
         classes = {"tableDrawerTile", cond(soon, "soon", cond(open, "selected", "ready"))},
         bgimage = "panels/square.png",
@@ -1008,17 +1069,7 @@ local function BuildTile(item)
             end
             PlaceItem(item, mouse.x, mouse.y, BehindScreen(fx))
         end,
-        --a real die rests here (SyncPreviews); other items show their icon.
-        gui.Panel{
-            classes = {"tableDrawerTileIcon"},
-            bgimage = cond(item.dice ~= nil or item.figureBlob ~= nil, nil, item.icon),
-            bgcolor = cond(item.dice ~= nil or item.figureBlob ~= nil, "clear", nil),
-            width = 28,
-            height = cond(item.dice ~= nil or item.figureBlob ~= nil, 44, 28),
-            halign = "center",
-            tmargin = cond(item.dice ~= nil or item.figureBlob ~= nil, 4, 12),
-            interactable = false,
-        },
+        icon,
         gui.Label{
             classes = {"tableDrawerTileName"},
             text = item.name,
@@ -1480,6 +1531,39 @@ function TableDice.ToggleDrawer(private)
     RebuildDrawer()
 end
 
+--- For debugging: the trackers in each store, and which have panels.
+--- @return table
+function TableDice.DebugTrackers()
+    local result = {shared = {}, private = {}, built = {}, kinds = {}, path = SharedDoc().path}
+    for kind, items in pairs(SharedDoc().data) do
+        local n = 0
+        if type(items) == "table" then
+            for _ in pairs(items) do
+                n = n + 1
+            end
+        end
+        result.kinds[kind] = n
+    end
+    for id, record in pairs(SharedItems("trackers")) do
+        result.shared[id] = record.type
+    end
+    for id, record in pairs(PrivateItems("trackers")) do
+        result.private[id] = record.type
+    end
+    for id, handle in pairs(g.trackers) do
+        local entry = {valid = handle.panel.valid, token = handle.token ~= nil, x = handle.panel.x, y = handle.panel.y}
+        if handle.token ~= nil and handle.token.valid then
+            entry.image = handle.token.image
+            entry.size = handle.token.size
+        end
+        if handle.panel.valid then
+            entry.rect = Tabletop.PanelRect(handle.panel)
+        end
+        result.built[id] = entry
+    end
+    return result
+end
+
 --- For tests: every die this client shows, as {id, faces, face, private, x, y}.
 --- @return table[]
 function TableDice.DebugDice()
@@ -1655,6 +1739,8 @@ local function UpdateDie(handle, record)
     handle.die:SetRest(px, py, record.face or 1, record.yaw or 0, record.pick or 0)
 end
 
+local DestroyTrackers
+
 local function DestroyFigures()
     for id, handle in pairs(g.figures) do
         if handle.figure.valid then
@@ -1672,6 +1758,7 @@ local function DestroyAll()
         g.handles[id] = nil
     end
     DestroyFigures()
+    DestroyTrackers()
 end
 
 --Every die that should exist, with whether it is private.
@@ -1979,6 +2066,690 @@ local function SyncFigures(covered, screenOpen, x1, y1, x2, y2)
     end
 end
 
+----------------------------------------------------------------------
+--Trackers (TABLE_DICE_BRIEF.md, "Trackers category"): medallion tokens that
+--hold a number everyone sees. Malice and Hero Tokens ARE the game's global
+--resources (CharacterResource), so a change here is the same change the action
+--bar and the journal's [[resource:...]] counter see. A Counter keeps its own
+--number in its record. Records live in the same two stores as the dice
+--(kind "trackers"); the panels are ordinary UI on this layer.
+
+--- @class TableTrackerRecord
+--- @field type string "malice", "herotokens" or "counter"
+--- @field fx number
+--- @field fy number
+--- @field seq number
+--- @field name nil|string a counter's caption
+--- @field value nil|number a counter's number
+--- @field playersCanChange nil|boolean a counter players may change too
+--- @field history nil|table[] a counter's recent changes {userid, timestamp, set, note}
+
+--the token's size, and its - / + buttons, in layer units.
+local TRACKER_SIZE = 72
+local TRACKER_STEP = 26
+local TRACKER_WIDTH = TRACKER_SIZE + 2 * (TRACKER_STEP + 6)
+local TRACKER_HEIGHT = TRACKER_SIZE + 26
+local TRACKER_HISTORY_MAX = 8
+
+--resourceKey names the CharacterResource field holding the resource's id.
+--Draw Steel's rules set those after this file loads, so they are read when used.
+--- @type table<string, {name: string, resourceKey: nil|string}>
+local TRACKER_TYPES = {
+    malice = {name = "Malice", resourceKey = "maliceResourceId"},
+    herotokens = {name = "Hero Tokens", resourceKey = "heroTokenId"},
+    counter = {name = "Counter"},
+}
+
+--The game resource a live tracker shows, or nil for a counter.
+--- @param record TableTrackerRecord
+--- @return nil|string
+local function TrackerResourceId(record)
+    local info = TRACKER_TYPES[record.type]
+    if info == nil or info.resourceKey == nil then
+        return nil
+    end
+    return rawget(CharacterResource, info.resourceKey)
+end
+
+--- @param record TableTrackerRecord
+--- @return boolean
+local function TrackerChangeable(record)
+    if dmhub.isDM then
+        return true
+    end
+    if record.type == "herotokens" then
+        return true
+    end
+    return record.type == "counter" and record.playersCanChange == true
+end
+
+--- @param record TableTrackerRecord
+--- @return number
+local function TrackerValue(record)
+    local resourceid = TrackerResourceId(record)
+    if resourceid ~= nil then
+        return CharacterResource.GetGlobalResource(resourceid) or 0
+    end
+    return tonumber(record.value) or 0
+end
+
+--- @param record TableTrackerRecord
+--- @return string
+local function TrackerName(record)
+    if record.type == "counter" and type(record.name) == "string" and record.name ~= "" then
+        return record.name
+    end
+    local info = TRACKER_TYPES[record.type]
+    return (info ~= nil and info.name) or "Tracker"
+end
+
+--Sets a tracker's number: the game resource for a live tracker, the record
+--for a counter (with a line in its history, kept as plain tables so the
+--Director's private store can hold it too).
+--- @param id string
+--- @param private boolean
+--- @param record TableTrackerRecord
+--- @param n number
+--- @param note string
+local function SetTrackerValue(id, private, record, n, note)
+    if not TrackerChangeable(record) then
+        return
+    end
+    n = round(n)
+    local resourceid = TrackerResourceId(record)
+    if resourceid ~= nil then
+        local resourceInfo = (dmhub.GetTable(CharacterResource.tableName) or {})[resourceid]
+        if (resourceInfo == nil or not resourceInfo.mayBeNegative) and n < 0 then
+            n = 0
+        end
+        CharacterResource.SetGlobalResource(resourceid, n, note)
+        return
+    end
+    Modify(id, private, "Change a table counter", function(r)
+        r.value = n
+        local history = r.history
+        if type(history) ~= "table" then
+            history = {}
+        end
+        history[#history+1] = {userid = dmhub.userid, timestamp = ServerTimestamp(), set = n, note = note}
+        while #history > TRACKER_HISTORY_MAX do
+            table.remove(history, 1)
+        end
+        r.history = history
+        r.seq = (r.seq or 0) + 1
+    end, "trackers")
+end
+
+--A counter's history in the shape gui.StatsHistoryTooltip takes.
+--- @param record TableTrackerRecord
+--- @return table[]
+local function CounterHistory(record)
+    local result = {}
+    for _, entry in ipairs(record.history or {}) do
+        if type(entry) == "table" then
+            result[#result+1] = {
+                who = dmhub.GetDisplayName(entry.userid),
+                color = "#ccccccff",
+                when = DescribeServerTimestamp(entry.timestamp),
+                value = entry.set,
+                note = entry.note or "Set on the table",
+            }
+        end
+    end
+    return result
+end
+
+--- @param record TableTrackerRecord
+--- @return table[]
+local function TrackerHistory(record)
+    local resourceid = TrackerResourceId(record)
+    if resourceid ~= nil then
+        return CharacterResource.GetGlobalResourceHistory(resourceid)
+    end
+    return CounterHistory(record)
+end
+
+--The token itself: its shape tells live trackers apart from plain ones.
+--Malice is the red cost diamond (as on the action bar), Hero Tokens a gold
+--coin, a Counter a neutral stone. The value label sits on top, unrotated.
+--Each tracker's 3D token (TableTrackers.cs in the engine).
+local TRACKER_SHAPES = {malice = "diamond", herotokens = "coin", counter = "stone"}
+
+--- @param ttype string
+--- @param size number
+--- @param label Panel
+--- @return Panel
+function TableDice.TrackerToken(ttype, size, label)
+    local shape
+    if ttype == "malice" then
+        shape = gui.Panel{
+            width = size * 0.72,
+            height = size * 0.72,
+            halign = "center",
+            valign = "center",
+            rotate = 45,
+            bgimage = true,
+            bgcolor = "#DE1E47",
+            borderWidth = math.max(2, size * 0.04),
+            borderColor = "#FF5076",
+            interactable = false,
+        }
+    elseif ttype == "herotokens" then
+        shape = gui.Panel{
+            width = size * 0.9,
+            height = size * 0.9,
+            halign = "center",
+            valign = "center",
+            bgimage = true,
+            bgcolor = "#B8892B",
+            cornerRadius = size * 0.45,
+            borderWidth = math.max(2, size * 0.04),
+            borderColor = "#F0CD6A",
+            interactable = false,
+            --the coin's inner ring.
+            gui.Panel{
+                width = "78%",
+                height = "78%",
+                halign = "center",
+                valign = "center",
+                bgimage = true,
+                bgcolor = "clear",
+                cornerRadius = size * 0.35,
+                borderWidth = math.max(1, size * 0.025),
+                borderColor = "#8A6418",
+                interactable = false,
+            },
+        }
+    else
+        shape = gui.Panel{
+            width = size * 0.86,
+            height = size * 0.86,
+            halign = "center",
+            valign = "center",
+            bgimage = true,
+            bgcolor = "#4A4A50",
+            cornerRadius = size * 0.26,
+            borderWidth = math.max(2, size * 0.04),
+            borderColor = "#86868E",
+            interactable = false,
+        }
+    end
+    return gui.Panel{
+        width = size,
+        height = size,
+        halign = "center",
+        valign = "top",
+        flow = "none",
+        interactable = false,
+        shape,
+        label,
+    }
+end
+
+--- Puts a tracker on the table, for everyone (or behind the screen).
+--- @param ttype string "malice", "herotokens" or "counter"
+--- @param px number screen pixels
+--- @param py number
+--- @param private boolean
+function TableDice.AddTracker(ttype, px, py, private)
+    if not dmhub.isDM or TRACKER_TYPES[ttype] == nil then
+        return
+    end
+    local fx, fy = ScreenToTable(px, py)
+    Add(dmhub.GenerateGuid(), private, {
+        type = ttype,
+        fx = fx,
+        fy = fy,
+        seq = 1,
+        value = 0,
+        playersCanChange = false,
+    }, "trackers")
+end
+
+--A tracker's right-click menu (Director only).
+--- @param id string
+local function ShowTrackerMenu(id)
+    local handle = g.trackers[id]
+    local anchor = MenuAnchor()
+    if handle == nil or anchor == nil or not dmhub.isDM then
+        return
+    end
+    local private = handle.private
+    local record = handle.record
+    anchor.x = handle.panel.x + TRACKER_WIDTH / 2
+    anchor.y = handle.panel.y
+    g.dieRightClickedAt = dmhub.Time()
+    local entries = {}
+    if record.type == "counter" then
+        entries[#entries+1] = {
+            text = cond(record.playersCanChange, "Players Can Change: On", "Players Can Change: Off"),
+            click = function()
+                CloseMenu()
+                Modify(id, private, "Change a table counter", function(r)
+                    r.playersCanChange = not r.playersCanChange
+                    r.seq = (r.seq or 0) + 1
+                end, "trackers")
+            end,
+        }
+        entries[#entries+1] = {
+            text = "Reset to 0",
+            click = function()
+                CloseMenu()
+                SetTrackerValue(id, private, record, 0, "Reset")
+            end,
+        }
+    end
+    entries[#entries+1] = {
+        text = "Remove Tracker",
+        click = function()
+            CloseMenu()
+            Modify(id, private, "Remove a table tracker", function() return false end, "trackers")
+        end,
+    }
+    dmhub.Schedule(0.02, function()
+        if mod.unloaded or not anchor.valid then
+            return
+        end
+        local menu = gui.ContextMenu{entries = entries}
+        if menu == nil then
+            return
+        end
+        local style = menu.selfStyle
+        if style ~= nil then
+            style.valign = "top"
+            style.halign = "center"
+        end
+        anchor.popup = menu
+    end)
+end
+
+--One tracker's panel. handle.record is kept current by SyncTrackers, so the
+--handlers always act on the latest record.
+--- @param id string
+--- @param record TableTrackerRecord
+--- @param private boolean
+local function BuildTracker(id, record, private)
+    local handle = {record = record, private = private, seq = record.seq or 0, type = record.type, shown = -1}
+    --the medallion is a real 3D token when the engine has them; an older
+    --engine gets the flat 2D one (TableDice.TrackerToken).
+    local token = nil
+    if dice.CreateTableTracker ~= nil then
+        token = dice.CreateTableTracker{shape = TRACKER_SHAPES[record.type] or "coin", size = TRACKER_SIZE}
+    end
+    handle.token = token
+    --what the mouse is over: the token or a step button. The buttons show
+    --while any of them is hovered (hovers go to the deepest panel only).
+    local hovered = {}
+    local steps = {}
+
+    local function ShowSteps()
+        local show = next(hovered) ~= nil and TrackerChangeable(handle.record)
+        for _, step in ipairs(steps) do
+            if step.valid then
+                step:SetClass("collapsed", not show)
+            end
+        end
+    end
+    local function Hover(key)
+        hovered[key] = true
+        ShowSteps()
+    end
+    local function Dehover(key)
+        hovered[key] = nil
+        dmhub.Schedule(0.1, function()
+            if mod.unloaded then
+                return
+            end
+            ShowSteps()
+        end)
+    end
+
+    local function Step(delta, halign)
+        local step
+        step = gui.Panel{
+            classes = {"tableTrackerStep", "collapsed"},
+            bgimage = "panels/square.png",
+            width = TRACKER_STEP,
+            height = TRACKER_STEP,
+            halign = halign,
+            valign = "top",
+            y = (TRACKER_SIZE - TRACKER_STEP) / 2,
+            swallowPress = true,
+            hover = function(element)
+                Hover(element)
+            end,
+            dehover = function(element)
+                Dehover(element)
+            end,
+            click = function(element)
+                local r = handle.record
+                SetTrackerValue(id, handle.private, r, TrackerValue(r) + delta, cond(delta > 0, "Added on the table", "Spent on the table"))
+            end,
+            gui.Label{
+                classes = {"tableTrackerStepLabel"},
+                text = cond(delta > 0, "+", "-"),
+                width = "100%",
+                height = "100%",
+                textAlignment = "center",
+                interactable = false,
+            },
+        }
+        steps[#steps+1] = step
+        return step
+    end
+
+    local valueLabel = gui.Label{
+        classes = {"tableTrackerValue"},
+        width = "100%",
+        height = "100%",
+        halign = "center",
+        valign = "center",
+        textAlignment = "center",
+        fontSize = TRACKER_SIZE * 0.4,
+        numeric = true,
+        characterLimit = 3,
+        text = "0",
+        --a 3D token draws over the UI, so its number is the token's own and
+        --this label only takes the mouse (an edit would be hidden under it).
+        opacity = cond(token ~= nil, 0, 1),
+        editable = token == nil and TrackerChangeable(record),
+        hover = function(element)
+            Hover(element)
+            element.tooltip = gui.StatsHistoryTooltip{
+                description = TrackerName(handle.record),
+                entries = TrackerHistory(handle.record),
+            }
+        end,
+        dehover = function(element)
+            Dehover(element)
+        end,
+        change = function(element)
+            local n = tonumber(element.text)
+            if n == nil then
+                handle.shown = -1
+                return
+            end
+            SetTrackerValue(id, handle.private, handle.record, n, "Set on the table")
+        end,
+    }
+
+    local nameLabel = gui.Label{
+        classes = {"tableTrackerName"},
+        text = TrackerName(record),
+        textWrap = false,
+        maxWidth = TRACKER_WIDTH,
+        halign = "center",
+        valign = "bottom",
+        --a Director renames a counter by clicking its name.
+        editable = dmhub.isDM and record.type == "counter",
+        hover = function(element)
+            Hover(element)
+        end,
+        dehover = function(element)
+            Dehover(element)
+        end,
+        change = function(element)
+            local text = (element.text or ""):gsub("^%s*(.-)%s*$", "%1")
+            Modify(id, handle.private, "Rename a table counter", function(r)
+                r.name = text
+                r.seq = (r.seq or 0) + 1
+            end, "trackers")
+        end,
+    }
+
+    local tokenPanel
+    if token ~= nil then
+        --the token's image is bigger than the token, to hold its shadow.
+        local view = token.imageSize / math.max(1, token.size)
+        tokenPanel = gui.Panel{
+            width = TRACKER_SIZE,
+            height = TRACKER_SIZE,
+            halign = "center",
+            valign = "top",
+            flow = "none",
+            gui.Panel{
+                floating = true,
+                halign = "center",
+                valign = "center",
+                width = TRACKER_SIZE * view,
+                height = TRACKER_SIZE * view,
+                bgimage = token.image,
+                bgcolor = "white",
+                interactable = false,
+            },
+            valueLabel,
+        }
+    else
+        tokenPanel = TableDice.TrackerToken(record.type, TRACKER_SIZE, valueLabel)
+    end
+
+    local panel
+    panel = gui.Panel{
+        classes = {"tableTracker"},
+        floating = true,
+        halign = "left",
+        valign = "top",
+        width = TRACKER_WIDTH,
+        height = TRACKER_HEIGHT,
+        flow = "none",
+        bgimage = true,
+        bgcolor = "clear",
+        swallowPress = true,
+        --only the Director moves trackers (TABLE_DICE_BRIEF.md, decision 4).
+        draggable = dmhub.isDM,
+        dragInPlace = true,
+        data = {id = id},
+        hover = function(element)
+            Hover(element)
+            element.tooltip = gui.StatsHistoryTooltip{
+                description = TrackerName(handle.record),
+                entries = TrackerHistory(handle.record),
+            }
+        end,
+        dehover = function(element)
+            Dehover(element)
+        end,
+        rightClick = function(element)
+            ShowTrackerMenu(id)
+        end,
+        --the 3D token lifts while it is carried.
+        dragging = function(element)
+            local t = handle.token
+            if t ~= nil and t.valid and not t.held then
+                t.held = true
+            end
+        end,
+        drag = function(element)
+            local t = handle.token
+            if t ~= nil and t.valid then
+                t.held = false
+            end
+            element.x = element.xdrag
+            element.y = element.ydrag
+            local w, h = TableSize()
+            local fx = (element.xdrag + TRACKER_WIDTH / 2) / math.max(1, w)
+            local fy = (element.ydrag + TRACKER_SIZE / 2) / math.max(1, h)
+            fx = math.max(0, math.min(1, fx))
+            fy = math.max(0, math.min(1, fy))
+            local behind = BehindScreen(fx)
+            if behind ~= handle.private then
+                Transfer(id, behind, fx, fy, "trackers")
+                return
+            end
+            Modify(id, handle.private, "Move a table tracker", function(r)
+                r.fx, r.fy = fx, fy
+                r.seq = (r.seq or 0) + 1
+            end, "trackers")
+        end,
+        tokenPanel,
+        Step(-1, "left"),
+        Step(1, "right"),
+        gui.Panel{
+            classes = {"tableTrackerPlate"},
+            bgimage = "panels/square.png",
+            width = "auto",
+            height = "auto",
+            hpad = 8,
+            vpad = 2,
+            borderBox = true,
+            halign = "center",
+            valign = "bottom",
+            nameLabel,
+        },
+    }
+    handle.panel = panel
+    handle.valueLabel = valueLabel
+    handle.nameLabel = nameLabel
+    return handle
+end
+
+--Renders a tracker's 3D token at the size it shows on screen, so it is crisp.
+local function PlaceToken(handle)
+    local t = handle.token
+    if t == nil or not t.valid then
+        return
+    end
+    local scale = Mapping()
+    local size = TRACKER_SIZE / scale
+    if math.abs(t.size - size) > 0.5 then
+        t.size = size
+    end
+end
+
+--The two panels trackers live in, made in the documents layer (with the
+--windows) and kept in order there: the shared trackers' first, under every
+--window and the Director's Screen; the private ones' last, so they lie on
+--the open screen. Rebuilt if anything takes them out (their trackers are
+--rebuilt with them).
+--- @return nil|Panel shared
+--- @return nil|Panel private
+local function TrackerLayers()
+    local hud = GameHud.instance
+    local docs = hud ~= nil and hud.documentsPanel or nil
+    if docs == nil or not docs.valid then
+        return nil, nil
+    end
+    for _, key in ipairs({"trackerLayer", "trackerScreenLayer"}) do
+        local layer = g[key]
+        if layer == nil or not layer.valid or layer.parent ~= docs then
+            if layer ~= nil and layer.valid then
+                layer:DestroySelf()
+            end
+            layer = gui.Panel{
+                width = "100%",
+                height = "100%",
+                flow = "none",
+                interactable = false,
+                styles = ThemeEngine.MergeTokens(g_drawerStyles),
+            }
+            docs:AddChild(layer)
+            g[key] = layer
+        end
+    end
+    local shared = g.trackerLayer --[[@as Panel]]
+    local private = g.trackerScreenLayer --[[@as Panel]]
+    local children = docs.children
+    if children[1] ~= shared then
+        shared:SetAsFirstSibling()
+    end
+    if children[#children] ~= private then
+        private:SetAsLastSibling()
+    end
+    return shared, private
+end
+
+--Places a tracker's panel on its spot (table fractions -> layer units).
+local function PlaceTracker(handle)
+    local w, h = TableSize()
+    handle.panel.x = (handle.record.fx or 0.5) * w - TRACKER_WIDTH / 2
+    handle.panel.y = (handle.record.fy or 0.5) * h - TRACKER_SIZE / 2
+    PlaceToken(handle)
+end
+
+local function DestroyTracker(handle)
+    if handle.token ~= nil and handle.token.valid then
+        handle.token:Destroy()
+    end
+    if handle.panel.valid then
+        handle.panel:DestroySelf()
+    end
+end
+
+DestroyTrackers = function()
+    for id, handle in pairs(g.trackers) do
+        DestroyTracker(handle)
+        g.trackers[id] = nil
+    end
+end
+
+--Keeps the trackers' panels in line with the stores (TableDice.Sync).
+--- @param covered boolean
+--- @param screenOpen boolean
+local function SyncTrackers(covered, screenOpen)
+    local sharedLayer, privateLayer = TrackerLayers()
+    if sharedLayer == nil or privateLayer == nil then
+        return
+    end
+    local wanted = {}
+    for id, record in pairs(SharedItems("trackers")) do
+        if type(record) == "table" and TRACKER_TYPES[record.type] ~= nil then
+            wanted[id] = {record = record, private = false}
+        end
+    end
+    if dmhub.isDM then
+        for id, record in pairs(PrivateItems("trackers")) do
+            if type(record) == "table" and TRACKER_TYPES[record.type] ~= nil then
+                wanted[id] = {record = record, private = true}
+            end
+        end
+    end
+    for id, handle in pairs(g.trackers) do
+        local want = wanted[id]
+        if want == nil or not handle.panel.valid or want.private ~= handle.private or want.record.type ~= handle.type then
+            DestroyTracker(handle)
+            g.trackers[id] = nil
+        end
+    end
+    for id, want in pairs(wanted) do
+        local handle = g.trackers[id]
+        if handle == nil then
+            handle = BuildTracker(id, want.record, want.private)
+            if want.private then
+                privateLayer:AddChild(handle.panel)
+            else
+                sharedLayer:AddChild(handle.panel)
+            end
+            PlaceTracker(handle)
+            g.trackers[id] = handle
+        else
+            handle.record = want.record
+            if (want.record.seq or 0) ~= handle.seq then
+                handle.seq = want.record.seq or 0
+                PlaceTracker(handle)
+                handle.nameLabel.text = TrackerName(want.record)
+                handle.valueLabel.editable = handle.token == nil and TrackerChangeable(want.record)
+            end
+            --follows the table if the window changes size.
+            PlaceToken(handle)
+        end
+        local value = TrackerValue(want.record)
+        if value ~= handle.shown then
+            handle.shown = value
+            handle.valueLabel.text = string.format("%d", math.floor(value))
+            if handle.token ~= nil and handle.token.valid then
+                handle.token.text = handle.valueLabel.text
+            end
+        end
+        local visible = not covered and (not want.private or screenOpen)
+        if handle.panel:HasClass("collapsed") == visible then
+            handle.panel:SetClass("collapsed", not visible)
+        end
+        if handle.token ~= nil and handle.token.valid then
+            handle.token:SetVisible(visible)
+        end
+    end
+end
+
 --- Brings the engine's dice in line with the stores; the layer's think runs it.
 function TableDice.Sync()
     --an engine older than table dice has no CreateTableDie: nothing to show.
@@ -2016,6 +2787,7 @@ function TableDice.Sync()
         end
     end
     SyncFigures(covered, screenOpen, x1, y1, x2, y2)
+    SyncTrackers(covered, screenOpen)
 end
 
 ----------------------------------------------------------------------
@@ -2094,4 +2866,11 @@ end
 g_tableDiceUnload = function()
     DestroyAll()
     DestroyPreviews()
+    --the trackers' panels live in the documents layer, which outlives this file.
+    for _, key in ipairs({"trackerLayer", "trackerScreenLayer"}) do
+        local layer = g[key]
+        if layer ~= nil and layer.valid then
+            layer:DestroySelf()
+        end
+    end
 end

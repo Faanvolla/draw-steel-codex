@@ -25,6 +25,11 @@ function dice.CreateTableDie(args) end
 --- @return nil|TableFigureLua
 function dice.CreateTableFigure(args) end
 
+--- Creates a 3D tracker token for the tabletop (see TableTrackerLua): shape 'diamond' (steel and red enamel), 'coin' (gold) or 'stone' (steel and pewter), size its diameter in screen pixels, text the number on its face. Show it with a panel whose bgimage is the token's image.
+--- @param args {shape: string, size: nil|number, text: nil|string, tilt: nil|number}
+--- @return nil|TableTrackerLua
+function dice.CreateTableTracker(args) end
+
 --- Returns a list of dice sets available to the current user, including owned dice from the shop.
 --- @return table
 function dice.GetAvailableDice() end
