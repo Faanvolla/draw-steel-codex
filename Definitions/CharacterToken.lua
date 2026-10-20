@@ -367,6 +367,12 @@ function CharacterToken:ShowSheet(tabid) end
 --- @return number
 function CharacterToken:GetLineOfSight(otherToken, pierceSurfacesArg, modeArg) end
 
+--- Line of effect from this creature to the space its own body would fill at loc: the teleport destination check. Uses the same altitude-aware targeting as GetLineOfSight between two tokens -- terrain profile (pits, ridges, raised blocks), height-limited walls and other floors -- with this creature's footprint and height placed at loc. Returns 1 = clear, 0.5 = half cover, 0.25 = three-quarters cover, 0 = no line of effect. GetLineOfSight(loc) is a flat single ray that ignores altitude.
+--- @param loc Loc Where this creature's body would stand, with its absolute altitude (a space in the air is allowed).
+--- @param pierceSurfacesArg? number How many thin walls the line may pass through.
+--- @return number
+function CharacterToken:GetLineOfSightToSpace(loc, pierceSurfacesArg) end
+
 --- The distance in native units to a loc, path, or another token.
 --- @param otherTokenOrLoc CharacterToken|LuaPath|Loc
 --- @return number
