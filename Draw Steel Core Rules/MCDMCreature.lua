@@ -4879,6 +4879,7 @@ creature.RegisterSymbol {
     },
 }
 
+--Creatures whose ability list is being built right now. Building the list runs
 --[==[ DEAD_CODE - overridden by Draw Steel Core Rules\MCDMMonster.lua:24
 function creature:PowerRollBonus()
     return 0
