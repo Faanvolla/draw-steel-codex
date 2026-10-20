@@ -23,6 +23,19 @@ local mod = dmhub.GetModLoading()
 
 EncounterOfTheWeek = {}
 
+--Analytics: the town is open (Codex Titlescreen/EotwAnalytics.lua). Tags
+--every event sent while it is up as EotW, and closes any run this player
+--left by quitting or crashing that they can no longer resume (the slot game
+--is the one they still can).
+local function AnalyticsTownOpened()
+    pcall(function()
+        EotwAnalytics.TownOpened()
+        local slot = nil
+        pcall(function() slot = lobby.eotwGameid end)
+        EotwAnalytics.ReconcileRuns(slot)
+    end)
+end
+
 --Launch-timing marker: grep Player.log for "[EOTWPROF]". server= is
 --dmhub.serverTime, which every client shares, so the host's and the members'
 --logs line up on one clock. The game-side codemod logs the same way. Never
@@ -1957,6 +1970,7 @@ local function CreateLoadingVeil(root)
             --started under us); either way the veil's job is over.
             if m_screen ~= nil and m_screen.valid then
                 m_screen:SetClass("eotwOpening", false)
+                AnalyticsTownOpened()
             end
             element:SetClass("dying", true)
             element:ScheduleEvent("destroySelf", VEIL_CROSSFADE_SECONDS + 0.05)
@@ -2894,6 +2908,8 @@ CreateScreen = function(args)
         if prevGameid == nil then
             return
         end
+        --analytics: a run this player still had open in it ends here.
+        pcall(EotwAnalytics.CloseRun, prevGameid, opts.how or cond(opts.abandon, "replaced", "cleanup"))
         m_resumeGameid = nil
         m_resumeInfo = nil
         if m_conn ~= nil then
@@ -2959,6 +2975,12 @@ CreateScreen = function(args)
             action = "join-game",
             args = { gameid = gameid },
             success = function()
+                local joined = GetGameRecord(gameid)
+                EotwAnalytics.Track("eotw_party_join", {
+                    runid = gameid,
+                    encounter = joined ~= nil and joined.encounter or nil,
+                    board = joined ~= nil and type(joined.encounter) == "string" and cond(EncounterOfTheWeek.IsDangerRoomEncounter(joined.encounter), "pits", "gate") or nil,
+                })
                 local prev = EotwSlotGameid()
                 EngineJoinEotw(gameid)
                 if prev ~= nil and prev ~= gameid then
@@ -3118,8 +3140,28 @@ CreateScreen = function(args)
             --members entered alongside the host (see fastLaunchSetting): the
             --game side waits for the host's setup stamp before placing heroes.
             fastLaunch = EncounterOfTheWeek.FastLaunch(),
+            --for the game's analytics, which cannot read the schedule.
+            week = (EncounterOfTheWeek.GetWeek() or {}).week,
         }
         _G.EotwPendingArrival = arrival
+
+        --analytics: the hand-off from town to game. resume = no party record
+        --(going back into a game already under way).
+        local memberCount = 0
+        for _,_ in pairs(members or {}) do
+            memberCount = memberCount + 1
+        end
+        EotwAnalytics.Track("eotw_enter_game", {
+            runid = gameid,
+            encounter = encounterMap,
+            board = encounterMap ~= nil and cond(arrival.practice, "pits", "gate") or nil,
+            resume = record == nil,
+            members = memberCount,
+            slotsFilled = slotsFilled,
+            myHeroes = #myHeroes,
+            host = record ~= nil and record.hostUserid == dmhub.loginUserid or nil,
+            fastLaunch = arrival.fastLaunch,
+        })
 
         --start directly on the encounter map rather than on the module's
         --first map and travelling. Only for the official module's maps: a
@@ -4092,6 +4134,18 @@ CreateScreen = function(args)
                         return
                     end
                     EotwProf("Begin pressed (launch-game sent) game=%s", gameid)
+                    local memberCount = 0
+                    for _,_ in pairs(record.players or {}) do
+                        memberCount = memberCount + 1
+                    end
+                    EotwAnalytics.Track("eotw_party_launch", {
+                        runid = gameid,
+                        encounter = record.encounter,
+                        board = cond(PartyMode(record) == "danger", "pits", "gate"),
+                        members = memberCount,
+                        slotsFilled = slotsFilled,
+                        slotsTotal = slotsTotal,
+                    })
                     m_conn:Request{
                         action = "launch-game",
                         args = { gameid = gameid },
@@ -4143,12 +4197,14 @@ CreateScreen = function(args)
                             element:ScheduleEvent("resetConfirm", 4)
                             return
                         end
+                        EotwAnalytics.Track("eotw_party_leave", { runid = gameid, how = "disband", encounter = record.encounter })
                         DestroyPreviousGame(gameid)
                         if CloseGameView ~= nil then
                             CloseGameView()
                         end
                         return
                     end
+                    EotwAnalytics.Track("eotw_party_leave", { runid = gameid, how = "leave", encounter = record.encounter })
                     if m_conn ~= nil then
                         m_conn:Request{
                             action = "leave-game",
@@ -4259,7 +4315,7 @@ CreateScreen = function(args)
                         element:ScheduleEvent("resetConfirm", 4)
                         return
                     end
-                    DestroyPreviousGame(resumeGameid, { abandon = true })
+                    DestroyPreviousGame(resumeGameid, { abandon = true, how = "resume_abandon" })
                     if rowPanel ~= nil and rowPanel.valid then
                         rowPanel:DestroySelf()
                     end
@@ -5128,6 +5184,11 @@ CreateScreen = function(args)
                 action = "create-game",
                 args = { name = name, public = m_public, encounter = m_encounter },
                 success = function()
+                    EotwAnalytics.Track("eotw_party_create", {
+                        encounter = m_encounter,
+                        board = cond(m_encounter ~= nil and EncounterOfTheWeek.IsDangerRoomEncounter(m_encounter), "pits", "gate"),
+                        public = m_public,
+                    })
                     SetDialogStatus("Creating the game...")
                     --one EotW game per account: capture the current slot
                     --value now -- creating the new game overwrites it --
@@ -5842,6 +5903,14 @@ CreateScreen = function(args)
                                 feedback = m_feedback,
                             },
                             success = function()
+                                EotwAnalytics.Track("eotw_debrief", {
+                                    action = "send",
+                                    runid = entry.gameid,
+                                    encounter = entry.encounter,
+                                    result = entry.result,
+                                    vote = m_vote,
+                                    hasFeedback = type(m_feedback) == "string" and m_feedback:match("%S") ~= nil,
+                                })
                                 ClearPendingDebrief(entry.gameid)
                                 Close()
                                 FetchDangerStats()
@@ -5860,6 +5929,12 @@ CreateScreen = function(args)
                     height = 44,
                     hmargin = 8,
                     click = function(element)
+                        EotwAnalytics.Track("eotw_debrief", {
+                            action = "skip",
+                            runid = entry.gameid,
+                            encounter = entry.encounter,
+                            result = entry.result,
+                        })
                         ClearPendingDebrief(entry.gameid)
                         Close()
                     end,
@@ -5981,6 +6056,11 @@ CreateScreen = function(args)
                 return
             end
             busy = true
+            EotwAnalytics.Track("eotw_offered_outcome", {
+                runid = game.gameid,
+                claim = claim == true,
+                heroes = #(game.heroes or {}),
+            })
             if claim then
                 local entries = {}
                 for _, hero in ipairs(game.heroes or {}) do
@@ -6294,6 +6374,13 @@ CreateScreen = function(args)
             end
             ClearPendingSurvey(entry.gameid)
             Close()
+            EotwAnalytics.Track("eotw_survey", {
+                action = "decline",
+                runid = entry.gameid,
+                encounter = entry.encounter,
+                outcome = entry.outcome,
+                minutes = entry.minutes,
+            })
             if m_conn ~= nil then
                 m_conn:Request{
                     action = "eotw-survey",
@@ -6509,6 +6596,24 @@ CreateScreen = function(args)
                             action = "eotw-survey",
                             args = SurveyArgs(entry, false, m_answers, m_comments),
                             success = function()
+                                --the answers are choice ids (the city keeps
+                                --the comment text; analytics only notes one).
+                                local hasComment = false
+                                for _, text in pairs(m_comments or {}) do
+                                    if type(text) == "string" and text:match("%S") ~= nil then
+                                        hasComment = true
+                                    end
+                                end
+                                EotwAnalytics.Track("eotw_survey", {
+                                    action = "send",
+                                    runid = entry.gameid,
+                                    encounter = entry.encounter,
+                                    outcome = entry.outcome,
+                                    minutes = entry.minutes,
+                                    surveyId = SURVEY_ID,
+                                    answers = m_answers,
+                                    hasComment = hasComment,
+                                })
                                 ClearPendingSurvey(entry.gameid)
                                 Close()
                             end,
@@ -6592,6 +6697,8 @@ CreateScreen = function(args)
     --games list must stay live (RefreshGames is what notices a launched
     --game and takes us into it); the Guild's is built on each visit.
     local m_locationId = nil
+    --when the open location was opened (dmhub.Time), for its analytics.
+    local m_locationOpenedAt = nil
     --true from the moment the Blue Fish Inn's reveal shows its node until the
     --reveal is recorded (see PlayInnReveal).
     local m_innRevealing = false
@@ -7288,6 +7395,8 @@ CreateScreen = function(args)
         local all = LoadWelcomed()
         all[dmhub.loginUserid] = true
         dmhub.SetSettingValue("eotw:welcomed", dmhub.ToJson(all))
+        --analytics: an account's first visit to the town on this machine.
+        EotwAnalytics.Track("eotw_welcome", { action = "shown" })
     end
 
     --Also reachable over MCP for testing: EncounterOfTheWeek.ShowWelcomeDialog().
@@ -7328,6 +7437,7 @@ CreateScreen = function(args)
                     hmargin = 8,
                     click = function(element)
                         dmhub.OpenURL(DISCORD_URL)
+                        EotwAnalytics.Track("eotw_welcome", { action = "discord" })
                     end,
                 },
                 gui.Button{
@@ -7899,6 +8009,13 @@ CreateScreen = function(args)
         if m_locationId == nil then
             return
         end
+        if m_locationOpenedAt ~= nil then
+            EotwAnalytics.Track("eotw_location_close", {
+                location = m_locationId,
+                seconds = math.floor(dmhub.Time() - m_locationOpenedAt),
+            })
+            m_locationOpenedAt = nil
+        end
         for _,scene in ipairs({ gateScene, dangerScene }) do
             if scene ~= nil and scene.valid then
                 scene:SetClass("collapsed", true)
@@ -7926,6 +8043,8 @@ CreateScreen = function(args)
         end
         CloseLocation()
         m_locationId = id
+        m_locationOpenedAt = dmhub.Time()
+        EotwAnalytics.Track("eotw_location_open", { location = id })
         if id == "gate" then
             gateScene:SetClass("collapsed", false)
             CreatorCredit.ReplayFade(gateScene)
@@ -8139,6 +8258,7 @@ CreateScreen = function(args)
 
         beginLoading = function(element)
             element.data.loadingUp = true
+            pcall(EotwAnalytics.TownClosed, "enter_game")
             element:ScheduleEvent("hideBehindLoadingScreen", LOADING_SCREEN_FADE_IN_SECONDS)
         end,
 
@@ -8157,6 +8277,7 @@ CreateScreen = function(args)
         returnFromGameComplete = function(element)
             element.data.loadingUp = false
             element:SetClass("hidden", false)
+            AnalyticsTownOpened()
         end,
 
         --Keep our roster records alive: the city expires a game 5 minutes
@@ -8204,6 +8325,8 @@ CreateScreen = function(args)
                 m_conn:Disconnect()
                 m_conn = nil
             end
+            --a no-op when the town already closed for a game load.
+            pcall(EotwAnalytics.TownClosed, "close")
         end,
 
         --the map, pannable by dragging anywhere that is not a location.

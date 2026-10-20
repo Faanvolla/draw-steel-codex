@@ -1542,6 +1542,8 @@ local function GrantItem(token, itemid, itemName, qty)
             props:SetItemQuantity(itemid, current + qty)
         end,
     }
+    --analytics (host): items the script handed out (or took, qty < 0).
+    EotwAnalytics.Track("eotw_item_grant", { item = itemName, itemid = itemid, qty = qty })
 end
 
 --Remember a granted item on the script document, so the montage stage can
@@ -3364,6 +3366,32 @@ local function ApplyResolution(m, doc, t, entry, option, tierIndex, heroes, user
         applied = applied,
         knack = t.knackReason,
     }
+
+    --analytics (host): one line per montage test, the hero's class and what
+    --they tried with what result. tier 0 / nil is an option with no roll.
+    local className = nil
+    pcall(function()
+        local tok = dmhub.GetCharacterById(t.heroid)
+        --a montage hero is always a character.
+        local classInfo = tok ~= nil and (tok.properties --[[@as character]]):GetClass() or nil
+        className = classInfo ~= nil and classInfo.name or nil
+    end)
+    EotwAnalytics.Track("eotw_montage_test", {
+        beat = doc.data.beat,
+        round = m.round,
+        entry = entry.name,
+        entryKind = entry.kind,
+        option = option.name,
+        attr = option.roll ~= nil and option.roll.attr or nil,
+        rolled = option.roll ~= nil,
+        tier = tierIndex,
+        total = t.total,
+        natural = t.natural,
+        knack = t.knackReason ~= nil,
+        heroClass = className,
+        owner = userid,
+        effects = #applied,
+    })
 end
 
 --Every die is in (or the wait ran out): the turn or the consequence that
@@ -3557,6 +3585,8 @@ end
 --in-order delve ("complete": its "## End" scene, if it has one).
 local function DelveLeave(m, doc, t, heroes, why)
     t.delve.obstacleId = nil
+    --kept for the delve's analytics line (DelveFinish).
+    t.delve.leaveWhy = why
     ClearTest(t)
     local lead = nil
     local delve = EncounterMontage.TurnDelve(t)
@@ -3635,6 +3665,17 @@ local function DelveFinish(m, doc, t)
         steps = delve ~= nil and #(delve.obstacles or {}) or nil,
         applied = d.applied or {},
     }
+
+    --analytics (host): how deep the hero went and why they came out.
+    EotwAnalytics.Track("eotw_delve", {
+        beat = doc.data.beat,
+        round = m.round,
+        entry = d.entryName,
+        depth = d.depth or 0,
+        chests = d.chests or 0,
+        steps = delve ~= nil and #(delve.obstacles or {}) or nil,
+        why = d.leaveWhy,
+    })
 end
 
 --Where a delve scene hands over once it has been read (and straight away

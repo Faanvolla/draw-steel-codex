@@ -5319,6 +5319,9 @@ function EotwHeroSheet.Show(args)
     if context == nil then
         context = cond(dmhub.inGame and not dmhub.isLobbyGame, "game", "town")
     end
+    if not args.switching then
+        EotwAnalytics.Track("eotw_hero_sheet_open", { heroid = charid, where = context, fallen = args.fallen ~= nil })
+    end
 
     ---@type Panel|nil
     local root = nil

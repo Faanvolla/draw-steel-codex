@@ -196,6 +196,16 @@ local function AddEvent(data, event)
         table.remove(events, 1)
     end
     data.events = events
+
+    --analytics (the host writes these): who left, came back, abandoned or
+    --took over hosting, and where the party was when it happened.
+    local heroCount = type(event.heroNames) == "table" and #event.heroNames or nil
+    EotwAnalytics.Track("eotw_presence", {
+        event = event.kind,
+        member = event.userid,
+        memberHeroes = heroCount,
+        phase = EotwAnalytics.CurrentPhase(),
+    })
 end
 
 --- abandoning ------------------------------------------------------------------
@@ -895,6 +905,10 @@ function EncounterPresence.Abandon(proceed)
             printf("EotW presence: could not leave the survey invitation: %s", tostring(err))
         end
     end
+    --analytics: this player's run ends here, abandoned.
+    if eotw ~= nil and eotw.AnalyticsEndRun ~= nil then
+        pcall(eotw.AnalyticsEndRun, "abandoned", "abandon")
+    end
 
     --a moment for the note to reach the server before the connection goes.
     --Not tied to mod.unloaded: the player must get out regardless. The
@@ -960,6 +974,18 @@ function EncounterPresence.ConfirmExit(kind, proceed)
         m_exitDialog = nil
     end
 
+    --analytics: what the player chose at the exit prompt ("leave" keeps the
+    --run open for a resume; "abandon" also ends it, see Abandon).
+    local function TrackChoice(choice)
+        EotwAnalytics.Track("eotw_exit_choice", {
+            kind = kind,
+            choice = choice,
+            phase = EotwAnalytics.CurrentPhase(),
+            host = isHost,
+            othersPlaying = othersPlaying,
+        })
+    end
+
     local abandonButton
     abandonButton = gui.Button{
         classes = {"sizeL", "abandon"},
@@ -981,6 +1007,7 @@ function EncounterPresence.ConfirmExit(kind, proceed)
                 return
             end
             Close()
+            TrackChoice("abandon")
             EncounterPresence.Abandon(proceed)
         end,
     }
@@ -995,6 +1022,7 @@ function EncounterPresence.ConfirmExit(kind, proceed)
         captureEscape = true,
         escape = function(element)
             Close()
+            TrackChoice("cancel")
         end,
 
         gui.Label{
@@ -1036,6 +1064,7 @@ function EncounterPresence.ConfirmExit(kind, proceed)
                 hmargin = 8,
                 click = function()
                     Close()
+                    TrackChoice("cancel")
                 end,
             },
             gui.Panel{
@@ -1050,6 +1079,7 @@ function EncounterPresence.ConfirmExit(kind, proceed)
                     hmargin = 8,
                     click = function()
                         Close()
+                        TrackChoice(kind == "quit" and "quit" or "leave")
                         proceed()
                     end,
                 },

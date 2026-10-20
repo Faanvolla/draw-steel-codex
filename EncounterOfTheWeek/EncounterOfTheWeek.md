@@ -1538,6 +1538,96 @@ answer or decline ("No thanks", or Escape); both are recorded.
   `survey-report`; a sub-10-minute game shows nothing (log: "no survey for
   a N second game").
 
+# Analytics (BUILT 2026-10-20; NEEDS ENGINE BUILD, not run)
+
+User direction (2026-10-20): serious analytics for EotW -- mark every in-app
+analytics event as EotW or not, track every EotW game to its outcome
+(victory, defeat or abandoned), and follow closely how people play.
+Firebase `/AnalyticsType` like all telemetry (the `codex-analytics` skill
+reads it); `telemetry_enabled` / `analytics:enabled` opt-outs apply.
+
+- **Every event is tagged** (engine, `Assets/AnalyticsManager.cs`
+  `StampContext`): `eotw = true|false` on every event, engine and Lua alike.
+  True when the loaded game is the account's EotW slot game (works before
+  any Lua runs, so `gameLoaded` / `loadGame` / `playingGame` are tagged) or
+  when Lua set the `eotw` context (the town). The new
+  `analytics.SetContext(key, value, scope)` stamps any field onto every
+  later event; scope `"game"` stops applying when that game is left,
+  `"titlescreen"` applies only with no game loaded. The town sets
+  `eotwWhere = "town"`; an EotW game sets `eotwWhere = "game"`, `eotwBoard`
+  (`gate`/`pits`) and `eotwEncounter`, so `use_ability`, `turn_end`,
+  `encounter_complete`... split by board and encounter without a join.
+- **The run** (`Codex Titlescreen/EotwAnalytics.lua`, core codex so the
+  town has it): one player's time in one EotW game. `runid` = the gameid.
+  `eotw_run_start` (or `eotw_run_resume` on a later sitting) once the host
+  has stamped the encounter and this player's heroes are down; exactly one
+  `eotw_run_end` with `outcome` victory / defeat / abandoned and `how`:
+  `conclusion` (the normal exit), `abandon` (the in-game Abandon), `quit`
+  (left and never came back: closed the next time this machine opens the
+  town or starts another run, from the `eotw:analyticsRun` preference),
+  `replaced` (a new party replaced the game), `resume_abandon` (the resume
+  row's Abandon). A Leave/Quit that keeps the game resumable leaves the run
+  open. Judgment call: a player who quits on the victory screen before
+  pressing on ends as `abandoned`/`quit` with `lastPhase = "victory"`.
+  Every `eotw_*` event sent in a game carries `runid`, `encounter`, `board`,
+  `week` (the town sends it with the arrival), `part` and `practice`.
+- **Phases** are the host's to report (`EncounterOfTheWeekGame.AnalyticsPhase`,
+  never throws): `eotw_phase` with `phase` = gathering / montage /
+  narrative / prep / combat / victory / defeat, the script `beat`,
+  `fromPhase` and `fromSeconds` (server time, so a host migration keeps it).
+  The host stamps it on `eotwstate` (`analyticsPhase*`); every client mirrors
+  it into its run record, so `eotw_run_end.lastPhase` is right for members.
+- **Tests never count**: an authoring test is not the slot game and every
+  run hook checks `IsTestPlayer`.
+
+Events (fields beyond the run fields):
+
+| Event | Sent by | Fields |
+|---|---|---|
+| `eotw_town_open` / `eotw_town_close` | client | `seconds`, `reason` (enter_game / close) |
+| `eotw_welcome` | client | `action` shown (first visit on this machine) / discord |
+| `eotw_location_open` / `_close` | client | `location`, `seconds` |
+| `eotw_party_create` / `_join` / `_launch` / `_leave` | client | `encounter`, `board`, `public`; `members`, `slotsFilled`/`slotsTotal`; leave `how` leave / disband |
+| `eotw_enter_game` | client | `resume`, `members`, `slotsFilled`, `myHeroes`, `host`, `fastLaunch` |
+| `eotw_run_start` / `_resume` | client | `host`, `sittings`, `players`, `partyHeroes`, `heroCount`, `heroClasses`/`heroAncestries`/`heroLevels` (comma lists), `combatStarted`, `lastPhase` (resume) |
+| `eotw_run_end` | client | `outcome`, `how`, `lastPhase`, `lastPhaseSeconds`, `minutes`/`seconds` (this machine's play time, all sittings), `heroesDied`/`heroesSurvived`, `victoriesEarned`, `treasuresEarned`, `rounds`, `combatStarted` |
+| `eotw_phase` | host | above, plus `title`, `round`, `livingHeroes` |
+| `eotw_montage_test` | host | `beat`, `round`, `entry`, `entryKind`, `option`, `attr`, `rolled`, `tier`, `total`, `natural`, `knack`, `heroClass`, `owner`, `effects` |
+| `eotw_montage_end` | host | `rounds`, `tests`, `tier1..3`, `unrolled`, `knacks`, `delves`, `vanquished`, `taken`, `consequences` |
+| `eotw_delve` | host | `entry`, `depth`, `chests`, `steps`, `why` (leave / forced / exhausted / complete) |
+| `eotw_narrative_choice` | host | `section`, `mode`, `options`, `option`/`optionIndex`/`decidedBy` or `optionCounts` |
+| `eotw_item_grant` | host | `item`, `itemid`, `qty` |
+| `eotw_presence` | host | `event` left / abandoned / returned / given / newhost, `member`, `memberHeroes`, `phase` |
+| `eotw_exit_choice` | client | `kind` leave / quit, `choice` leave / quit / abandon / cancel, `phase`, `host`, `othersPlaying` |
+| `eotw_hero_recruit` / `_dismiss` / `_outcome` | client | `how` pregen / titlescreen / built, `heroClass`/`heroAncestry`/`heroLevel`; outcome `result`, `died` (the burial), `victories`, `treasures` |
+| `eotw_hero_sheet_open`, `eotw_equip` | client | `where`, `fallen`; `action` equip / unequip, `itemid`, `slot` |
+| `eotw_downtime`, `eotw_project_start`, `eotw_project_roll`, `eotw_carouse`, `eotw_market_buy` | client | `activity` respite / catch_breath; project `tier`, `natural`, `total`, `characteristic`, `skill`, `breakthrough`, `progress`, `completed`; carouse `tier`, `leads`; buy `itemid`, `item` |
+| `eotw_debrief`, `eotw_survey`, `eotw_offered_outcome` | client | `action` send / skip / decline, `vote`, `hasFeedback`; survey `answers` (choice ids, no text), `hasComment`; offer `claim` |
+
+## Known gaps
+
+- Trap TRIGGERS are not tracked: they happen in the engine (`LevelObject.cs`
+  pressure plates), not in EotW Lua. Reveals are not tracked either.
+- Montage tests are host-side, so a test's `owner` is the userid who rolled
+  it, not the reporting client.
+- The engine caps `encounter_complete` at 20 per install per day; EotW play
+  is far below that.
+
+## To test (after the engine build and a RESTART: EotwAnalytics.lua is a new file)
+
+1. Open the town: in the Player.log, `Analytics:` lines for
+   `eotw_town_open`; `analytics.IsEotw()` over MCP is true in town, false on
+   the titlescreen once the town is closed.
+2. Form a party and play: `eotw_party_create`, `_launch`, `eotw_enter_game`,
+   `eotw_run_start`, `eotw_phase` per beat, `eotw_montage_test` per test,
+   `eotw_montage_end`, `eotw_phase` combat then victory/defeat, and
+   `eotw_run_end` with `how = conclusion` on the way out.
+3. Quit mid-game, then Abandon from the resume row: one `eotw_run_end` with
+   `how = resume_abandon`. Quit, start a new party: `how = replaced`.
+4. Any engine event in the game (`playingGame`) carries `eotw: true`,
+   `eotwWhere: "game"`, `eotwBoard`, `eotwEncounter`.
+5. The Unity Editor suppresses almost every event: test in a built player.
+
 # Encounter series (BUILT 2026-10-17; nothing run yet)
 
 User direction (2026-10-17): an Encounter of the Week can be several

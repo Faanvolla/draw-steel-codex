@@ -1770,9 +1770,10 @@ local function BankPlaytime()
 end
 
 --Called from the 1s driver. Counts only real EotW games, never a test; a
---long gap (the app frozen, or asleep) adds at most a few seconds.
+--long gap (the app frozen, or asleep) adds at most a few seconds. Runs
+--whether or not the survey is on: analytics reports the minutes too.
 local function UpdatePlayClock()
-    if not EOTW_BETA_SURVEY or not EncounterOfTheWeekGame.IsEotwGame() or EncounterOfTheWeekGame.IsTestPlayer() then
+    if not EncounterOfTheWeekGame.IsEotwGame() or EncounterOfTheWeekGame.IsTestPlayer() then
         m_playClockAt = nil
         return
     end
@@ -1783,6 +1784,7 @@ local function UpdatePlayClock()
     m_playClockAt = now
     if m_playUnbanked >= PLAYTIME_BANK_SECONDS then
         BankPlaytime()
+        EotwAnalytics.UpdateMinutes(EncounterOfTheWeekGame.PlaySeconds())
     end
 end
 
@@ -1844,6 +1846,199 @@ function EncounterOfTheWeekGame.RecordPendingSurvey(outcome)
     }
     dmhub.SetSettingValue("eotw:pendingSurvey", dmhub.ToJson(all))
     printf("EotW: beta survey (%s, %d min) waiting for the town", outcome, math.floor(seconds / 60))
+end
+
+--- analytics ---------------------------------------------------------------
+--The run lifecycle (Codex Titlescreen/EotwAnalytics.lua): every client opens
+--its own run here and closes it on the way out. Phases are the HOST's to
+--report (one eotw_phase per transition for the whole party); the host also
+--stamps the phase on the state doc, and every client mirrors it into its run
+--record, so a member's eotw_run_end still says where they were. Tests never
+--count.
+
+--The week number the town sent with the arrival (the game cannot read it).
+local m_analyticsWeek = nil
+
+local function AnalyticsActive()
+    return EncounterOfTheWeekGame.IsEotwGame() and not EncounterOfTheWeekGame.IsTestPlayer()
+end
+
+--This player's heroes in this game: classes, ancestries and levels, as
+--comma lists, and how many.
+local function AnalyticsMyHeroes()
+    local classes, ancestries, levels, count = {}, {}, {}, 0
+    for _, charid in pairs(GetPlacedHeroes(dmhub.loginUserid)) do
+        local tok = dmhub.GetCharacterById(charid)
+        if tok ~= nil and tok.properties ~= nil then
+            --town heroes are always characters.
+            local props = tok.properties --[[@as character]]
+            count = count + 1
+            local className, ancestry, level = "?", "?", 0
+            pcall(function()
+                local classInfo = props:GetClass()
+                if classInfo ~= nil then
+                    className = classInfo.name
+                end
+            end)
+            pcall(function() ancestry = props:RaceOrMonsterType() or "?" end)
+            pcall(function() level = props:Level() or 0 end)
+            classes[#classes + 1] = className
+            ancestries[#ancestries + 1] = ancestry
+            levels[#levels + 1] = tostring(level)
+        end
+    end
+    return {
+        heroCount = count,
+        heroClasses = table.concat(classes, ","),
+        heroAncestries = table.concat(ancestries, ","),
+        heroLevels = table.concat(levels, ","),
+    }
+end
+
+--Open this client's run once the host has stamped the encounter and this
+--player's heroes are down. Called after arrival and from the 1s driver (the
+--backstop for a game entered without an arrival, e.g. a relaunch into it).
+local function EnsureAnalyticsRun()
+    if not AnalyticsActive() or EotwAnalytics.InRun() then
+        return
+    end
+    local data = nil
+    pcall(function() data = mod:GetDocumentSnapshot(STATE_DOC_ID).data end)
+    if data == nil or type(data.encounterMap) ~= "string" or data.encounterMap == "" then
+        return
+    end
+    if next(GetPlacedHeroes(dmhub.loginUserid)) == nil then
+        return
+    end
+
+    local players, partyHeroes = 0, 0
+    for _, _ in pairs(data.expectedUsers or {}) do
+        players = players + 1
+    end
+    for _, placed in pairs(data.placedHeroes or {}) do
+        for _, _ in pairs(placed) do
+            partyHeroes = partyHeroes + 1
+        end
+    end
+    local report = AnalyticsMyHeroes()
+    report.players = players
+    report.partyHeroes = partyHeroes
+    report.combatStarted = data.combatStarted == true
+
+    EotwAnalytics.BeginRun{
+        encounter = data.encounterMap,
+        board = cond(EncounterOfTheWeekGame.IsPracticeGame(), "pits", "gate"),
+        week = m_analyticsWeek,
+        part = EncounterOfTheWeekGame.ActivePart(),
+        practice = EncounterOfTheWeekGame.IsPracticeGame(),
+        host = IsDMOrPlayerHost(),
+        report = report,
+    }
+    --a resume picks the phase back up from the host's stamp.
+    if type(data.analyticsPhase) == "string" then
+        EotwAnalytics.NotePhase(data.analyticsPhase)
+    end
+end
+
+--Host only: the party moved into a new phase ("gathering", "montage",
+--"narrative", "prep", "combat", "victory", "defeat"). beat is the script
+--beat index, which tells two montages apart; detail rides the event. A
+--repeat is ignored, so the host tick can call it every time it runs. The
+--time in the previous phase comes from the doc's server-time stamp, so it
+--survives a host migration. Never throws: the host tick that runs the whole
+--encounter calls it, and bookkeeping must not be able to stall a game.
+local function AnalyticsPhaseImpl(phase, beat, detail)
+    if not AnalyticsActive() or not IsDMOrPlayerHost() then
+        return
+    end
+    local key = string.format("%s:%s", phase, tostring(beat or ""))
+    local doc = mod:GetDocumentSnapshot(STATE_DOC_ID)
+    if doc.data.analyticsPhaseKey == key then
+        return
+    end
+    local now = dmhub.serverTime
+    local fromPhase = doc.data.analyticsPhase
+    local fromAt = tonumber(doc.data.analyticsPhaseAt)
+    doc:BeginChange()
+    doc.data.analyticsPhaseKey = key
+    doc.data.analyticsPhase = phase
+    doc.data.analyticsPhaseAt = now
+    doc:CompleteChange("Encounter of the Week: phase", {undoable = false})
+
+    EotwAnalytics.NotePhase(phase)
+    local fields = {}
+    for k, v in pairs(detail or {}) do
+        fields[k] = v
+    end
+    fields.phase = phase
+    fields.beat = beat
+    fields.fromPhase = fromPhase
+    if fromAt ~= nil then
+        fields.fromSeconds = math.max(0, math.floor(now - fromAt))
+    end
+    pcall(function()
+        local q = dmhub.initiativeQueue
+        if q ~= nil and not q.hidden then
+            fields.round = q.round
+        end
+    end)
+    EotwAnalytics.Track("eotw_phase", fields)
+end
+
+---@param phase string
+---@param beat? number
+---@param detail? table
+function EncounterOfTheWeekGame.AnalyticsPhase(phase, beat, detail)
+    local ok, err = pcall(AnalyticsPhaseImpl, phase, beat, detail)
+    if not ok then
+        printf("EotW analytics: phase %s not recorded: %s", tostring(phase), tostring(err))
+    end
+end
+
+--Every client: follow the host's phase stamp into this run's record.
+local function MirrorAnalyticsPhase()
+    if not EotwAnalytics.InRun() then
+        return
+    end
+    local phase = nil
+    pcall(function() phase = mod:GetDocumentSnapshot(STATE_DOC_ID).data.analyticsPhase end)
+    if type(phase) == "string" then
+        EotwAnalytics.NotePhase(phase)
+    end
+end
+
+--What this player's heroes came out with, for eotw_run_end.
+local function AnalyticsHeroOutcomes(result)
+    local died, survived, victories, treasures = 0, 0, 0, 0
+    pcall(function()
+        for _, entry in ipairs(OutcomesFor(dmhub.loginUserid, "", result)) do
+            local o = entry.outcome or {}
+            if o.died then
+                died = died + 1
+            else
+                survived = survived + 1
+            end
+            victories = victories + (tonumber(o.victories) or 0)
+            treasures = treasures + #(o.treasures or {})
+        end
+    end)
+    return { heroesDied = died, heroesSurvived = survived, victoriesEarned = victories, treasuresEarned = treasures }
+end
+
+--Close this client's run. outcome "victory" | "defeat" | "abandoned"; how
+--says what ended it ("conclusion", "abandon").
+function EncounterOfTheWeekGame.AnalyticsEndRun(outcome, how)
+    if not EotwAnalytics.InRun() then
+        return
+    end
+    pcall(BankPlaytime)
+    local fields = AnalyticsHeroOutcomes(outcome)
+    pcall(function()
+        local q = dmhub.initiativeQueue
+        fields.rounds = q ~= nil and q.round or nil
+        fields.combatStarted = mod:GetDocumentSnapshot(STATE_DOC_ID).data.combatStarted == true
+    end)
+    EotwAnalytics.EndRun(outcome, how, fields, EncounterOfTheWeekGame.PlaySeconds())
 end
 
 --The script's story section for an outcome ("# Conclusion" after a victory,
@@ -1954,6 +2149,7 @@ local function UpdateEncounterConclusion()
         end
         RecordPendingDebrief(m_outcomeKind)
         EncounterOfTheWeekGame.RecordPendingSurvey(m_outcomeKind)
+        pcall(EncounterOfTheWeekGame.AnalyticsEndRun, m_outcomeKind, "conclusion")
 
         --hand the finished game to the titlescreen: it destroys the game /
         --clears the account slot on its next refresh, so a decided
@@ -2476,6 +2672,8 @@ dmhub.Coroutine(function()
         pcall(UpdateBusyMirror)
         pcall(UpdateEncounterConclusion)
         pcall(UpdatePlayClock)
+        pcall(EnsureAnalyticsRun)
+        pcall(MirrorAnalyticsPhase)
         pcall(function() EncounterOfTheWeekGame.EnsureMapScriptRunning() end)
         --an authoring test waiting to be set up after its player-host refresh.
         pcall(function() EncounterOfTheWeekGame.ConsumePendingTest() end)
@@ -3845,6 +4043,10 @@ local function RecordCombatStarted()
     doc:BeginChange()
     doc.data.combatStarted = true
     doc:CompleteChange("Encounter of the Week: combat started", {undoable = false})
+    --the beat index the way GetBeatIndex (declared further down) reads it.
+    local beat = nil
+    pcall(function() beat = EncounterMontage.GetDoc().data.beat end)
+    EncounterOfTheWeekGame.AnalyticsPhase("combat", beat)
 end
 
 --Consecutive host ticks the met outcome condition has been observed with
@@ -3996,6 +4198,10 @@ local function CheckEncounterOutcome(queue)
         live.defeatAwarded = true
         dmhub:UploadInitiativeQueue()
     end
+
+    local living = nil
+    pcall(function() living = CountLivingHeroes(queue) end)
+    EncounterOfTheWeekGame.AnalyticsPhase(cond(victory, "victory", "defeat"), nil, { livingHeroes = living })
 end
 
 --Game-scoped settings every EotW game forces to a fixed value.
@@ -4133,6 +4339,63 @@ local function AdvanceFromStageBeat(script, index, montage, narrative)
 end
 
 local m_reportedBeat = nil
+--Host: one eotw_montage_end per finished montage beat -- its length in
+--rounds, how many tests and how they landed (tier counts), and what the
+--party won or let slip. Read from the montage's own state before the
+--script moves on.
+local m_montageReported = {}
+local function AnalyticsMontageEnd(montage, index, beat)
+    if m_montageReported[index] then
+        return
+    end
+    m_montageReported[index] = true
+    pcall(function()
+        local m = montage.GetDoc().data.montage or {}
+        local tiers = { 0, 0, 0 }
+        local tests, unrolled, delves, knacks = 0, 0, 0, 0
+        for _, line in ipairs(m.log or {}) do
+            if line.delve then
+                delves = delves + 1
+            else
+                tests = tests + 1
+                local tier = tonumber(line.tier)
+                if tier ~= nil and tiers[tier] ~= nil then
+                    tiers[tier] = tiers[tier] + 1
+                else
+                    unrolled = unrolled + 1
+                end
+                if line.knack ~= nil then
+                    knacks = knacks + 1
+                end
+            end
+        end
+        local function Count(t)
+            local n = 0
+            for _, v in pairs(t or {}) do
+                if v then
+                    n = n + 1
+                end
+            end
+            return n
+        end
+        EotwAnalytics.Track("eotw_montage_end", {
+            beat = index,
+            title = beat.title,
+            rounds = m.round,
+            tests = tests,
+            tier1 = tiers[1],
+            tier2 = tiers[2],
+            tier3 = tiers[3],
+            unrolled = unrolled,
+            knacks = knacks,
+            delves = delves,
+            vanquished = Count(m.vanquished),
+            taken = Count(m.taken),
+            consequences = #(m.consequences or {}),
+        })
+    end)
+end
+
 local function RunScriptBeat(ctx)
     local montage = rawget(_G, "EncounterMontage")
     if montage == nil then
@@ -4166,9 +4429,11 @@ local function RunScriptBeat(ctx)
     end
 
     if beat.kind == "montage" then
+        EncounterOfTheWeekGame.AnalyticsPhase("montage", index, { title = beat.title })
         local status = montage.HostTick(script, beat, index)
         if status == "done" then
             printf("EotW: montage beat %d complete", index)
+            AnalyticsMontageEnd(montage, index, beat)
             AdvanceFromStageBeat(script, index, montage, rawget(_G, "EncounterNarrative"))
         end
         return
@@ -4183,6 +4448,7 @@ local function RunScriptBeat(ctx)
             SetBeatIndex(index + 1)
             return
         end
+        EncounterOfTheWeekGame.AnalyticsPhase("narrative", index, { title = beat.title })
         local status = narrative.HostTick(script, beat, index)
         if status == "done" then
             printf("EotW: narrative beat %d complete", index)
@@ -4204,6 +4470,7 @@ local function RunScriptBeat(ctx)
     --and applied with the rest when the zones go down.
     local prep = rawget(_G, "EncounterPrep")
     if prep ~= nil and prep.Required() then
+        EncounterOfTheWeekGame.AnalyticsPhase("prep", index)
         local status = prep.HostTick(script, beat, index)
         if status ~= "done" then
             return
@@ -4738,6 +5005,7 @@ function EncounterOfTheWeekGame.SetupOnArrival(args)
         --a series' part rides the key; until the host stamps it, this is
         --where ActivePart reads it (a member placing heroes early).
         m_arrivalKey = args.encounterMap
+        m_analyticsWeek = tonumber(args.week)
 
         if IsDMOrPlayerHost() and args.fastLaunch then
             --ready-game goes out as soon as the stage is up; have the lobby
@@ -4854,6 +5122,18 @@ function EncounterOfTheWeekGame.SetupOnArrival(args)
         --never fires on a half-placed party.
         RecordArrival()
         EotwProf("arrival recorded")
+
+        --analytics: this player's run opens now their heroes are down; the
+        --host's first one also starts the party's clock (waiting for the
+        --rest of the party is the "gathering" phase).
+        pcall(EnsureAnalyticsRun)
+        if IsDMOrPlayerHost() then
+            pcall(function()
+                if mod:GetDocumentSnapshot(STATE_DOC_ID).data.analyticsPhase == nil then
+                    EncounterOfTheWeekGame.AnalyticsPhase("gathering")
+                end
+            end)
+        end
         dmhub.Coroutine(KeepMyArrivalRecorded)
 
         if waitForHost then
