@@ -6719,6 +6719,9 @@ local function CreateScriptStage(args)
     local m_scene = nil
     local m_dismissed = false
     local m_holdsCursors = false
+    local m_holdsActionBar = false
+    local m_staleHideSent = false
+    local m_staleCheckScheduled = false
 
     --one child, sized to fill: the montage's body or the narrative's.
     local bodyHolder = gui.Panel{
@@ -6744,6 +6747,12 @@ local function CreateScriptStage(args)
             m_holdsCursors = false
             ReleaseScreenCursors()
         end
+        --and the action bar comes back with the map, even if the host never
+        --takes this panel down.
+        if m_holdsActionBar then
+            m_holdsActionBar = false
+            ReleaseActionBarHide()
+        end
         local started = false
         pcall(function()
             local transition
@@ -6761,9 +6770,41 @@ local function CreateScriptStage(args)
         end
     end
 
+    --The host normally takes the stage down within a second of the dismiss
+    --stamp. A stage still up long after (the host tick stopped first, e.g. a
+    --test or dev encounter outside an EotW game) would come back on every
+    --launch, so the host clears it. A hidden panel stops thinking, so the
+    --check schedules itself rather than waiting for Refresh.
+    local function ClearIfStale(element, dismissAt)
+        if m_staleHideSent or not dmhub.isDMOrPlayerHost then
+            return
+        end
+        local staleAfter = (EncounterMontage.STAGE_DISMISS_SECONDS or 0.8) + (EncounterMontage.STAGE_DISMISS_TIMEOUT or 4) + 5
+        local age = dmhub.serverTime - dismissAt
+        if age > staleAfter then
+            m_staleHideSent = true
+            printf("EotW: clearing a script stage dismissed %.0fs ago that was never taken down", age)
+            EncounterMontage.Hide()
+        elseif not m_staleCheckScheduled then
+            m_staleCheckScheduled = true
+            dmhub.Schedule(staleAfter - age + 0.5, function()
+                m_staleCheckScheduled = false
+                if mod.unloaded or not element.valid then
+                    return
+                end
+                local at = EncounterMontage.DismissAt()
+                if at ~= nil then
+                    ClearIfStale(element, at)
+                end
+            end)
+        end
+    end
+
     local function Refresh(element)
-        if EncounterMontage.DismissAt() ~= nil then
+        local dismissAt = EncounterMontage.DismissAt()
+        if dismissAt ~= nil then
             Dismiss(element)
+            ClearIfStale(element, dismissAt)
             return
         end
 
@@ -6835,10 +6876,13 @@ local function CreateScriptStage(args)
         end,
 
         create = function(element)
-            Refresh(element)
+            --claimed before the first Refresh, so a stage created already
+            --dismissed hands them straight back instead of holding them.
+            m_holdsActionBar = true
             AcquireActionBarHide()
             m_holdsCursors = true
             AcquireScreenCursors()
+            Refresh(element)
             --Entering an EotW game holds the loading screen until the opening
             --beat is on screen (EncounterOfTheWeek.md, the loading-screen
             --hold). We are it: let the screen fade over us, a beat later so
@@ -6848,7 +6892,10 @@ local function CreateScriptStage(args)
         end,
 
         destroy = function(element)
-            ReleaseActionBarHide()
+            if m_holdsActionBar then
+                m_holdsActionBar = false
+                ReleaseActionBarHide()
+            end
             if m_holdsCursors then
                 m_holdsCursors = false
                 ReleaseScreenCursors()

@@ -2820,6 +2820,7 @@ end
 local STAGE_DISMISS_SECONDS = 0.8
 local STAGE_DISMISS_TIMEOUT = 4
 EncounterMontage.STAGE_DISMISS_SECONDS = STAGE_DISMISS_SECONDS
+EncounterMontage.STAGE_DISMISS_TIMEOUT = STAGE_DISMISS_TIMEOUT
 
 --The moment the host asked the stage to dissolve, or nil.
 function EncounterMontage.DismissAt()
