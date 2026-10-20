@@ -42,6 +42,7 @@ Not beats (can sit anywhere, including in a sub-document):
 | `# Defeat` | story screen after a defeat |
 | `# Delve: <Name>` | a delve entered from a montage option (see Delves) |
 | `# Part <n>: <Title>` | marks the document as one part of a series (see Series) |
+| `# Results` | a series part's outcome bars and what its outcome does to the story (see "Carrying the story forward") |
 
 Any other `#` heading warns and is ignored. A document with no beats but an
 `[[encounter]]` island plays as a plain fight.
@@ -74,6 +75,7 @@ dialog, log). Use it for hidden mechanics.
 | `+1 hero token` / `you gain 2 hero tokens` / `the party gains 1 hero token` | party Hero Token pool |
 | `+2 intelligence` / `the party gains 1 intelligence` | Intelligence pool (needs `Unlock: Intelligence` somewhere; warns otherwise) |
 | `+2 malice` / `gain 2 malice` | Director's Malice pool (carries into combat) |
+| `Rite's Progress +1` / `Rite's Progress falls by 2` / `raise Rite's Progress by 1` | a story track of a series part (needs `Track: Rite's Progress`; see "Carrying the story forward") |
 | `a Wode Hag joins you` / `Wolf joins you` | allied monster (bestiary name), on a free Start tile, controlled by the acting player, fights on the heroes' side |
 | `the threat is vanquished` / `you vanquish the threat` | resolves the threat (no consequence) |
 | `you begin the encounter surprised` / `you are surprised` | monsters go first; Surprised on every hero (sticky) |
@@ -302,7 +304,9 @@ and starts a scripted scene; each non-blank line after it is one step:
   item...), `PC is skilled in X`, `PC can X` (any capability: `PC can fly`),
   `PC was a X` (career), `PC carries X`, `PC worships X`, `PC chose <option>`,
   `tier1`/`tier2`/`tier3`, `crit`, combined with `not`, `and`, `or` and
-  parentheses.
+  parentheses. In a series part, the story conditions work too
+  (`Rite's Progress is 2 or more`, `Part 1 was a failure`; see "Carrying the
+  story forward").
 - Under an option: lines above its roll are the pre-roll scene, lines below
   are the outcome scene. **Effects apply after the outcome scene is read.**
 - Entries without a scene get an automatic intro.
@@ -566,6 +570,108 @@ game (the map starts fresh each time).
   part unlocks when any of the account's heroes has won the part before it;
   in the Proving Pits, when the account has won it there. Proving Pits wins do
   not carry over to the Gate. Each part is worth its own Victory at the Gate.
+
+### Carrying the story forward
+
+A part can leave a mark that later parts read: **story tracks** (named
+numbers such as Rite's Progress) and its **result** (the montage outcome, its
+score and the round the fight was won in). It belongs to the host's account:
+a party plays with its host's story, and the latest win of a part replaces
+that part's result (replaying never clears later parts). Danger Room and Town
+Gate stories are separate.
+
+**Declare** each track in every part document that uses it, under the
+`# Part N` heading (or above the first heading):
+
+```
+# Part 1: The Road Off the Moor
+Track: Rite's Progress (Hidden) -- how close the cult is to finishing the rite
+Track: Renown
+```
+
+`(Hidden)` means players never see the number, and any clause that changes it
+is hidden as if it were in `{...}`. The text after ` -- ` is shown next to a
+shown track's value. A track starts at 0. A name with `and`, `or` or `not` in
+it cannot be read in a condition (the parser warns).
+
+**Change** a track with a clause anywhere clauses go (tiers, consequences,
+narrative options, chest rows, `# Results`): `Rite's Progress +1`,
+`Rite's Progress -2`, `Rite's Progress rises by 2` / `falls by 1`,
+`raise Rite's Progress by 1` / `lower Rite's Progress by 2`. A name that is not
+declared warns and does nothing.
+
+**The outcome.** Every montage in the part adds up to one score: each
+tier-3 result (or critical) +1, each tier-1 result -1, each threat whose
+consequence landed -1. Delve tests do not count. The score is divided by the
+heroes who began the part, so the bars mean the same for 4 heroes or 6.
+`# Results` (not a beat; runs once, at victory) sets the bars and what each
+outcome does:
+
+```
+# Results
+Outcome: total success at 1, partial at 0
+Total success: nothing happens
+Partial success: Rite's Progress +1
+Failure: Rite's Progress +2
+The fight lasted 5 or more rounds: Rite's Progress +1
+```
+
+Without an `Outcome:` line the bars are total success at 0.5, partial at -0.25.
+Each `<condition>: <clauses>` line whose condition holds applies, in order. A
+threat's consequence that changes a track stacks with `# Results` (and the
+threat already cost the score), so do one or the other unless you mean both.
+A defeat carries nothing forward.
+
+**Read it** with these conditions (joined with `not`, `and`, `or` and
+parentheses; comparisons are `2 or more` / `or higher` / `at least 2`,
+`2 or less` / `or fewer` / `at most 2`, or `2`; scores are per hero):
+
+- `Rite's Progress is 2 or more`
+- `Part 1 was a total success` / `a partial success` / `a failure`
+- `Part 1 was not recorded` (the host never won it on this board, e.g. they
+  joined someone else's party for it). Every other condition about that part is
+  false and its track shares count 0. The parser nudges you to handle it.
+- `Part 1 scored 0.5 or more`, `Part 1's fight lasted 5 or more rounds`
+- `the previous part ...` works in place of `Part n ...`
+- in `# Results` only, about this part: `total success`, `partial success`,
+  `failure`, `score 0.5 or more`, `the fight lasted 5 or more rounds`
+
+Where they go:
+
+- **Scenes**: `if Rite's Progress is 2 or more then` ... `end`.
+- **When lines**, directly under `# Montage`, `# Narrative` or `# Encounter`,
+  applied once as the beat starts: `When Rite's Progress is 2 or more: +2 malice`;
+  `When Part 1 was a failure: unlock The Bone Choir` (a harder `(Locked)`
+  threat). Inside an entry or section they warn and do nothing.
+- **Fight variants**: `When <condition>:` with nothing after the colon,
+  directly above an `[[encounter]]` island: the first island whose gate holds
+  (or that has none) is the fight. Give the last island no `When` line so
+  there is always a fight. Above a `## Reinforcements:` heading it decides
+  whether that section comes at all.
+- **Story text**: in `# Town Gate`, `# Conclusion`, `# Defeat` and a narrative
+  section, `If <condition>:` ... `Otherwise:` ... `End` lines (also
+  `Else if <condition>:`). With no story (the town before a party forms), each
+  block shows its `Otherwise` lines. Prose such as "If you listen closely:"
+  stays prose, because its condition does not parse.
+
+```
+# Conclusion
+
+The doors of the ossuary grind shut behind you.
+
+If Rite's Progress is 3 or more:
+Far below, the choir has begun to sing.
+Otherwise:
+The bones are silent. For now.
+End
+```
+
+After a win the Conclusion screen adds a recap: "Montage: Partial success.",
+"Won in round 4." and each shown track ("Renown rose to 2."). **Test
+Encounter** on Part 2 and later has a **Story so far** box: set each earlier
+part's outcome, score and round (or Not recorded) and each track's value. The
+test applies no City rows; its result is printed in the console
+("EotW story: Part 2 result: ...").
 
 ## Full worked example (master + one sub-document)
 

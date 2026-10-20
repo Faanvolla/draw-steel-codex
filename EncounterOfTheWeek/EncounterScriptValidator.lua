@@ -736,6 +736,28 @@ function EncounterScriptValidator.BuildReport(docid, partyid)
             children[#children + 1] = RowLabel{ depth = 0, class = "problem",
                 text = "this part's encounter has no region, so heroes can walk into the other parts' areas: draw one in the encounter builder, then load it into the island" }
         end
+
+        --the story it carries forward: its tracks and its "# Results".
+        for _, decl in ipairs(parse.tracks or {}) do
+            local text = string.format("story track '%s'%s", decl.name, cond(decl.hidden, " (hidden from players)", ""))
+            if decl.description ~= nil then
+                text = text .. " -- " .. decl.description
+            end
+            children[#children + 1] = RowLabel{ depth = 0, class = "note", text = text }
+        end
+        if parse.results ~= nil then
+            local bars = parse.results.bars
+            local barsText = "the default bars"
+            if bars ~= nil then
+                barsText = string.format("total success at %g, partial at %g", bars.total, bars.partial)
+            else
+                bars = EncounterScript.DEFAULT_OUTCOME_BARS
+                barsText = string.format("the default bars (total success at %g, partial at %g)", bars.total, bars.partial)
+            end
+            children[#children + 1] = RowLabel{ depth = 0, class = "note",
+                text = string.format("# Results: score per hero against %s; %d result line%s", barsText,
+                    #(parse.results.lines or {}), cond(#(parse.results.lines or {}) == 1, "", "s")) }
+        end
     end
 
     if #problems > 0 then

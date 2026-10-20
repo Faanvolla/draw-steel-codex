@@ -1722,6 +1722,7 @@ local function RecordPendingDebrief(outcome)
     printf("EotW: Proving Pits debrief of %s waiting for the town", encounter)
 end
 
+<<<<<<< Updated upstream
 --- the beta survey -------------------------------------------------------
 --While EotW is in beta, every finished game (won, lost or abandoned) of at
 --least SURVEY_MIN_SECONDS leaves eotw:pendingSurvey, and back in town the
@@ -1844,10 +1845,62 @@ function EncounterOfTheWeekGame.RecordPendingSurvey(outcome)
     }
     dmhub.SetSettingValue("eotw:pendingSurvey", dmhub.ToJson(all))
     printf("EotW: beta survey (%s, %d min) waiting for the town", outcome, math.floor(seconds / 60))
+=======
+local OUTCOME_LABELS = { total = "Total success", partial = "Partial success", failure = "Failure" }
+
+--A series part's recap under its Conclusion: the montage outcome, the
+--round the fight was won in, and every shown track (D14), e.g.
+--"Montage: Partial success." / "Won in round 4." / "Renown rose to 2."
+--nil for anything that is not a won series part.
+local function SeriesRecap(script)
+    local montage = rawget(_G, "EncounterMontage")
+    if montage == nil or montage.Story == nil or script == nil or script.parse == nil or script.parse.part == nil then
+        return nil
+    end
+    local result = nil
+    pcall(function() result = montage.GetDoc().data.seriesResult end)
+    if type(result) ~= "table" then
+        return nil
+    end
+    local lines = {}
+    for _, b in ipairs(script.parse.beats or {}) do
+        if b.kind == "montage" then
+            lines[#lines + 1] = string.format("Montage: %s.", OUTCOME_LABELS[result.outcome] or tostring(result.outcome))
+            break
+        end
+    end
+    if tonumber(result.rounds) ~= nil then
+        lines[#lines + 1] = string.format("Won in round %d.", math.floor(tonumber(result.rounds) or 0))
+    end
+    local story = montage.Story()
+    local shares = {}
+    for _, share in pairs(result.tracks or {}) do
+        if type(share) == "table" and share.key ~= nil then
+            shares[share.key] = tonumber(share.value) or 0
+        end
+    end
+    for _, decl in ipairs(script.parse.tracks or {}) do
+        if not decl.hidden then
+            local share = shares[decl.key] or 0
+            local verb = cond(share > 0, "rose to", cond(share < 0, "fell to", "stays at"))
+            local line = string.format("%s %s %g", decl.name, verb, story.tracks[decl.key] or 0)
+            if decl.description ~= nil then
+                line = line .. " -- " .. decl.description
+            end
+            lines[#lines + 1] = line .. "."
+        end
+    end
+    if #lines == 0 then
+        return nil
+    end
+    return table.concat(lines, "\n")
+>>>>>>> Stashed changes
 end
 
 --The script's story section for an outcome ("# Conclusion" after a victory,
---"# Defeat" after a defeat), or nil.
+--"# Defeat" after a defeat), or nil. Its text is read for the story so far
+--(a series part's "If ...:" blocks), and a won series part adds its recap.
+--The section returned is a copy; the parse is never changed.
 local function OutcomeStory(outcome)
     local section, script = nil, nil
     pcall(function()
@@ -1858,10 +1911,31 @@ local function OutcomeStory(outcome)
             section = story[cond(outcome == "defeat", "defeat", "conclusion")]
         end
     end)
-    if section == nil or section.text == nil or section.text == "" then
+    if section == nil or section.text == nil then
         return nil
     end
-    return section, script
+    local text = section.text
+    pcall(function()
+        local montage = rawget(_G, "EncounterMontage")
+        if section.storyBlocks ~= nil and montage ~= nil and montage.Story ~= nil then
+            text = EncounterScript.ResolveStoryText(section, montage.Story())
+        end
+        if outcome == "victory" then
+            local recap = SeriesRecap(script)
+            if recap ~= nil then
+                text = cond(text == "", recap, text .. "\n\n" .. recap)
+            end
+        end
+    end)
+    if text == "" then
+        return nil
+    end
+    local copy = {}
+    for k, v in pairs(section) do
+        copy[k] = v
+    end
+    copy.text = text
+    return copy, script
 end
 
 --Watch the encounter conclude: once this client has seen the victory/defeat
@@ -2568,8 +2642,50 @@ end)
 --and info-bubble encounters never do. FindMapScript itself falls back on this
 --for a map with no script document, hence the re-entry guard.
 local m_findingMapEncounter = false
+
+--A fight with variants ("When <condition>:" above an [[encounter]] island
+--in a series part): the island the story picks -- the first whose gate
+--holds, or that has none -- resolved like a reinforcement island. nil when
+--no island is gated (the usual search below finds the fight).
+local function GatedIslandEntry(script)
+    local beat = nil
+    for _, b in ipairs(script.parse.beats or {}) do
+        if b.kind == "encounter" then
+            beat = b
+            break
+        end
+    end
+    local gated = false
+    for _, island in ipairs((beat ~= nil and beat.islands) or {}) do
+        if island.gate ~= nil then
+            gated = true
+        end
+    end
+    local reinforcements = rawget(_G, "EncounterReinforcements")
+    if not gated or reinforcements == nil then
+        return nil
+    end
+    ---@cast beat -nil
+    local story = EncounterMontage.Story()
+    local chosen = nil
+    for _, island in ipairs(beat.islands) do
+        if island.gate == nil or EncounterScript.EvalStoryCondition(island.gate.cond, story) then
+            chosen = island
+            break
+        end
+    end
+    chosen = chosen or beat.islands[1]
+    local encounter, tag = reinforcements.IslandEncounter(script, chosen)
+    if encounter == nil then
+        return nil
+    end
+    local src = script.parse.sources ~= nil and script.parse.sources[chosen.line] or nil
+    return { encounter = encounter, richEncounter = tag, docid = src ~= nil and src.docid or nil }
+end
+
 local function FindMapEncounter()
     local partDocs = nil
+    local gatedEntry = nil
     local montage = rawget(_G, "EncounterMontage")
     if not m_findingMapEncounter and montage ~= nil and montage.ScriptDocuments ~= nil then
         m_findingMapEncounter = true
@@ -2578,8 +2694,12 @@ local function FindMapEncounter()
             if #(script.seriesParts or {}) > 0 then
                 partDocs = montage.ScriptDocuments(script)
             end
+            gatedEntry = GatedIslandEntry(script)
         end)
         m_findingMapEncounter = false
+    end
+    if gatedEntry ~= nil then
+        return gatedEntry
     end
 
     --hostAccess: EotW games are directorless, so the host's dmhub.isDM is false
@@ -3989,6 +4109,15 @@ local function CheckEncounterOutcome(queue)
 
     if victory then
         printf("EotW: victory condition met; showing the victory screen")
+        --a series part decides what it carries forward now, once: the
+        --montage outcome, the round, "# Results" (practice games too).
+        pcall(function()
+            local montage = rawget(_G, "EncounterMontage")
+            if montage ~= nil then
+                local numHeroes = tonumber(dmhub.GetSettingValue("numheroes")) or 5
+                montage.DecideSeriesResult(montage.FindMapScript(), true, numHeroes, tonumber(queue.round))
+            end
+        end)
         live.victoryAwarded = true
         dmhub:UploadInitiativeQueue()
     else
@@ -4062,6 +4191,34 @@ local function EnforceStrictRules()
         if dmhub.GetSettingValue(entry.id) ~= value then
             dmhub.SetSettingValue(entry.id, value)
         end
+    end
+end
+
+--- a series' story --------------------------------------------------------
+
+--Host: the story this series part starts from ("Carrying the story
+--forward"): `carried` is the City's story for the host's account (arrival
+--args) or a test's Story so far, nil for Part 1 or when nothing came. A
+--story already seeded for this part (a resumed host) is kept.
+local function SeedSeriesStory(carried)
+    local montage = rawget(_G, "EncounterMontage")
+    if montage == nil or montage.SeedStory == nil then
+        return
+    end
+    local ok, err = pcall(function()
+        local part = EncounterOfTheWeekGame.ActivePart()
+        local doc = montage.GetDoc()
+        local story = doc.data.story
+        if type(story) == "table" and story.seeded and tonumber(story.part) == part then
+            return
+        end
+        doc:BeginChange()
+        montage.SeedStory(doc, part, carried)
+        doc:CompleteChange("Encounter of the Week: the story so far", { undoable = false })
+        printf("EotW story: part %d starts with %s", part, carried ~= nil and "the story so far" or "no story carried")
+    end)
+    if not ok then
+        printf("EotW story: seeding failed: %s", tostring(err))
     end
 end
 
@@ -4207,6 +4364,22 @@ local function RunScriptBeat(ctx)
         local status = prep.HostTick(script, beat, index)
         if status ~= "done" then
             return
+        end
+    end
+
+    --a series part's "When <condition>:" lines (more Malice for a rite
+    --gone further), once, before anything is set up.
+    if beat.when ~= nil and #beat.when > 0 then
+        local okWhen, errWhen = pcall(function()
+            local doc = montage.GetDoc()
+            if not (doc.data.whenApplied or {})["b" .. tostring(index)] then
+                doc:BeginChange()
+                montage.ApplyWhenLines(doc, beat, index, nil)
+                doc:CompleteChange("Encounter of the Week: When lines", { undoable = false })
+            end
+        end)
+        if not okWhen then
+            printf("EotW story: When lines failed: %s", tostring(errWhen))
         end
     end
 
@@ -4781,6 +4954,11 @@ function EncounterOfTheWeekGame.SetupOnArrival(args)
             RecordEncounterMap(encounterKey, encounterMapId)
             RecordPracticeMode(args.practice)
 
+            --a series part starts from the story the earlier parts left
+            --(the City's, for the host's account): before the region, which
+            --a fight with variants picks by it, and before the opening beat.
+            SeedSeriesStory(args.story)
+
             --the encounter's region bounds the map from now on (a series'
             --part plays in its own corner of the map). Before any hero lands.
             ApplyPlayRegion()
@@ -5064,6 +5242,8 @@ function EncounterOfTheWeekGame.StartTest(options)
         mode = options.mode,
         part = tonumber(options.part) or 1,
         heroes = options.heroes,
+        --a series part's Story so far (EncounterTest's editor), or nil.
+        story = options.story,
         at = dmhub.Time(),
     }
     printf("EotW test: starting a %s test of part %d with %d heroes", tostring(options.mode), tonumber(options.part) or 1, #options.heroes)
@@ -5254,6 +5434,10 @@ local function TestArrival(pending)
         }
     end, "Encounter test: setting up")
     m_testPart = nil
+
+    --a series part: the Story so far the tester set (nil = nothing
+    --carried). Before the region, which a fight with variants picks by it.
+    SeedSeriesStory(pending.story)
 
     --bounded to the encounter's region like a real game (released at the
     --end of the test).

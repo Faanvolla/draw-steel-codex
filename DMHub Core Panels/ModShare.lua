@@ -1701,8 +1701,11 @@ end
 --author playtests in.
 --Returns { errors, warnings, encounters }: encounters is what the town reads
 --from the module record as publishingProperties.eotwEncounters, {<map name>
---= {townGate = text}} from each script's "# Town Gate" section; a series map
---adds parts = { {number, title, townGate}, ... }, one per part. Also ticks
+--= {townGate = text, townGateSource?}} from each script's "# Town Gate"
+--section (townGateSource: the text as written, when it has "If ...:" story
+--blocks; townGate is then what shows with no story); a series map adds
+--parts = { {number, title, townGate, townGateSource?, tracks? = { {name,
+--hidden, description}, ... }}, ... }, one per part. Also ticks
 --every document a script is built from (ctx.include), since nothing else
 --ties a map to the documents in its journal folder.
 local CheckEncounterModule = function(ctx)
@@ -1809,17 +1812,29 @@ local CheckEncounterModule = function(ctx)
 					warnings[#warnings+1] = string.format("%s: %d more script warnings (/eotwscript on the map lists them all).", entry.label, #scriptWarnings - 3)
 				end
 
+				--a Town Gate with "If ...:" blocks (a series part reading the
+				--story so far) ships its no-story text as townGate, and the
+				--text as written as townGateSource for a town that can read it.
 				local towngate = script.parse.story ~= nil and script.parse.story.towngate or nil
-				local townGateText = nil
+				local townGateText, townGateSource = nil, nil
+				if towngate ~= nil and type(towngate.rawText) == "string" then
+					townGateSource = towngate.rawText
+				end
 				if towngate ~= nil and type(towngate.text) == "string" and towngate.text ~= "" then
 					townGateText = towngate.text
-				else
+				elseif townGateSource == nil then
 					warnings[#warnings+1] = string.format("%s: no # Town Gate section, so the town shows no backstory for it.", entry.label)
 				end
 				if series then
-					parts[#parts+1] = { number = entry.number, title = entry.title, townGate = townGateText }
-				elseif townGateText ~= nil then
-					result.encounters[m.name] = { townGate = townGateText }
+					--the part's story tracks, so the town can tell shown ones from hidden.
+					local tracks = nil
+					for _, decl in ipairs(script.parse.tracks or {}) do
+						tracks = tracks or {}
+						tracks[#tracks+1] = { name = decl.name, hidden = decl.hidden == true, description = decl.description }
+					end
+					parts[#parts+1] = { number = entry.number, title = entry.title, townGate = townGateText, townGateSource = townGateSource, tracks = tracks }
+				elseif townGateText ~= nil or townGateSource ~= nil then
+					result.encounters[m.name] = { townGate = townGateText, townGateSource = townGateSource }
 				end
 			end
 			if series and #parts > 0 then
