@@ -41,7 +41,7 @@ end
 --                       town says they already won this encounter; each
 --                       owner stamps its own at arrival. The automatic
 --                       Victory award skips them.)
---  data.practice      = true  (host-stamped at setup: a Danger Rooms game.
+--  data.practice      = true  (host-stamped at setup: a Proving Pits game.
 --                       Practice only -- no Victory, no treasure, no
 --                       outcome goes home; players debrief it in town.)
 --  data.abilityBusy   = { [userid] = serverTime }  (that client has an
@@ -125,7 +125,7 @@ setting{
     storage = "preference",
 }
 
---Handoff to the town after a Danger Rooms game: the town asks the player to
+--Handoff to the town after a Proving Pits game: the town asks the player to
 --debrief it (vote, feedback for its creator, next week's nomination). JSON
 --text: { [userid] = {gameid, encounter, result} }, one game per player.
 --Machine-local; the titlescreen re-declares it.
@@ -303,7 +303,7 @@ local function RecordEncounterMap(key, mapid)
     doc:CompleteChange("Encounter of the Week: encounter map", {undoable = false})
 end
 
---Host only, at setup: a party from the Danger Rooms plays for practice (the
+--Host only, at setup: a party from the Proving Pits plays for practice (the
 --town decides, from the week's schedule, and says so in the arrival). Only
 --ever set, never cleared: a resume has no arrival flag and keeps the stamp.
 local function RecordPracticeMode(practice)
@@ -316,10 +316,10 @@ local function RecordPracticeMode(practice)
     end
     doc:BeginChange()
     doc.data.practice = true
-    doc:CompleteChange("Encounter of the Week: Danger Rooms practice", {undoable = false})
+    doc:CompleteChange("Encounter of the Week: Proving Pits practice", {undoable = false})
 end
 
---Is this a Danger Rooms game? Practice only: the host awards no Victory,
+--Is this a Proving Pits game? Practice only: the host awards no Victory,
 --nothing goes home, and each player debriefs the encounter back in town.
 function EncounterOfTheWeekGame.IsPracticeGame()
     local practice = false
@@ -1270,7 +1270,7 @@ local function AutoAwardVictories(live, now)
     if live:try_get("victoriesAwarded", false) then
         return
     end
-    --the Danger Rooms award nothing that lasts.
+    --the Proving Pits award nothing that lasts.
     if EncounterOfTheWeekGame.IsPracticeGame() then
         return
     end
@@ -1383,6 +1383,97 @@ function EncounterOfTheWeekGame.TreasureGained(token)
     return result
 end
 
+--- auto-equip: treasure found is put on while there is room ----------------
+--User direction 2026-10-19: a hero who gains an equippable treasure (a
+--montage reward, a delve or map chest, a hand-over) wears it at once when
+--they have a free slot, by the EotW hero sheet's rules (EotwHeroSheet.
+--EquipSlot: trinket slots, the leveled-treasure cap). Watching the items
+--rather than hooking each grant catches every way an item can arrive.
+--
+--State doc autoEquip[charid][itemid] = how many gained units were already
+--handled (equipped, or found no room), so an item the player takes off
+--is never put back on, and a full hero does not equip it later out of the
+--blue. Host only, every script tick once the arrival snapshot exists.
+local function AutoEquipTreasure()
+    local sheet = rawget(_G, "EotwHeroSheet")
+    if sheet == nil or sheet.EquipInPlace == nil then
+        return
+    end
+    local doc = mod:GetDocumentSnapshot(STATE_DOC_ID)
+    local arrivalAll = doc.data.arrivalItems
+    if type(arrivalAll) ~= "table" then
+        return
+    end
+    local handledAll = type(doc.data.autoEquip) == "table" and doc.data.autoEquip or {}
+    local gear = dmhub.GetTable("tbl_Gear") or {}
+    local updates = {}
+
+    for _, token in ipairs(dmhub.allTokens) do
+        local arrival = token.valid and arrivalAll[token.charid] or nil
+        local isHero = false
+        pcall(function() isHero = token.properties ~= nil and token.properties:IsHero() end)
+        if isHero and type(arrival) == "table" then
+            local handled = type(handledAll[token.charid]) == "table" and handledAll[token.charid] or {}
+            local changes = nil
+            for itemid, count in pairs(ItemCounts(token.properties)) do
+                local item = gear[itemid]
+                local gained = count - (tonumber(arrival[itemid]) or 0)
+                local done = tonumber(handled[itemid]) or 0
+                if item ~= nil and EquipmentCategory.IsEquippable(item) then
+                    if gained < done then
+                        --handed away or lost: a later gain is a new find.
+                        changes = changes or {}
+                        changes[itemid] = math.max(0, gained)
+                    elseif gained > done then
+                        local equipped = {}
+                        ElevateToHostPermissions()
+                        local ok, err = pcall(function()
+                            token:ModifyProperties{
+                                description = "Equip treasure",
+                                undoable = false,
+                                execute = function()
+                                    for _ = done + 1, gained do
+                                        local slot = sheet.EquipInPlace(token, itemid)
+                                        if slot ~= nil then
+                                            equipped[#equipped + 1] = slot
+                                        end
+                                    end
+                                end,
+                            }
+                        end)
+                        DropHostPermissions()
+                        if not ok then
+                            printf("EotW: auto-equip of %s on %s failed: %s", tostring(item.name), tostring(token.name), tostring(err))
+                        elseif #equipped > 0 then
+                            printf("EotW: %s equips %s (%s)", tostring(token.name), tostring(item.name), table.concat(equipped, ", "))
+                        end
+                        changes = changes or {}
+                        changes[itemid] = gained
+                    end
+                end
+            end
+            if changes ~= nil then
+                updates[token.charid] = changes
+            end
+        end
+    end
+
+    if next(updates) == nil then
+        return
+    end
+    doc:BeginChange()
+    doc.data.autoEquip = doc.data.autoEquip or {}
+    for charid, changes in pairs(updates) do
+        doc.data.autoEquip[charid] = doc.data.autoEquip[charid] or {}
+        for itemid, n in pairs(changes) do
+            doc.data.autoEquip[charid][itemid] = n
+        end
+    end
+    doc:CompleteChange("Encounter of the Week: treasure equipped", {undoable = false})
+end
+
+EncounterOfTheWeekGame.AutoEquipTreasure = AutoEquipTreasure
+
 --"Bastion Belt" / "Bastion Belt x2, Ward Token".
 local function DescribeTreasure(list)
     local parts = {}
@@ -1417,13 +1508,13 @@ pcall(function()
     end)
 end)
 
---In the Danger Rooms every hero's card says why nothing was awarded.
+--In the Proving Pits every hero's card says why nothing was awarded.
 pcall(function()
     DSVictoryScreen.RegisterHeroCardNote("eotw-practice", function(live, token)
         if not EncounterOfTheWeekGame.IsPracticeGame() then
             return nil
         end
-        return "Danger Rooms: practice only"
+        return "Proving Pits: practice only"
     end)
 end)
 
@@ -1522,7 +1613,7 @@ local function RecordPendingOutcomes(result)
     end
     m_outcomesRecorded = true
 
-    --a Danger Rooms game sends nothing home, not even a death: the debrief
+    --a Proving Pits game sends nothing home, not even a death: the debrief
     --replaces it.
     if EncounterOfTheWeekGame.IsPracticeGame() then
         return
@@ -1602,7 +1693,7 @@ local function OfferAbsentOutcomes(result)
     end
 end
 
---After a Danger Rooms game, ask the town to have this player debrief it
+--After a Proving Pits game, ask the town to have this player debrief it
 --(eotw:pendingDebrief). Victory or defeat alike; a later game replaces it.
 local function RecordPendingDebrief(outcome)
     if not EncounterOfTheWeekGame.IsPracticeGame() then
@@ -1628,7 +1719,7 @@ local function RecordPendingDebrief(outcome)
         result = outcome or "",
     }
     dmhub.SetSettingValue("eotw:pendingDebrief", dmhub.ToJson(all))
-    printf("EotW: Danger Rooms debrief of %s waiting for the town", encounter)
+    printf("EotW: Proving Pits debrief of %s waiting for the town", encounter)
 end
 
 --- the beta survey -------------------------------------------------------
@@ -4279,6 +4370,14 @@ function EncounterOfTheWeekGame.MapScriptHostThink(ctx)
         end
     end
 
+    --equippable treasure a hero just gained goes on while there is room.
+    do
+        local ok, err = pcall(AutoEquipTreasure)
+        if not ok then
+            printf("EotW: auto-equip tick failed: %s", tostring(err))
+        end
+    end
+
     local queue = dmhub.initiativeQueue
     local queueLive = queue ~= nil and not queue.hidden
     local shared = ctx:GetShared()
@@ -5100,6 +5199,7 @@ local function ClearTestArrival(data)
     data.combatStarted = nil
     data.proceedRequested = nil
     data.arrivalItems = nil
+    data.autoEquip = nil
     data.alreadyCompleted = nil
     data.abilityBusy = nil
     data.practice = nil

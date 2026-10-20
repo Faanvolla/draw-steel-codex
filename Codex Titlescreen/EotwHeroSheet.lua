@@ -3919,7 +3919,7 @@ local function SwitcherPanel(ctx, label, ours, theirs)
     }
 end
 
---Whether the practice-only chip shows: a Danger Room game.
+--Whether the practice-only chip shows: a Proving Pits game.
 ---@param ctx table
 ---@return boolean
 local function IsPractice(ctx)
@@ -3963,7 +3963,7 @@ local function RightContent(ctx)
     if IsPractice(ctx) then
         right[#right+1] = gui.Panel{
             classes = { "eotwsStateChip" },
-            Text("Danger Rooms: practice only", { "eotwsStateChipText" }),
+            Text("Proving Pits: practice only", { "eotwsStateChipText" }),
         }
     end
 

@@ -564,7 +564,7 @@ game (the map starts fresh each time).
   whole). Form a Party opens on the next part the player has to play, with
   a chip per part: won parts are ticked, locked ones greyed. At the Town Gate a
   part unlocks when any of the account's heroes has won the part before it;
-  in the Danger Rooms, when the account has won it there. Danger Room wins do
+  in the Proving Pits, when the account has won it there. Proving Pits wins do
   not carry over to the Gate. Each part is worth its own Victory at the Gate.
 
 ## Full worked example (master + one sub-document)

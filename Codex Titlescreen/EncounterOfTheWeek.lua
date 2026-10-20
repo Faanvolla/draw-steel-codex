@@ -119,7 +119,7 @@ setting{
     storage = "preference",
 }
 
---Set by the game-side EotW codemod after a Danger Rooms game: the debrief
+--Set by the game-side EotW codemod after a Proving Pits game: the debrief
 --this player owes, { [userid] = {gameid, encounter, result} } as JSON. The
 --town asks for it (ShowDebriefDialog) and clears it. Same id as the game
 --codemod's declaration.
@@ -136,6 +136,15 @@ setting{
 --id as the game codemod's declaration.
 setting{
     id = "eotw:pendingSurvey",
+    default = "",
+    storage = "preference",
+}
+
+--The accounts on this machine that have seen the town's welcome dialog
+--(ShowWelcomeDialog), as JSON text: { [userid] = true }. Machine-local, so a
+--player on a second machine sees it once more.
+setting{
+    id = "eotw:welcomed",
     default = "",
     storage = "preference",
 }
@@ -160,7 +169,7 @@ local GATE_ART = "db5bcf88-00fc-4e0b-89c9-5ddb98d1a772" --Market Streets, Origin
 CreatorCredit.RegisterArt(GUILD_ART, "czepeku")
 CreatorCredit.RegisterArt(GATE_ART, "czepeku")
 
---The Danger Rooms' art: the front cover of Draw Steel: Monsters, rendered
+--The Proving Pits' art: the front cover of Draw Steel: Monsters, rendered
 --from the cover PSD with its title text, spine and text shadow hidden, and
 --cropped to a 16:9 band (3840x2160) around the beholder. MCDM's own art, so
 --no creator credit. Sources in C:/dev/eotw/art/ (danger-rooms-*).
@@ -298,7 +307,7 @@ local CITY_LOCATIONS = {
     --Encounter of the Week (the city decides; see EotwRoster.DangerRoomsUnlocked).
     {
         id = "danger",
-        label = "Danger Rooms",
+        label = "Proving Pits",
         icon = "phosphor/skull-fill.png",
         --level with the Guild: anything much lower sits under the hero
         --cards along the bottom of the screen.
@@ -308,7 +317,7 @@ local CITY_LOCATIONS = {
             art = DANGER_ART,
             aspect = 16 / 9,
             focusX = 0.3,
-            title = "The Danger Rooms",
+            title = "The Proving Pits",
             tagline = "Untried horrors dreamed up by the town's own, loosed on whoever dares. It is only practice: no Victories, no treasure, nothing kept. Survive, then tell the makers what you thought.",
         },
         locked = function(ctx)
@@ -316,7 +325,7 @@ local CITY_LOCATIONS = {
                 return "The guild is still checking your roster..."
             end
             if EotwRoster.DangerRoomsUnlocked() ~= true then
-                return "Defeat the Encounter of the Week to unlock the Danger Rooms."
+                return "Defeat the Encounter of the Week to unlock the Proving Pits."
             end
             if EotwRoster.LivingCount() == 0 then
                 return "You need a hero before you can venture out. Visit the Hero's Guild."
@@ -546,7 +555,7 @@ end
 --EncounterOfTheWeek.md). Its parts are keyed off the map's key: part 1 is the
 --bare key, a later part adds "#<n>" ("Encounter: The Crypt#2"). Map names
 --can never hold "#". The bare key also names the whole series: the schedule,
---the Danger Rooms rows and votes all use it.
+--the Proving Pits rows and votes all use it.
 --key -> the series' key (the bare key), part number (1 when none).
 function EncounterOfTheWeek.SplitPartKey(key)
     if type(key) ~= "string" then
@@ -678,8 +687,8 @@ end
 --May this account form a party for this key? Part 1 of a series (and any
 --encounter that is not a series) always; part n once the account has won
 --part n-1 ON THE SAME BOARD: at the Town Gate any of its heroes' wins
---(EotwRoster.AccountCompleted), in the Danger Rooms its practice wins
---(EotwRoster.PracticeWon). A Danger Room win does not carry over to the Gate.
+--(EotwRoster.AccountCompleted), in the Proving Pits its practice wins
+--(EotwRoster.PracticeWon). A Proving Pits win does not carry over to the Gate.
 --Returns true, or false + the reason to show.
 function EncounterOfTheWeek.PartUnlocked(key)
     local seriesKey, part = EncounterOfTheWeek.SplitPartKey(key)
@@ -732,7 +741,7 @@ local function ModuleEncounters(info, moduleid)
     pcall(function() published = info.publishingProperties.eotwEncounters end)
     pcall(function() name = info.name end)
     pcall(function() author = info.authorid end)
-    --published from this account: its creator reads the Danger Rooms feedback.
+    --published from this account: its creator reads the Proving Pits feedback.
     local ours = false
     pcall(function() ours = info.ourModule == true end)
 
@@ -991,7 +1000,7 @@ end
 --- the week's schedule ------------------------------------------------
 --One encounter at a time is THE Encounter of the Week. The Town Gate offers
 --it, and the past ones, and nothing else. Every other community encounter in
---the pool plays in the Danger Rooms, for practice. Official-module maps that
+--the pool plays in the Proving Pits, for practice. Official-module maps that
 --are not on the schedule (Angry Dwarves) are retired: offered nowhere. The
 --schedule lives in the City (/city/week = {week, current, past, since}, keys
 --as above); an admin rotates it with EncounterOfTheWeek.SetWeek, from the
@@ -1057,14 +1066,14 @@ function EncounterOfTheWeek.IsScheduledEncounter(key)
     return false
 end
 
---Does this encounter play in the Danger Rooms (a community encounter that
+--Does this encounter play in the Proving Pits (a community encounter that
 --has never been an Encounter of the Week)?
 function EncounterOfTheWeek.IsDangerRoomEncounter(key)
     local moduleid = EncounterOfTheWeek.ParseEncounterKey(key)
     return moduleid ~= STARTING_MODULE and not EncounterOfTheWeek.IsScheduledEncounter(key)
 end
 
---The pool's Danger Room encounters, grouped by module as the pool lists them.
+--The pool's Proving Pits encounters, grouped by module as the pool lists them.
 function EncounterOfTheWeek.GetDangerRoomEncounters()
     local result = {}
     for _,entry in ipairs(EncounterOfTheWeek.GetEncounters() or {}) do
@@ -2166,7 +2175,7 @@ function EncounterOfTheWeek.ShowPoolDialog()
             vmargin = 8,
         },
         gui.Label{
-            text = "Community modules published Public or Unlisted as Encounter of the Week. A pulled module's encounters are not offered in the Danger Rooms (or at the Gate, if one was an Encounter of the Week); games already formed keep playing it.",
+            text = "Community modules published Public or Unlisted as Encounter of the Week. A pulled module's encounters are not offered in the Proving Pits (or at the Gate, if one was an Encounter of the Week); games already formed keep playing it.",
             fontSize = 15,
             color = "#b8ad96",
             width = "100%",
@@ -2219,7 +2228,7 @@ function EncounterOfTheWeek.ShowPoolDialog()
 end
 
 --Admin: the weekly assessment and the rotation. Lists every encounter in the
---pool that is not this week's, Danger Room votes, plays and feedback beside
+--pool that is not this week's, Proving Pits votes, plays and feedback beside
 --each, best net vote first, each with "Make Encounter of the Week" (a second
 --click confirms). Mounted over the town screen.
 function EncounterOfTheWeek.ShowWeekDialog()
@@ -2294,7 +2303,7 @@ function EncounterOfTheWeek.ShowWeekDialog()
         local rows = {}
         for _,entry in ipairs(entries) do
             local stats = byKey[entry.key]
-            local kind = "Danger Room"
+            local kind = "Proving Pits"
             if EncounterOfTheWeek.IsScheduledEncounter(entry.key) then
                 kind = "Past Encounter of the Week"
             elseif entry.official then
@@ -2520,7 +2529,7 @@ CreateScreen = function(args)
     local chatTitleLabel = nil
 
     --The two party boards: the Town Gate's ("gate": the Encounter of the
-    --Week and the past ones) and the Danger Rooms' ("danger"). Each is the
+    --Week and the past ones) and the Proving Pits' ("danger"). Each is the
     --body of its location's scene; both are built once and kept, and
     --RefreshGames renders each. Per board: { list, title, error, controls,
     --creatorButton, pastButton, cardWidth }.
@@ -2534,7 +2543,7 @@ CreateScreen = function(args)
     local ShowPastEncountersDialog = nil
     ---@type fun()
     local ShowCreatorFeedbackDialog = nil
-    --Danger Room votes from the city's danger-stats, { [key] = {up, down,
+    --Proving Pits votes from the city's danger-stats, { [key] = {up, down,
     --plays} }.
     local m_dangerStats = {}
 
@@ -2596,7 +2605,7 @@ CreateScreen = function(args)
     end
 
     --A board's scene card is narrow over its lists, so the art (the Gate's
-    --tower, the Danger Rooms' monster) stays clear, and wide in a party view,
+    --tower, the Proving Pits' monster) stays clear, and wide in a party view,
     --where a full party's six hero cards need one row. The list panel sits in
     --the board, which sits in the card.
     local CARD_WIDTH_LIST = { gate = 1000, danger = 900 }
@@ -2928,7 +2937,7 @@ CreateScreen = function(args)
         return ""
     end
 
-    --Which board lists a party: the Danger Rooms' for a Danger Room
+    --Which board lists a party: the Proving Pits' for a Proving Pits
     --encounter, the Gate's for everything else.
     local PartyMode = function(record)
         if record ~= nil and EncounterOfTheWeek.IsDangerRoomEncounter(record.encounter) then
@@ -2937,8 +2946,8 @@ CreateScreen = function(args)
         return "gate"
     end
 
-    --What the Danger Rooms mean for the heroes, wherever a party forms there.
-    local PRACTICE_TEXT = "The Danger Rooms are practice. Heroes earn no Victories, keep no treasure and carry nothing else home. Afterwards you can vote on the encounter and leave feedback for its creator."
+    --What the Proving Pits mean for the heroes, wherever a party forms there.
+    local PRACTICE_TEXT = "The Proving Pits are practice. Heroes earn no Victories, keep no treasure and carry nothing else home. Afterwards you can vote on the encounter and leave feedback for its creator."
 
     local PracticeNote = function(width)
         return gui.Label{
@@ -3058,7 +3067,7 @@ CreateScreen = function(args)
             numHeroes = slotsFilled,
             members = members,
             encounterMap = encounterMap,
-            --a Danger Rooms party: the host stamps the game as practice, so
+            --a Proving Pits party: the host stamps the game as practice, so
             --no Victory or treasure is awarded and players debrief it in town.
             practice = encounterMap ~= nil and EncounterOfTheWeek.IsDangerRoomEncounter(encounterMap),
             --members entered alongside the host (see fastLaunchSetting): the
@@ -3069,7 +3078,7 @@ CreateScreen = function(args)
 
         --start directly on the encounter map rather than on the module's
         --first map and travelling. Only for the official module's maps: a
-        --Danger Rooms module is installed by the host's setup, after load.
+        --Proving Pits module is installed by the host's setup, after load.
         local enterOptions = nil
         if arrival.fastLaunch and encounterMap ~= nil then
             local moduleid, mapName = EncounterOfTheWeek.ParseEncounterKey(encounterMap)
@@ -4400,7 +4409,7 @@ CreateScreen = function(args)
         }
     end
 
-    --One encounter on the Danger Rooms' board: its title, maker, votes so
+    --One encounter on the Proving Pits' board: its title, maker, votes so
     --far, backstory, and a Form a Party for it.
     local DangerEncounterRow = function(entry)
         local stats = m_dangerStats[entry.key]
@@ -4479,7 +4488,7 @@ CreateScreen = function(args)
     end
 
     --This account's own encounters in the pool (it published the module),
-    --whose Danger Rooms feedback it may read.
+    --whose Proving Pits feedback it may read.
     local MyEncounters = function()
         local result = {}
         for _,entry in ipairs(EncounterOfTheWeek.GetEncounters() or {}) do
@@ -4491,7 +4500,7 @@ CreateScreen = function(args)
     end
 
     --A board's list mode: its header, then the parties it holds (forming
-    --ones first, then those underway), then -- in the Danger Rooms -- the
+    --ones first, then those underway), then -- in the Proving Pits -- the
     --encounters to try.
     local BoardChildren = function(mode, games, ids)
         local children = {}
@@ -4525,7 +4534,7 @@ CreateScreen = function(args)
         if #forming == 0 then
             children[#children+1] = EmptyNote(cond(mode == "gate",
                 "No parties are forming right now. Form one and others can join you!",
-                "Nobody is in the Danger Rooms right now. Pick an encounter below to form a party."))
+                "Nobody is in the Proving Pits right now. Pick an encounter below to form a party."))
         end
         for _,row in ipairs(forming) do
             children[#children+1] = row
@@ -4607,7 +4616,7 @@ CreateScreen = function(args)
                     ui.list.children = BoardChildren(mode, games, ids)
                 end
                 if ui.title ~= nil and ui.title.valid then
-                    ui.title.text = cond(inView, "Your Party", cond(mode == "gate", "Encounter of the Week", "The Danger Rooms"))
+                    ui.title.text = cond(inView, "Your Party", cond(mode == "gate", "Encounter of the Week", "The Proving Pits"))
                 end
                 --no back button in a party view: leaving the party
                 --(Abandon/Leave) is the way back to the lists. The collapsed
@@ -5032,8 +5041,8 @@ CreateScreen = function(args)
         local dlg = nil
 
         --The party sets out for one encounter, chosen where it was formed:
-        --the Encounter of the Week (or a past one) at the Gate, a Danger Room
-        --encounter in the Danger Rooms. It rides the party record as its
+        --the Encounter of the Week (or a past one) at the Gate, a Proving Pits
+        --encounter in the Proving Pits. It rides the party record as its
         --encounter KEY (the town keys who has already won an encounter by it).
         local m_encounter = encounterKey
         local practice = EncounterOfTheWeek.IsDangerRoomEncounter(m_encounter)
@@ -5466,7 +5475,7 @@ CreateScreen = function(args)
         dlg = ModalDialog{ title = "Past Encounters", children = rows }
     end
 
-    --A creator's view of what Danger Rooms players said about their
+    --A creator's view of what Proving Pits players said about their
     --encounters: the votes so far and every piece of feedback, newest first.
     ShowCreatorFeedbackDialog = function()
         local mine = MyEncounters()
@@ -5490,7 +5499,7 @@ CreateScreen = function(args)
                     create = function(element)
                         body = element
                     end,
-                    EmptyNote("Asking the Danger Rooms..."),
+                    EmptyNote("Asking the Proving Pits..."),
                 },
             },
         }
@@ -5544,7 +5553,7 @@ CreateScreen = function(args)
         }
     end
 
-    --The Danger Rooms' votes so far, for the board.
+    --The Proving Pits' votes so far, for the board.
     local FetchDangerStats = function()
         if m_conn == nil or not m_conn.connected then
             return
@@ -5559,13 +5568,13 @@ CreateScreen = function(args)
                 RefreshGames()
             end,
             error = function(message)
-                printf("EotW: could not read the Danger Rooms' votes: %s", tostring(message))
+                printf("EotW: could not read the Proving Pits' votes: %s", tostring(message))
             end,
         }
     end
 
-    --- the Danger Rooms debrief -------------------------------------------
-    --After a Danger Rooms game the game side leaves eotw:pendingDebrief; back
+    --- the Proving Pits debrief -------------------------------------------
+    --After a Proving Pits game the game side leaves eotw:pendingDebrief; back
     --in town the player is asked to vote and give the creator feedback.
     --Sending or skipping clears it.
 
@@ -5602,7 +5611,7 @@ CreateScreen = function(args)
     end
 
     local m_debriefOpen = false
-    --{gameid -> true}: Danger Room wins sent this session (record-practice-win).
+    --{gameid -> true}: Proving Pits wins sent this session (record-practice-win).
     local m_practiceWinSent = {}
 
     local ShowDebriefDialog = function(entry)
@@ -5690,8 +5699,8 @@ CreateScreen = function(args)
             return button
         end
 
-        local resultText = cond(entry.result == "victory", "Your party survived the Danger Room.",
-            cond(entry.result == "defeat", "The Danger Room got the better of your party.", "Your party left the Danger Room."))
+        local resultText = cond(entry.result == "victory", "Your party survived the Proving Pits.",
+            cond(entry.result == "defeat", "The Proving Pits got the better of your party.", "Your party left the Proving Pits."))
 
         local Label = function(text, size, color)
             return gui.Label{
@@ -5707,7 +5716,7 @@ CreateScreen = function(args)
         end
 
         dlg = ModalDialog{
-            title = "Danger Rooms Debrief",
+            title = "Proving Pits Debrief",
             width = 720,
             maxBodyHeight = 720,
             --closing with Escape counts as Skip.
@@ -5817,7 +5826,7 @@ CreateScreen = function(args)
         end
     end
 
-    --Ask for a Danger Rooms debrief owed from the last game, once the town is
+    --Ask for a Proving Pits debrief owed from the last game, once the town is
     --connected and the pool (which names the encounter) has loaded.
     local MaybeShowDebrief = function()
         if m_debriefOpen or m_conn == nil or not m_conn.connected then
@@ -5831,7 +5840,7 @@ CreateScreen = function(args)
             return
         end
         m_debriefOpen = true
-        --a won Danger Room counts for the account, whatever the player does
+        --a won Proving Pits game counts for the account, whatever the player does
         --with the debrief: it unlocks a series' next part there. Idempotent.
         if entry.result == "victory" and not m_practiceWinSent[entry.gameid] then
             m_practiceWinSent[entry.gameid] = true
@@ -5846,7 +5855,7 @@ CreateScreen = function(args)
                 end,
                 error = function(message)
                     m_practiceWinSent[entry.gameid] = nil
-                    printf("EotW: could not record the Danger Room win: %s", tostring(message))
+                    printf("EotW: could not record the Proving Pits win: %s", tostring(message))
                 end,
             }
         end
@@ -6492,7 +6501,7 @@ CreateScreen = function(args)
         if m_modalDialog ~= nil and m_modalDialog.valid then
             return
         end
-        --a Danger Rooms debrief goes first.
+        --a Proving Pits debrief goes first.
         if ReadPendingDebrief() ~= nil then
             return
         end
@@ -7212,6 +7221,109 @@ CreateScreen = function(args)
         PlayInnReveal(heroid)
     end
 
+    --- the welcome dialog --------------------------------------------------
+    --The first time an account opens the town on this machine it is welcomed
+    --to Encounter of the Week (eotw:welcomed). It is a ModalDialog, so the
+    --inn's reveal, the debrief and the survey all wait for it to close.
+
+    local DISCORD_URL = "https://discord.gg/q7kg5AVSfj"
+
+    local LoadWelcomed = function()
+        local text = dmhub.GetSettingValue("eotw:welcomed")
+        if type(text) == "string" and text ~= "" then
+            local parsed = dmhub.FromJson(text)
+            if type(parsed) == "table" and parsed.success and type(parsed.result) == "table" then
+                return parsed.result
+            end
+        end
+        return {}
+    end
+
+    local MarkWelcomed = function()
+        local all = LoadWelcomed()
+        all[dmhub.loginUserid] = true
+        dmhub.SetSettingValue("eotw:welcomed", dmhub.ToJson(all))
+    end
+
+    --Also reachable over MCP for testing: EncounterOfTheWeek.ShowWelcomeDialog().
+    local ShowWelcomeDialog = function()
+        local dlg = nil
+        --<link=url> spans in the text open their url when pressed.
+        local Paragraph = function(text)
+            return gui.Label{
+                text = text,
+                fontSize = 19,
+                color = "#efe4cc",
+                width = "100%",
+                height = "auto",
+                textWrap = true,
+                vmargin = 8,
+                links = true,
+                press = function(element)
+                    if element.linkHovered ~= nil then
+                        dmhub.OpenURL(element.linkHovered)
+                    end
+                end,
+            }
+        end
+        dlg = ModalDialog{
+            title = "Welcome to Encounter of the Week",
+            width = 760,
+            children = {
+                Paragraph("Play Draw Steel by yourself or with a few friends, or people you meet along the way. This game mode is experimental and in beta. Please report bugs using Feedback in the menus."),
+                Paragraph(string.format("Discuss Encounter of the Week in the <color=#8fc7ff><u><link=%s>DMHub Discord</link></u></color>!", DISCORD_URL)),
+                Paragraph("Encounter of the Week does let you play with other users. Be kind to each other. We really don't want to ban anybody, but we will if we have to."),
+            },
+            buttons = {
+                gui.Button{
+                    text = "Join the Discord",
+                    fontSize = 20,
+                    width = 200,
+                    height = 44,
+                    hmargin = 8,
+                    click = function(element)
+                        dmhub.OpenURL(DISCORD_URL)
+                    end,
+                },
+                gui.Button{
+                    text = "Let's Go!",
+                    fontSize = 20,
+                    width = 160,
+                    height = 44,
+                    hmargin = 8,
+                    click = function(element)
+                        if dlg ~= nil and dlg.valid then
+                            dlg:DestroySelf()
+                        end
+                    end,
+                },
+            },
+        }
+        return dlg
+    end
+    EncounterOfTheWeek.ShowWelcomeDialog = ShowWelcomeDialog
+
+    --Welcome an account the first time it reaches the town map: the screen
+    --up and settled, no location open and no other dialog. Marked seen as it
+    --opens, so it never comes back even if the app quits with it up.
+    local MaybeShowWelcome = function()
+        if resultPanel == nil or not resultPanel.valid or resultPanel:HasClass("hidden") or resultPanel:HasClass("eotwOpening") then
+            return
+        end
+        if m_locationId ~= nil or m_innRevealing or m_debriefOpen or m_offersOpen or m_surveyOpen then
+            return
+        end
+        if m_modalDialog ~= nil and m_modalDialog.valid then
+            return
+        end
+        if LoadWelcomed()[dmhub.loginUserid] == true then
+            return
+        end
+        if ShowWelcomeDialog() ~= nil then
+            MarkWelcomed()
+        end
+    end
+
     --Was the Arcane Market found when the roster was last listed? nil until
     --then. A hidden node is collapsed, and a collapsed panel stops thinking,
     --so it cannot show itself again: this watcher does it.
@@ -7580,9 +7692,9 @@ CreateScreen = function(args)
         end,
     }
 
-    --A party board, the body of the Gate's or the Danger Rooms' scene: its
+    --A party board, the body of the Gate's or the Proving Pits' scene: its
     --title, the list RefreshGames renders (the week's encounter or the
-    --Danger Room encounters, parties forming and underway, or a party's own
+    --Proving Pits encounters, parties forming and underway, or a party's own
     --view while you are in it), an error line and the board's controls.
     local PartyBoard = function(mode)
         local ui = m_partyUI[mode]
@@ -8248,6 +8360,7 @@ CreateScreen = function(args)
             interactable = false,
             thinkTime = 0.5,
             think = function(element)
+                MaybeShowWelcome()
                 MaybePlayInnReveal()
                 RevealFoundLocations()
                 --the beta survey waits for the inn's reveal to finish.
@@ -8278,7 +8391,7 @@ CreateScreen = function(args)
                 MaybeShowOfferedOutcomes()
             elseif string.starts_with(path, "/city/week") then
                 --the week rotated: the boards re-sort the encounters, and
-                --the Danger Rooms may have opened (an earlier win of the
+                --the Proving Pits may have opened (an earlier win of the
                 --new past encounter counts).
                 RefreshGames()
                 EotwRoster.Refresh()

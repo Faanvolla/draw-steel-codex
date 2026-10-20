@@ -1412,6 +1412,16 @@ function EncounterMontage.LocalUserPacesScene(m)
     return t ~= nil and t.status == "scene" and t.userid == dmhub.loginUserid
 end
 
+--May the hero on stage still back out of their approach for free? Only
+--while the first line of the entry's intro is up (usually just "X
+--approaches Y..."), before anything about it is shown -- a mis-click guard.
+--Once past it, "Leave" (which spends the turn) is the only way out.
+function EncounterMontage.CanBackOut(m)
+    local t = m ~= nil and m.turn or nil
+    return t ~= nil and t.delve == nil and t.status == "scene" and t.scene ~= nil
+        and t.scene.part == "intro" and EncounterMontage.SceneCursor(m) == 1
+end
+
 --The acting hero's player has finished reading the line on screen.
 function EncounterMontage.AdvanceScene()
     local m = EncounterMontage.GetState()
@@ -1518,6 +1528,12 @@ local function GrantItem(token, itemid, itemName, qty)
         undoable = false,
         execute = function()
             local props = token.properties
+            if qty < 0 then
+                --GiveItem takes it off first when it is worn (treasure is
+                --auto-equipped when found, EncounterOfTheWeek AutoEquipTreasure).
+                props:GiveItem(itemid, qty)
+                return
+            end
             local inventory = props:try_get("inventory", {})
             local current = 0
             if inventory[itemid] ~= nil and type(inventory[itemid].quantity) == "number" then
@@ -1591,6 +1607,15 @@ local function InventoryQuantity(token, itemid)
         if inventory[itemid] ~= nil and type(inventory[itemid].quantity) == "number" then
             qty = inventory[itemid].quantity
         end
+    end)
+    return qty
+end
+
+--How many of an item a token holds, worn ones included.
+local function HeldQuantity(token, itemid)
+    local qty = InventoryQuantity(token, itemid)
+    pcall(function()
+        qty = qty + (token.properties:GetEquipmentInAllSlots()[itemid] or 0)
     end)
     return qty
 end
@@ -4713,6 +4738,16 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         }
         m.turn = nil
         return string.format("%s does nothing", t.heroName or "A hero")
+    elseif kind == "backout" then
+        --undo a mis-clicked approach: the hero has not acted and nothing is
+        --logged, so they (or anyone) can go somewhere else this round.
+        local t = m.turn
+        if t == nil or t.userid ~= userid or not EncounterMontage.CanBackOut(m) then
+            return "ignored backout: past the first line"
+        end
+        local entry = EncounterMontage.TurnEntry(beat, t)
+        m.turn = nil
+        return string.format("%s backs out of %s", t.heroName or "A hero", entry ~= nil and entry.name or "?")
     elseif kind == "choose" then
         local t = m.turn
         if t == nil or t.userid ~= userid or t.status ~= "choosing" then
@@ -4996,7 +5031,7 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         if entry == nil then
             return "ignored give: hero did not gain that item here"
         end
-        if InventoryQuantity(hero.token, req.itemid) < 1 then
+        if HeldQuantity(hero.token, req.itemid) < 1 then
             --gained here, but already used up or dropped: the icon is stale.
             UnrecordItem(doc, hero.charid, req.itemid, entry.qty or 1)
             return "ignored give: item no longer in the hero's inventory"

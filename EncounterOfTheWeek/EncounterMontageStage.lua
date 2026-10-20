@@ -3777,6 +3777,34 @@ local function CreateSceneStage()
             m_boxKey = nil
             ShowDetail({})
             boxExtra.children = {}
+            --the first line of an approach shows nothing about the entry yet,
+            --so a mis-clicked hero may still walk away for free.
+            if IsMyTurn(m) and EncounterMontage.CanBackOut(m) then
+                boxExtra.children = {
+                    gui.Panel{
+                        classes = {"eotwSceneOption", "actionable"},
+                        width = "auto",
+                        height = "auto",
+                        halign = "left",
+                        hpad = 14,
+                        vpad = 5,
+                        borderBox = true,
+                        tmargin = 8,
+                        bgimage = "panels/square.png",
+                        --the box's own press turns the page, which would
+                        --move past the first line and void the back-out.
+                        swallowPress = true,
+                        gui.Label{ classes = {"eotwSceneOptionName", "pass"}, text = "Oops, back out", interactable = false },
+                        linger = function(element)
+                            gui.Tooltip("Wrong place? Step back and choose again. This does not use your turn.")(element)
+                        end,
+                        press = function(element)
+                            audio.FireSoundEvent("Mouse.Click")
+                            EncounterMontage.SendRequest("backout", {})
+                        end,
+                    },
+                }
+            end
             narration:SetClass("collapsed", false)
             local key = string.format("%s:%d", tostring(scene.id), index)
             if key == m_textKey then

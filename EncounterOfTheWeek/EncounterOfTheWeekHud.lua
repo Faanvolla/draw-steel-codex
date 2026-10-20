@@ -717,6 +717,10 @@ local function CreateEncounterPoolsPanel()
     return strip
 end
 
+--Defined with the map creator watermark, below; the rail's think keeps it up.
+--- @type fun(hidden: boolean)
+local UpdateMapWatermark
+
 --The whole right-rail widget: the pools strip above the hero roster. Both
 --pack against the right edge; the roster's own fit-to-screen shrink
 --pivots on its top-right corner so the strip above it is untouched.
@@ -747,6 +751,12 @@ local function CreateRightRailPanel()
                 montagePresented = EncounterMontage.IsPresented()
             end)
             roster:SetClass("collapsed", montagePresented)
+            --the montage stage covers the map; its scenes credit their own art.
+            UpdateMapWatermark(montagePresented)
+        end,
+        --the interface is going away (e.g. the Director-UI hatch).
+        destroy = function(element)
+            UpdateMapWatermark(true)
         end,
     }
 end
@@ -1071,12 +1081,51 @@ local ABOUT_ART_HEIGHT = 240
 local ABOUT_THUMB_WIDTH = 168
 local ABOUT_THUMB_HEIGHT = 108
 
---The mode's credits, in order. Markup is TextMeshPro rich text.
+--The mode's credits, in order: the text before the name (TextMeshPro rich
+--text), the name, and optionally a site the name links to.
+--- @type {lead: string, name: string, url: nil|string}[]
 local ABOUT_CREDITS = {
-    "<b>Draw Steel</b> by MCDM",
-    "<b>Encounter of the Week</b> concept and engineering by the Codex Development Team",
-    "<b>Cartography</b> by Czepeku",
+    { lead = "<b>Draw Steel</b> by", name = "MCDM" },
+    { lead = "<b>Encounter of the Week</b> concept and engineering by", name = "the Codex Development Team" },
+    { lead = "<b>Cartography</b> by", name = "Czepeku", url = "https://czepeku.com" },
 }
+
+--Map packs whose maps are credited to someone other than the pack's
+--publishing organization: pack module fullid -> {name, url}.
+--- @type table<string, {name: string, url: nil|string}>
+local ABOUT_MAP_PACK_CREATORS = {
+    ["mcdm-encountermaps"] = { name = "MAD Cartographer", url = "https://themad.network/the-mad-cartographer" },
+}
+
+--A name as rich text, bold if asked, and when it has a url a link: accent
+--colored and underlined (some schemes' accent is close to the body text),
+--which an AboutLinkLabel opens on press.
+--- @param name string
+--- @param url nil|string
+--- @param bold nil|boolean
+--- @return string
+local function AboutName(name, url, bold)
+    if bold then
+        name = string.format("<b>%s</b>", name)
+    end
+    if url == nil or url == "" then
+        return name
+    end
+    return ThemeEngine.ResolveTokens(string.format("<color=@accent><u><link=%s>%s</link></u></color>", url, name))
+end
+
+--A gui.Label whose <link=url> spans open their url when pressed.
+--- @param options table
+--- @return Panel
+local function AboutLinkLabel(options)
+    options.links = true
+    options.press = function(element)
+        if element.linkHovered ~= nil then
+            dmhub.OpenURL(element.linkHovered)
+        end
+    end
+    return gui.Label(options)
+end
 
 local ABOUT_STYLES = {
     {
@@ -1129,14 +1178,16 @@ local ABOUT_STYLES = {
     },
 }
 
---Creator organization id -> display name, or false when the lookup failed.
---- @type table<string, string|false>
+--- @alias AboutCredit {name: string, url: nil|string}
+
+--Creator organization id -> {name, url}, or false when the lookup failed.
+--- @type table<string, AboutCredit|false>
 local g_aboutOrgNames = {}
 
---Calls back with an organization's display name, or nil when it has none
---or the lookup fails. Answers at once from the cache.
+--Calls back with an organization's display name and website, or nil when
+--it has no name or the lookup fails. Answers at once from the cache.
 --- @param orgid nil|string
---- @param callback fun(name: nil|string)
+--- @param callback fun(credit: nil|AboutCredit)
 local function AboutOrgName(orgid, callback)
     if orgid == nil or orgid == "" then
         callback(nil)
@@ -1150,13 +1201,15 @@ local function AboutOrgName(orgid, callback)
     module.GetOrganizationInfo{
         orgid = orgid,
         success = function(info)
+            local credit = nil
             local name = type(info) == "table" and info.displayName or nil
-            if type(name) ~= "string" or name == "" then
-                name = nil
+            if type(name) == "string" and name ~= "" then
+                local url = info.url
+                credit = { name = name, url = cond(type(url) == "string" and url ~= "", url, nil) }
             end
-            g_aboutOrgNames[orgid] = name or false
+            g_aboutOrgNames[orgid] = credit or false
             if not mod.unloaded then
-                callback(name)
+                callback(credit)
             end
         end,
         failure = function()
@@ -1173,7 +1226,7 @@ end
 --(author ids are often organization ids: "mcdm"), else the author id. nil
 --when the module is not known here.
 --- @param moduleid nil|string
---- @param callback fun(name: nil|string)
+--- @param callback fun(credit: nil|AboutCredit)
 local function AboutEncounterAuthor(moduleid, callback)
     local info = moduleid ~= nil and module.GetModule(moduleid) or nil
     if info == nil then
@@ -1189,8 +1242,11 @@ local function AboutEncounterAuthor(moduleid, callback)
     if org == nil or org == "" then
         org = authorid
     end
-    AboutOrgName(org, function(name)
-        callback(name or authorid)
+    AboutOrgName(org, function(credit)
+        if credit == nil and authorid ~= nil then
+            credit = { name = authorid }
+        end
+        callback(credit)
     end)
 end
 
@@ -1208,45 +1264,40 @@ local function AboutMapPack(mapid)
     return pack
 end
 
---Calls back with the creator of a map that came from a map pack (the pack's
---creator organization's name), or nil for any other map. A map added before
+--The creator organization that publishes a map pack, or nil.
+--- @param pack string
+--- @return nil|string
+local function MapPackOrg(pack)
+    local org = nil
+    for _,p in ipairs(mappacks.packs or {}) do
+        if p.id == pack then
+            org = p.org
+        end
+    end
+    if org == nil or org == "" then
+        pcall(function() org = module.GetModule(pack).org end)
+    end
+    if org == "" then
+        return nil
+    end
+    return org
+end
+
+--Calls back with the map pack a map came from, or nil. A map added before
 --provenance was recorded is only recognised once the pack index has synced,
 --so an unsynced index is synced first.
 --- @param mapid string
---- @param callback fun(name: nil|string)
-local function AboutMapCreator(mapid, callback)
-    local function FromPack(pack)
-        local org = nil
-        for _,p in ipairs(mappacks.packs or {}) do
-            if p.id == pack then
-                org = p.org
-            end
-        end
-        if org == nil or org == "" then
-            pcall(function() org = module.GetModule(pack).org end)
-        end
-        AboutOrgName(org, callback)
-    end
-
+--- @param callback fun(pack: nil|string)
+local function MapPackOf(mapid, callback)
     local pack = AboutMapPack(mapid)
-    if pack ~= nil then
-        FromPack(pack)
-        return
-    end
-    if mappacks.synced then
-        callback(nil)
+    if pack ~= nil or mappacks.synced then
+        callback(pack)
         return
     end
     mappacks.Sync{
         success = function()
-            if mod.unloaded then
-                return
-            end
-            local synced = AboutMapPack(mapid)
-            if synced == nil then
-                callback(nil)
-            else
-                FromPack(synced)
+            if not mod.unloaded then
+                callback(AboutMapPack(mapid))
             end
         end,
         error = function()
@@ -1255,6 +1306,123 @@ local function AboutMapCreator(mapid, callback)
             end
         end,
     }
+end
+
+--Calls back with the creator of a map that came from a map pack (the pack's
+--entry in ABOUT_MAP_PACK_CREATORS, else its creator organization), or nil
+--for any other map.
+--- @param mapid string
+--- @param callback fun(credit: nil|AboutCredit)
+local function AboutMapCreator(mapid, callback)
+    MapPackOf(mapid, function(pack)
+        if pack == nil then
+            callback(nil)
+        elseif ABOUT_MAP_PACK_CREATORS[pack] ~= nil then
+            callback(ABOUT_MAP_PACK_CREATORS[pack])
+        else
+            AboutOrgName(MapPackOrg(pack), callback)
+        end
+    end)
+end
+
+--- Map creator watermark -----------------------------------------------------
+
+--(user direction 2026-10-19) While a map from a map pack is on screen, its
+--creator's logo sits in the bottom-right corner of the map window; clicking
+--it opens their Patreon (CreatorCredit.ForOrganization). EotW games only: the
+--whole interface, this included, is up only there (IsInterfaceActive).
+
+--Creator organizations whose maps carry no watermark: MCDM's own.
+local MAP_WATERMARK_EXEMPT_ORGS = { mcdm = true }
+
+local MAP_WATERMARK_HEIGHT = 36
+
+--mapid -> its watermark credit, false for none, or true while looking it up.
+--- @type table<string, CreatorCreditInfo|boolean>
+local g_mapWatermarkCredits = {}
+
+--The badge on screen, and the map window overlay and creator it is for.
+local m_mapWatermark = nil
+local m_mapWatermarkHost = nil
+local m_mapWatermarkCreator = nil
+
+--The watermark credit for a map: nil when it has none, or until its lookup
+--(started here on first ask) comes back.
+--- @param mapid string
+--- @return nil|CreatorCreditInfo
+local function MapWatermarkCredit(mapid)
+    local cached = g_mapWatermarkCredits[mapid]
+    if type(cached) == "table" then
+        return cached
+    end
+    if cached ~= nil then
+        return nil
+    end
+    g_mapWatermarkCredits[mapid] = true
+    MapPackOf(mapid, function(pack)
+        local org = pack ~= nil and MapPackOrg(pack) or nil
+        if org == nil or MAP_WATERMARK_EXEMPT_ORGS[org] then
+            g_mapWatermarkCredits[mapid] = false
+            return
+        end
+        CreatorCredit.ForOrganization(org, function(info)
+            g_mapWatermarkCredits[mapid] = info or false
+        end)
+    end)
+    return nil
+end
+
+local function RemoveMapWatermark()
+    if m_mapWatermark ~= nil and m_mapWatermark.valid then
+        m_mapWatermark:DestroySelf()
+    end
+    m_mapWatermark = nil
+    m_mapWatermarkHost = nil
+    m_mapWatermarkCreator = nil
+end
+
+--Keeps the watermark on the live map window: added, moved to a new window,
+--or taken down as the map, its window or the montage changes. Called from
+--the right rail's think (CreateRightRailPanel), and with hidden = true when
+--the rail goes away.
+--- @param hidden boolean
+UpdateMapWatermark = function(hidden)
+    --- @type nil|Panel
+    local host = nil
+    local credit = nil
+    if not hidden then
+        pcall(function() host = Tabletop.MapOverlayHost() end)
+        local mapid = game.currentMapId
+        if host ~= nil and mapid ~= nil then
+            credit = MapWatermarkCredit(mapid)
+        end
+    end
+    if host == nil or credit == nil then
+        RemoveMapWatermark()
+        return
+    end
+    if m_mapWatermark ~= nil and m_mapWatermark.valid and m_mapWatermarkHost == host and m_mapWatermarkCreator == credit.id then
+        return
+    end
+    RemoveMapWatermark()
+    local badge = CreatorCredit.Badge{
+        creator = credit.id,
+        height = MAP_WATERMARK_HEIGHT,
+        light = true,
+        backing = true,
+        label = "Map by",
+        hmargin = 16,
+        vmargin = 16,
+    }
+    if badge == nil then
+        return
+    end
+    host:AddChild(badge)
+    --under the map's own HUD and dialogs (the Draw Steel banner).
+    badge:SetAsFirstSibling()
+    m_mapWatermark = badge
+    m_mapWatermarkHost = host
+    m_mapWatermarkCreator = credit.id
 end
 
 local m_aboutDialog = nil
@@ -1277,7 +1445,7 @@ end
 local function AboutEncounterSection(info)
     --hidden until its lookup comes back with a name.
     local function PendingLine()
-        return gui.Label{
+        return AboutLinkLabel{
             classes = {"eotwAboutLine", "collapsed"},
             text = "",
             fill = function(element, text)
@@ -1291,9 +1459,9 @@ local function AboutEncounterSection(info)
     local mapLabel = PendingLine()
 
     local function Fill(label, prefix)
-        return function(name)
-            if name ~= nil and label.valid then
-                label:FireEvent("fill", string.format("%s <b>%s</b>", prefix, name))
+        return function(credit)
+            if credit ~= nil and label.valid then
+                label:FireEvent("fill", string.format("%s %s", prefix, AboutName(credit.name, credit.url, true)))
             end
         end
     end
@@ -1357,10 +1525,10 @@ function EncounterOfTheWeekHud.ShowAbout()
     end
 
     local credits = {}
-    for _,text in ipairs(ABOUT_CREDITS) do
-        credits[#credits+1] = gui.Label{
+    for _,credit in ipairs(ABOUT_CREDITS) do
+        credits[#credits+1] = AboutLinkLabel{
             classes = {"eotwAboutCredit"},
-            text = text,
+            text = string.format("%s %s", credit.lead, AboutName(credit.name, credit.url)),
         }
     end
 
