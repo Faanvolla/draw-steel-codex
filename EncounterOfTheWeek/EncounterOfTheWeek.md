@@ -4338,7 +4338,7 @@ onlooker sees only the total):
 | Bar | Levels (players only ever read the rung they are on) |
 |---|---|
 | Surprise | surprised / lose initiative / roll / win / enemy surprised -- opens on what the montage decided; bought levels are applied with the montage's own clauses |
-| Traps (only if the beat has a setup instruction) | unaware / "There are 4 Snare Traps hidden on the map." / all marked (a banked reveal); opens at 2 if the montage already earned the reveal |
+| Traps (only if the beat has a setup instruction) | unaware / "You know where some of the traps are." (two of the placed traps, drawn at random, are marked: `EncounterZones.BankPartialReveal`) / all marked (a banked reveal); opens at 2 if the montage already earned the reveal |
 | Enemy Stamina | none / bar / exact (`enemystambardisplay`); **with this feature on, the week starts the party at `none`** |
 
 A player's Proceed appears once **their own** Intelligence is spent (or

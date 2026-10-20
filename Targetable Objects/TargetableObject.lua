@@ -30,6 +30,52 @@ function TargetableObject.TokenSuppressesCollisionDamage(token)
     return token.properties:try_get("no_collision_damage", false) == true
 end
 
+--Hidden traps that announce themselves with a dramatic banner when a
+--creature springs them, keyed by the object's lower-cased name. Only a trap
+--the players cannot see gets one: a visible trap was walked into knowingly.
+TargetableObject.hiddenTrapBanners = {
+    ["snare trap"] = { text = "Snare Trap!", subtitle = "You have stepped into a trap!" },
+}
+
+--The engine dispatches "pressureplate" on the mover's own client only, so
+--each springing shows the (game-wide) banner once.
+local function ShowHiddenTrapBanner(self, args)
+    local token = dmhub.LookupToken(self)
+    if token == nil or not token.objectInvisibleToPlayers then
+        return
+    end
+    local name = nil
+    pcall(function() name = token.objectInstance.description end)
+    if type(name) ~= "string" or name == "" then
+        name = token.name
+    end
+    local banner = TargetableObject.hiddenTrapBanners[string.lower(tostring(name or ""))]
+    if banner == nil then
+        return
+    end
+    local victim = args ~= nil and args.target ~= nil and dmhub.LookupToken(args.target) or nil
+    DramaticBanner.Show{
+        tokenid = victim ~= nil and victim.charid or nil,
+        text = banner.text,
+        subtitle = banner.subtitle,
+    }
+end
+
+--Hooked on creature.DispatchEvent, not TargetableObject:DispatchEvent: the
+--engine's pressure plate looks DispatchEvent up on the MOVER's properties and
+--calls it with the object's properties as self, so the object's own
+--override never runs. Chained like every other DispatchEvent wrapper.
+local g_baseDispatchEvent = creature.DispatchEvent
+function creature:DispatchEvent(eventName, args)
+    if eventName == "pressureplate" and self.isMapObject then
+        local ok, err = pcall(ShowHiddenTrapBanner, self, args)
+        if not ok then
+            printf("TargetableObject: hidden trap banner failed: %s", tostring(err))
+        end
+    end
+    return g_baseDispatchEvent(self, eventName, args)
+end
+
 function TargetableObject:DispatchEvent(eventName, args)
     creature.DispatchEvent(self, eventName, args)
 end
