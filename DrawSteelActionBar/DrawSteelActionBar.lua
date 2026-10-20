@@ -7564,7 +7564,7 @@ local function ActionSubMenu(args)
     --The column's foot: the ordinary text heading (every legacy menu) and,
     --for a director-overview column, the identity/signals footer bar (slice
     --(d)) which takes the heading's place. Both are pooled for the life of
-    --the column and always sit at the END of m_children, after the chips.
+    --the column and sit below the chip columns.
     local m_heading = gui.Label {
         classes = { "submenuHeading" },
         abilities = function(element, abilities, grouping)
@@ -7579,14 +7579,75 @@ local function ActionSubMenu(args)
     --Pooled chips (AbilityHeading, created on demand, never destroyed) and
     --the pooled hairline an overview column shows between its main actions
     --and its maneuvers. m_children is REBUILT from these on every populate
-    --(chips, divider at its slot, heading, footer) - see "abilities" below.
+    --(chips, divider at its slot) - see "abilities" below.
     local m_chips = {}
     local m_divider = gui.Panel {
         classes = { "overviewActionDivider", "collapsed" },
         interactable = false,
     }
 
-    local m_children = { m_divider, m_heading, m_footer }
+    local m_children = { m_divider }
+
+    --Chips sit in columns of up to COLUMN_MAX_CHIPS, each with its own
+    --background. Extra columns get their own chips, because moving a chip to
+    --another panel destroys it. The heading below spans every column.
+    local COLUMN_MAX_CHIPS = 8
+    local m_firstColumn = gui.Panel {
+        classes = { "abilitySubMenuColumn" },
+        children = m_children,
+    }
+    local m_columnsRow = gui.Panel {
+        classes = { "abilitySubMenuColumns" },
+        children = { m_firstColumn },
+    }
+
+    --Extra columns, created on demand and never destroyed: { panel, chips }.
+    local m_extraColumns = {}
+
+    local function GetExtraColumn(index)
+        local column = m_extraColumns[index]
+        if column == nil then
+            column = { chips = {} }
+            column.panel = gui.Panel {
+                classes = { "abilitySubMenuColumn", "framed", "extraColumn" },
+                blurBackground = true,
+                children = column.chips,
+            }
+            m_extraColumns[index] = column
+            local rowChildren = { m_firstColumn }
+            for _, extra in ipairs(m_extraColumns) do
+                rowChildren[#rowChildren + 1] = extra.panel
+            end
+            m_columnsRow.children = rowChildren
+        end
+        return column
+    end
+
+    local function HideExtraColumns()
+        for _, column in ipairs(m_extraColumns) do
+            column.panel:SetClass("collapsed", true)
+        end
+    end
+
+    --Shows abilities[first..last] in extra column `index`. Extra columns only
+    --ever show ordinary menus, so their chips never need the overview setup
+    --(caster, lens marks, badges).
+    local function FillExtraColumn(index, abilities, first, last)
+        local column = GetExtraColumn(index)
+        column.panel:SetClass("collapsed", false)
+        local count = last - first + 1
+        for k = 1, count do
+            if column.chips[k] == nil then
+                column.chips[k] = AbilityHeading()
+                column.panel.children = column.chips
+            end
+            column.chips[k]:FireEventTree("ability", abilities[first + k - 1])
+            column.chips[k]:SetClass("collapsed", false)
+        end
+        for k = count + 1, #column.chips do
+            column.chips[k]:SetClass("collapsed", true)
+        end
+    end
 
     local resultPanel
 
@@ -7665,25 +7726,18 @@ local function ActionSubMenu(args)
 
         vpad = -4,
 
-        children = m_children,
-        classes = { "abilitySubMenu" },
+        --Columns are built in Lua (see "abilities"), so the engine's wrap
+        --from the abilitySubMenu style must stay off.
+        wrap = false,
+
+        children = { m_columnsRow, m_heading, m_footer },
+        classes = { "abilitySubMenu", "chipColumns" },
         blurBackground = true,
         data = { lensMatchCount = 0 },
 
         setCasterToken = function(element, casterToken, column)
             m_casterToken = casterToken
             m_column = column
-            --The abilitySubMenu style wraps a vertical flow into a second
-            --column when it runs out of height (legacy long menus). For an
-            --overview column that wrap misfires: the engine resolves the
-            --column's auto height and the wrap limit in one pass, and once
-            --the footer grew past ~70px (F2-4 two-line rows / 12px text) the
-            --footer of EVERY column - even a one-chip column - wrapped to the
-            --top-right of its column (seen live, A5). An overview kit is a
-            --handful of chips plus the footer and never needs to wrap, so
-            --turn wrapping off while a column is bound; restore it when the
-            --pooled panel is parked again.
-            element.selfStyle.wrap = not (column ~= nil and casterToken ~= nil)
         end,
 
         --Forwarded to the footer (slice (e) owner prompt); no-op for ordinary
@@ -7693,6 +7747,8 @@ local function ActionSubMenu(args)
         end,
 
         abilities = function(element, abilities)
+            HideExtraColumns()
+
             if abilities == nil or #abilities == 0 then
                 element:SetClass("collapsed", true)
                 --A pooled overview column parked with no kit drops its
@@ -7769,7 +7825,14 @@ local function ActionSubMenu(args)
                 end)
             end
 
-            for i = 1, #abilities do
+            --An overview column is never split; an ordinary menu puts its
+            --first COLUMN_MAX_CHIPS chips here and the rest in extra columns.
+            local firstCount = #abilities
+            if not overview then
+                firstCount = math.min(#abilities, COLUMN_MAX_CHIPS)
+            end
+
+            for i = 1, firstCount do
                 m_chips[i] = m_chips[i] or AbilityHeading()
                 --Re-point the pooled chip at this column's owner (nil restores
                 --the g_token default) before it computes cost/suppression.
@@ -7847,7 +7910,7 @@ local function ActionSubMenu(args)
                 m_chips[i]:FireEvent("setOverviewBadges", dmgBadge, multiBadge, multiDamaging, summonBadge, dmgTooltip, areaTooltip, healBadge)
             end
 
-            for i = #abilities + 1, #m_chips do
+            for i = firstCount + 1, #m_chips do
                 m_chips[i]:SetClass("collapsed", true)
             end
 
@@ -7876,11 +7939,8 @@ local function ActionSubMenu(args)
             end
             m_divider:SetClass("collapsed", dividerAfter == nil)
 
-            --Rebuild the child order: every pooled chip (spares collapsed at
-            --the end), the divider at its slot (or parked collapsed before
-            --the tail), then heading + footer. Every pooled panel is ALWAYS
-            --in the list (fa2053b7 rule); the list is only re-assigned when
-            --the order actually changed.
+            --Keep every pooled chip and the divider in the list (a panel left
+            --out is destroyed); only re-assign it when the order changed.
             local newChildren = {}
             for i = 1, #m_chips do
                 newChildren[#newChildren + 1] = m_chips[i]
@@ -7891,8 +7951,6 @@ local function ActionSubMenu(args)
             if dividerAfter == nil then
                 newChildren[#newChildren + 1] = m_divider
             end
-            newChildren[#newChildren + 1] = m_heading
-            newChildren[#newChildren + 1] = m_footer
 
             local changed = #newChildren ~= #m_children
             if not changed then
@@ -7922,13 +7980,31 @@ local function ActionSubMenu(args)
             --F2-7: grey every chip of an all-acted column (class tree so the
             --title / keywords / icon rules apply); always cleared for
             --ordinary menus, which reuse no overview state.
-            for i = 1, #abilities do
+            for i = 1, firstCount do
                 m_chips[i]:SetClassTree("acted", overview and allActed)
             end
 
             if changed then
-                element.children = m_children
+                m_firstColumn.children = m_children
             end
+
+            --Overview: one framed panel around chips + footer, never split.
+            --Ordinary menus: each column carries its own background instead.
+            element:SetClass("chipColumns", not overview)
+            element.blurBackground = overview
+            m_firstColumn:SetClass("framed", not overview)
+            m_firstColumn.blurBackground = not overview
+
+            local columnIndex = 0
+            for first = firstCount + 1, #abilities, COLUMN_MAX_CHIPS do
+                columnIndex = columnIndex + 1
+                FillExtraColumn(columnIndex, abilities, first, math.min(first + COLUMN_MAX_CHIPS - 1, #abilities))
+            end
+
+            --Stretch the heading under every column: 205px per column plus the
+            --4px gap between them (abilityHeading width, extraColumn lmargin).
+            local columns = columnIndex + 1
+            m_heading.selfStyle.width = 205 * columns + 4 * (columns - 1)
         end,
     }
 
