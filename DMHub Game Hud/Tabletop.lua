@@ -10974,6 +10974,10 @@ function Tabletop.CreateLayer()
         blocksGameInteraction = false,
         swallowPress = true,
         rightClick = function(element)
+            --a right-click on a table die opens the die's menu instead.
+            if rawget(_G, "TableDice") ~= nil and TableDice.DieJustRightClicked() then
+                return
+            end
             ShowTableMenu()
         end,
 

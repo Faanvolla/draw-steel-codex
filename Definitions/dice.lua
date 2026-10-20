@@ -20,6 +20,11 @@ function dice:Set(table) end
 --- @return nil|TableDieLua
 function dice.CreateTableDie(args) end
 
+--- Creates a 3D miniature standing on the tabletop, from an STL file on this computer (path) or from a mesh another client uploaded (blob, from TableFigureLua.Upload) (see TableFigureLua). The file is simplified on a worker thread and cached, so a big file shows after a moment the first time and at once afterwards. It stands at (x, y) screen pixels from the top-left. Nil if it cannot be made.
+--- @param args {path: nil|string, blob: nil|string, x: number, y: number, height: nil|number, tilt: nil|number, yaw: nil|number}
+--- @return nil|TableFigureLua
+function dice.CreateTableFigure(args) end
+
 --- Returns a list of dice sets available to the current user, including owned dice from the shop.
 --- @return table
 function dice.GetAvailableDice() end
