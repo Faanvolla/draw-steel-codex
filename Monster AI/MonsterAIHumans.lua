@@ -186,13 +186,32 @@ MonsterAI:RegisterMove{
     end,
 }
 
+--Rise, My Minions only raises creatures who died during this encounter. Its
+--first step drops any corpse whose creature's initiative entry is not in the
+--current combat (it died before the fight), so the AI must skip those too or it
+--pays Malice and its maneuver to raise nothing.
+local function DiedThisEncounter(corpse)
+    local q = dmhub.initiativeQueue
+    if q == nil or q.hidden or corpse.objectInstance == nil then
+        return false
+    end
+    local component = corpse.objectInstance:GetComponent("Corpse")
+    local deadToken = component ~= nil and component.properties:DeadCreatureToken() or nil
+    if deadToken == nil then
+        return false
+    end
+    local initiativeid = InitiativeQueue.GetInitiativeId(deadToken)
+    return initiativeid ~= nil and q.entries[initiativeid] ~= nil
+end
+
 --Corpse objects of dead minions within reach of a square, nearest first.
---Rise, My Minions only takes minions, so its own target filter does the check.
+--The ability's own target filter checks the corpse is a minion.
 local function RaisableCorpses(ai, token, ability, loc)
     local result = {}
     ai:ExecuteWithTheoreticalMovementLoc(token, loc, function()
         for _,corpse in ipairs(dmhub.allObjectTokens) do
             if corpse.valid and corpse.isCorpse and token:Distance(corpse) <= riseMyMinionsRange
+                and DiedThisEncounter(corpse)
                 and ability:TargetPassesFilter(token, corpse, {}) then
                 result[#result+1] = {token = corpse, distance = token:Distance(corpse)}
             end

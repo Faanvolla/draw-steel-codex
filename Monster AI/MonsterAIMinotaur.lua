@@ -253,33 +253,81 @@ local function BullRushHelps(actor, enemies)
     return nearest > speed + reach and nearest <= speed + bullRushSpeedBonus + reach
 end
 
+--Bull Rush buffs one minotaur per 3 Malice spent.
+local bullRushMalicePerMinotaur = 3
+
+--The acting minotaurs who can only reach an enemy with Bull Rush's bonus, as
+--many as the current Malice pays for. The first one can afford the base cost.
+local function BullRushPlan(context)
+    local enemies = context.enemyTokens or {}
+    local caster = nil
+    local ability = nil
+    local minotaurs = {}
+    for _,actor in ipairs(context.actingTokens or {}) do
+        if IsMinotaur(actor) and not HasOngoingEffect(actor, bullRushEffectId)
+            and BullRushHelps(actor, enemies) then
+            local actorAbility = FindAbility(actor, "Bull Rush")
+            if caster == nil and actorAbility ~= nil and actorAbility:CanAfford(actor) then
+                caster = actor
+                ability = actorAbility
+                table.insert(minotaurs, 1, actor)
+            else
+                minotaurs[#minotaurs+1] = actor
+            end
+        end
+    end
+    if caster == nil then
+        return nil
+    end
+    local affordable = math.floor((CharacterResource.GetMalice() or 0) / bullRushMalicePerMinotaur)
+    table.resize_array(minotaurs, math.max(1, math.min(#minotaurs, affordable)))
+    return {caster = caster, ability = ability, minotaurs = minotaurs}
+end
+
 MonsterAI:RegisterMaliceAbility{
     id = "Minotaur Malice: Bull Rush",
     monsterGroups = minotaurGroup,
     abilities = {"Bull Rush"},
-    description = "Spend 3 Malice on Bull Rush for an acting minotaur who can only reach an enemy with the speed bonus.",
+    description = "Spend 3 Malice per acting minotaur who can only reach an enemy with Bull Rush's speed bonus, buffing them all in one cast.",
     score = function(self, ai, token, ability, context)
-        local enemies = context.enemyTokens or {}
-        for _,actor in ipairs(context.actingTokens or {}) do
-            local actorAbility = IsMinotaur(actor) and FindAbility(actor, "Bull Rush") or nil
-            if actorAbility ~= nil and actorAbility:CanAfford(actor)
-                and not HasOngoingEffect(actor, bullRushEffectId)
-                and BullRushHelps(actor, enemies) then
-                return {score = 0.72, actor = actor}
-            end
+        local plan = BullRushPlan(context)
+        if plan == nil then
+            return nil, "no acting minotaur needs the speed"
         end
-        return nil, "no acting minotaur needs the speed"
+        --Not "targets": the decision log reads that field as a target list.
+        return {
+            score = math.min(0.84, 0.72 + 0.04*(#plan.minotaurs - 1)),
+            buffing = #plan.minotaurs,
+        }
     end,
     execute = function(self, ai, token, scoringInfo, ability, context)
-        local actor = scoringInfo.actor
-        if not LiveCreature(actor) then
+        local plan = BullRushPlan(context)
+        if plan == nil then
             return
         end
-        --Self-targeted, so the minotaur who benefits must cast it.
-        local actorAbility = FindAbility(actor, "Bull Rush") or ability
-        ai:RunWithTokenControl(actor, function()
-            ai:ExecuteAbility(actor, actorAbility, {{token = actor}}, {sleep = abilityPause})
+        local targets = {}
+        for _,minotaur in ipairs(plan.minotaurs) do
+            targets[#targets+1] = {token = minotaur}
+        end
+
+        --Its target count is "1 + Charges", which the AI would read as 1, so set it
+        --on a copy. AI casts only pay the base 3 Malice; the rest is paid below.
+        local rush = plan.ability:MakeTemporaryClone()
+        rush.numTargets = tostring(#targets)
+        local rushed = false
+        rush.OnFinishCast = function(_, options)
+            rushed = not options.abort and not options.atexit
+        end
+        ai:RunWithTokenControl(plan.caster, function()
+            ai:ExecuteAbility(plan.caster, rush, targets, {sleep = abilityPause})
         end)
+
+        local extra = (#targets - 1)*bullRushMalicePerMinotaur
+        if rushed and extra > 0 then
+            local malice = CharacterResource.GetMalice()
+            CharacterResource.SetMalice(math.max(0, malice - extra),
+                string.format("Bull Rush: %d extra minotaurs", #targets - 1))
+        end
     end,
 }
 
