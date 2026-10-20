@@ -556,7 +556,7 @@ local g_casterTokenStack = {}
 ---@field fallingShape nil|LuaObjectReference
 ---@field fallDamageLabel nil|SheetContainer
 ---@field fallDamageKey nil|string
----@field teleportLoe nil|{key: string, reason: string} The hovered teleport destination's line-of-effect failure, keyed on the hovered loc.
+---@field teleportLoe nil|{key: string, reason: string, obstructionDist: number} The hovered teleport destination's line-of-effect failure, keyed on the hovered loc; obstructionDist is where (0-1) along the line it is blocked.
 ---@field chargeJumpLabel nil|LuaTargetingMarkers
 ---@field chargeJumpLabelKey nil|string
 ---@field chargeJumpUnreachable nil|boolean
@@ -9896,23 +9896,26 @@ end
 --- stands to the space its body will fill, measured with the altitude-aware
 --- targeting, so a creature at the bottom of a pit can't reach the ground set
 --- back from the rim. The Line Of Effect Limit attribute (e.g. Dazzled) caps it.
+--- The second result is how far (0-1) along the line it stops, for the arrow.
 --- @param mover CharacterToken
 --- @param loc Loc
---- @return nil|string
+--- @return nil|string reason
+--- @return number obstructionDist
 function DrawSteelActionBar.TeleportLineOfEffectFailReason(mover, loc)
-    if mover:GetLineOfSightToSpace(loc, mover.properties:GetPierceWalls()) == 0 then
-        return "No Line of Effect"
+    local info = mover:GetLineOfSightToSpaceInfo(loc, mover.properties:GetPierceWalls())
+    if info.cover == 0 then
+        return "No Line of Effect", info.obstructionDist
     end
 
     local limit = mover.properties:CalculateNamedCustomAttribute("Line Of Effect Limit") or 0
     if limit > 0 then
         local distSquares = math.max(mover:Distance(loc) / dmhub.unitsPerSquare, math.abs(loc.altitude - mover.loc.altitude))
         if distSquares > limit then
-            return "Beyond Line of Effect"
+            return "Beyond Line of Effect", limit / distSquares
         end
     end
 
-    return nil
+    return nil, 1
 end
 
 --- The default landing altitude for a teleport pick at the hovered `loc`: the
@@ -12519,8 +12522,18 @@ CreateAbilityController = function()
             local filteredTargets = {}
 
             local targetColor = "white"
-            --set below when the hovered teleport destination is out of line of effect.
+            --Teleport: the creature needs line of effect to the space it lands in. Worked
+            --out here, before the arrow is drawn, so the arrow can turn red where it is
+            --blocked; the square is drawn red with the reason, and mappress refuses it
+            --under strict targeting. Keyed on the hovered loc so a press can match it.
             g_pointTargeting.teleportLoe = nil
+            if loc ~= nil and DrawSteelActionBar.IsTeleportPick() then
+                local loeReason, loeBreak = DrawSteelActionBar.TeleportLineOfEffectFailReason(g_token,
+                    DrawSteelActionBar.TeleportAnchorLoc(g_token, loc))
+                if loeReason ~= nil then
+                    g_pointTargeting.teleportLoe = { key = startingLoc.str, reason = loeReason, obstructionDist = loeBreak }
+                end
+            end
             local clearMovementArrow = g_pointTargeting.showingMovementArrow
             local clearWarningArrows = g_pointTargeting.showingWarningArrows
             local prevShape = g_pointTargeting.shape
@@ -12730,6 +12743,9 @@ CreateAbilityController = function()
                             end
                         end
 
+                        if g_pointTargeting.teleportLoe ~= nil then
+                            markOptions.errorFrom = g_pointTargeting.teleportLoe.obstructionDist
+                        end
                         local movementInfo = g_token:MarkMovementArrow(loc, markOptions)
                         g_pointTargeting.showingMovementArrow = true
                         clearMovementArrow = false
@@ -12765,6 +12781,9 @@ CreateAbilityController = function()
                                 --a teleport so the diagram keeps the dialed landing altitude and
                                 --synthesizes the arrival fall for a non-flyer.
                                 movementInfo.path.teleport = true
+                                if g_pointTargeting.teleportLoe ~= nil then
+                                    movementInfo.path.lineOfEffectBreak = g_pointTargeting.teleportLoe.obstructionDist
+                                end
                             elseif movementType == nil then
                                 --The ability moves nobody -- it PLACES something in the hovered
                                 --square (a summon). The default "Movement: 3 squares" reads as the
@@ -13451,16 +13470,8 @@ CreateAbilityController = function()
                     g_pointTargeting.shape = nil
                 end
 
-                --Teleport: the creature needs line of effect to the space it lands
-                --in. Shown in red with the reason; mappress refuses it under strict
-                --targeting. Keyed on the hovered loc so a press can match it.
-                if g_pointTargeting.shape ~= nil and loc ~= nil and DrawSteelActionBar.IsTeleportPick() then
-                    local loeReason = DrawSteelActionBar.TeleportLineOfEffectFailReason(g_token,
-                        DrawSteelActionBar.TeleportAnchorLoc(g_token, loc))
-                    if loeReason ~= nil then
-                        g_pointTargeting.teleportLoe = { key = startingLoc.str, reason = loeReason }
-                        targetColor = "red"
-                    end
+                if g_pointTargeting.shape ~= nil and g_pointTargeting.teleportLoe ~= nil then
+                    targetColor = "red"
                 end
 
                 -- Partner burst: if the ability declares partnerBurst (a GoblinScript
@@ -13701,8 +13712,11 @@ CreateAbilityController = function()
                         end
                     end
 
+                    --an out-of-reach teleport square gets a large red label above it instead.
+                    local loeText = nil
                     if g_pointTargeting.teleportLoe ~= nil then
-                        clickText = tr(g_pointTargeting.teleportLoe.reason)
+                        loeText = tr(g_pointTargeting.teleportLoe.reason)
+                        clickText = ""
                     end
 
                     local locs = g_pointTargeting.shape.locations
@@ -13764,8 +13778,28 @@ CreateAbilityController = function()
                                 width = "80%",
                                 height = "auto",
                                 fontSize = 0.15,
-                                color = cond(g_pointTargeting.teleportLoe ~= nil, "#ff6666", "white"),
+                                color = "white",
                                 text = clickText,
+                                textAlignment = "center",
+                            },
+                            gui.Label {
+                                interactable = false,
+                                floating = true,
+                                classes = { cond(loeText == nil, "collapsed") },
+                                valign = "top",
+                                halign = "center",
+                                width = "auto",
+                                height = "auto",
+                                y = -0.55,
+                                hpad = 0.08,
+                                vpad = 0.03,
+                                borderBox = true,
+                                bgimage = true,
+                                bgcolor = "#000000cc",
+                                fontSize = 0.32,
+                                bold = true,
+                                color = "#ff4a3d",
+                                text = loeText or "",
                                 textAlignment = "center",
                             },
                             gui.Label {
