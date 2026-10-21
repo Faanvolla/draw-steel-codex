@@ -12,6 +12,7 @@ local mod = dmhub.GetModLoading()
 local playersManageProjects = setting{
 	id = "permission:playersprojectrolls",
 	description = "Players Manage Downtime Projects",
+	help = "Players can roll on their Heroes' projects from the character sheet, and use the Director's project controls: status, milestones, adjustments, event rolls, activity counts and deleting history.",
 	editor = "check",
 	default = false,
 
@@ -102,11 +103,16 @@ function DTCharSheetTab.CreateDowntimePanel()
                         end
                     end
 
-                    modifyTokenProps{
-                        execute = function()
-                            downtimeInfo.followerRolls = migratedRolls
-                        end
-                    }
+                    --Only write when there are old rolls to move: opening a sheet
+                    --must not upload anything (a viewer's open used to write, and
+                    --every first open cost an upload and a second refresh).
+                    if next(migratedRolls) ~= nil then
+                        modifyTokenProps{
+                            execute = function()
+                                downtimeInfo.followerRolls = migratedRolls
+                            end
+                        }
+                    end
                 end
             end
         end,
