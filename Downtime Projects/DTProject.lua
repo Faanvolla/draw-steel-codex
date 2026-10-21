@@ -21,6 +21,7 @@
 --- @field projectRolls table Array of DTRoll objects - History of all rolls made on this project
 --- @field progressAdjustments table Array of DTAdjustment objects - History of all adjustments made to project progress
 --- @field createdBy string GUID identifier of the user who created this project
+--- @field itemGranted boolean True once a crafting project has given its item; it never gives another
 DTProject = RegisterGameType("DTProject")
 DTProject.sortOrder = 1
 
@@ -38,6 +39,7 @@ DTProject.status = DEFAULT_STATUS
 DTProject.statusReason = "New Project - Ask your Director to review"
 DTProject.milestoneThreshold = 0
 DTProject.createdBy = dmhub.userid
+DTProject.itemGranted = false
 
 DTProject._cachedProgress = nil        -- Stores the calculated progress value
 DTProject._progressDirty = true        -- Marks cache as needing recalculation
@@ -375,17 +377,25 @@ function DTProject:_setStateFromProgressChange(item, direction, priorProgress)
     local milestoneStop = self:GetMilestoneThreshold()
 
     if newValue >= projectGoal then
-        DTBusinessRules.GiveItemToCharacter(self)
+        -- This branch re-enters whenever progress is added to, or removed from, a
+        -- finished project, so the item and the banner wait for the transition
+        -- INTO complete. The item also comes at most once per project, so deleting
+        -- a roll and rolling again never crafts a second copy.
+        local completing = currentStatus ~= STATUS.COMPLETE.key
+        if completing and not self:try_get("itemGranted", false) then
+            if DTBusinessRules.GiveItemToCharacter(self) then
+                self.itemGranted = true
+            end
+        end
         self:SetStatusReason("Project complete.")
             :SetStatus(DTConstants.STATUS.COMPLETE.key)
 
         -- Announce completion with a dramatic banner (synced to all clients,
-        -- non-modal). Gate on the transition INTO complete: this branch
-        -- re-enters whenever more progress is added to an already-finished
-        -- project, and the banner, unlike the item grant above, should fire
-        -- once. Title falls back to "a project" for untitled projects.
-        if currentStatus ~= STATUS.COMPLETE.key then
-            local token = dmhub.GetTokenById(self:GetOwnerID())
+        -- non-modal). Title falls back to "a project" for untitled projects.
+        -- GetCharacterById, not GetTokenById: the owner may not be on the loaded
+        -- map (a Respite run on another map), and the banner must still show.
+        if completing then
+            local token = dmhub.GetCharacterById(self:GetOwnerID())
             if token ~= nil and token.valid then
                 local title = self:GetTitle()
                 if title == nil or title == "" then
