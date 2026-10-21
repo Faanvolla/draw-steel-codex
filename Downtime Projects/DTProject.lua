@@ -376,6 +376,7 @@ function DTProject:_setStateFromProgressChange(item, direction, priorProgress)
     local projectGoal = self:GetProjectGoal()
     local milestoneStop = self:GetMilestoneThreshold()
 
+    self:_healLegacyGrant(oldValue)
     if newValue >= projectGoal then
         self:_markComplete(currentStatus)
     elseif currentStatus == DTConstants.STATUS.COMPLETE.key then
@@ -396,15 +397,34 @@ function DTProject:_setStateFromProgressChange(item, direction, priorProgress)
     end
 end
 
---- Marks the project Complete. The item and the banner wait for the transition
---- INTO complete, because progress added to or removed from a finished project
---- comes back through here; the item also comes at most once per project, so
---- deleting a roll and rolling again never crafts a second copy.
+--- Is the project stopped until the Director acts (Paused or at a Milestone)?
+--- @return boolean
+function DTProject:WaitsOnDirector()
+    local status = self:GetStatus()
+    return status == DTConstants.STATUS.PAUSED.key or status == DTConstants.STATUS.MILESTONE.key
+end
+
+--- A crafting project finished before itemGranted existed gave its item when its
+--- progress reached the goal, so one that is Complete at its goal counts as given.
+--- Without this, deleting its last roll and rolling again would give a second copy.
+--- @param progress number The progress before the change being made
+function DTProject:_healLegacyGrant(progress)
+    if self:GetStatus() == DTConstants.STATUS.COMPLETE.key and progress >= self:GetProjectGoal()
+            and self:GetItemID() ~= "" and not self:try_get("itemGranted", false) then
+        self.itemGranted = true
+    end
+end
+
+--- Marks the project Complete. The item comes the first time progress reaches
+--- the goal, whatever the status was (a Director may have picked Complete by
+--- hand), and never again, so deleting a roll and rolling again never crafts a
+--- second copy. The banner waits for the transition INTO complete, because
+--- progress added to or removed from a finished project comes back through here.
 --- @param currentStatus string The status before this change
 function DTProject:_markComplete(currentStatus)
     local STATUS = DTConstants.STATUS
     local completing = currentStatus ~= STATUS.COMPLETE.key
-    if completing and not self:try_get("itemGranted", false) then
+    if not self:try_get("itemGranted", false) then
         if DTBusinessRules.GiveItemToCharacter(self) then
             self.itemGranted = true
         end
@@ -441,11 +461,10 @@ end
 function DTProject:ChangeProjectGoal(goal)
     local STATUS = DTConstants.STATUS
     local currentStatus = self:GetStatus()
+    self:_healLegacyGrant(self:GetProgress())
     self:SetProjectGoal(goal)
     if self:GetProgress() >= self:GetProjectGoal() then
-        if currentStatus ~= STATUS.COMPLETE.key then
-            self:_markComplete(currentStatus)
-        end
+        self:_markComplete(currentStatus)
     elseif currentStatus == STATUS.COMPLETE.key then
         self:SetStatus(STATUS.ACTIVE.key)
             :SetStatusReason("")

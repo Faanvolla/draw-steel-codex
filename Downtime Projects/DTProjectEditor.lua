@@ -719,8 +719,7 @@ function DTProjectEditor:_createProjectForm()
                     --only true while the project waits on the Director.
                     linger = function(element)
                         local project = element.parent.data.getProject(element)
-                        local status = project and project:GetStatus()
-                        if status == DTConstants.STATUS.PAUSED.key or status == DTConstants.STATUS.MILESTONE.key then
+                        if project ~= nil and project:WaitsOnDirector() then
                             gui.Tooltip{
                                 maxWidth = 300,
                                 fontSize = 16,
@@ -763,8 +762,7 @@ function DTProjectEditor:_createProjectForm()
             },
             refreshToken = function(element)
                 local project = element.data.getProject(element)
-                local status = project and project:GetStatus()
-                if canManage or status == DTConstants.STATUS.PAUSED.key or status == DTConstants.STATUS.MILESTONE.key then
+                if canManage or (project ~= nil and project:WaitsOnDirector()) then
                     element.text = "Status Reason:"
                 else
                     element.text = ""
@@ -825,8 +823,7 @@ function DTProjectEditor:_createProjectForm()
             --the same states the "Status Reason:" header above shows for.
             refreshToken = function(element)
                 local project = element.data.getProject(element)
-                local status = project and project:GetStatus()
-                if project and (status == DTConstants.STATUS.PAUSED.key or status == DTConstants.STATUS.MILESTONE.key) then
+                if project and project:WaitsOnDirector() then
                     element.text = project:GetStatusReason()
                 else
                     element.text = ""
@@ -2654,6 +2651,35 @@ function DTProjectEditor.RecordProjectRolls(args)
         DTShares.Touch()
         AnnounceChange()
     end)
+end
+
+--- Gives back the activity a deleted roll spent: the opposite of the spend in
+--- RecordProjectRolls. The roll names the Hero who paid (rolledById) and the
+--- follower who rolled, if one did; on a shared project that is not the
+--- project's owner. A breakthrough came free with the roll before it, so it
+--- refunds nothing. A roll that names no payer refunds the fallback.
+--- @param roll DTRoll
+--- @param fallbackToken any The Hero to refund when the roll names no payer
+--- @param fallbackKey string|nil The roller id to refund under in that case
+function DTProjectEditor.RefundProjectRoll(roll, fallbackToken, fallbackKey)
+    if roll:GetBreakthrough() then
+        return
+    end
+
+    local holder = nil
+    local holderId = roll:GetRolledByID()
+    if holderId ~= nil and holderId ~= "" then
+        holder = dmhub.GetCharacterById(holderId)
+    end
+    local key = roll:GetRolledByFollowerID()
+    if holder == nil then
+        holder = fallbackToken
+        key = fallbackKey
+    elseif key == nil or key == "" then
+        key = holder.charid
+    end
+
+    DTProjectEditor.AdjustDowntimeRolls(holder, key or "", 1)
 end
 
 --- Comma-separated display names for a project's test characteristics
