@@ -5052,7 +5052,6 @@ local function CreateTopBar()
         local m_includeLog = isBugReport
         local m_includeScreenshot = false
         local m_allowGameEntry = true
-        local m_contactOnDiscord = true
         local m_mood = nil
 
         --the dialog is hosted in the gamehud modal stack in-game, or as a
@@ -5140,33 +5139,6 @@ local function CreateTopBar()
                 m_allowGameEntry = element.value
             end,
         }
-
-        --Discord follow-up: if the Discord desktop client is running we know the
-        --user's Discord handle and can offer to contact them about the report.
-        --Otherwise explain that we cannot follow up.
-        local discordSection
-        if report.discordUsername ~= nil then
-            discordSection = gui.Check{
-                text = "Contact me on Discord (" .. report.discordUsername .. ") to follow up on this report",
-                tooltip = "If checked, your Discord username is included with the report so a Codex developer can reach out to you about it. Leave unchecked to keep your Discord username private.",
-                value = m_contactOnDiscord,
-                halign = "left",
-                tmargin = 12,
-                change = function(element)
-                    m_contactOnDiscord = element.value
-                end,
-            }
-        else
-            discordSection = gui.Label{
-                fontSize = 15,
-                width = 880,
-                height = "auto",
-                textWrap = true,
-                halign = "left",
-                tmargin = 12,
-                text = "Discord isn't linked, so we won't be able to follow up with you about this report. Run the Discord app alongside Codex if you would like us to be able to reach out.",
-            }
-        end
 
         local m_attachmentsList = gui.Panel{
             width = "100%",
@@ -5387,7 +5359,6 @@ local function CreateTopBar()
                     includeLog = m_includeLog,
                     includeScreenshot = m_includeScreenshot,
                     allowGameEntry = m_allowGameEntry,
-                    contactOnDiscord = m_contactOnDiscord,
                     mood = m_mood,
                     attachments = m_attachments,
                     progress = function(ratio)
@@ -5538,7 +5509,6 @@ local function CreateTopBar()
         end
 
         formChildren[#formChildren + 1] = gameEntryCheck
-        formChildren[#formChildren + 1] = discordSection
 
         if screenshotSection ~= nil then
             formChildren[#formChildren + 1] = screenshotSection
