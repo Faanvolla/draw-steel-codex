@@ -83,6 +83,10 @@ local g = {
     trackers = {},
     trackerLayer = nil,
     trackerScreenLayer = nil,
+    --- @type Panel|nil the table pass's image (TrackerLayers)
+    tableImage = nil,
+    --- @type number|nil the image's crop, as last set
+    tableImageCrop = nil,
 }
 
 ----------------------------------------------------------------------
@@ -904,6 +908,9 @@ local function BuildPreview(tile, item, faces, index)
     if die == nil then
         return
     end
+    --the drawer's dice sit over the drawer, not on the table under it (an
+    --engine without table layering has no aboveUI: they are over it anyway).
+    pcall(function() die.aboveUI = true end)
     local preview = {die = die, tile = tile, item = item, faces = faces, index = index}
     --a dice-set tile's die: clicking or moving it picks the set; it stays put.
     if item.setValue ~= nil then
@@ -3449,6 +3456,36 @@ local function TrackerLayers()
     end
     local shared = g.trackerLayer --[[@as Panel]]
     local private = g.trackerScreenLayer --[[@as Panel]]
+
+    --The dice and figures lying on the table, drawn by the engine's table pass
+    --("#DiceTable"): over the shared trackers, under every window and panel.
+    local image = g.tableImage
+    if image == nil or not image.valid or image.parent ~= shared then
+        image = gui.Panel{
+            floating = true,
+            width = "100%",
+            height = "100%",
+            bgimage = "#DiceTable",
+            bgcolor = "white",
+            interactable = false,
+        }
+        shared:AddChild(image)
+        g.tableImage = image
+        g.tableImageCrop = nil
+    end
+    local sharedChildren = shared.children
+    if sharedChildren[#sharedChildren] ~= image then
+        image:SetAsLastSibling()
+    end
+    --the image is the whole screen; the table is the part below the title bar
+    --(imageRect's y counts up from the bottom).
+    local screen = dmhub.screenDimensions
+    local below = dmhub.screenDimensionsBelowTitlebar
+    local crop = screen.y > 0 and below.y / screen.y or 1
+    if crop ~= g.tableImageCrop then
+        g.tableImageCrop = crop
+        image.selfStyle.imageRect = {x1 = 0, x2 = 1, y1 = 0, y2 = crop}
+    end
     local children = docs.children
     if children[1] ~= shared then
         shared:SetAsFirstSibling()

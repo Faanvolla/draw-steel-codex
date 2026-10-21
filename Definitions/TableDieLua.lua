@@ -6,6 +6,7 @@
 --- @field face number (Read-only) The value on the die's top face.
 --- @field x number (Read-only) Where the die rests, x in screen pixels from the left.
 --- @field y number (Read-only) Where the die rests, y in screen pixels from the top.
+--- @field aboveUI boolean True to draw the die over all the UI, like a roll's dice (the drawer's preview dice). False, the default: it lies on the table, under windows and panels, and a panel over it gets the mouse.
 --- @field scale number The die's size (1 is a normal roll's die).
 --- @field callbacks {onRoll: nil|fun(roll: table), onMove: nil|fun(x: number, y: number), onRightClick: nil|fun(x: number, y: number)} Callbacks: {onRoll = function(roll), onMove = function(x, y), onRightClick = function(x, y)}. onRoll fires when this client starts a roll (a click or a throw); roll is the record to pass to PlayRoll on the other clients. onMove fires when the die is dragged and put down without a throw.
 TableDieLua = {}
