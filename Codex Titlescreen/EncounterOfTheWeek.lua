@@ -1822,6 +1822,51 @@ local m_veil = nil
 
 local CreateScreen
 
+---- Steam invites -------------------------------------------------------
+--Any party member can invite Steam friends ("Invite Steam Friends" in the
+--party view), and an open party is each member's Steam "Join Game" target.
+--Both carry kind "eotw" and payload "<gameid>:<invite code>"; the code is
+--what lets a friend into a private party (the city's invite-code action).
+
+local STEAM_INVITE_KIND = "eotw"
+
+--The party invite this player accepted, { gameid, code }, waiting for the
+--town screen to join it (TryAcceptInvite inside CreateScreen).
+---@type nil|{gameid: string, code: string}
+local m_pendingInvite = nil
+
+--Takes an accepted invite from the engine once we are at the titlescreen
+--past its splash, and opens the town to act on it. Accepting does not need
+--the beta setting: the invite is the way in. Reschedules itself every
+--second for the life of this codemod generation.
+local function PollSteamInvite()
+    if mod.unloaded then
+        return
+    end
+    dmhub.Schedule(1, PollSteamInvite)
+
+    local root = rawget(_G, "CodexTitlescreenRoot")
+    if root == nil or not root.valid or root:HasClass("starting-screen") then
+        return
+    end
+    if dmhub.isLobbyGame ~= true or (dmhub.gameLoadingProgress or 0) < 1 then
+        return
+    end
+
+    local invite = dmhub.TakeSteamInvite()
+    if invite == nil then
+        return
+    end
+    local gameid, code = string.match(invite.payload, "^([%w_%-]+):([%w_%-]+)$")
+    if invite.kind ~= STEAM_INVITE_KIND or gameid == nil then
+        printf("EotW: ignoring a Steam invite we do not understand (%s)", tostring(invite.kind))
+        return
+    end
+    m_pendingInvite = { gameid = gameid, code = code }
+    EncounterOfTheWeek.ShowScreen()
+end
+dmhub.Schedule(1, PollSteamInvite)
+
 --The veil the screen is built behind. Deliberately cheap: a flat dark
 --panel and two labels, no streamed art of its own, so it can be up and
 --painted within a frame of the click. It owns the whole opening sequence
@@ -2966,14 +3011,17 @@ CreateScreen = function(args)
     --arbitrated server-side), then the engine-side join adds us to the
     --game's real player list, and we land in the game's lobby view to
     --pick heroes. Joining a game other than our current EotW game destroys
-    --the previous one (one EotW game per account).
-    local JoinGame = function(gameid)
+    --the previous one (one EotW game per account). inviteCode (from a Steam
+    --invite) is what admits us to a private game.
+    ---@param gameid string
+    ---@param inviteCode? string
+    local JoinGame = function(gameid, inviteCode)
         if m_conn == nil then
             return
         end
         m_conn:Request{
             action = "join-game",
-            args = { gameid = gameid },
+            args = { gameid = gameid, invite = inviteCode },
             success = function()
                 local joined = GetGameRecord(gameid)
                 EotwAnalytics.Track("eotw_party_join", {
@@ -2993,6 +3041,57 @@ CreateScreen = function(args)
             end,
             error = ShowGamesError,
         }
+    end
+
+    --Invite codes of parties we belong to, by gameid (see the Steam invites
+    --note above CreateScreen). A code never changes, so one ask per party.
+    ---@type table<string, string>
+    local m_inviteCodes = {}
+    ---@type table<string, boolean>
+    local m_inviteCodeAsked = {}
+
+    --Calls fn(code) with the party's invite code, asking the city for it the
+    --first time. onError gets the city's message if it refuses.
+    ---@param gameid string
+    ---@param fn fun(code: string)
+    ---@param onError? fun(message: string)
+    local WithInviteCode = function(gameid, fn, onError)
+        if m_inviteCodes[gameid] ~= nil then
+            fn(m_inviteCodes[gameid])
+            return
+        end
+        if m_conn == nil then
+            return
+        end
+        m_inviteCodeAsked[gameid] = true
+        m_conn:Request{
+            action = "invite-code",
+            args = { gameid = gameid },
+            success = function(result)
+                if type(result) == "table" and type(result.code) == "string" then
+                    m_inviteCodes[gameid] = result.code
+                    fn(result.code)
+                end
+            end,
+            error = function(message)
+                --a later push may try again (the party may have reopened).
+                m_inviteCodeAsked[gameid] = nil
+                if onError ~= nil then
+                    onError(message)
+                end
+            end,
+        }
+    end
+
+    --The Steam overlay's invite dialog for one of our parties.
+    local InviteSteamFriends = function(gameid)
+        WithInviteCode(gameid, function(code)
+            if not dmhub.InviteViaSteam(STEAM_INVITE_KIND, gameid .. ":" .. code) then
+                ShowGamesError("Steam's overlay is not available, so friends cannot be invited from here. Check that the Steam overlay is enabled.")
+                return
+            end
+            EotwAnalytics.Track("eotw_party_invite", { runid = gameid })
+        end, ShowGamesError)
     end
 
     --" -- Encounter: <title>" for a roster record whose host chose an
@@ -4173,6 +4272,23 @@ CreateScreen = function(args)
                 end,
             }
         end
+        --Any member may invite Steam friends while the party is forming; the
+        --invite gets them in even when the party is private. Without the
+        --Steam overlay (not launched through Steam, or overlay disabled)
+        --there is no invite dialog to open, so no button.
+        if isMember and isOpen and dmhub.IsSteamOverlayRunning() then
+            buttons[#buttons+1] = gui.Button{
+                text = "Invite Friends",
+                fontSize = 20,
+                width = 180,
+                height = 44,
+                hmargin = 6,
+                hover = gui.Tooltip("Invite Steam friends to join this party."),
+                click = function()
+                    InviteSteamFriends(gameid)
+                end,
+            }
+        end
         if isMember then
             --The host's Abandon destroys the game outright (roster record
             --dropped, engine game deleted + storage released, account slot
@@ -4621,8 +4737,10 @@ CreateScreen = function(args)
         for _,gameid in ipairs(ids) do
             ---@cast games -nil
             local record = games[gameid]
-            --private games are never listed for anyone but their host.
-            if PartyMode(record) == mode and (record.public == true or record.hostUserid == dmhub.loginUserid) then
+            --private games are listed only for their members (the host, and
+            --friends who joined through a Steam invite).
+            local isMember = record.hostUserid == dmhub.loginUserid or (record.players ~= nil and record.players[dmhub.loginUserid] ~= nil)
+            if PartyMode(record) == mode and (record.public == true or isMember) then
                 if record.status == "open" then
                     forming[#forming+1] = MakeGameRow(gameid, record)
                 else
@@ -7479,6 +7597,180 @@ CreateScreen = function(args)
         end
     end
 
+    ---- Steam invites (see the note above CreateScreen) -----------------
+
+    local InviteNotice = function(title, text)
+        ModalDialog{
+            title = title,
+            width = 640,
+            children = {
+                gui.Label{
+                    text = text,
+                    fontSize = 20,
+                    color = Styles.textColor,
+                    width = "100%",
+                    height = "auto",
+                    textWrap = true,
+                    textAlignment = "center",
+                    vmargin = 8,
+                },
+            },
+        }
+    end
+
+    --True when we host, or have joined, this roster record.
+    ---@param record table
+    local IsMemberOf = function(record)
+        local myUserid = dmhub.loginUserid
+        return record.hostUserid == myUserid or (record.players ~= nil and record.players[myUserid] ~= nil)
+    end
+
+    --Act on an accepted invite (m_pendingInvite) once the town is up and the
+    --lobby snapshot has arrived: open the party's board and join it, first
+    --asking if that means leaving a party we are already in.
+    local TryAcceptInvite = function()
+        local invite = m_pendingInvite
+        if invite == nil or m_conn == nil or not m_conn.connected or m_enteringWorld then
+            return
+        end
+        if resultPanel == nil or not resultPanel.valid or resultPanel:HasClass("hidden") or resultPanel:HasClass("eotwOpening") then
+            return
+        end
+        --we are always present ourselves, so an empty /presence means the
+        --snapshot (and with it the party list) has not arrived yet.
+        if next(m_conn:GetPath("/presence") or {}) == nil then
+            return
+        end
+        if m_modalDialog ~= nil and m_modalDialog.valid then
+            return
+        end
+        m_pendingInvite = nil
+
+        local gameid = invite.gameid
+        local record = GetGameRecord(gameid)
+        if record == nil then
+            InviteNotice("Party Not Found", "That party is no longer forming. Your friend may have disbanded it, or it may have timed out.")
+            return
+        end
+        local mode = PartyMode(record)
+        if IsMemberOf(record) then
+            OpenLocation(mode)
+            OpenGameView(gameid)
+            return
+        end
+        if record.status ~= "open" then
+            InviteNotice("Party Already Set Out", string.format("%s's party has already begun its encounter.", record.hostName or "Your friend"))
+            return
+        end
+
+        local Join = function()
+            EotwAnalytics.Track("eotw_party_invite_accept", { runid = gameid })
+            OpenLocation(mode)
+            JoinGame(gameid, invite.code)
+        end
+
+        --joining replaces the party we are in (JoinGame leaves our EotW slot
+        --game, disbanding it if we host it), so ask first.
+        local current = nil
+        for otherid,other in pairs(m_conn:GetPath("/state/games") or {}) do
+            if otherid ~= gameid and IsMemberOf(other) then
+                current = other
+            end
+        end
+        if current == nil then
+            Join()
+            return
+        end
+
+        local consequence
+        if current.hostUserid == dmhub.loginUserid then
+            consequence = "Joining will disband the party you are hosting."
+        else
+            consequence = string.format("Joining will take you out of %s's party.", current.hostName or "your current")
+        end
+        local dlg
+        dlg = ModalDialog{
+            title = "Join Your Friend's Party?",
+            width = 680,
+            children = {
+                gui.Label{
+                    text = string.format("%s invited you to their party. %s", record.hostName or "A friend", consequence),
+                    fontSize = 20,
+                    color = Styles.textColor,
+                    width = "100%",
+                    height = "auto",
+                    textWrap = true,
+                    textAlignment = "center",
+                    vmargin = 8,
+                },
+            },
+            buttons = {
+                gui.Button{
+                    text = "Join",
+                    fontSize = 20,
+                    width = 140,
+                    height = 42,
+                    hmargin = 6,
+                    click = function()
+                        if dlg ~= nil then
+                            dlg:DestroySelf()
+                        end
+                        Join()
+                    end,
+                },
+                gui.Button{
+                    text = "Cancel",
+                    fontSize = 20,
+                    width = 140,
+                    height = 42,
+                    hmargin = 6,
+                    click = function()
+                        if dlg ~= nil then
+                            dlg:DestroySelf()
+                        end
+                    end,
+                },
+            },
+        }
+    end
+
+    --Our forming party is our Steam "Join Game" target, so friends can join
+    --from the Steam friends list too. The engine forgets it 10s after the
+    --last push, so a closed or hidden town stops advertising on its own.
+    local PushSteamJoinTarget = function()
+        if m_conn == nil or not m_conn.connected then
+            dmhub.SetSteamJoinTarget(nil)
+            return
+        end
+        local party = nil
+        local partyid = nil
+        for gameid,record in pairs(m_conn:GetPath("/state/games") or {}) do
+            if record.status == "open" and IsMemberOf(record) and (partyid == nil or gameid == m_viewGameid) then
+                party = record
+                partyid = gameid
+            end
+        end
+        if party == nil or partyid == nil then
+            dmhub.SetSteamJoinTarget(nil)
+            return
+        end
+        local code = m_inviteCodes[partyid]
+        if code == nil then
+            if not m_inviteCodeAsked[partyid] then
+                WithInviteCode(partyid, function() end)
+            end
+            return
+        end
+        local members = 0
+        for _,_ in pairs(party.players or {}) do
+            members = members + 1
+        end
+        if party.players == nil or party.players[party.hostUserid] == nil then
+            members = members + 1
+        end
+        dmhub.SetSteamJoinTarget(STEAM_INVITE_KIND, partyid .. ":" .. code, partyid, members)
+    end
+
     --Was the Arcane Market found when the roster was last listed? nil until
     --then. A hidden node is collapsed, and a collapsed panel stops thinking,
     --so it cannot show itself again: this watcher does it.
@@ -8324,6 +8616,7 @@ CreateScreen = function(args)
         --fires on DestroySelf and on titlescreen teardown alike; the C#
         --side drops its handler refs and closes the shared connection.
         destroy = function(element)
+            dmhub.SetSteamJoinTarget(nil)
             if m_conn ~= nil then
                 EotwRoster.Detach(m_conn)
                 m_conn:Disconnect()
@@ -8535,6 +8828,7 @@ CreateScreen = function(args)
             interactable = false,
             thinkTime = 0.5,
             think = function(element)
+                TryAcceptInvite()
                 MaybeShowWelcome()
                 MaybePlayInnReveal()
                 RevealFoundLocations()
@@ -8542,6 +8836,18 @@ CreateScreen = function(args)
                 if not m_innRevealActive then
                     MaybeShowSurvey()
                 end
+            end,
+        },
+
+        --keeps our forming party advertised as our Steam "Join Game".
+        gui.Panel{
+            floating = true,
+            width = 1,
+            height = 1,
+            interactable = false,
+            thinkTime = 3,
+            think = function(element)
+                PushSteamJoinTarget()
             end,
         },
     }

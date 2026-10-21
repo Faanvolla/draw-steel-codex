@@ -1305,14 +1305,10 @@ function EotwRoster.CreateHero(host, onDone)
     end)
 end
 
---Whether a roster hero may still be rebuilt in the EotW builder: only until
---their first encounter (none completed, and not away in a party now).
+--Whether a roster hero may be rebuilt in the EotW builder: any time they are
+--home in Blackbottom (on the roster and not away in a party now).
 function EotwRoster.CanRebuildHero(heroid)
-    local hero = EotwRoster.FindHero(heroid)
-    if hero == nil or EotwRoster.AwayHeroes()[heroid] ~= nil then
-        return false
-    end
-    return #(hero.completed or {}) == 0
+    return EotwRoster.FindHero(heroid) ~= nil and EotwRoster.AwayHeroes()[heroid] == nil
 end
 
 --Recruit a pregen: copy the module's pregen into the lobby game under the
@@ -1419,8 +1415,9 @@ function EotwRoster.RecruitTitlescreenHero(source, name, onDone)
     end)
 end
 
---Open a roster hero: in the EotW builder while it can still be rebuilt
---(and a host to mount on is given), otherwise in the EotW hero sheet.
+--Open a roster hero: in the EotW builder when it can be rebuilt (home, not
+--away in a party, and a host to mount on is given), otherwise in the EotW
+--hero sheet.
 function EotwRoster.EditHero(heroid, host)
     local tok = dmhub.GetCharacterById(heroid)
     if tok == nil then
@@ -1435,12 +1432,14 @@ function EotwRoster.EditHero(heroid, host)
             host = host,
             token = tok,
             title = "Rebuild Your Hero",
+            --a created hero keeps the Ancestry and Class it was made with
+            lockedSteps = { ancestry = true, class = true },
             onFinish = Save,
             onClose = Save,
         }
         return
     end
-    --past rebuilding, a roster Hero opens the EotW hero sheet, not the full
+    --when it cannot be rebuilt, a roster Hero opens the EotW hero sheet, not the full
     --editable sheet; its own controls (equip, spend a Recovery, appearance)
     --push the Hero to the City themselves
     EotwHeroSheet.Show{ charid = heroid, context = "town" }
@@ -2323,7 +2322,7 @@ local function GuildRow(hero, away, host)
                 bgimage = "phosphor/pencil-simple.png",
                 linger = function(element)
                     if EotwRoster.CanRebuildHero(heroid) then
-                        gui.Tooltip("Rebuild this hero. You can change a hero's build until their first encounter.")(element)
+                        gui.Tooltip("Rebuild this hero. You can change a hero's build any time they are in Blackbottom.")(element)
                     else
                         gui.Tooltip("Open this hero's character sheet")(element)
                     end

@@ -673,6 +673,9 @@ end
 --  step      optional step to open on (default: the first incomplete one)
 --  only      optional step id: show only that step (no stepper choice, no
 --            Back / Fill / Next), e.g. "appearance" for Change Appearance
+--  lockedSteps optional set of step ids ({ancestry = true}) whose main pick
+--            is fixed once made: the page shows only the chosen card. A
+--            rebuild locks Ancestry and Class; Create locks nothing.
 --  onFinish  function(token) when the player finishes a complete hero
 --  onClose   function(token) when the player closes without finishing
 ---@param args table
@@ -1038,12 +1041,22 @@ function EotwBuilder.Open(args)
 
     --- the page ---
 
-    --The cards for a step's main pick.
+    --Whether this step's main pick is fixed (args.lockedSteps) and already made.
+    --An unmade pick is never locked, so a hero missing one can still choose.
+    local function BaseLocked(tok, stepid)
+        return args.lockedSteps ~= nil and args.lockedSteps[stepid] == true and CurrentBaseId(tok, stepid) ~= nil
+    end
+
+    --The cards for a step's main pick. A locked pick shows only its own card.
     local function BaseCards(tok, stepid, options, width)
         local current = CurrentBaseId(tok, stepid)
+        local locked = BaseLocked(tok, stepid)
         local cards = {}
         for _,entry in ipairs(options) do
             local id = entry.id
+            if locked and id ~= current then
+                goto continue
+            end
             cards[#cards+1] = Card{
                 text = entry.name,
                 selected = current == id,
@@ -1088,6 +1101,7 @@ function EotwBuilder.Open(args)
                     end
                 end,
             }
+            ::continue::
         end
         return gui.Panel{
             width = "100%",
@@ -2143,14 +2157,24 @@ function EotwBuilder.Open(args)
                 local optional = baseRow ~= nil and baseRow.optional == true
                 local done = baseRow ~= nil and baseRow.complete and not optional
                 local statusText = cond(optional, "Optional", cond(done, "Done", "Choose one"))
-                Add("baseheader", statusText, function()
+                local locked = BaseLocked(tok, stepid)
+                Add("baseheader", statusText .. tostring(locked), function()
+                    local heading = string.format(cond(locked, "Your %s", "Choose your %s"), string.lower(step.base))
                     return gui.Panel{
                         width = "100%",
                         height = "auto",
-                        flow = "horizontal",
+                        flow = "vertical",
                         children = {
-                            gui.Label{ classes = { "eotwbSection" }, text = string.format("Choose your %s", string.lower(step.base)), width = "auto" },
-                            gui.Label{ classes = Classes("eotwbStatus", { done = done }), text = statusText, valign = "center", lmargin = 14, tmargin = 12 },
+                            gui.Panel{
+                                width = "100%",
+                                height = "auto",
+                                flow = "horizontal",
+                                children = {
+                                    gui.Label{ classes = { "eotwbSection" }, text = heading, width = "auto" },
+                                    gui.Label{ classes = Classes("eotwbStatus", { done = done }), text = statusText, valign = "center", lmargin = 14, tmargin = 12 },
+                                },
+                            },
+                            locked and Text(string.format("Your %s is chosen when the hero is created and can't be changed.", string.lower(step.base)), { "eotwbText", "muted" }, { bmargin = 6 }) or nil,
                         },
                     }
                 end)

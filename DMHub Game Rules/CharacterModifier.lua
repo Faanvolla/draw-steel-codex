@@ -3686,6 +3686,15 @@ end
 function CharacterModifier:ConsumeResource(creature, modContext)
 	local result = self:ConsumeResourceInternal(creature, modContext)
 
+	--A trigger augmentation (an additional cost modifier) replaces its trigger's
+	--modifier in the roll, carrying it as baseModifier. The base's own cost (e.g. a
+	--Malice cost) is still owed, so charge it too. Only its resourceCostType cost: the
+	--triggered action itself is paid by TriggerPayCost. Its triggerOnUse runs below.
+	local baseModifier = self:try_get("baseModifier") --[[@as CharacterModifier|nil]]
+	if baseModifier ~= nil and not self:try_get("overrideBase", false) then
+		baseModifier:ConsumeResourceCost(creature, modContext)
+	end
+
 	local typeInfo = CharacterModifier.TypeInfo[self.behavior] or {}
 	if typeInfo.triggerOnUse ~= nil then
 		typeInfo.triggerOnUse(self, creature, modContext)
@@ -3694,8 +3703,11 @@ function CharacterModifier:ConsumeResource(creature, modContext)
 	return result
 end
 
-function CharacterModifier:ConsumeResourceInternal(creature, modContext)
-
+--- Charges only the modifier's resourceCostType cost (surges, epic, or the creature's
+--- Heroic resource / Malice). Split out so a trigger augmentation can bill its base.
+--- @param creature creature
+--- @param modContext nil|table
+function CharacterModifier:ConsumeResourceCost(creature, modContext)
     local costType = self:try_get("resourceCostType", "none")
     print("CONSUME:: IN INTERNAL CONSUME", costType, self:try_get("overrideCost", false))
     if costType == "surges" then
@@ -3719,6 +3731,12 @@ function CharacterModifier:ConsumeResourceInternal(creature, modContext)
         print("CONSUME:: ConsumeResources:", creature.resourceid, cost, creature.resourceRefresh)
         creature:ConsumeResource(creature.resourceid, creature.resourceRefresh, cost, string.format("%s", self.name))
     end
+end
+
+function CharacterModifier:ConsumeResourceInternal(creature, modContext)
+
+    local costType = self:try_get("resourceCostType", "none")
+    self:ConsumeResourceCost(creature, modContext)
 
 
 	local result = false

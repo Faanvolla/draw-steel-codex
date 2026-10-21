@@ -4143,6 +4143,17 @@ local function RecordCombatStarted()
     EncounterOfTheWeekGame.AnalyticsPhase("combat", beat)
 end
 
+--Has this game's combat begun, on any client: the host's permanent stamp,
+--or (before the stamp replicates) a live initiative queue. The HUD's
+--Encounter Rules button appears on it.
+function EncounterOfTheWeekGame.CombatStarted()
+    if mod:GetDocumentSnapshot(STATE_DOC_ID).data.combatStarted == true then
+        return true
+    end
+    local queue = dmhub.initiativeQueue
+    return queue ~= nil and not queue.hidden
+end
+
 --Consecutive host ticks the met outcome condition has been observed with
 --every client ability-idle; the award waits for AWARD_HOLD_TICKS of them so
 --the fight visibly settles (and any just-started prompt's busy stamp has

@@ -619,14 +619,67 @@ end
 --Returns { docid, doc, parse, text } or a script with no beats.
 --The markdown documents filed under a map's journal folder, sorted by name:
 --the candidates for its script. Returns a list of { docid, doc }.
-local function MapScriptCandidates(mapid)
+--Is this document name an "Encounter Rules" document: the players' rules
+--reference, read from the HUD's rules button once combat begins, never a
+--script. "Encounter Rules" covers every part of a series; a series may also
+--give one part its own, "Encounter Rules: Part 2" (also "- Part 2" or
+--"(Part 2)"). Returns isRules, partNumber (nil for the general one).
+function EncounterMontage.RulesDocumentPart(name)
+    local s = string.lower(string.match(tostring(name or ""), "^%s*(.-)%s*$"))
+    if s == "encounter rules" then
+        return true, nil
+    end
+    local n = string.match(s, "^encounter rules%s*[:%-]?%s*%(?part%s+(%d+)%)?$")
+    if n ~= nil then
+        return true, tonumber(n)
+    end
+    return false, nil
+end
+
+--The map's markdown documents filed under its journal folder, split into
+--script candidates and Encounter Rules documents (each list { docid, doc }).
+local function MapJournalDocuments(mapid)
     local docsTable = dmhub.GetTable("documents") or {}
     local candidates = {}
+    local rules = {}
     for docid, doc in unhidden_pairs(docsTable) do
         if doc.typeName == "MarkdownDocument" and CustomDocument.IsDocInAccessibleRoot(doc, { [mapid] = true }) then
-            candidates[#candidates + 1] = { docid = docid, doc = doc }
+            if EncounterMontage.RulesDocumentPart(doc.description) then
+                rules[#rules + 1] = { docid = docid, doc = doc }
+            else
+                candidates[#candidates + 1] = { docid = docid, doc = doc }
+            end
         end
     end
+    return candidates, rules
+end
+
+--The Encounter Rules document for this map and series part: the part's own
+--when it has one, else the general one; nil when the map has none. Returns
+--the document (a MarkdownDocument) or nil.
+function EncounterMontage.FindRulesDocument(mapid, part)
+    mapid = mapid or game.currentMapId
+    if mapid == nil then
+        return nil
+    end
+    --EncounterMontage.ActivePart: the local is declared further down.
+    part = part or EncounterMontage.ActivePart()
+    local _, rules = MapJournalDocuments(mapid)
+    local general = nil
+    for _, r in ipairs(rules) do
+        local _, n = EncounterMontage.RulesDocumentPart(r.doc.description)
+        if n == part then
+            return r.doc
+        elseif n == nil and (general == nil or r.docid < general.docid) then
+            general = r
+        end
+    end
+    return general ~= nil and general.doc or nil
+end
+
+--Encounter Rules documents are filed there too but are never candidates.
+local function MapScriptCandidates(mapid)
+    local candidates = MapJournalDocuments(mapid)
     table.sort(candidates, function(a, b)
         local na, nb = a.doc.description or "", b.doc.description or ""
         if na ~= nb then
@@ -732,6 +785,11 @@ function EncounterMontage.ScriptForMap(mapid)
     end
     for docid in pairs(allIncluded) do
         documents[docid] = true
+    end
+    --the Encounter Rules documents are not script candidates but ship too.
+    local _, rules = MapJournalDocuments(mapid)
+    for _, r in ipairs(rules) do
+        documents[r.docid] = true
     end
     return { script = best, documents = documents, parts = parts }
 end
