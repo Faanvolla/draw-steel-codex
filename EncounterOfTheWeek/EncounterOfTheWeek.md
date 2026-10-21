@@ -1564,6 +1564,30 @@ Decisions taken with the user:
   region rectangle, see `MCDMEncounter.lua` "Encounter region and hero start
   zone"), which hard-restricts the heroes to that part of the map.
 
+**Part maps (2026-10-20, user direction):** a playtest showed the region
+hides nothing -- players saw the whole map, and on an upper floor every floor
+below shows through -- so a part may have its own map, named after the series
+map plus " (Part <n>)" ("Encounter: The Crypt (Part 2)"). Rules:
+- Part n plays on its part map when one exists, else on the series map (so
+  one-map series still work). The KEY is unchanged (`<key>#<n>`); only the
+  map it resolves to changes: game side `PartMapName` / `SplitPartMapName` /
+  `FindPartMap`, used by `EnsureOnEncounterMap`, `OnRequestedEncounterMap`
+  and `EnsureEncounterModule` (which, for a later part, waits up to 3 s past
+  the series map for the part map to arrive).
+- A part map's scripts must all say its own part. On a part map with no key
+  and no test running, `ActivePart` is that map's part, so the validator and
+  script panel read the right script while authoring.
+- The town never lists a part map as an encounter (`GetEncounters` skips
+  names `SplitPartMapName` accepts). Both publishers read a series' part maps
+  with it, number-check all its parts together, and record `map = <part map
+  name>` on each part in `eotwEncounters`; `ReadSeriesParts` keeps it as
+  `mapName`, which the fast launch's `startMap` uses.
+- Test Encounter's Part dropdown lists the parts on the current map. The
+  validator's "no region" problem shows only when the map holds more than
+  one part.
+- Not run yet: a real arrival on a part map, a community install of a
+  series with part maps, and both publishers on one.
+
 Each part is a separate game: the map starts fresh. As built, nothing that
 happened in Part 1 carries into Part 2 except through the story text; the
 DESIGNED (not built) way to carry results forward is "Carrying the story

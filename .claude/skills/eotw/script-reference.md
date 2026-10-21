@@ -535,14 +535,22 @@ Trap: Place 4 Snare Trap objects in Trap zones and delete the other Trap zones.
   - `/eotwreinforce` lists what the script will send and what has arrived;
     `/eotwreinforce arrive 1` brings section 1's next group in now.
 
-## Series: several encounters on one map
+## Series: several encounters, one after another
 
-A **series** is one encounter map played as several encounters, each on its
-own part of the map, unlocked one after another: a party plays Part 1; once the
-player's account has won it, Part 2 opens; and so on. Every part is a separate
-game (the map starts fresh each time).
+A **series** is several encounters played in order, unlocked one after
+another: a party plays Part 1; once the player's account has won it, Part 2
+opens; and so on. Every part is a separate game (the map starts fresh each
+time).
 
-- **One script document per part**, all in the map's Map Documents folder, each
+- **Each part can have its own map.** Name it after the series map with
+  ` (Part <n>)` on the end: the series map `Encounter: The Bone Cathedral`
+  holds Part 1, `Encounter: The Bone Cathedral (Part 2)` holds Part 2, and so
+  on. A part map is never an encounter of its own in town; it ships and is
+  listed with its series. Its script documents go in its own Map Documents
+  folder, and every one of them says that map's part (`# Part 2`). A part with
+  no part map plays on the series map, so several parts can still share one
+  map (see the region below).
+- **One script document per part**, in its map's Map Documents folder, each
   starting with a part heading: `# Part 1: The Antechamber`, `# Part 2: The
   Ossuary`, `# Part 3` (the title is optional). It is not a beat. Number the
   parts 1, 2, 3... with no gaps or repeats (publishing refuses otherwise).
@@ -551,18 +559,23 @@ game (the map starts fresh each time).
 - Each part is a whole script: its own beats, its own `# Encounter` and
   `[[encounter]]` island, and its own `# Town Gate` / `# Conclusion` /
   `# Defeat`. Sub-documents work as usual, per part.
-- **Where each part is played: the encounter's region.** In the encounter
+- **Parts sharing one map: the encounter's region.** In the encounter
   builder, draw the encounter's **region** (the rectangle of the map it takes
   place in) and its **hero start zone**, then load that saved encounter into
   the part's `[[encounter]]` island ("Load saved..."). The game bounds the map
-  to the region from the moment the party arrives (players cannot see or walk
-  out of it) and places the heroes on the start tiles. With no start tiles,
+  to the region from the moment the party arrives (the camera, movement, fog
+  and lighting stop at its edges) and places the heroes on the start tiles.
+  The region does NOT hide the rest of the map: players can still see art
+  outside it, and an upper floor shows every floor below. That is why a part
+  map is usually the better choice. A part alone on its map needs no region.
+  With no start tiles,
   heroes start on the map's `Start` zone tiles inside the region, so a shared
   map can carry one Start zone per part. Trap zones and reinforcement `Enter:`
   zones only count inside the region too.
 - The validator panel says which part a document is, and flags a part whose
-  encounter has no region.
-- **Testing**: Test Encounter has a **Part** dropdown on a series map. The test
+  encounter has no region when its map holds other parts too.
+- **Testing**: Test Encounter has a **Part** dropdown listing the parts on the
+  map you are on; to test Part 2 on its part map, go to that map. The test
   bounds the map like a real game and puts the bounds back at End Test.
 - **In town**: the series is one entry (it is scheduled and voted on as a
   whole). Form a Party opens on the next part the player has to play, with

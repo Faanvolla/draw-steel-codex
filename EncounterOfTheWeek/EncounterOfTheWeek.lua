@@ -494,6 +494,23 @@ local function ParseEncounterKey(key)
     return moduleid, mapName, part
 end
 
+--A series can put a later part on its own map, named after the series map
+--with " (Part <n>)" on the end: "Encounter: The Crypt (Part 2)". Without one,
+--the part plays on the series map itself. Mirrored by the titlescreen's
+--EncounterOfTheWeek.PartMapName and the publishers -- keep them in step.
+local function PartMapName(seriesMapName, part)
+    return string.format("%s (Part %d)", seriesMapName, part)
+end
+
+--The series map's name and the part, if `name` is a part map's name.
+local function SplitPartMapName(name)
+    local base, number = string.match(name or "", "^(.-) %(Part (%d+)%)$")
+    if base == nil or base == "" then
+        return nil, nil
+    end
+    return base, tonumber(number)
+end
+
 --What this game plays, for the Codex > About Encounter of the Week dialog
 --(EncounterOfTheWeekHud.lua): { title, mapid, moduleid }, or nil when no
 --encounter map is up. title is the map's name without "Encounter: ", plus the
@@ -507,6 +524,8 @@ function EncounterOfTheWeekGame.EncounterInfo()
         return nil
     end
     local name = tostring(map.description or "")
+    --a part map is titled as its series.
+    name = SplitPartMapName(name) or name
     local title = string.match(name, "^[^:]+:%s*(.+)$") or name
 
     --a series names the part: "The Crypt -- Part 2: The Ossuary".
@@ -564,6 +583,15 @@ function EncounterOfTheWeekGame.ActivePart()
         local _, _, part = ParseEncounterKey(m_arrivalKey)
         return part
     end
+    --authoring on a part map: that map's part.
+    local partOfMap = nil
+    pcall(function()
+        local _, n = SplitPartMapName(game.currentMap.description)
+        partOfMap = n
+    end)
+    if partOfMap ~= nil and partOfMap >= 2 then
+        return math.floor(partOfMap)
+    end
     return 1
 end
 
@@ -574,6 +602,18 @@ local function FindMapByName(name)
         end
     end
     return nil
+end
+
+--The map a part plays on: its own part map if the series has one, else the
+--series map. `part` 1 (or nil) is always the series map.
+local function FindPartMap(seriesMapName, part)
+    if (part or 1) >= 2 then
+        local map = FindMapByName(PartMapName(seriesMapName, part))
+        if map ~= nil then
+            return map
+        end
+    end
+    return FindMapByName(seriesMapName)
 end
 
 local function FindMapById(mapid)
@@ -610,10 +650,12 @@ end
 --map is told apart from a same-named official map by being NEW: the map ids
 --present before the install are snapshotted. On a re-entry, with the module
 --already installed, the id stamped by RecordEncounterMap is used instead.
-local function EnsureEncounterModule(moduleid, mapName)
+--`part` picks a series part's own map when the module has one (FindPartMap).
+local function EnsureEncounterModule(moduleid, mapName, part)
+    part = part or 1
     local data = mod:GetDocumentSnapshot(STATE_DOC_ID).data
     if data.encounterModule == moduleid then
-        local map = FindMapById(data.encounterMapId) or FindMapByName(mapName)
+        local map = FindMapById(data.encounterMapId) or FindPartMap(mapName, part)
         if map ~= nil then
             return map
         end
@@ -651,15 +693,33 @@ local function EnsureEncounterModule(moduleid, mapName)
 
     --the install's success can land before its maps reach game.maps, so
     --wait for the map itself, with a grace period after a success.
+    --A later part waits for its part map too, but only a few seconds past
+    --the series map: a series need not have one.
+    local partMapName = part >= 2 and PartMapName(mapName, part) or nil
     local waited = 0
     local sinceInstalled = 0
+    local sinceSeriesMap = nil
     while waited < MODULE_INSTALL_TIMEOUT_SECONDS do
+        local seriesMap = nil
         for _,map in pairs(game.maps or {}) do
-            if not before[map.id] and map.description == mapName then
-                RecordEncounterModule(moduleid)
-                printf("EotW: installed %s; its encounter map is %s", moduleid, map.id)
-                return map
+            if not before[map.id] then
+                if partMapName ~= nil and map.description == partMapName then
+                    RecordEncounterModule(moduleid)
+                    printf("EotW: installed %s; part %d's map is %s", moduleid, part, map.id)
+                    return map
+                end
+                if map.description == mapName then
+                    seriesMap = map
+                end
             end
+        end
+        if seriesMap ~= nil and (partMapName == nil or (sinceSeriesMap ~= nil and sinceSeriesMap > 3)) then
+            RecordEncounterModule(moduleid)
+            printf("EotW: installed %s; its encounter map is %s", moduleid, seriesMap.id)
+            return seriesMap
+        end
+        if seriesMap ~= nil then
+            sinceSeriesMap = (sinceSeriesMap or 0) + 0.2
         end
         if failure ~= nil then
             printf("EotW: could not install the encounter module %s: %s", moduleid, tostring(failure))
@@ -670,7 +730,7 @@ local function EnsureEncounterModule(moduleid, mapName)
             if sinceInstalled > 10 then
                 --installed but no new map: the module was already in the
                 --game (its maps keep their ids), so take its map by name.
-                local map = FindMapByName(mapName)
+                local map = FindPartMap(mapName, part)
                 if map ~= nil then
                     RecordEncounterModule(moduleid)
                 end
@@ -691,11 +751,11 @@ local function OnRequestedEncounterMap(requested)
     if type(requested) ~= "string" or requested == "" then
         return false
     end
-    local moduleid, name = ParseEncounterKey(requested)
+    local moduleid, name, part = ParseEncounterKey(requested)
     if moduleid ~= OFFICIAL_MODULE then
         return false
     end
-    local map = FindMapByName(name)
+    local map = FindPartMap(name, part)
     return map ~= nil and game.currentMapId == map.id
 end
 
@@ -710,8 +770,9 @@ end
 --doc (a resume after the lobby record expired) -> the default. For a
 --community encounter the host first installs its module
 --(EnsureEncounterModule); everyone else finds the map by the id the host
---stamped. A key with no matching map falls back to the official default
---map; with no default either we stay put.
+--stamped. A series part plays on its own part map when there is one
+--(FindPartMap). A key with no matching map falls back to the official
+--default map; with no default either we stay put.
 --Returns the encounter key now in play and its map id (nil, nil if no map
 --was found).
 local function EnsureOnEncounterMap(requested)
@@ -729,17 +790,17 @@ local function EnsureOnEncounterMap(requested)
     if type(key) ~= "string" or key == "" then
         key = DEFAULT_ENCOUNTER_MAP
     end
-    local moduleid, name = ParseEncounterKey(key)
+    local moduleid, name, part = ParseEncounterKey(key)
 
     local map = nil
     if key == stampedKey then
         map = FindMapById(stampedId)
     end
     if map == nil and moduleid ~= OFFICIAL_MODULE and IsDMOrPlayerHost() then
-        map = EnsureEncounterModule(moduleid, name)
+        map = EnsureEncounterModule(moduleid, name, part)
     end
     if map == nil then
-        map = FindMapByName(name)
+        map = FindPartMap(name, part)
     end
     if map == nil and key ~= DEFAULT_ENCOUNTER_MAP then
         printf("EotW: this game has no map for the encounter \"%s\"; falling back to \"%s\"", key, DEFAULT_ENCOUNTER_MAP)
@@ -756,7 +817,7 @@ local function EnsureOnEncounterMap(requested)
         return key, map.id
     end
 
-    printf("EotW: travelling to the encounter map \"%s\"", name)
+    printf("EotW: travelling to the encounter map \"%s\"", tostring(map.description))
     map:Travel()
 
     --the animated switch syncs the map's details first, so give it a
@@ -1722,7 +1783,6 @@ local function RecordPendingDebrief(outcome)
     printf("EotW: Proving Pits debrief of %s waiting for the town", encounter)
 end
 
-<<<<<<< Updated upstream
 --- the beta survey -------------------------------------------------------
 --While EotW is in beta, every finished game (won, lost or abandoned) of at
 --least SURVEY_MIN_SECONDS leaves eotw:pendingSurvey, and back in town the
@@ -1845,7 +1905,8 @@ function EncounterOfTheWeekGame.RecordPendingSurvey(outcome)
     }
     dmhub.SetSettingValue("eotw:pendingSurvey", dmhub.ToJson(all))
     printf("EotW: beta survey (%s, %d min) waiting for the town", outcome, math.floor(seconds / 60))
-=======
+end
+
 local OUTCOME_LABELS = { total = "Total success", partial = "Partial success", failure = "Failure" }
 
 --A series part's recap under its Conclusion: the montage outcome, the
@@ -1894,7 +1955,6 @@ local function SeriesRecap(script)
         return nil
     end
     return table.concat(lines, "\n")
->>>>>>> Stashed changes
 end
 
 --The script's story section for an outcome ("# Conclusion" after a victory,

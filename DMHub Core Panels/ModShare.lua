@@ -1705,7 +1705,9 @@ end
 --section (townGateSource: the text as written, when it has "If ...:" story
 --blocks; townGate is then what shows with no story); a series map adds
 --parts = { {number, title, townGate, townGateSource?, tracks? = { {name,
---hidden, description}, ... }}, ... }, one per part. Also ticks
+--hidden, description}, ... }, map?}, ... }, one per part; map names a part
+--played on its own part map ("<series map> (Part <n>)"), which is checked
+--with its series and never listed as an encounter of its own. Also ticks
 --every document a script is built from (ctx.include), since nothing else
 --ties a map to the documents in its journal folder.
 local CheckEncounterModule = function(ctx)
@@ -1737,6 +1739,31 @@ local CheckEncounterModule = function(ctx)
 	end
 	table.sort(maps, function(a, b) return a.name < b.name end)
 
+	--part maps go with their series map, not on their own.
+	local partMaps = {}
+	local seriesMaps = {}
+	for _,m in ipairs(maps) do
+		local seriesName, number = nil, nil
+		if eotw.SplitPartMapName ~= nil then
+			seriesName, number = eotw.SplitPartMapName(m.name)
+		end
+		if seriesName ~= nil then
+			m.part = number
+			partMaps[seriesName] = partMaps[seriesName] or {}
+			table.insert(partMaps[seriesName], m)
+		else
+			seriesMaps[#seriesMaps+1] = m
+		end
+	end
+	for seriesName,list in pairs(partMaps) do
+		if not seenNames[seriesName] then
+			for _,pm in ipairs(list) do
+				errors[#errors+1] = string.format("%s: there is no map named \"%s\" for this part to belong to.", pm.name, seriesName)
+			end
+		end
+	end
+	maps = seriesMaps
+
 	if #maps == 0 then
 		errors[#errors+1] = "An Encounter of the Week module must include at least one map named \"Encounter\" or \"Encounter: <title>\"."
 	end
@@ -1759,15 +1786,45 @@ local CheckEncounterModule = function(ctx)
 				ctx.include(docid)
 			end
 
+			--the series' parts: this map's, then each part map's (whose
+			--scripts must all be that map's part).
+			local allParts = {}
+			for _,script in ipairs(found.parts or {}) do
+				allParts[#allParts+1] = { script = script }
+			end
+			for _,pm in ipairs(partMaps[m.name] or {}) do
+				local pmFound = nil
+				local pmOk, pmErr = pcall(function() pmFound = montage.ScriptForMap(pm.id) end)
+				if not pmOk or pmFound == nil then
+					errors[#errors+1] = string.format("%s: its script could not be read: %s", pm.name, tostring(pmErr))
+				else
+					for docid,_ in pairs(pmFound.documents) do
+						ctx.include(docid)
+					end
+					if #(pmFound.parts or {}) == 0 then
+						errors[#errors+1] = string.format("%s: its script needs a \"# Part %d\" heading.", pm.name, pm.part)
+					end
+					for _,script in ipairs(pmFound.parts or {}) do
+						if script.parse.part.number ~= pm.part then
+							errors[#errors+1] = string.format("%s: a script there says \"# Part %d\". A part map holds only its own part.", pm.name, script.parse.part.number)
+						else
+							allParts[#allParts+1] = { script = script, map = pm.name }
+						end
+					end
+				end
+			end
+			table.sort(allParts, function(a, b) return a.script.parse.part.number < b.script.parse.part.number end)
+
 			--A series (scripts saying "# Part N") is checked part by part,
 			--each like a whole encounter; a plain map is its one script.
-			local series = found.parts ~= nil and #found.parts > 0
+			local series = #allParts > 0
 			local scripts = {}
 			if series then
-				for i,script in ipairs(found.parts) do
+				for i,partEntry in ipairs(allParts) do
+					local script = partEntry.script
 					local number = script.parse.part.number
 					if number ~= i then
-						if i > 1 and found.parts[i-1].parse.part.number == number then
+						if i > 1 and allParts[i-1].script.parse.part.number == number then
 							errors[#errors+1] = string.format("%s: two scripts say \"# Part %d\". Each part needs its own number.", m.name, number)
 						else
 							errors[#errors+1] = string.format("%s: there is no Part %d. Number the parts 1, 2, 3... with no gaps.", m.name, i)
@@ -1778,9 +1835,9 @@ local CheckEncounterModule = function(ctx)
 					if script.parse.part.title ~= nil then
 						name = name .. ": " .. script.parse.part.title
 					end
-					scripts[#scripts+1] = { script = script, label = string.format("%s, %s", m.name, name), number = number, title = script.parse.part.title }
+					scripts[#scripts+1] = { script = script, label = string.format("%s, %s", partEntry.map or m.name, name), number = number, title = script.parse.part.title, map = partEntry.map }
 				end
-				if #found.parts == 1 then
+				if #allParts == 1 then
 					warnings[#warnings+1] = string.format("%s: only one part. A series unlocks its parts one after another, so it needs at least two.", m.name)
 				end
 			elseif found.script ~= nil then
@@ -1832,7 +1889,7 @@ local CheckEncounterModule = function(ctx)
 						tracks = tracks or {}
 						tracks[#tracks+1] = { name = decl.name, hidden = decl.hidden == true, description = decl.description }
 					end
-					parts[#parts+1] = { number = entry.number, title = entry.title, townGate = townGateText, townGateSource = townGateSource, tracks = tracks }
+					parts[#parts+1] = { number = entry.number, title = entry.title, townGate = townGateText, townGateSource = townGateSource, tracks = tracks, map = entry.map }
 				elseif townGateText ~= nil or townGateSource ~= nil then
 					result.encounters[m.name] = { townGate = townGateText, townGateSource = townGateSource }
 				end

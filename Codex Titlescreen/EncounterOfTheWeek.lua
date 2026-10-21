@@ -535,6 +535,23 @@ function EncounterOfTheWeek.IsEncounterMapName(name)
     return name == ENCOUNTER_MAP_NAME or name:sub(1, #ENCOUNTER_MAP_NAME + 2) == ENCOUNTER_MAP_NAME .. ": "
 end
 
+--A series can put a later part on its own map, named after the series map
+--with " (Part <n>)" on the end: "Encounter: The Crypt (Part 2)". It is part
+--of its series, never an encounter of its own. Mirrored by the game side's
+--PartMapName (EncounterOfTheWeek/EncounterOfTheWeek.lua) and the publishers.
+function EncounterOfTheWeek.PartMapName(seriesMapName, part)
+    return string.format("%s (Part %d)", seriesMapName, part)
+end
+
+--The series map's name and the part, if `name` is a part map's name.
+function EncounterOfTheWeek.SplitPartMapName(name)
+    local base, number = string.match(name or "", "^(.-) %(Part (%d+)%)$")
+    if base == nil or base == "" then
+        return nil, nil
+    end
+    return base, tonumber(number)
+end
+
 --An encounter is named by a KEY string. For the official module it is the
 --map name ("Encounter: Goblin Ambush"), which is all party records and
 --completions carried before the pool existed. For a community module it is
@@ -628,8 +645,9 @@ function EncounterOfTheWeek.EncounterDisplayName(key)
 end
 
 --The parts of a series map from its module record's eotwEncounters entry:
---{ {number, title, townGate}, ... } sorted by number, or nil when the map is
---not a series. Read leniently: Firebase may hand a list back keyed "0", "1".
+--{ {number, title, townGate, mapName}, ... } sorted by number, or nil when
+--the map is not a series. mapName is set for a part on its own part map.
+--Read leniently: Firebase may hand a list back keyed "0", "1".
 local function ReadSeriesParts(story)
     if type(story) ~= "table" or type(story.parts) ~= "table" then
         return nil
@@ -644,7 +662,11 @@ local function ReadSeriesParts(story)
             if type(p.townGate) == "string" and p.townGate ~= "" then
                 townGate = p.townGate
             end
-            parts[#parts+1] = { number = math.floor(tonumber(p.number) or 0), title = title, townGate = townGate }
+            local mapName = nil
+            if type(p.map) == "string" and p.map ~= "" then
+                mapName = p.map
+            end
+            parts[#parts+1] = { number = math.floor(tonumber(p.number) or 0), title = title, townGate = townGate, mapName = mapName }
         end
     end
     if #parts == 0 then
@@ -751,7 +773,9 @@ local function ModuleEncounters(info, moduleid)
         local kind = string.lower(tostring(entry.type or ""))
         if kind == "map" or kind == "maps" then
             for _,item in ipairs(entry.items or {}) do
-                if EncounterOfTheWeek.IsEncounterMapName(item) and not seen[item] then
+                --a part map is listed under its series, not on its own.
+                if EncounterOfTheWeek.IsEncounterMapName(item) and not seen[item]
+                    and EncounterOfTheWeek.SplitPartMapName(item) == nil then
                     seen[item] = true
                     local townGate = nil
                     local story = type(published) == "table" and published[item] or nil
@@ -3128,6 +3152,11 @@ CreateScreen = function(args)
         if arrival.fastLaunch and encounterMap ~= nil then
             local moduleid, mapName = EncounterOfTheWeek.ParseEncounterKey(encounterMap)
             if moduleid == STARTING_MODULE then
+                --a series part on its own map starts there.
+                local part = EncounterOfTheWeek.GetPart(encounterMap)
+                if part ~= nil and part.mapName ~= nil then
+                    mapName = part.mapName
+                end
                 enterOptions = { startMap = mapName }
             end
         end

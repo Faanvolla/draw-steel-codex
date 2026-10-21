@@ -714,8 +714,9 @@ function EncounterScriptValidator.BuildReport(docid, partyid)
             text = "no [[encounter]] island: this document spawns no combat" }
     end
 
-    --one part of a series ("# Part N"): played after the part before it, on
-    --its own part of the shared map -- its encounter's region bounds the map.
+    --one part of a series ("# Part N"): played after the part before it,
+    --either on its own map ("<series map> (Part <n>)") or on its own part of
+    --a shared map -- there its encounter's region bounds the map.
     if parse.part ~= nil then
         local title = ""
         if parse.part.title ~= nil then
@@ -732,7 +733,10 @@ function EncounterScriptValidator.BuildReport(docid, partyid)
             local tag = doc:try_get("annotations")["encounter"]
             encounter = tag.encounter
         end)
-        if encounter ~= nil and encounter:GetRegion() == nil then
+        --a region matters only when this map holds other parts too.
+        local partsOnMap = 0
+        pcall(function() partsOnMap = #EncounterOfTheWeekGame.SeriesParts() end)
+        if encounter ~= nil and encounter:GetRegion() == nil and partsOnMap > 1 then
             children[#children + 1] = RowLabel{ depth = 0, class = "problem",
                 text = "this part's encounter has no region, so heroes can walk into the other parts' areas: draw one in the encounter builder, then load it into the island" }
         end
