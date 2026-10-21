@@ -1812,6 +1812,9 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 			Tabletop.CreateButtonLayer(),
 			--the Director's Screen's tab and drop hint, over the windows.
 			DirectorScreen.CreateTabLayer(),
+			--3D dice resting on the table: the Director's dice button and the
+			--dice sync (TableDice.lua; the dice themselves draw in the engine).
+			(rawget(_G, "TableDice") ~= nil and TableDice.CreateLayer()) or gui.Panel{width = 1, height = 1, interactable = false},
 			--mode banners (e.g. the encounter builder's staging banner) sit over
 			--every window, so click-to-front on a map window cannot bury them.
 			gamehud:CreateBannerLayer(),
