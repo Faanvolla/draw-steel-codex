@@ -377,37 +377,7 @@ function DTProject:_setStateFromProgressChange(item, direction, priorProgress)
     local milestoneStop = self:GetMilestoneThreshold()
 
     if newValue >= projectGoal then
-        -- This branch re-enters whenever progress is added to, or removed from, a
-        -- finished project, so the item and the banner wait for the transition
-        -- INTO complete. The item also comes at most once per project, so deleting
-        -- a roll and rolling again never crafts a second copy.
-        local completing = currentStatus ~= STATUS.COMPLETE.key
-        if completing and not self:try_get("itemGranted", false) then
-            if DTBusinessRules.GiveItemToCharacter(self) then
-                self.itemGranted = true
-            end
-        end
-        self:SetStatusReason("Project complete.")
-            :SetStatus(DTConstants.STATUS.COMPLETE.key)
-
-        -- Announce completion with a dramatic banner (synced to all clients,
-        -- non-modal). Title falls back to "a project" for untitled projects.
-        -- GetCharacterById, not GetTokenById: the owner may not be on the loaded
-        -- map (a Respite run on another map), and the banner must still show.
-        if completing then
-            local token = dmhub.GetCharacterById(self:GetOwnerID())
-            if token ~= nil and token.valid then
-                local title = self:GetTitle()
-                if title == nil or title == "" then
-                    title = "a project"
-                end
-                DramaticBanner.Show{
-                    tokenid = token.charid,
-                    text = "Project Complete",
-                    subtitle = string.format("%s completed %s", token.name, title),
-                }
-            end
-        end
+        self:_markComplete(currentStatus)
     elseif currentStatus == DTConstants.STATUS.COMPLETE.key then
         if newValue < projectGoal then
             self:SetStatus(STATUS.ACTIVE.key)
@@ -424,6 +394,63 @@ function DTProject:_setStateFromProgressChange(item, direction, priorProgress)
                 :SetStatus(STATUS.MILESTONE.key)
         end
     end
+end
+
+--- Marks the project Complete. The item and the banner wait for the transition
+--- INTO complete, because progress added to or removed from a finished project
+--- comes back through here; the item also comes at most once per project, so
+--- deleting a roll and rolling again never crafts a second copy.
+--- @param currentStatus string The status before this change
+function DTProject:_markComplete(currentStatus)
+    local STATUS = DTConstants.STATUS
+    local completing = currentStatus ~= STATUS.COMPLETE.key
+    if completing and not self:try_get("itemGranted", false) then
+        if DTBusinessRules.GiveItemToCharacter(self) then
+            self.itemGranted = true
+        end
+    end
+    self:SetStatusReason("Project complete.")
+        :SetStatus(STATUS.COMPLETE.key)
+
+    -- Announce completion with a dramatic banner (synced to all clients,
+    -- non-modal). Title falls back to "a project" for untitled projects.
+    -- GetCharacterById, not GetTokenById: the owner may not be on the loaded
+    -- map (a Respite run on another map), and the banner must still show.
+    if completing then
+        local token = dmhub.GetCharacterById(self:GetOwnerID())
+        if token ~= nil and token.valid then
+            local title = self:GetTitle()
+            if title == nil or title == "" then
+                title = "a project"
+            end
+            DramaticBanner.Show{
+                tokenid = token.charid,
+                text = "Project Complete",
+                subtitle = string.format("%s completed %s", token.name, title),
+            }
+        end
+    end
+end
+
+--- Changes the goal and settles the status it implies: reaching the new goal
+--- completes the project (and gives its item, once); a Complete project whose
+--- goal is raised past its progress is Active again.
+--- Must be called within token:ModifyProperties on the project's owner.
+--- @param goal number The new goal
+--- @return DTProject self For chaining
+function DTProject:ChangeProjectGoal(goal)
+    local STATUS = DTConstants.STATUS
+    local currentStatus = self:GetStatus()
+    self:SetProjectGoal(goal)
+    if self:GetProgress() >= self:GetProjectGoal() then
+        if currentStatus ~= STATUS.COMPLETE.key then
+            self:_markComplete(currentStatus)
+        end
+    elseif currentStatus == STATUS.COMPLETE.key then
+        self:SetStatus(STATUS.ACTIVE.key)
+            :SetStatusReason("")
+    end
+    return self
 end
 
 --- Adds a project roll to this project

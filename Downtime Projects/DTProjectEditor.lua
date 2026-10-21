@@ -42,6 +42,19 @@ function DTProjectEditor:GetProject()
     return self.project
 end
 
+--- May the current user change this project's goal? Anyone may while the
+--- project has no progress (setting up a new project); after that only those
+--- with the Director's project controls, because lowering the goal to the
+--- progress completes the project and gives its item.
+--- @param project DTProject|nil
+--- @return boolean
+function DTProjectEditor.CanEditGoal(project)
+    if project == nil then
+        return false
+    end
+    return DTCharSheetTab.CanManageProjects() or project:GetProgress() <= 0
+end
+
 --- Creates the project editor form for a downtime project
 --- @return table panel The form panel with input fields
 function DTProjectEditor:_createProjectForm()
@@ -566,17 +579,22 @@ function DTProjectEditor:_createProjectForm()
                 if project and element.text ~= tostring(project:GetProjectGoal()) then
                     element.text = tostring(project:GetProjectGoal())
                 end
+                element.editable = DTProjectEditor.CanEditGoal(project)
             end,
             edit = function(element)
                 element:FireEvent("change")
             end,
             change = function(element)
                 local project = element.data.getProject(element)
+                if project and not DTProjectEditor.CanEditGoal(project) then
+                    element.text = tostring(project:GetProjectGoal())
+                    return
+                end
                 if project and tonumber(element.text) ~= project:GetProjectGoal() then
                     local value = tonumber(element.text) or 1
                     modifyTokenProps{
                         execute = function()
-                            project:SetProjectGoal(math.max(1, math.floor(value)))
+                            project:ChangeProjectGoal(math.max(1, math.floor(value)))
                         end,
                     }
                     dmhub.Schedule(0.1, function()
@@ -1415,6 +1433,11 @@ function DTProjectEditor:_createAdjustmentsPanel()
                 width = "12%",
                 height = "auto",
                 halign = "right",
+                --Adjustments move progress, so they can complete a project and
+                --give its item: the Director's control, like deleting them.
+                refreshToken = function(element)
+                    element:SetClass("collapsed", not DTCharSheetTab.CanManageProjects())
+                end,
                 linger = function(element)
                     gui.Tooltip("Add an adjustment")(element)
                 end,
@@ -1864,17 +1887,25 @@ function DTProjectEditor:_createOwnedProjectButtons()
             if projectController and downtimeController then
                 local project = projectController.data and projectController.data.project
                 if project then
-                    CharacterSheet.instance:AddChild(DTConfirmationDialog.ShowDeleteAsChild("Project: ".. project:GetTitle(), {
+                    local title = project:GetTitle()
+                    if title == nil or title == "" then
+                        title = "this project"
+                    end
+                    CharacterSheet.instance:AddChild(DTConfirmationDialog.CreateAsChild("Delete Confirmation",
+                        string.format("Delete %s? Its history goes with it; rolls spent on it are not returned.", title),
+                        "Delete", "Cancel", {
                         confirm = function()
                             downtimeController:FireEvent("deleteProject", project:GetID())
                         end,
-                        cancel = function()
-                            -- Optional cancel logic
-                        end
                     }))
                 end
             end
-        end
+        end,
+        --Only the Hero's own player or the Director deletes a project.
+        refreshToken = function(element)
+            local token = DTCharSheetTab.GetToken()
+            element:SetClass("collapsed", not (dmhub.isDM or (token ~= nil and token.canControlAsUser)))
+        end,
     }
 
     local shareButton = gui.Button {

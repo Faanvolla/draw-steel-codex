@@ -112,7 +112,7 @@ function DTCharSheetTab.CreateDowntimePanel()
         end,
 
         deleteProject = function(element, projectId)
-            if projectId and type(projectId) == "string" and #projectId then
+            if projectId and type(projectId) == "string" and #projectId > 0 then
                 local downtimeInfo = element.data.getDowntimeInfo()
                 if downtimeInfo then
                     modifyTokenProps{
@@ -120,6 +120,14 @@ function DTCharSheetTab.CreateDowntimePanel()
                             downtimeInfo:RemoveProject(projectId)
                         end,
                     }
+                    --its shares end with it, so no recipient keeps a stale entry.
+                    local token = getToken()
+                    if token ~= nil then
+                        local shares = DTShares.CreateNew()
+                        for _, recipientId in ipairs(shares:GetProjectSharedWith(token.charid, projectId)) do
+                            shares:Revoke(token.charid, recipientId, projectId)
+                        end
+                    end
                     DTSettings.Touch()
                     element:FireEventTree("refreshToken")
                 end
@@ -381,6 +389,14 @@ function DTCharSheetTab._createBodyPanel()
                 refreshGame = function(element)
                     element:FireEvent("refreshToken")
                 end,
+                --Turning "Players Manage Downtime Projects" on or off rebuilds
+                --the open cards, whose Director controls are built per permission.
+                monitor = playersManageProjects.id,
+                events = {
+                    monitor = function(element)
+                        element:FireEventTree("refreshToken")
+                    end,
+                },
                 refreshToken = function(element)
                     DTCharSheetTab._refreshProjectsList(element)
                 end
@@ -418,10 +434,11 @@ function DTCharSheetTab._refreshProjectsList(element)
         return
     end
 
-    local projects
+    --stays empty when the Hero has no downtime info but has projects shared with them.
+    local projects = {}
     if downtimeInfo then
-        projects = downtimeInfo:GetSortedProjects()
-        if (not projects or #projects == 0) and #sharedProjects == 0 then
+        projects = downtimeInfo:GetSortedProjects() or {}
+        if #projects == 0 and #sharedProjects == 0 then
             element.children = {
                 gui.Label {
                     classes = {"sizeL"},
@@ -439,6 +456,8 @@ function DTCharSheetTab._refreshProjectsList(element)
 
     -- Reconcile existing panels with current projects
     local panels = element.children or {}
+    --an owned card built under the other permission is rebuilt (see the monitor above).
+    local canManage = DTCharSheetTab.CanManageProjects()
 
     -- Step 1: Remove panels for projects that no longer exist OR have wrong type
     for i = #panels, 1, -1 do
@@ -449,7 +468,7 @@ function DTCharSheetTab._refreshProjectsList(element)
         -- Check owned projects (should NOT be shared panel)
         for _, project in ipairs(projects) do
             if project:GetID() == panel.id then
-                if not isSharedPanel then
+                if not isSharedPanel and panel.data.builtCanManage == canManage then
                     shouldRemove = false
                 end
                 break
@@ -486,7 +505,9 @@ function DTCharSheetTab._refreshProjectsList(element)
             end
         end
         if not foundPanel then
-            panels[#panels + 1] = DTProjectEditor.new{project = project}:CreateEditorPanel()
+            local panel = DTProjectEditor.new{project = project}:CreateEditorPanel()
+            panel.data.builtCanManage = canManage
+            panels[#panels + 1] = panel
         end
     end
 
