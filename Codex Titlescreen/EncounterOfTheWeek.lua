@@ -2637,6 +2637,24 @@ CreateScreen = function(args)
     --card plays the grow + fade-in entrance.
     local m_knownHeroCards = nil
 
+    --The party whose host is choosing how long to blow the horn for (the
+    --button row shows the 2/5/10 minute choices instead), or nil.
+    local m_hornPickerFor = nil
+
+    --Milliseconds the party's horn still sounds, or 0. While it sounds the
+    --server refuses Begin unless every slot is filled.
+    local HornRemainingMs = function(record)
+        if type(record.hornUntil) ~= "number" then
+            return 0
+        end
+        return math.max(0, record.hornUntil - dmhub.serverTimeMilliseconds)
+    end
+
+    local FormatCountdown = function(ms)
+        local secs = math.ceil(ms / 1000)
+        return string.format("%d:%02d", math.floor(secs / 60), secs % 60)
+    end
+
     --Other players' roster heroes, read from the City for their cards, keyed
     --"userid|heroid": a detached token once loaded, false while the request
     --is out or after it failed (so each hero is asked for once per screen).
@@ -4165,8 +4183,90 @@ CreateScreen = function(args)
             }
         end
 
+        --the horn: a countdown everyone in the party sees while it sounds.
+        if isOpen and type(record.hornUntil) == "number" then
+            local HornText = function()
+                local remaining = HornRemainingMs(record)
+                if slotsFilled >= slotsTotal then
+                    return "The horn has sounded and the party is full."
+                elseif remaining <= 0 then
+                    return "The horn has sounded."
+                end
+                return string.format("The horn sounds! Waiting %s for more heroes to join -- the party can begin when it is full or time runs out.", FormatCountdown(remaining))
+            end
+            children[#children+1] = gui.Label{
+                text = HornText(),
+                fontSize = 18,
+                color = "#d9b56a",
+                width = "90%",
+                height = "auto",
+                halign = "center",
+                textAlignment = "center",
+                vmargin = 8,
+                thinkTime = 0.5,
+                think = function(element)
+                    element.text = HornText()
+                end,
+            }
+        end
+
         --controls. (Adding heroes is the "+" card in the lineup above.)
         local buttons = {}
+        --Blow the Horn: host of an open public party, once. The host picks
+        --how long to wait; the town chat and Discord hear it.
+        local canHorn = isHost and isOpen and record.public == true and record.hornUntil == nil and slotsFilled < slotsTotal
+        if canHorn and m_hornPickerFor == gameid then
+            for _,minutes in ipairs({ 2, 5, 10 }) do
+                buttons[#buttons+1] = gui.Button{
+                    text = string.format("Wait %d min", minutes),
+                    fontSize = 20,
+                    width = 140,
+                    height = 44,
+                    hmargin = 6,
+                    click = function()
+                        m_hornPickerFor = nil
+                        if m_conn == nil then
+                            return
+                        end
+                        EotwAnalytics.Track("eotw_party_horn", {
+                            runid = gameid,
+                            encounter = record.encounter,
+                            minutes = minutes,
+                            slotsFilled = slotsFilled,
+                        })
+                        m_conn:Request{
+                            action = "blow-horn",
+                            args = { gameid = gameid, minutes = minutes },
+                            error = ShowGamesError,
+                        }
+                    end,
+                }
+            end
+            buttons[#buttons+1] = gui.Button{
+                text = "Cancel",
+                fontSize = 20,
+                width = 120,
+                height = 44,
+                hmargin = 6,
+                click = function()
+                    m_hornPickerFor = nil
+                    RefreshGames()
+                end,
+            }
+        elseif canHorn then
+            buttons[#buttons+1] = gui.Button{
+                text = "Blow the Horn",
+                fontSize = 20,
+                width = 180,
+                height = 44,
+                hmargin = 6,
+                hover = gui.Tooltip("Call for more heroes in town and on Discord. The party waits until it is full or the time you choose runs out."),
+                click = function()
+                    m_hornPickerFor = gameid
+                    RefreshGames()
+                end,
+            }
+        end
         if not isMember and isOpen and (record.public == true or isHost) then
             buttons[#buttons+1] = gui.Button{
                 text = "Join Game",
@@ -4185,16 +4285,28 @@ CreateScreen = function(args)
         --enters via CheckLaunchedGames and runs setup in-game; members
         --wait for the game-side "ready-game" signal to flip the record to
         --"ready" before entering (see CheckLaunchedGames).
-        if isHost and isOpen then
+        if isHost and isOpen and m_hornPickerFor ~= gameid then
             local canBegin = slotsFilled >= MIN_HEROES and slotsFilled <= slotsTotal
+            --the horn holds Begin until the party is full or time is up.
+            local HornHolds = function()
+                return slotsFilled < slotsTotal and HornRemainingMs(record) > 0
+            end
             buttons[#buttons+1] = gui.Button{
                 text = "Begin",
                 fontSize = 20,
                 width = 160,
                 height = 44,
                 hmargin = 6,
-                opacity = cond(canBegin, 1, 0.45),
+                opacity = cond(canBegin and not HornHolds(), 1, 0.45),
+                thinkTime = 0.5,
+                think = function(element)
+                    element.selfStyle.opacity = cond(canBegin and not HornHolds(), 1, 0.45)
+                end,
                 click = function()
+                    if HornHolds() then
+                        ShowGamesError(string.format("The horn is still sounding: the party can begin when it is full or in %s.", FormatCountdown(HornRemainingMs(record))))
+                        return
+                    end
                     if not canBegin then
                         if slotsFilled > slotsTotal then
                             ShowGamesError(string.format("At most %d heroes can begin (%d filled).", slotsTotal, slotsFilled))
@@ -4995,8 +5107,14 @@ CreateScreen = function(args)
             if msg.edited then
                 edited = " <color=#ffffff80><size=80%>(edited)</size></color>"
             end
+            local body = ChatPlain(msg.text or "")
+            --a horn's announcement reads as one gold line: "Aria blows the horn! ..."
+            if msg.kind == "horn" then
+                name = string.format("<color=#d9b56a><b>%s</b>", ChatPlain(msg.name or "?"))
+                body = body .. "</color>"
+            end
             children[#children+1] = gui.Label{
-                text = string.format("%s%s %s%s", stamp, name, ChatPlain(msg.text or ""), edited),
+                text = string.format("%s%s %s%s", stamp, name, body, edited),
                 fontSize = 18,
                 color = Styles.textColor,
                 width = "96%",
