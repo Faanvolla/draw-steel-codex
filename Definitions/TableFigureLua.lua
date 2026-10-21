@@ -9,7 +9,7 @@
 --- @field yaw number Its turn about its own up, in degrees.
 --- @field tilt number How far it leans back from standing straight up at the camera, in degrees (0-85), so the top-down table shows its front.
 --- @field height number Its height in screen pixels when standing straight up.
---- @field callbacks {onMove: nil|fun(x: number, y: number), onClick: nil|fun(x: number, y: number), onRightClick: nil|fun(x: number, y: number)} Callbacks: {onMove = function(x, y), onClick = function(x, y), onRightClick = function(x, y)}. onMove fires when the figure is dragged and let go.
+--- @field callbacks {onMove: nil|fun(x: number, y: number, yaw: number), onClick: nil|fun(x: number, y: number), onRightClick: nil|fun(x: number, y: number)} Callbacks: {onMove = function(x, y, yaw), onClick = function(x, y), onRightClick = function(x, y)}. onMove fires when the figure is dragged and let go; yaw is its turn then, as the mouse wheel turns a held figure.
 TableFigureLua = {}
 
 --- Stands the figure at (x, y) screen pixels.

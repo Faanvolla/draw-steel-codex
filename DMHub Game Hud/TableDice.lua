@@ -30,6 +30,22 @@ local g_privateSetting = setting{
     default = "",
 }
 
+--Dev gate for the Director's tray (the Table items drawer and its two
+--buttons). No editor entry, so it never shows in the settings UI; toggle
+--from chat with /toggle dev:directortray. Things already on the table show
+--for everyone either way.
+TableDice.traySetting = setting{
+    id = "dev:directortray",
+    default = false,
+    storage = "preference",
+}
+
+--- Whether this user gets the tray: the Director, with dev:directortray on.
+--- @return boolean
+function TableDice.TrayEnabled()
+    return dmhub.isDM and TableDice.traySetting:Get() == true
+end
+
 --The dice set new dice wear ("" = the default set).
 local g_setSetting = setting{
     id = "tabledice:set",
@@ -232,7 +248,8 @@ end
 --- @param fx number
 --- @param fy number
 --- @param kind? string
-local function Transfer(id, toPrivate, fx, fy, kind)
+--- @param changes? table fields to set on the moved record too
+local function Transfer(id, toPrivate, fx, fy, kind, changes)
     kind = kind or "dice"
     local from = toPrivate and SharedItems(kind) or PrivateItems(kind)
     local record = from[id]
@@ -241,6 +258,9 @@ local function Transfer(id, toPrivate, fx, fy, kind)
     end
     local copy = DeepCopy(record)
     copy.fx, copy.fy = fx, fy
+    for k, v in pairs(changes or {}) do
+        copy[k] = v
+    end
     copy.roll, copy.rollAt, copy.rollBy = nil, nil, nil
     copy.seq = (copy.seq or 0) + 1
     Modify(id, not toPrivate, "Move a table item", function() return false end, kind)
@@ -1515,7 +1535,7 @@ end
 --- @param private boolean
 function TableDice.ToggleDrawer(private)
     local panel = g_drawer.panel
-    if not dmhub.isDM or panel == nil or not panel.valid then
+    if not TableDice.TrayEnabled() or panel == nil or not panel.valid then
         return
     end
     if TableDice.DrawerOpen() and g_drawer.private == private then
@@ -1604,7 +1624,14 @@ end
 --- @return Panel
 function TableDice.CreateScreenButton()
     return gui.Panel{
-        classes = {"tableDiceButton"},
+        classes = {"tableDiceButton", cond(TableDice.TrayEnabled(), nil, "collapsed")},
+        --shown only with the dev:directortray gate on.
+        monitor = "dev:directortray",
+        events = {
+            monitor = function(element)
+                element:SetClass("collapsed", not TableDice.TrayEnabled())
+            end,
+        },
         bgimage = "phosphor/package.png",
         bgcolor = "#ffffff70",
         width = 16,
@@ -1976,7 +2003,8 @@ local function BuildFigure(id, record, private)
     end
     local handle = {figure = figure, seq = record.seq or 0, private = private, blob = record.blob}
     figure.callbacks = {
-        onMove = function(x, y)
+        --yaw: the mouse wheel turns a figure while it is held.
+        onMove = function(x, y, yaw)
             local h = g.figures[id]
             if h == nil then
                 return
@@ -1985,12 +2013,15 @@ local function BuildFigure(id, record, private)
             if dmhub.isDM then
                 local behind = BehindScreen(fx)
                 if behind ~= h.private then
-                    Transfer(id, behind, fx, fy, "figures")
+                    Transfer(id, behind, fx, fy, "figures", {yaw = yaw})
                     return
                 end
             end
             Modify(id, h.private, "Move a table figure", function(r)
                 r.fx, r.fy = fx, fy
+                if yaw ~= nil then
+                    r.yaw = yaw
+                end
                 r.seq = (r.seq or 0) + 1
                 h.seq = r.seq
             end, "figures")
@@ -2836,7 +2867,7 @@ function TableDice.CreateLayer()
             if mod.unloaded then
                 return
             end
-            local shown = dmhub.isDM and Tabletop.IsActive() and not Tabletop.TableCovered()
+            local shown = TableDice.TrayEnabled() and Tabletop.IsActive() and not Tabletop.TableCovered()
             local button = g.tableButton
             if button ~= nil and button.valid and button:HasClass("collapsed") == shown then
                 button:SetClass("collapsed", not shown)
