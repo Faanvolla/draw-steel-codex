@@ -511,6 +511,7 @@ end
 --- @field opensNoun nil|string what that row shows, for the tooltip ("your figures")
 --- @field trackerText nil|string a tracker tile: the number its medallion shows
 --- @field portrait nil|string a character tile (a standee): the portrait it shows
+--- @field thumbnail nil|string a dice-set tile: the still picture of its die
 --- @field action nil|fun() a tile that does something other than place an item
 --- @field tracker nil|string a tracker tile: the medallion it shows (TableDice.TrackerToken)
 
@@ -1208,11 +1209,14 @@ local function DiceSetItems()
         if value == "Default" then
             value = ""
         end
+        --a still, numberless picture of the set's d10 (DiceIconManager, as the
+        --Dice panel shows), not a live die: a live one read as a die to grab
+        --(Venla, 2026-10-21).
         result[#result+1] = {
             id = "set:" .. tostring(value),
             name = tostring(entry.text),
             icon = "phosphor/dice-five.png",
-            dice = {10},
+            thumbnail = string.format("#DiceIcon:%s:d10", tostring(entry.value)),
             model = value,
             setValue = value,
         }
@@ -1239,10 +1243,12 @@ local function BuildSetTile(item)
             SelectDiceSet(item.setValue)
         end,
         gui.Panel{
-            width = 28,
-            height = 44,
+            bgimage = item.thumbnail,
+            bgcolor = "white",
+            width = 40,
+            height = 40,
             halign = "center",
-            tmargin = 4,
+            tmargin = 6,
             interactable = false,
         },
         gui.Label{
