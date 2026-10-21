@@ -498,7 +498,7 @@ that load sections of `MonsterAI.lua`; add them to any new test that does so.
 | `ai:FindValidTargetsOfStrike(token, ability, loc, range?)` | Returns sorted array of `{token, loc, charge, edges}` for valid targets from a position |
 | `ai:ExecuteAbility(casterToken, ability, targets?, options?)` | Displays a three-pulse labeled telegraph for placed target areas, preserves the full area target list, invokes the original target type, and waits for resolution |
 | `ai:Speech(token, text, options?)` | Makes a token say something (text can be a string or array for random selection) |
-| `ai:SpeakNow(token, text)` | Shows the speech bubble at once without casting, so several tokens can talk together |
+| `ai:SpeakNow(token, text, options?)` | Shows the speech bubble at once without casting, so several tokens can talk together. `options.language` (an id or a name such as `"Caelian"`) speaks in that language instead of the creature's own, so players who know it are not shown scrambled text |
 | `ai:RunConcurrently(fns, stagger?)` | Runs yielding actions side by side, each starting `stagger` seconds after the last; raises the first error once all finish |
 | `ai:FindMostSeniorInitiativeGroupMember(tokens)` | Chooses a live initiative-group leader by non-minion status, squad captain status, then highest EV; exact ties retain token order |
 | `ai:FindReachableConcealment()` | Finds the nearest reachable concealed tile |

@@ -5902,20 +5902,45 @@ function MonsterAI:Speech(token, text, options)
     self:ExecuteAbility(token, ability, {}, options)
 end
 
+--The id of a language given by id or by name (case-insensitive), or nil.
+--- @param idOrName string
+--- @return string|nil
+function MonsterAI.FindLanguageId(idOrName)
+    local languages = dmhub.GetTable(Language.tableName) or {}
+    if languages[idOrName] ~= nil then
+        return idOrName
+    end
+    local wanted = string.lower(idOrName)
+    for id, language in unhidden_pairs(languages) do
+        if string.lower(tostring(language.name)) == wanted then
+            return id
+        end
+    end
+    return nil
+end
+
 --Show a speech bubble over a token straight away. Speech() casts an ability
 --and waits for it, so several tokens could not talk at once; this writes the
 --bubble directly, as the Character Speech behavior does. A creature that
 --speaks no language says "...".
-function MonsterAI:SpeakNow(token, text)
+--options.language: a language id or name (e.g. "Caelian") to speak in
+--instead of the creature's own, so players who know it can read the line.
+function MonsterAI:SpeakNow(token, text, options)
     if not self.TokenIsLiveCombatant(token) then
         return
     end
     if type(text) == "table" then
         text = text[math.random(1, #text)]
     end
-    local language = token.properties:CurrentlySpokenLanguage()
+    local language = nil
+    if options ~= nil and options.language ~= nil then
+        language = MonsterAI.FindLanguageId(options.language)
+    end
     if language == nil then
-        text = "..."
+        language = token.properties:CurrentlySpokenLanguage()
+        if language == nil then
+            text = "..."
+        end
     end
     token:ModifyProperties{
         description = "Speech",
