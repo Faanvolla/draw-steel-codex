@@ -107,6 +107,19 @@ local function SendCarouse(entry, onDone)
         args = entry,
         success = function(result)
             EotwDowntime.UI.SaveMine("eotw:pendingCarouse", nil)
+            local tier = nil
+            pcall(function() tier = EotwDowntime.TestTier(entry.natural, entry.total) end)
+            local leads = 0
+            for _, _ in pairs(result.leads or {}) do
+                leads = leads + 1
+            end
+            EotwAnalytics.Track("eotw_carouse", {
+                heroid = entry.heroid,
+                natural = entry.natural,
+                total = entry.total,
+                tier = tier,
+                leads = leads,
+            })
             EotwRoster.SetListedLeads(result.leads, result.carouse)
             --the lead's project can be started now: list it.
             EotwDowntime.RefreshProjects()

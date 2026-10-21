@@ -10,7 +10,7 @@ local mod = dmhub.GetModLoading()
 --  * A hero may buy as many of the offered treasures as their Wealth (each
 --    one once). Treasures cost nothing else.
 --  * One roll and one round of buying per hero until that hero comes home
---    from another Town Gate encounter. Danger Rooms games do not count.
+--    from another Town Gate encounter. Proving Pits games do not count.
 --  * The stock: every echelon 1 consumable whose automation is Gold, plus
 --    the extras below, read live from the compendium.
 --
@@ -437,7 +437,16 @@ function EotwMarket.Buy(heroid, itemid, onDone)
         bought[itemid] = true
         copy.bought = bought
         props:GiveItem(itemid, 1)
-    end, onDone)
+    end, function(ok, message)
+        if ok then
+            local itemName = nil
+            pcall(function() itemName = dmhub.GetTable(equipment.tableName)[itemid].name end)
+            EotwAnalytics.Track("eotw_market_buy", { heroid = heroid, itemid = itemid, item = itemName })
+        end
+        if onDone ~= nil then
+            onDone(ok, message)
+        end
+    end)
 end
 
 --- UI bits ---------------------------------------------------------------------

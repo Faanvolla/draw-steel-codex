@@ -2144,6 +2144,19 @@ function ActivatedAbilitySummonBehavior:Cast(ability, casterToken, targets, args
         local chooseSquad = self:try_get("chooseSquad", false)
         local usesSquadChooser = isSummoner or chooseSquad
         local useEncounterSquads = chooseSquad and not isSummoner
+
+        --When a summoned creature turns into another one, such as an Elemental
+        --Mote, the new creature belongs to whoever summoned the old one. It used
+        --to belong to the old creature, which is removed right after.
+        local inheritedSummonerToken = nil
+        local inheritedSummonerEntries = {}
+        if self.replaceCaster and casterToken.summonerid ~= nil and casterToken.summonerid ~= "" then
+            local summonerToken = dmhub.GetTokenById(casterToken.summonerid)
+            if summonerToken ~= nil and summonerToken.valid and summonerToken.properties ~= nil then
+                inheritedSummonerToken = summonerToken
+            end
+        end
+
         local cachedSquadResult = nil
         local placementSquadCtx = nil
         local placementCreatureCtx = nil
@@ -2388,7 +2401,11 @@ function ActivatedAbilitySummonBehavior:Cast(ability, casterToken, targets, args
 
             token.ownerId = newOwner
 
-            token.summonerid = casterToken.charid
+            if inheritedSummonerToken ~= nil then
+                token.summonerid = inheritedSummonerToken.charid
+            else
+                token.summonerid = casterToken.charid
+            end
 
             if self.shareSurgesWithSummoner then
                 token.properties.sharesSurgesWithSummoner = true
@@ -2469,6 +2486,14 @@ function ActivatedAbilitySummonBehavior:Cast(ability, casterToken, targets, args
             end
 
             summonedTokens[#summonedTokens+1] = token
+
+            if inheritedSummonerToken ~= nil and token.properties.minion then
+                inheritedSummonerEntries[#inheritedSummonerEntries+1] = {
+                    charid = token.charid,
+                    squad = token.properties:try_get("minionSquad"),
+                    monsterType = chosenOption.properties.monster_type,
+                }
+            end
 
             if self.casterControls then
                 local lookKey = ActivatedAbilitySummonBehavior.SummonLookKey(chosenOption, chosenOption.id)
@@ -2587,6 +2612,19 @@ function ActivatedAbilitySummonBehavior:Cast(ability, casterToken, targets, args
                     execute = function()
                         for _,entry in ipairs(summonerEntries) do
                             casterToken.properties:RegisterSummonedMinion(entry.charid, entry.squad, entry.monsterType)
+                        end
+                    end,
+                }
+            end
+
+            --Show the new minions in the summoner's panel too. Otherwise they
+            --belong to the summoner but are missing from their panel.
+            if inheritedSummonerToken ~= nil and inheritedSummonerToken.valid and #inheritedSummonerEntries > 0 then
+                inheritedSummonerToken:ModifyProperties{
+                    description = "Register summons",
+                    execute = function()
+                        for _,entry in ipairs(inheritedSummonerEntries) do
+                            inheritedSummonerToken.properties:RegisterSummonedMinion(entry.charid, entry.squad, entry.monsterType)
                         end
                     end,
                 }

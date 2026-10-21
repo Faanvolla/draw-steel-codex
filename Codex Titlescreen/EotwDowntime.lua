@@ -515,6 +515,11 @@ local function ContinueRespite(onDone)
         success = function(result)
             SaveMine("eotw:pendingRespite", nil)
             m_respiteBusy = false
+            local heroCount = 0
+            for _, _ in pairs(result.downtime or {}) do
+                heroCount = heroCount + 1
+            end
+            EotwAnalytics.Track("eotw_downtime", { activity = "respite", heroes = heroCount })
             for heroid, downtime in pairs(result.downtime or {}) do
                 EotwRoster.SetListedDowntime(heroid, downtime)
             end
@@ -618,6 +623,7 @@ function EotwDowntime.CatchBreath(heroid, onDone)
         end,
     }
     Bump()
+    EotwAnalytics.Track("eotw_downtime", { activity = "catch_breath", heroid = heroid })
     dmhub.Schedule(0.3, function()
         if mod.unloaded then
             return
@@ -661,6 +667,21 @@ local function SendProjectRoll(roll, onDone)
             if type(result.project) == "table" then
                 m_projects[result.project.projectid] = result.project
             end
+            local tier = nil
+            pcall(function() tier = EotwDowntime.TestTier(roll.natural, roll.total) end)
+            local project = type(result.project) == "table" and result.project or {}
+            EotwAnalytics.Track("eotw_project_roll", {
+                projectid = roll.projectid,
+                heroid = roll.heroid,
+                natural = roll.natural,
+                total = roll.total,
+                tier = tier,
+                characteristic = roll.characteristic,
+                skill = roll.skill,
+                breakthrough = roll.breakthroughOf ~= nil,
+                progress = project.progress,
+                completed = project.completed,
+            })
             EotwRoster.SetListedDowntime(roll.heroid, result.downtime)
             EotwRoster.SetListedSlots(result.slots)
             Bump()
@@ -2032,6 +2053,7 @@ function EotwDowntime.StartProject(projectid, onDone)
         action = "start-project",
         args = { projectid = projectid },
         success = function(result)
+            EotwAnalytics.Track("eotw_project_start", { projectid = projectid })
             if type(result.project) == "table" then
                 m_projects[result.project.projectid] = result.project
             end
