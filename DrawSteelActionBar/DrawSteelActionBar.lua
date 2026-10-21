@@ -556,6 +556,7 @@ local g_casterTokenStack = {}
 ---@field fallingShape nil|LuaObjectReference
 ---@field fallDamageLabel nil|SheetContainer
 ---@field fallDamageKey nil|string
+---@field teleportLoe nil|{key: string, reason: string, obstructionDist: number} The hovered teleport destination's line-of-effect failure, keyed on the hovered loc; obstructionDist is where (0-1) along the line it is blocked.
 ---@field chargeJumpLabel nil|LuaTargetingMarkers
 ---@field chargeJumpLabelKey nil|string
 ---@field chargeJumpUnreachable nil|boolean
@@ -1363,6 +1364,19 @@ local function PushCasterToken(token)
     g_creature = g_token.properties
 end
 
+--The first of the selection with a token on the board. A creature selected
+--off the board (a tabletop card's) has no abilities to use here: casting and
+--moving need its token.
+--- @return nil|CharacterToken
+function DrawSteelActionBar._operate.SelectedBoardToken()
+    for _, tok in ipairs(dmhub.selectedOrPrimaryTokens) do
+        if tok.onBoard then
+            return tok
+        end
+    end
+    return nil
+end
+
 --The token the bar is bound to when no cast has pushed a caster: the object
 --being operated, else the selection.
 --- @return nil|CharacterToken
@@ -1370,7 +1384,7 @@ function DrawSteelActionBar._operate.BaseBarToken()
     if DrawSteelActionBar._operate.operation ~= nil then
         return DrawSteelActionBar._operate.operation.object
     end
-    return dmhub.selectedOrPrimaryTokens[1]
+    return DrawSteelActionBar._operate.SelectedBoardToken()
 end
 
 local function TryPopCasterToken()
@@ -3881,7 +3895,10 @@ local function CreateActionBar()
                 end
             end
 
-            if #g_casterTokenStack == 0 then
+            --Keep the same caster until the ability is cast or cancelled. Dragging
+            --a hero while targeting used to make the hero the caster, so the mote's
+            --Catalyst removed the hero instead of the mote.
+            if #g_casterTokenStack == 0 and g_currentAbility == nil then
                 g_token = DrawSteelActionBar._operate.BaseBarToken()
             end
 
@@ -3889,10 +3906,12 @@ local function CreateActionBar()
             --while no caster is pushed: during an invoked/overview cast the
             --engine's selection override makes selectedOrPrimaryTokens report
             --the caster, and the strip should stay put until the cast pops.
-            if #g_casterTokenStack == 0 then
+            --Not while targeting either, so the bar notices the new selection
+            --once the cast ends.
+            if #g_casterTokenStack == 0 and g_currentAbility == nil then
                 local selected = {}
                 for _, tok in ipairs(dmhub.selectedOrPrimaryTokens) do
-                    if tok ~= nil and tok.valid and tok.properties ~= nil then
+                    if tok ~= nil and tok.valid and tok.onBoard and tok.properties ~= nil then
                         selected[#selected + 1] = tok
                     end
                 end
@@ -3904,6 +3923,13 @@ local function CreateActionBar()
                     g_overviewLens = "all"
                 end
                 element.data.selectionSignature = signature
+            end
+
+            --If the caster is deleted while targeting, cancel the ability.
+            --Otherwise the action bar disappears and targeting never ends.
+            if g_currentAbility ~= nil and #g_casterTokenStack == 0 and (g_token == nil or not g_token.valid) and g_abilityController ~= nil then
+                g_abilityController:FireEvent("cancelCasting", { norefresh = true })
+                g_token = DrawSteelActionBar._operate.BaseBarToken()
             end
 
             if g_token == nil or not g_token.valid then
@@ -7550,7 +7576,7 @@ local function ActionSubMenu(args)
     --The column's foot: the ordinary text heading (every legacy menu) and,
     --for a director-overview column, the identity/signals footer bar (slice
     --(d)) which takes the heading's place. Both are pooled for the life of
-    --the column and always sit at the END of m_children, after the chips.
+    --the column and sit below the chip columns.
     local m_heading = gui.Label {
         classes = { "submenuHeading" },
         abilities = function(element, abilities, grouping)
@@ -7565,14 +7591,75 @@ local function ActionSubMenu(args)
     --Pooled chips (AbilityHeading, created on demand, never destroyed) and
     --the pooled hairline an overview column shows between its main actions
     --and its maneuvers. m_children is REBUILT from these on every populate
-    --(chips, divider at its slot, heading, footer) - see "abilities" below.
+    --(chips, divider at its slot) - see "abilities" below.
     local m_chips = {}
     local m_divider = gui.Panel {
         classes = { "overviewActionDivider", "collapsed" },
         interactable = false,
     }
 
-    local m_children = { m_divider, m_heading, m_footer }
+    local m_children = { m_divider }
+
+    --Chips sit in columns of up to COLUMN_MAX_CHIPS, each with its own
+    --background. Extra columns get their own chips, because moving a chip to
+    --another panel destroys it. The heading below spans every column.
+    local COLUMN_MAX_CHIPS = 8
+    local m_firstColumn = gui.Panel {
+        classes = { "abilitySubMenuColumn" },
+        children = m_children,
+    }
+    local m_columnsRow = gui.Panel {
+        classes = { "abilitySubMenuColumns" },
+        children = { m_firstColumn },
+    }
+
+    --Extra columns, created on demand and never destroyed: { panel, chips }.
+    local m_extraColumns = {}
+
+    local function GetExtraColumn(index)
+        local column = m_extraColumns[index]
+        if column == nil then
+            column = { chips = {} }
+            column.panel = gui.Panel {
+                classes = { "abilitySubMenuColumn", "framed", "extraColumn" },
+                blurBackground = true,
+                children = column.chips,
+            }
+            m_extraColumns[index] = column
+            local rowChildren = { m_firstColumn }
+            for _, extra in ipairs(m_extraColumns) do
+                rowChildren[#rowChildren + 1] = extra.panel
+            end
+            m_columnsRow.children = rowChildren
+        end
+        return column
+    end
+
+    local function HideExtraColumns()
+        for _, column in ipairs(m_extraColumns) do
+            column.panel:SetClass("collapsed", true)
+        end
+    end
+
+    --Shows abilities[first..last] in extra column `index`. Extra columns only
+    --ever show ordinary menus, so their chips never need the overview setup
+    --(caster, lens marks, badges).
+    local function FillExtraColumn(index, abilities, first, last)
+        local column = GetExtraColumn(index)
+        column.panel:SetClass("collapsed", false)
+        local count = last - first + 1
+        for k = 1, count do
+            if column.chips[k] == nil then
+                column.chips[k] = AbilityHeading()
+                column.panel.children = column.chips
+            end
+            column.chips[k]:FireEventTree("ability", abilities[first + k - 1])
+            column.chips[k]:SetClass("collapsed", false)
+        end
+        for k = count + 1, #column.chips do
+            column.chips[k]:SetClass("collapsed", true)
+        end
+    end
 
     local resultPanel
 
@@ -7651,25 +7738,18 @@ local function ActionSubMenu(args)
 
         vpad = -4,
 
-        children = m_children,
-        classes = { "abilitySubMenu" },
+        --Columns are built in Lua (see "abilities"), so the engine's wrap
+        --from the abilitySubMenu style must stay off.
+        wrap = false,
+
+        children = { m_columnsRow, m_heading, m_footer },
+        classes = { "abilitySubMenu", "chipColumns" },
         blurBackground = true,
         data = { lensMatchCount = 0 },
 
         setCasterToken = function(element, casterToken, column)
             m_casterToken = casterToken
             m_column = column
-            --The abilitySubMenu style wraps a vertical flow into a second
-            --column when it runs out of height (legacy long menus). For an
-            --overview column that wrap misfires: the engine resolves the
-            --column's auto height and the wrap limit in one pass, and once
-            --the footer grew past ~70px (F2-4 two-line rows / 12px text) the
-            --footer of EVERY column - even a one-chip column - wrapped to the
-            --top-right of its column (seen live, A5). An overview kit is a
-            --handful of chips plus the footer and never needs to wrap, so
-            --turn wrapping off while a column is bound; restore it when the
-            --pooled panel is parked again.
-            element.selfStyle.wrap = not (column ~= nil and casterToken ~= nil)
         end,
 
         --Forwarded to the footer (slice (e) owner prompt); no-op for ordinary
@@ -7679,6 +7759,8 @@ local function ActionSubMenu(args)
         end,
 
         abilities = function(element, abilities)
+            HideExtraColumns()
+
             if abilities == nil or #abilities == 0 then
                 element:SetClass("collapsed", true)
                 --A pooled overview column parked with no kit drops its
@@ -7755,7 +7837,14 @@ local function ActionSubMenu(args)
                 end)
             end
 
-            for i = 1, #abilities do
+            --An overview column is never split; an ordinary menu puts its
+            --first COLUMN_MAX_CHIPS chips here and the rest in extra columns.
+            local firstCount = #abilities
+            if not overview then
+                firstCount = math.min(#abilities, COLUMN_MAX_CHIPS)
+            end
+
+            for i = 1, firstCount do
                 m_chips[i] = m_chips[i] or AbilityHeading()
                 --Re-point the pooled chip at this column's owner (nil restores
                 --the g_token default) before it computes cost/suppression.
@@ -7833,7 +7922,7 @@ local function ActionSubMenu(args)
                 m_chips[i]:FireEvent("setOverviewBadges", dmgBadge, multiBadge, multiDamaging, summonBadge, dmgTooltip, areaTooltip, healBadge)
             end
 
-            for i = #abilities + 1, #m_chips do
+            for i = firstCount + 1, #m_chips do
                 m_chips[i]:SetClass("collapsed", true)
             end
 
@@ -7862,11 +7951,8 @@ local function ActionSubMenu(args)
             end
             m_divider:SetClass("collapsed", dividerAfter == nil)
 
-            --Rebuild the child order: every pooled chip (spares collapsed at
-            --the end), the divider at its slot (or parked collapsed before
-            --the tail), then heading + footer. Every pooled panel is ALWAYS
-            --in the list (fa2053b7 rule); the list is only re-assigned when
-            --the order actually changed.
+            --Keep every pooled chip and the divider in the list (a panel left
+            --out is destroyed); only re-assign it when the order changed.
             local newChildren = {}
             for i = 1, #m_chips do
                 newChildren[#newChildren + 1] = m_chips[i]
@@ -7877,8 +7963,6 @@ local function ActionSubMenu(args)
             if dividerAfter == nil then
                 newChildren[#newChildren + 1] = m_divider
             end
-            newChildren[#newChildren + 1] = m_heading
-            newChildren[#newChildren + 1] = m_footer
 
             local changed = #newChildren ~= #m_children
             if not changed then
@@ -7908,13 +7992,31 @@ local function ActionSubMenu(args)
             --F2-7: grey every chip of an all-acted column (class tree so the
             --title / keywords / icon rules apply); always cleared for
             --ordinary menus, which reuse no overview state.
-            for i = 1, #abilities do
+            for i = 1, firstCount do
                 m_chips[i]:SetClassTree("acted", overview and allActed)
             end
 
             if changed then
-                element.children = m_children
+                m_firstColumn.children = m_children
             end
+
+            --Overview: one framed panel around chips + footer, never split.
+            --Ordinary menus: each column carries its own background instead.
+            element:SetClass("chipColumns", not overview)
+            element.blurBackground = overview
+            m_firstColumn:SetClass("framed", not overview)
+            m_firstColumn.blurBackground = not overview
+
+            local columnIndex = 0
+            for first = firstCount + 1, #abilities, COLUMN_MAX_CHIPS do
+                columnIndex = columnIndex + 1
+                FillExtraColumn(columnIndex, abilities, first, math.min(first + COLUMN_MAX_CHIPS - 1, #abilities))
+            end
+
+            --Stretch the heading under every column: 205px per column plus the
+            --4px gap between them (abilityHeading width, extraColumn lmargin).
+            local columns = columnIndex + 1
+            m_heading.selfStyle.width = 205 * columns + 4 * (columns - 1)
         end,
     }
 
@@ -9842,6 +9944,91 @@ local m_allowedAltitudeCalculator
 --- @type nil|string
 local m_altitudeMode
 
+--- True while the cast is picking a teleport destination square: the creature
+--- being moved is g_token (a relocate always moves its own caster).
+--- @return boolean
+function DrawSteelActionBar.IsTeleportPick()
+    local ability = g_currentAbility
+    if ability == nil or g_token == nil or m_allowedAltitudeCalculator == nil then
+        return false
+    end
+    if ability.targetType ~= "emptyspace" and ability.targetType ~= "anyspace" then
+        return false
+    end
+    if ability:try_get("targeting", "direct") ~= "direct" then
+        return false
+    end
+    return ability:GetMovementType(g_token, g_currentSymbols) == "teleport"
+end
+
+--- The loc a teleport pick lands the mover on for the hovered loc. An odd-sized
+--- large creature is anchored on its south-west square (mappress shifts the
+--- same way before casting); altitude is kept.
+--- @param mover CharacterToken
+--- @param loc Loc
+--- @return Loc
+function DrawSteelActionBar.TeleportAnchorLoc(mover, loc)
+    local dims = mover.creatureDimensions.x
+    if dims > 1 and dims % 2 == 1 then
+        local altitude = loc.altitude
+        for i = 3, dims, 2 do
+            loc = loc.west.south
+        end
+        loc = loc:WithAltitude(altitude)
+    end
+    return loc
+end
+
+--- Why `mover` can't teleport to `loc` (its anchor loc, at the landing altitude),
+--- or nil when it can. A teleporting creature needs line of effect from where it
+--- stands to the space its body will fill, measured with the altitude-aware
+--- targeting, so a creature at the bottom of a pit can't reach the ground set
+--- back from the rim. The Line Of Effect Limit attribute (e.g. Dazzled) caps it.
+--- The second result is how far (0-1) along the line it stops, for the arrow.
+--- @param mover CharacterToken
+--- @param loc Loc
+--- @return nil|string reason
+--- @return number obstructionDist
+function DrawSteelActionBar.TeleportLineOfEffectFailReason(mover, loc)
+    local info = mover:GetLineOfSightToSpaceInfo(loc, mover.properties:GetPierceWalls())
+    if info.cover == 0 then
+        return "No Line of Effect", info.obstructionDist
+    end
+
+    local limit = mover.properties:CalculateNamedCustomAttribute("Line Of Effect Limit") or 0
+    if limit > 0 then
+        local distSquares = math.max(mover:Distance(loc) / dmhub.unitsPerSquare, math.abs(loc.altitude - mover.loc.altitude))
+        if distSquares > limit then
+            return "Beyond Line of Effect", limit / distSquares
+        end
+    end
+
+    return nil, 1
+end
+
+--- The default landing altitude for a teleport pick at the hovered `loc`: the
+--- lowest altitude in [minAltitude, maxAltitude] the mover has line of effect
+--- to. When the ground is out of sight but the air above it is not, the
+--- creature lands in the air and falls. nil when this is not a teleport pick or
+--- no altitude in the column can be reached.
+--- @param loc Loc The hovered loc.
+--- @param minAltitude number
+--- @param maxAltitude number
+--- @return nil|number
+function DrawSteelActionBar.TeleportLandingAltitude(loc, minAltitude, maxAltitude)
+    if not DrawSteelActionBar.IsTeleportPick() then
+        return nil
+    end
+    ---@cast g_token -nil
+    local anchor = DrawSteelActionBar.TeleportAnchorLoc(g_token, loc)
+    for alt = minAltitude, maxAltitude do
+        if DrawSteelActionBar.TeleportLineOfEffectFailReason(g_token, anchor:WithAltitude(alt)) == nil then
+            return alt
+        end
+    end
+    return nil
+end
+
 local m_altitudeController
 local m_shiftController
 
@@ -10071,7 +10258,8 @@ local function CreateAltitudeController()
                     alt = maxAltitude
                     element.text = string.format("max (%d)", alt)
                 elseif target == "min" then
-                    alt = minAltitude
+                    --a teleport lands as low as it can while keeping line of effect.
+                    alt = DrawSteelActionBar.TeleportLandingAltitude(info.loc, minAltitude, maxAltitude) or minAltitude
                     element.text = string.format("min (%d)", alt)
                 elseif type(target) == "number" then
                     alt = math.clamp(target, minAltitude, maxAltitude)
@@ -11868,7 +12056,8 @@ CreateAbilityController = function()
             element:FireEvent("cancelCasting")
         end,
 
-        cancelCasting = function(element)
+        --- @param opts nil|{norefresh: nil|boolean} norefresh when called from inside the bar's own refresh
+        cancelCasting = function(element, opts)
             --Director overview (slice (e)): whatever ended this cast, the
             --pending implicit-claim record dies with it.
             g_overviewCastPending = nil
@@ -11964,6 +12153,16 @@ CreateAbilityController = function()
             end
 
             element:SetClass("collapsed", true)
+
+            --If another token was selected while targeting, show its abilities now.
+            if (opts == nil or not opts.norefresh) and #g_casterTokenStack == 0 and g_actionBar ~= nil and g_actionBar.valid then
+                local selected = DrawSteelActionBar._operate.BaseBarToken()
+                local selectedid = selected ~= nil and selected.charid or nil
+                local boundid = (g_token ~= nil and g_token.valid) and g_token.charid or nil
+                if selectedid ~= boundid then
+                    g_actionBar:FireEventTree("refresh")
+                end
+            end
         end,
 
         chooseTargetToken = function(element, options)
@@ -12078,7 +12277,7 @@ CreateAbilityController = function()
             if options.sourceToken ~= nil and options.sourceToken.valid then
                 local shownToken = g_token
                 if #g_casterTokenStack == 0 then
-                    shownToken = dmhub.selectedOrPrimaryTokens[1]
+                    shownToken = DrawSteelActionBar._operate.SelectedBoardToken()
                 end
                 if shownToken == nil or not shownToken.valid then
                     PushCasterToken(options.sourceToken)
@@ -12422,6 +12621,18 @@ CreateAbilityController = function()
             local filteredTargets = {}
 
             local targetColor = "white"
+            --Teleport: the creature needs line of effect to the space it lands in. Worked
+            --out here, before the arrow is drawn, so the arrow can turn red where it is
+            --blocked; the square is drawn red with the reason, and mappress refuses it
+            --under strict targeting. Keyed on the hovered loc so a press can match it.
+            g_pointTargeting.teleportLoe = nil
+            if loc ~= nil and DrawSteelActionBar.IsTeleportPick() then
+                local loeReason, loeBreak = DrawSteelActionBar.TeleportLineOfEffectFailReason(g_token,
+                    DrawSteelActionBar.TeleportAnchorLoc(g_token, loc))
+                if loeReason ~= nil then
+                    g_pointTargeting.teleportLoe = { key = startingLoc.str, reason = loeReason, obstructionDist = loeBreak }
+                end
+            end
             local clearMovementArrow = g_pointTargeting.showingMovementArrow
             local clearWarningArrows = g_pointTargeting.showingWarningArrows
             local prevShape = g_pointTargeting.shape
@@ -12631,6 +12842,9 @@ CreateAbilityController = function()
                             end
                         end
 
+                        if g_pointTargeting.teleportLoe ~= nil then
+                            markOptions.errorFrom = g_pointTargeting.teleportLoe.obstructionDist
+                        end
                         local movementInfo = g_token:MarkMovementArrow(loc, markOptions)
                         g_pointTargeting.showingMovementArrow = true
                         clearMovementArrow = false
@@ -12666,6 +12880,9 @@ CreateAbilityController = function()
                                 --a teleport so the diagram keeps the dialed landing altitude and
                                 --synthesizes the arrival fall for a non-flyer.
                                 movementInfo.path.teleport = true
+                                if g_pointTargeting.teleportLoe ~= nil then
+                                    movementInfo.path.lineOfEffectBreak = g_pointTargeting.teleportLoe.obstructionDist
+                                end
                             elseif movementType == nil then
                                 --The ability moves nobody -- it PLACES something in the hovered
                                 --square (a summon). The default "Movement: 3 squares" reads as the
@@ -13352,6 +13569,10 @@ CreateAbilityController = function()
                     g_pointTargeting.shape = nil
                 end
 
+                if g_pointTargeting.shape ~= nil and g_pointTargeting.teleportLoe ~= nil then
+                    targetColor = "red"
+                end
+
                 -- Partner burst: if the ability declares partnerBurst (a GoblinScript
                 -- condition formula that evaluates true) and we're doing a
                 -- RadiusFromCreature burst around the caster, also build a second
@@ -13528,7 +13749,8 @@ CreateAbilityController = function()
                     video = "illusionline.webm"
                 end
 
-                if g_pointTargeting.shapeRequiresConfirm then
+                --an out-of-reach teleport square stays red rather than the confirm grey.
+                if g_pointTargeting.shapeRequiresConfirm and g_pointTargeting.teleportLoe == nil then
                     targetColor = "#444444"
                 end
 
@@ -13587,6 +13809,13 @@ CreateAbilityController = function()
                         if buildWall ~= nil and buildWall.StackedToCeiling ~= nil and buildWall.StackedToCeiling(loc) then
                             clickText = tr("Walls Stacked to Ceiling")
                         end
+                    end
+
+                    --an out-of-reach teleport square gets a large red label above it instead.
+                    local loeText = nil
+                    if g_pointTargeting.teleportLoe ~= nil then
+                        loeText = tr(g_pointTargeting.teleportLoe.reason)
+                        clickText = ""
                     end
 
                     local locs = g_pointTargeting.shape.locations
@@ -13650,6 +13879,26 @@ CreateAbilityController = function()
                                 fontSize = 0.15,
                                 color = "white",
                                 text = clickText,
+                                textAlignment = "center",
+                            },
+                            gui.Label {
+                                interactable = false,
+                                floating = true,
+                                classes = { cond(loeText == nil, "collapsed") },
+                                valign = "top",
+                                halign = "center",
+                                width = "auto",
+                                height = "auto",
+                                y = -0.55,
+                                hpad = 0.08,
+                                vpad = 0.03,
+                                borderBox = true,
+                                bgimage = true,
+                                bgcolor = "#000000cc",
+                                fontSize = 0.32,
+                                bold = true,
+                                color = "#ff4a3d",
+                                text = loeText or "",
                                 textAlignment = "center",
                             },
                             gui.Label {
@@ -13742,6 +13991,14 @@ CreateAbilityController = function()
             if shape == "line" and #m_positionTargetsChosen == 0 then
                 --a line ability's start square is stored as a bare Loc (see the declaration).
                 m_positionTargetsChosen[#m_positionTargetsChosen + 1] = loc
+                return
+            end
+
+            --Strict targeting: a player can't teleport to a space the hover found
+            --out of line of effect. Directors bypass this.
+            local teleportLoe = g_pointTargeting.teleportLoe
+            if teleportLoe ~= nil and loc ~= nil and teleportLoe.key == loc.str
+                and (not dmhub.isDM) and dmhub.GetSettingValue("strict:targeting") then
                 return
             end
 

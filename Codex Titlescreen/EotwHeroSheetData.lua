@@ -949,13 +949,34 @@ function EotwHeroSheet.Equip(tok, itemid)
             p:Equipment()[slot] = itemid
         end,
     }
+    EotwAnalytics.Track("eotw_equip", { action = "equip", heroid = tok.charid, itemid = itemid, slot = slot })
     return true, nil
+end
+
+--- Auto-equip: moves one of an item from the inventory into a free slot, by the
+--- same rules as the sheet's Equip button. Call it INSIDE the caller's own
+--- tok:ModifyProperties (the treasure grants do), so it uploads with the grant.
+--- @param tok CharacterToken
+--- @param itemid string
+--- @return string|nil slot where it went, or nil when it stays in the inventory
+function EotwHeroSheet.EquipInPlace(tok, itemid)
+    local slot = EotwHeroSheet.EquipSlot(tok, itemid)
+    if slot == nil then
+        return nil
+    end
+    local p = tok.properties
+    p:SetItemQuantity(itemid, p:GetItemQuantity(itemid) - 1)
+    p:Equipment()[slot] = itemid
+    return slot
 end
 
 --- Unequips the item in an equipment slot back into the inventory.
 --- @param tok CharacterToken
 --- @param slot string
 function EotwHeroSheet.Unequip(tok, slot)
+    local itemid = nil
+    pcall(function() itemid = tok.properties:Equipment()[slot] end)
+    EotwAnalytics.Track("eotw_equip", { action = "unequip", heroid = tok.charid, itemid = itemid, slot = slot })
     tok:ModifyProperties{
         description = "Unequip treasure",
         execute = function()
