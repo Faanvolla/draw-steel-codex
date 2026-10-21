@@ -716,12 +716,17 @@ function DTProjectEditor:_createProjectForm()
                     classes = {"form", "bold"},
                     width = "auto",
                     valign = "center",
+                    --only true while the project waits on the Director.
                     linger = function(element)
-                        gui.Tooltip{
-                            maxWidth = 300,
-                            fontSize = 16,
-                            text = "Your Director must activate this project by editing this form.",
-                        }(element)
+                        local project = element.parent.data.getProject(element)
+                        local status = project and project:GetStatus()
+                        if status == DTConstants.STATUS.PAUSED.key or status == DTConstants.STATUS.MILESTONE.key then
+                            gui.Tooltip{
+                                maxWidth = 300,
+                                fontSize = 16,
+                                text = "Your Director must activate this project by editing this form.",
+                            }(element)
+                        end
                     end,
                     refreshToken = function(element)
                         local project = element.parent.data.getProject(element)
@@ -817,9 +822,11 @@ function DTProjectEditor:_createProjectForm()
                     return nil
                 end
             },
+            --the same states the "Status Reason:" header above shows for.
             refreshToken = function(element)
                 local project = element.data.getProject(element)
-                if project and not project:IsActive() then
+                local status = project and project:GetStatus()
+                if project and (status == DTConstants.STATUS.PAUSED.key or status == DTConstants.STATUS.MILESTONE.key) then
                     element.text = project:GetStatusReason()
                 else
                     element.text = ""
@@ -1760,6 +1767,7 @@ function DTProjectEditor:_createRollButton(options)
             end
 
             element.data.enabled = isEnabled
+            element:SetClass("disabled", not isEnabled)
         end,
 
         linger = function(element)

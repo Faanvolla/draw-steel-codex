@@ -312,8 +312,24 @@ function DTCharSheetTab._createHeaderPanel()
                                 end)
                             end
                         end,
+                        custom = function()
+                            -- keep the new project, empty, for manual editing
+                        end,
                         cancel = function()
-                            -- Custom / cancel: leave the new project empty for manual editing
+                            -- closed without a choice: the project was never wanted.
+                            local di = token.properties:GetDowntimeInfo()
+                            if di ~= nil and di:GetProject(newProjectId) ~= nil then
+                                modifyTokenProps{
+                                    execute = function()
+                                        di:RemoveProject(newProjectId)
+                                    end
+                                }
+                                local sa = CharacterSheet.instance:Get("projectScrollArea")
+                                if sa then
+                                    sa:FireEventTree("refreshToken")
+                                end
+                                DTSettings.Touch()
+                            end
                         end
                     }))
                 end

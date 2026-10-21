@@ -302,9 +302,11 @@ function DTBusinessRules.ApplySourceToProject(project, sourceType, selectedId)
         return nil
     end
 
+    -- A new source is a new thing to make, so it may give its item again.
     if sourceType == "crafting" then
         local item = dmhub.GetTable(equipment.tableName)[selectedId]
         if item then
+            project.itemGranted = false
             project:SetTitle(item.name)
                 :SetItemID(selectedId)
                 :SetActivityID("")
@@ -318,6 +320,7 @@ function DTBusinessRules.ApplySourceToProject(project, sourceType, selectedId)
     elseif sourceType == "activity" then
         local activity = dmhub.GetTable(DowntimeActivity.tableName)[selectedId]
         if activity then
+            project.itemGranted = false
             project:SetTitle(activity:GetName())
                 :SetActivityID(selectedId)
                 :SetItemID("")
