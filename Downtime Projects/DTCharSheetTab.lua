@@ -390,14 +390,6 @@ function DTCharSheetTab._createBodyPanel()
                 refreshGame = function(element)
                     element:FireEvent("refreshToken")
                 end,
-                --Turning "Players Manage Downtime Projects" on or off rebuilds
-                --the open cards, whose Director controls are built per permission.
-                monitor = playersManageProjects.id,
-                events = {
-                    monitor = function(element)
-                        element:FireEventTree("refreshToken")
-                    end,
-                },
                 refreshToken = function(element)
                     DTCharSheetTab._refreshProjectsList(element)
                 end
@@ -457,7 +449,9 @@ function DTCharSheetTab._refreshProjectsList(element)
 
     -- Reconcile existing panels with current projects
     local panels = element.children or {}
-    --an owned card built under the other permission is rebuilt (see the monitor above).
+    --an owned card built under the other permission is rebuilt on this refresh.
+    --A player's open sheet only refreshes on its own changes, so a permission
+    --switched by the Director reaches it when the sheet is next opened.
     local canManage = DTCharSheetTab.CanManageProjects()
 
     -- Step 1: Remove panels for projects that no longer exist OR have wrong type
