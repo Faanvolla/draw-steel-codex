@@ -162,6 +162,15 @@ setting{
     storage = "preference",
 }
 
+--The newest chat message this player has seen in the town's chat drawer,
+--per channel ("town", or a party's gameid), in server ms. Drives the
+--drawer's New divider.
+setting{
+    id = "eotw:chatlastviewed",
+    default = {},
+    storage = "preference",
+}
+
 --The town's city (see EotwRoster.lua), on staging until EotW nears release.
 local LOBBY_ID = EotwRoster.CITY_ID
 local LOBBY_OPTIONS = EotwRoster.CITY_OPTIONS
@@ -2586,6 +2595,17 @@ CreateScreen = function(args)
     local statusLabel = nil
     local chatErrorLabel = nil
     local chatTitleLabel = nil
+    local chatInput = nil
+
+    --whether the chat drawer is open, and per channel the last-viewed mark
+    --taken when it opened: newer messages sit below the New divider until
+    --the drawer closes (or we post).
+    local m_chatOpen = false
+    local m_chatDividers = {}
+    --follow new messages to the bottom unless the player has scrolled up
+    --to read history; reset on opening the drawer or changing channel.
+    local m_chatStickBottom = true
+    local m_chatChannel = nil
 
     --The two party boards: the Town Gate's ("gate": the Encounter of the
     --Week and the past ones) and the Proving Pits' ("danger"). Each is the
@@ -2707,6 +2727,59 @@ CreateScreen = function(args)
             halign = "center",
             textAlignment = "center",
             vmargin = 24,
+        }
+    end
+
+    --A chat message's time: "3:42 PM" today, "Oct 19, 3:42 PM" before.
+    local FormatChatTime = function(ms)
+        local secs = math.floor(ms / 1000)
+        local t = os.date("*t", secs) --[[@as osdate]]
+        local now = os.date("*t") --[[@as osdate]]
+        local hour = t.hour % 12
+        if hour == 0 then
+            hour = 12
+        end
+        local clock = string.format("%d:%02d %s", hour, t.min, cond(t.hour < 12, "AM", "PM"))
+        if t.year == now.year and t.yday == now.yday then
+            return clock
+        end
+        return string.format("%s, %s", os.date("%b %d", secs), clock)
+    end
+
+    --Chat text shown as typed: rich-text tags in it are not applied.
+    local ChatPlain = function(text)
+        return "<noparse>" .. string.gsub(text, "</?[nN][oO][pP][aA][rR][sS][eE]>", "") .. "</noparse>"
+    end
+
+    --The red line between unread chat messages and those already seen.
+    local ChatNewDivider = function()
+        local red = "#f23f43"
+        return gui.Panel{
+            width = "96%",
+            height = 18,
+            halign = "left",
+            vmargin = 6,
+            flow = "horizontal",
+            gui.Panel{
+                bgimage = "panels/square.png",
+                bgcolor = red,
+                width = "100%-52",
+                height = 1,
+                valign = "center",
+            },
+            gui.Label{
+                text = "NEW",
+                fontSize = 12,
+                bold = true,
+                color = "#ffffff",
+                bgimage = "panels/square.png",
+                bgcolor = red,
+                width = 44,
+                height = 16,
+                lmargin = 8,
+                valign = "center",
+                textAlignment = "center",
+            },
         }
     end
 
@@ -4824,37 +4897,106 @@ CreateScreen = function(args)
             return
         end
 
-        --in a game lobby view the chat column shows that game's private
-        --channel; otherwise the lobby-wide chat.
+        --in a party view the drawer shows that party's private channel;
+        --otherwise the town-wide chat.
         local chat
+        local channel
         if m_viewGameid ~= nil then
             chat = m_conn:GetPath("/gamechat/" .. m_viewGameid)
+            channel = m_viewGameid
             if chatTitleLabel ~= nil and chatTitleLabel.valid then
                 chatTitleLabel.text = "Game Chat"
             end
         else
             chat = m_conn:GetPath("/chat")
+            channel = "town"
             if chatTitleLabel ~= nil and chatTitleLabel.valid then
-                chatTitleLabel.text = "Lobby Chat"
+                chatTitleLabel.text = "Town Chat"
             end
+        end
+        --players must know when what they type also shows on Discord.
+        if chatInput ~= nil and chatInput.valid then
+            local mirrored = channel == "town" and m_conn:GetPath("/city/discordBridge") == true
+            chatInput.placeholderText = cond(mirrored, "Say something... (also posted to Discord)", "Say something...")
         end
         local ids = {}
+        local newestTs = nil
         if chat ~= nil then
-            for msgid,_ in pairs(chat) do
+            for msgid,msg in pairs(chat) do
                 ids[#ids+1] = msgid
+                if type(msg.ts) == "number" and (newestTs == nil or msg.ts > newestTs) then
+                    newestTs = msg.ts
+                end
             end
         end
-        --msgids sort chronologically; show newest first so the latest
-        --message is always visible without scroll-position management.
-        table.sort(ids, function(a,b) return a > b end)
+        --msgids sort chronologically: oldest at the top, newest at the bottom.
+        table.sort(ids)
+        if channel ~= m_chatChannel then
+            m_chatChannel = channel
+            m_chatStickBottom = true
+        end
+
+        --while the drawer is open everything shown counts as seen, but the
+        --divider stays where it was when the drawer opened. false = no
+        --divider (first visit to this channel).
+        local divider = nil
+        if m_chatOpen then
+            local viewed = dmhub.GetSettingValue("eotw:chatlastviewed")
+            if type(viewed) ~= "table" then
+                viewed = {}
+            end
+            if m_chatDividers[channel] == nil then
+                m_chatDividers[channel] = viewed[channel] or false
+            end
+            divider = m_chatDividers[channel]
+            if newestTs ~= nil and (viewed[channel] == nil or newestTs > viewed[channel]) then
+                --keep only the town and this channel: party chats come and go.
+                dmhub.SetSettingValue("eotw:chatlastviewed", { town = viewed.town, [channel] = newestTs })
+            end
+
+            --posting clears the divider, as in Discord.
+            if divider and chat ~= nil then
+                for _,msg in pairs(chat) do
+                    if msg.userid == dmhub.loginUserid and type(msg.ts) == "number" and msg.ts > divider then
+                        divider = false
+                        m_chatDividers[channel] = newestTs
+                        break
+                    end
+                end
+            end
+        end
 
         local children = {}
+        local seenAbove = false
         for _,msgid in ipairs(ids) do
             --ids is empty unless chat is non-nil.
             ---@cast chat -nil
             local msg = chat[msgid]
+            local ts = type(msg.ts) == "number" and msg.ts or nil
+            if divider and ts ~= nil then
+                if ts <= divider then
+                    seenAbove = true
+                elseif seenAbove then
+                    children[#children+1] = ChatNewDivider()
+                    seenAbove = false
+                    divider = false
+                end
+            end
+            local stamp = ""
+            if ts ~= nil then
+                stamp = string.format("<color=#ffffff80><size=80%%>%s</size></color>  ", FormatChatTime(ts))
+            end
+            --messages bridged in from the Discord channel carry a tag.
+            local name = string.format("<b>%s:</b>", ChatPlain(msg.name or "?"))
+            if msg.source == "discord" then
+                name = string.format("<color=#8c9eff><b>%s</b> <size=70%%>DISCORD</size>:</color>", ChatPlain(msg.name or "?"))
+            end
+            local edited = ""
+            if msg.edited then
+                edited = " <color=#ffffff80><size=80%>(edited)</size></color>"
+            end
             children[#children+1] = gui.Label{
-                text = string.format("<b>%s:</b> %s", msg.name or "?", msg.text or ""),
+                text = string.format("%s%s %s%s", stamp, name, ChatPlain(msg.text or ""), edited),
                 fontSize = 18,
                 color = Styles.textColor,
                 width = "96%",
@@ -4864,6 +5006,11 @@ CreateScreen = function(args)
             }
         end
         chatMessagesPanel.children = children
+        if m_chatStickBottom then
+            --set again once layout has measured the new children.
+            chatMessagesPanel.vscrollPosition = 0
+            chatMessagesPanel:ScheduleEvent("moveToBottom", 0.05)
+        end
     end
 
     local RefreshStatus = function()
@@ -4878,9 +5025,9 @@ CreateScreen = function(args)
         if status == "connected" then
             statusLabel.text = ""
         elseif status == "closed" then
-            statusLabel.text = "Disconnected from the lobby."
+            statusLabel.text = "Disconnected from the town."
         else
-            statusLabel.text = "Connecting to the lobby..."
+            statusLabel.text = "Connecting to the town..."
         end
     end
 
@@ -8115,7 +8262,11 @@ CreateScreen = function(args)
             color = Styles.textColor,
             opacity = 0.7,
             width = "94%",
-            height = "auto",
+            --two lines at most, so a busy town cannot push the input
+            --off the bottom of the drawer.
+            height = 42,
+            textAlignment = "topleft",
+            textOverflow = "ellipsis",
             halign = "center",
             text = "",
             create = function(element)
@@ -8126,7 +8277,7 @@ CreateScreen = function(args)
 
         gui.Panel{
             width = "94%",
-            height = "100%-190",
+            height = "100%-214",
             halign = "center",
             flow = "vertical",
             vscroll = true,
@@ -8136,6 +8287,14 @@ CreateScreen = function(args)
             create = function(element)
                 chatMessagesPanel = element
                 RefreshChat()
+            end,
+            moveToBottom = function(element)
+                if m_chatStickBottom then
+                    element.vscrollPosition = 0
+                end
+            end,
+            scroll = function(element)
+                m_chatStickBottom = element.vscrollPosition <= 0.02
             end,
         },
 
@@ -8167,6 +8326,9 @@ CreateScreen = function(args)
             fontSize = 18,
             placeholderText = "Say something...",
             characterLimit = 400,
+            create = function(element)
+                chatInput = element
+            end,
             change = function(element)
                 local text = (element.text or ""):match("^%s*(.-)%s*$")
                 if text == "" or m_conn == nil then
@@ -8190,6 +8352,15 @@ CreateScreen = function(args)
             end,
         },
     }
+
+    --closing forgets the dividers, so the next open places them afresh.
+    local SetChatOpen = function(open)
+        m_chatOpen = open
+        m_chatDividers = {}
+        m_chatStickBottom = true
+        chatPanel:SetClass("collapsed", not open)
+        RefreshChat()
+    end
 
     resultPanel = gui.Panel{
         id = "encounterOfTheWeekScreen",
@@ -8227,7 +8398,7 @@ CreateScreen = function(args)
             --close the topmost town panel first: the chat drawer, then
             --an open location, and the town itself last.
             if chatPanel ~= nil and chatPanel.valid and not chatPanel:HasClass("collapsed") then
-                chatPanel:SetClass("collapsed", true)
+                SetChatOpen(false)
                 return
             end
             if m_locationId ~= nil then
@@ -8520,8 +8691,7 @@ CreateScreen = function(args)
                 chatButton = element
             end,
             click = function(element)
-                chatPanel:SetClass("collapsed", not chatPanel:HasClass("collapsed"))
-                RefreshChat()
+                SetChatOpen(chatPanel:HasClass("collapsed"))
             end,
         },
 
