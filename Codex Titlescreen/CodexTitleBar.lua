@@ -5016,7 +5016,7 @@ local function CreateTopBar()
                 thanks = "Your bug report has been submitted. Thank you!",
                 --shown alongside thanks when the ticket bridge exists: a bug
                 --report also opens a ticket the user can follow up on.
-                ticketInfo = "A ticket has been opened for your report. You can find it under Feedback > Your Tickets, where you can add details at any time. When a developer responds, a marker will appear on that menu.",
+                ticketInfo = "A ticket has been opened for your report. You can find it under Feedback -> Your Tickets. We find feedback very helpful in developing the app and our developers will review it soon. We may respond to your ticket if we need more information or when we close it, but not every report will be responded to. If your issue is urgent or you would like a response, then joining our Discord and asking about the issue is the best way to guarantee a human response. You can safely post your ticket ID in the Discord.",
             },
             feature = {
                 title = "Request a Feature",
