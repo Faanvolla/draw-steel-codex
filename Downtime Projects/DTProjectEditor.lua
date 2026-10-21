@@ -2155,7 +2155,7 @@ function DTProjectEditor:CreateEditorPanel()
                                 element.data.project:RemoveRoll(rollId)
                             end,
                         }
-                        downtimeController:FireEvent("adjustRolls", 1, roller)
+                        downtimeController:FireEvent("refundRoll", roll, roller)
                         dmhub.Schedule(0.1, function()
                             DTSettings.Touch()
                             DTShares.Touch()

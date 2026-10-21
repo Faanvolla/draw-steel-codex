@@ -126,8 +126,30 @@ function DTCharSheetTab.CreateDowntimePanel()
             end
         end,
 
-        adjustRolls = function(element, amount, roller)
-            DTProjectEditor.AdjustDowntimeRolls(getToken(), roller:GetTokenID(), amount)
+        --Gives back the activity a deleted roll spent. The roll names the Hero
+        --who paid (rolledById) and the follower who rolled, if one did; on a
+        --shared project that is not this sheet's Hero. A breakthrough came free
+        --with the roll before it, so deleting one refunds nothing.
+        refundRoll = function(element, roll, roller)
+            if roll:GetBreakthrough() then
+                return
+            end
+
+            local holder = nil
+            local holderId = roll:GetRolledByID()
+            if holderId ~= nil and holderId ~= "" then
+                holder = dmhub.GetCharacterById(holderId)
+            end
+            local key = roll:GetRolledByFollowerID()
+            if holder == nil then
+                --a roll that does not name its payer: this sheet's Hero, as before.
+                holder = getToken()
+                key = roller:GetTokenID()
+            elseif key == nil or key == "" then
+                key = holder.charid
+            end
+
+            DTProjectEditor.AdjustDowntimeRolls(holder, key, 1)
             DTSettings.Touch()
             element:FireEventTree("refreshToken")
         end,
