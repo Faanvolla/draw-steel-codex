@@ -3145,8 +3145,8 @@ CreateScreen = function(args)
         }
         _G.EotwPendingArrival = arrival
 
-        --analytics: the hand-off from town to game. resume = no party record
-        --(going back into a game already under way).
+        --analytics: the hand-off from town to game. resume = this player
+        --already has a run open in it (going back into a game under way).
         local memberCount = 0
         for _,_ in pairs(members or {}) do
             memberCount = memberCount + 1
@@ -3155,7 +3155,7 @@ CreateScreen = function(args)
             runid = gameid,
             encounter = encounterMap,
             board = encounterMap ~= nil and cond(arrival.practice, "pits", "gate") or nil,
-            resume = record == nil,
+            resume = EotwAnalytics.HasOpenRun(gameid),
             members = memberCount,
             slotsFilled = slotsFilled,
             myHeroes = #myHeroes,
@@ -8277,7 +8277,11 @@ CreateScreen = function(args)
         returnFromGameComplete = function(element)
             element.data.loadingUp = false
             element:SetClass("hidden", false)
-            AnalyticsTownOpened()
+            --a stale screen from an unloaded generation is about to be swept
+            --and replaced; the replacement reports the visit.
+            if not mod.unloaded then
+                AnalyticsTownOpened()
+            end
         end,
 
         --Keep our roster records alive: the city expires a game 5 minutes
@@ -8325,8 +8329,11 @@ CreateScreen = function(args)
                 m_conn:Disconnect()
                 m_conn = nil
             end
-            --a no-op when the town already closed for a game load.
-            pcall(EotwAnalytics.TownClosed, "close")
+            --a no-op when the town already closed for a game load; skipped
+            --for a stale screen swept on return (its generation is unloaded).
+            if not mod.unloaded then
+                pcall(EotwAnalytics.TownClosed, "close")
+            end
         end,
 
         --the map, pannable by dragging anywhere that is not a location.

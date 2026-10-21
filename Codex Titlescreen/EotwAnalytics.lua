@@ -146,6 +146,15 @@ function EotwAnalytics.ReconcileRuns(resumableGameid, how)
     WriteRun(nil)
 end
 
+--Does this player have a run open in `gameid` (they played it before and
+--did not finish)? The town asks as it enters a game: a resume, not a start.
+---@param gameid string
+---@return boolean
+function EotwAnalytics.HasOpenRun(gameid)
+    local run = ReadRuns()[dmhub.loginUserid]
+    return type(run) == "table" and run.runid ~= nil and run.runid == gameid
+end
+
 --The town gave up `gameid` (the resume row's Abandon, or a new party
 --replacing the old game): close this player's run in it, if one is open.
 ---@param gameid string
