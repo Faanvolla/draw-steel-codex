@@ -355,6 +355,16 @@ local CITY_LOCATIONS = {
         y = 0.86,
         open = function(ctx) ctx.OpenGraveyard() end,
     },
+    --Every party that won an Encounter of the Week, and the victory screen
+    --each saw (EotwRoster.ShowHall). Open to all, even with no hero yet.
+    {
+        id = "hall",
+        label = "Hall of Heroes",
+        icon = "phosphor/trophy-fill.png",
+        x = 0.33,
+        y = 0.2,
+        open = function(ctx) ctx.OpenHall() end,
+    },
 }
 
 --The CITY_LOCATIONS row with this id.
@@ -6871,6 +6881,9 @@ CreateScreen = function(args)
         end,
         OpenGraveyard = function()
             EotwRoster.ShowGraveyard(resultPanel)
+        end,
+        OpenHall = function()
+            EotwRoster.ShowHall(resultPanel)
         end,
     }
 

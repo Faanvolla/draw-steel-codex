@@ -155,6 +155,17 @@ setting{
     storage = "preference",
 }
 
+--Handoff to the town: Hall of Heroes entries this machine (as a game's host)
+--has not yet seen the city accept. The host sends each one at the victory
+--and drops it once the city answers; one still here when the game closes is
+--sent by the town (EotwRoster). JSON text: { [userid] = { [gameid] = args
+--of the city's hall-record } }. The titlescreen re-declares it.
+setting{
+    id = "eotw:pendingHall",
+    default = "",
+    storage = "preference",
+}
+
 --- Is the current game an Encounter of the Week game? ----------------------
 
 --Cached once true: a game cannot stop being an EotW game mid-session.
@@ -1290,6 +1301,9 @@ end
 --"Already Completed" on their card instead.
 local VICTORY_AWARD_DELAY = 3
 local m_victorySeenAt = nil
+--defined with the play clock below (it needs the encounter key and the
+--host's play time); see "the Hall of Heroes".
+local RecordHallOfHeroes
 local function AutoAwardVictories(live, now)
     if live:try_get("victoriesAwarded", false) then
         return
@@ -1322,6 +1336,13 @@ local function AutoAwardVictories(live, now)
     DropHostPermissions()
     if not ok then
         printf("EotW: the Victory award failed: %s", tostring(err))
+        return
+    end
+    --the victory screen is complete now (award included): enter it in the
+    --town's Hall of Heroes while combat is still live.
+    local hallOk, hallErr = pcall(RecordHallOfHeroes, live)
+    if not hallOk then
+        printf("EotW: could not record the Hall of Heroes entry: %s", tostring(hallErr))
     end
 end
 
@@ -1816,6 +1837,160 @@ end
 function EncounterOfTheWeekGame.PlaySeconds()
     local entry = ReadPlaytime()[dmhub.gameid]
     return (type(entry) == "table" and tonumber(entry.seconds) or 0) + m_playUnbanked
+end
+
+--- the Hall of Heroes ------------------------------------------------------
+--Every party that wins an Encounter of the Week gets an entry in the town's
+--Hall of Heroes: who played, when, the host's play time, rounds of combat,
+--deaths, and the victory screen they saw (DSVictoryScreen.SavedSnapshot), so
+--the town can show it again. The host sends it once the Victory award has
+--landed; the city only accepts scheduled encounters, and the Proving Pits
+--never get this far (no award there). The entry waits in eotw:pendingHall
+--until the city answers, so one the game closes on is sent from the town.
+
+local function ReadPendingHall()
+    local text = dmhub.GetSettingValue("eotw:pendingHall")
+    if type(text) ~= "string" or text == "" then
+        return {}
+    end
+    --FromJson answers {success, result}, not the decoded value.
+    local parsed = dmhub.FromJson(text)
+    if type(parsed) ~= "table" or not parsed.success or type(parsed.result) ~= "table" then
+        return {}
+    end
+    return parsed.result
+end
+
+--Set (entry) or clear (nil) this account's pending entry for a game.
+local function SetPendingHall(gameid, entry)
+    local all = ReadPendingHall()
+    local mine = all[dmhub.loginUserid]
+    if type(mine) ~= "table" then
+        mine = {}
+        all[dmhub.loginUserid] = mine
+    end
+    mine[gameid] = entry
+    if next(mine) == nil then
+        all[dmhub.loginUserid] = nil
+    end
+    dmhub.SetSettingValue("eotw:pendingHall", cond(next(all) == nil, "", dmhub.ToJson(all)))
+end
+
+--A character's still portrait image id, or nil ("#..." ids are live renders
+--of a token on this machine, and "anim:" ids are animations; neither loads
+--in town).
+local function StillPortrait(tok)
+    local portrait = nil
+    pcall(function()
+        for _, p in ipairs({ tok.offTokenPortrait, tok.portrait }) do
+            if portrait == nil and type(p) == "string" and p ~= "" and string.sub(p, 1, 1) ~= "#" and string.sub(p, 1, 5) ~= "anim:" then
+                portrait = p
+            end
+        end
+    end)
+    return portrait
+end
+
+--Rounds of combat in this game: the fight still on screen plus every earlier
+--one in the battle log (the current one is logged only at Proceed).
+local function GameRounds()
+    local q = dmhub.initiativeQueue
+    local rounds = (q ~= nil and tonumber(q.round)) or 0
+    local currentId = q ~= nil and q:try_get("guid") or nil
+    local battleLog = rawget(_G, "BattleLog")
+    if battleLog ~= nil then
+        pcall(function()
+            for _, battle in ipairs(battleLog.GetBattles()) do
+                if battle.id ~= currentId then
+                    rounds = rounds + (tonumber(battle.rounds) or 0)
+                end
+            end
+        end)
+    end
+    return rounds
+end
+
+--The party as the Hall lists it: every placed hero with its player, and the
+--players in the order their first hero appears. Also how many heroes died.
+local function HallParty()
+    local heroes, players, seen, deaths = {}, {}, {}, 0
+    local placed = {}
+    pcall(function() placed = mod:GetDocumentSnapshot(STATE_DOC_ID).data.placedHeroes or {} end)
+    local roster = rawget(_G, "EotwRoster")
+    for userid, mine in pairs(placed) do
+        for _, charid in pairs(type(mine) == "table" and mine or {}) do
+            local tok = dmhub.GetCharacterById(charid)
+            if tok ~= nil then
+                local dead = false
+                pcall(function() dead = tok.properties:IsDead() end)
+                if dead then
+                    deaths = deaths + 1
+                end
+                local playerName = dmhub.GetDisplayName(userid) or "?"
+                local hero = { name = tok.name or "Hero", userid = userid, player = playerName, died = dead, portrait = StillPortrait(tok) }
+                if roster ~= nil then
+                    pcall(function()
+                        local className, ancestry, level = roster.HeroDetails(tok)
+                        hero.className, hero.ancestry, hero.level = className, ancestry, level
+                    end)
+                end
+                heroes[#heroes + 1] = hero
+                if not seen[userid] then
+                    seen[userid] = true
+                    players[#players + 1] = { userid = userid, name = playerName }
+                end
+            end
+        end
+    end
+    return heroes, players, deaths
+end
+
+--Send one entry to the city; clear it from the pending list once the city
+--has answered (accepted, already had it, or refused it for good).
+local function SendHallEntry(entry)
+    SendLobbyRequest("hall-record", entry, function(ok, result)
+        if ok then
+            printf("EotW: entered in the Hall of Heroes")
+        else
+            printf("EotW: the Hall of Heroes refused this game: %s", tostring(result))
+        end
+        SetPendingHall(entry.gameid, nil)
+    end)
+end
+
+--Host, once, at the award (see AutoAwardVictories): build and send this
+--game's Hall of Heroes entry. Real Town Gate games only.
+local m_hallRecorded = false
+RecordHallOfHeroes = function(live)
+    if m_hallRecorded or not IsDMOrPlayerHost() or not EncounterOfTheWeekGame.IsEotwGame()
+        or EncounterOfTheWeekGame.IsPracticeGame() or EncounterOfTheWeekGame.IsTestPlayer() then
+        return
+    end
+    m_hallRecorded = true
+    local encounter = RecordedEncounter()
+    if encounter == nil then
+        return
+    end
+
+    local snapshot = DSVictoryScreen.SavedSnapshot(DSVictoryScreen.CaptureSnapshot(live, "victory", { afterAward = true }))
+    local heroes, players, deaths = HallParty()
+    local title = nil
+    pcall(function()
+        title = string.match(game.currentMap.description or "", "^[^:]+:%s*(.+)$")
+    end)
+    BankPlaytime()
+    local entry = {
+        gameid = dmhub.gameid,
+        encounter = encounter,
+        seconds = math.floor(EncounterOfTheWeekGame.PlaySeconds()),
+        rounds = GameRounds(),
+        deaths = deaths,
+        summary = { title = title, heroes = heroes, players = players },
+        snapshot = snapshot,
+    }
+    SetPendingHall(entry.gameid, entry)
+    printf("EotW: Hall of Heroes entry for %s: %d heroes, %d rounds, %d deaths, %d s", encounter, #heroes, entry.rounds, deaths, entry.seconds)
+    SendHallEntry(entry)
 end
 
 --Leave a survey invitation for the town after this game. outcome is

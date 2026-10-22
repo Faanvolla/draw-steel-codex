@@ -74,6 +74,15 @@ setting{
     storage = "preference",
 }
 
+--Hall of Heroes entries a game this machine hosted could not hand the city
+--before it closed (see FlushPendingHall). Declared by the game-side EotW mod
+--too; JSON text: { [userid] = { [gameid] = args of the city's hall-record } }.
+setting{
+    id = "eotw:pendingHall",
+    default = "",
+    storage = "preference",
+}
+
 local m_conn = nil
 --this account's living heroes as the city last listed them (hero views:
 --{heroid, rev, status, active, summary, ...}); nil until the first list.
@@ -1004,6 +1013,59 @@ function EotwRoster.AddPendingOutcomes(entries)
     ApplyPendingOutcomes()
 end
 
+--Send the Hall of Heroes entries a hosted game left behind (eotw:pendingHall),
+--each once per town visit; drop each once the city has answered, accepted
+--or refused (the city keeps one entry per game, so a resend is harmless).
+local m_hallSending = {}
+local function FlushPendingHall()
+    if m_conn == nil then
+        return
+    end
+    local text = dmhub.GetSettingValue("eotw:pendingHall")
+    if type(text) ~= "string" or text == "" then
+        return
+    end
+    --FromJson answers {success, result}, not the decoded value.
+    local parsed = dmhub.FromJson(text)
+    if type(parsed) ~= "table" or not parsed.success or type(parsed.result) ~= "table" then
+        return
+    end
+    local mine = parsed.result[dmhub.loginUserid]
+    if type(mine) ~= "table" then
+        return
+    end
+    for gameid, entry in pairs(mine) do
+        if not m_hallSending[gameid] and type(entry) == "table" then
+            m_hallSending[gameid] = true
+            local function Done()
+                local now = dmhub.FromJson(dmhub.GetSettingValue("eotw:pendingHall") or "")
+                if type(now) == "table" and now.success and type(now.result) == "table" then
+                    local all = now.result
+                    if type(all[dmhub.loginUserid]) == "table" then
+                        all[dmhub.loginUserid][gameid] = nil
+                        if next(all[dmhub.loginUserid]) == nil then
+                            all[dmhub.loginUserid] = nil
+                        end
+                    end
+                    dmhub.SetSettingValue("eotw:pendingHall", cond(next(all) == nil, "", dmhub.ToJson(all)))
+                end
+            end
+            m_conn:Request{
+                action = "hall-record",
+                args = entry,
+                success = function()
+                    printf("EotW town: sent the Hall of Heroes entry for game %s", tostring(gameid))
+                    Done()
+                end,
+                error = function(message)
+                    printf("EotW town: the Hall of Heroes refused game %s: %s", tostring(gameid), tostring(message))
+                    Done()
+                end,
+            }
+        end
+    end
+end
+
 --Re-list this account's roster from the city (and sync the working copies).
 function EotwRoster.Refresh()
     if m_conn == nil or not m_conn.connected then
@@ -1031,6 +1093,7 @@ function EotwRoster.Refresh()
             EotwRoster.SetListedLeads(result.leads, result.carouse)
             Bump()
             SyncWorkingCopies()
+            FlushPendingHall()
             if m_refreshAgain then
                 m_refreshAgain = false
                 EotwRoster.Refresh()
@@ -1500,6 +1563,39 @@ function EotwRoster.SetActive(heroid, active)
             EotwRoster.Refresh()
         end,
         error = Fail,
+    }
+end
+
+--One page of the Hall of Heroes. args {encounter?, sort?, offset?, limit?};
+--onDone(result) with {entries, more, encounters, sort} (see the city's list-hall).
+function EotwRoster.ListHall(args, onDone)
+    if m_conn == nil then
+        return
+    end
+    m_conn:Request{
+        action = "list-hall",
+        args = args,
+        success = onDone,
+        error = Fail,
+    }
+end
+
+--One Hall of Heroes entry with its saved victory screen. onDone(result) with
+--the entry's fields plus `snapshot`; onFail(message) optional.
+function EotwRoster.GetHallEntry(gameid, onDone, onFail)
+    if m_conn == nil then
+        return
+    end
+    m_conn:Request{
+        action = "get-hall-entry",
+        args = { gameid = gameid },
+        success = onDone,
+        error = function(message)
+            Fail(message)
+            if onFail ~= nil then
+                onFail(message)
+            end
+        end,
     }
 end
 
@@ -2830,6 +2926,336 @@ function EotwRoster.ShowGraveyard(host)
             gui.Panel{
                 width = "94%",
                 height = "100%-190",
+                halign = "center",
+                flow = "vertical",
+                vscroll = true,
+                rpad = 12,
+                borderBox = true,
+                vmargin = 8,
+                create = function(element)
+                    listPanel = element
+                    Rebuild()
+                end,
+            },
+            gui.Panel{
+                width = "auto",
+                height = "auto",
+                halign = "center",
+                valign = "bottom",
+                bmargin = 14,
+                Button("Leave", function() dlg:DestroySelf() end, 180),
+            },
+        },
+    }
+    host:AddChild(dlg)
+    LoadMore()
+    return dlg
+end
+
+--- the Hall of Heroes -----------------------------------------------------
+--Every party that won an Encounter of the Week, from the city's Hall of
+--Heroes (written by each game's host at the victory). A tab per encounter,
+--sorted newest first or best first; an entry opens the victory screen the
+--party saw (DSVictoryScreen.ShowReplay).
+
+--The Hall's sort orders: the city's sort id and the button text.
+local HALL_SORTS = {
+    { id = "recent", text = "Most Recent" },
+    { id = "fastest", text = "Fastest" },
+    { id = "rounds", text = "Fewest Rounds" },
+    { id = "deaths", text = "Fewest Deaths" },
+}
+
+--"1h 05m" / "42 min" / "under a minute" for a play time in seconds.
+local function FormatPlayTime(seconds)
+    seconds = math.floor(tonumber(seconds) or 0)
+    if seconds <= 0 then
+        return "time unknown"
+    end
+    if seconds < 60 then
+        return "under a minute"
+    end
+    local minutes = math.floor(seconds / 60)
+    if minutes < 60 then
+        return string.format("%d min", minutes)
+    end
+    return string.format("%dh %02dm", math.floor(minutes / 60), minutes % 60)
+end
+
+--An encounter key as a player reads it (a community encounter names its module).
+local function HallEncounterName(key, fallback)
+    local eotw = rawget(_G, "EncounterOfTheWeek")
+    if type(key) == "string" and key ~= "" and eotw ~= nil and eotw.EncounterDisplayName ~= nil then
+        local ok, name = pcall(eotw.EncounterDisplayName, key)
+        if ok and type(name) == "string" and name ~= "" then
+            return name
+        end
+    end
+    return fallback or key or "An Encounter of the Week"
+end
+
+--A small toggle for the Hall's tab and sort strips.
+local function HallChip(text, selected, click)
+    return gui.Label{
+        text = text,
+        fontSize = 16,
+        bold = selected,
+        color = cond(selected, TEXT, DIM),
+        width = "auto",
+        height = "auto",
+        hpad = 12,
+        vpad = 5,
+        borderBox = true,
+        hmargin = 3,
+        vmargin = 3,
+        bgimage = "panels/square.png",
+        bgcolor = cond(selected, "#8c7a5599", "#ffffff10"),
+        cornerRadius = 6,
+        styles = {
+            { selectors = {"hover"}, bgcolor = cond(selected, "#8c7a55cc", "#ffffff22") },
+        },
+        click = function()
+            audio.FireSoundEvent("Mouse.Click")
+            click()
+        end,
+    }
+end
+
+--Open an entry's saved victory screen over `host`.
+local function OpenHallEntry(host, entry)
+    audio.FireSoundEvent("Mouse.Click")
+    EotwRoster.GetHallEntry(entry.gameid, function(result)
+        if mod.unloaded or host == nil or not host.valid then
+            return
+        end
+        if type(result.snapshot) ~= "table" or next(result.snapshot) == nil then
+            Fail("This entry has no victory screen to show.")
+            return
+        end
+        local summary = type(result.summary) == "table" and result.summary or {}
+        local caption = HallEncounterName(result.encounter, summary.title)
+        if type(result.at) == "number" then
+            caption = caption .. " -- " .. DescribeServerTimestamp(result.at)
+        end
+        DSVictoryScreen.ShowReplay(host, result.snapshot, { caption = caption })
+    end)
+end
+
+--The Hall of Heroes dialog over `host`.
+function EotwRoster.ShowHall(host)
+    local dlg
+    local listPanel = nil
+    local tabsPanel = nil
+    local sortPanel = nil
+    local entries = {}
+    local encounters = {}
+    local more = false
+    local loading = false
+    --the current tab ("" = every encounter) and sort; a request answered
+    --after either changed is dropped (see `generation`).
+    local encounter = ""
+    local sort = "recent"
+    local generation = 0
+
+    local Rebuild
+    local LoadMore = function()
+        if loading then
+            return
+        end
+        loading = true
+        local g = generation
+        EotwRoster.ListHall({ encounter = encounter, sort = sort, offset = #entries }, function(result)
+            if g ~= generation then
+                return
+            end
+            loading = false
+            for _,e in ipairs(result.entries or {}) do
+                entries[#entries+1] = e
+            end
+            more = result.more == true
+            encounters = result.encounters or {}
+            Rebuild()
+        end)
+    end
+
+    --Start the list over for a new tab or sort.
+    local function Reload()
+        generation = generation + 1
+        entries = {}
+        more = false
+        loading = false
+        Rebuild()
+        LoadMore()
+    end
+
+    local function EntryRow(rank, e)
+        local summary = type(e.summary) == "table" and e.summary or {}
+        local heroes = summary.heroes or {}
+        local mine = false
+        local names, fallen = {}, {}
+        local portraits = {}
+        for _,h in ipairs(heroes) do
+            names[#names+1] = h.name or "Hero"
+            if h.died then
+                fallen[#fallen+1] = h.name or "Hero"
+            end
+            if h.userid == dmhub.loginUserid then
+                mine = true
+            end
+            if #portraits < 6 then
+                portraits[#portraits+1] = Portrait(h.portrait, 45, 60, "left")
+            end
+        end
+        local playerNames = {}
+        for _,p in ipairs(summary.players or {}) do
+            playerNames[#playerNames+1] = p.name or "?"
+            if p.userid == dmhub.loginUserid then
+                mine = true
+            end
+        end
+
+        local when = HallEncounterName(e.encounter, summary.title)
+        if type(e.at) == "number" then
+            when = when .. ", " .. DescribeServerTimestamp(e.at)
+        end
+        local deaths = tonumber(e.deaths) or 0
+        local deathText = "no deaths"
+        if deaths > 0 then
+            deathText = string.format("%d %s", deaths, cond(deaths == 1, "death", "deaths"))
+            if #fallen > 0 then
+                deathText = deathText .. " (" .. table.concat(fallen, ", ") .. ")"
+            end
+        end
+        local rounds = tonumber(e.rounds) or 0
+        local stats = string.format("%s played | %d %s | %s", FormatPlayTime(e.seconds), rounds, cond(rounds == 1, "round", "rounds"), deathText)
+
+        local children = {}
+        if rank ~= nil then
+            children[#children+1] = gui.Label{ text = string.format("#%d", rank), fontSize = 22, bold = true, color = TEXT, width = 52, height = "auto", valign = "center", textAlignment = "center" }
+        end
+        children[#children+1] = gui.Panel{
+            width = "auto",
+            height = "auto",
+            flow = "horizontal",
+            valign = "center",
+            children = portraits,
+        }
+        children[#children+1] = gui.Panel{
+            width = "100%-" .. tostring(#portraits * 45 + 30 + cond(rank ~= nil, 52, 0)),
+            height = "auto",
+            flow = "vertical",
+            valign = "center",
+            lmargin = 14,
+            gui.Label{ text = table.concat(names, ", "), fontSize = 20, bold = true, color = TEXT, width = "100%", height = "auto" },
+            gui.Label{ text = string.format("Played by %s", table.concat(playerNames, ", ")), fontSize = 14, color = DIM, width = "100%", height = "auto" },
+            gui.Label{ text = when, fontSize = 14, color = DIM, width = "100%", height = "auto" },
+            gui.Label{ text = stats, fontSize = 14, color = TEXT, width = "100%", height = "auto" },
+        }
+
+        return gui.Panel{
+            width = "100%",
+            height = "auto",
+            minHeight = 84,
+            flow = "horizontal",
+            bgimage = "panels/square.png",
+            bgcolor = cond(mine, "#2a2418cc", "#ffffff0a"),
+            styles = {
+                { selectors = {"hover"}, bgcolor = cond(mine, "#3a3220dd", "#ffffff18") },
+            },
+            --an entry opens the victory screen the party saw
+            click = function()
+                OpenHallEntry(host, e)
+            end,
+            hover = gui.Tooltip("Show this party's victory screen"),
+            cornerRadius = 8,
+            pad = 8,
+            borderBox = true,
+            vmargin = 3,
+            children = children,
+        }
+    end
+
+    Rebuild = function()
+        if tabsPanel ~= nil and tabsPanel.valid then
+            local chips = { HallChip("All", encounter == "", function()
+                if encounter ~= "" then
+                    encounter = ""
+                    Reload()
+                end
+            end) }
+            for _,enc in ipairs(encounters) do
+                local key = enc.encounter
+                chips[#chips+1] = HallChip(string.format("%s (%d)", HallEncounterName(key), tonumber(enc.count) or 0), encounter == key, function()
+                    if encounter ~= key then
+                        encounter = key
+                        Reload()
+                    end
+                end)
+            end
+            tabsPanel.children = chips
+        end
+        if sortPanel ~= nil and sortPanel.valid then
+            local chips = { gui.Label{ text = "Sort:", fontSize = 16, color = DIM, width = "auto", height = "auto", valign = "center", rmargin = 6 } }
+            for _,s in ipairs(HALL_SORTS) do
+                chips[#chips+1] = HallChip(s.text, sort == s.id, function()
+                    if sort ~= s.id then
+                        sort = s.id
+                        Reload()
+                    end
+                end)
+            end
+            sortPanel.children = chips
+        end
+        if listPanel == nil or not listPanel.valid then
+            return
+        end
+        local rows = {}
+        if #entries == 0 then
+            rows[1] = gui.Label{ text = cond(loading, "Reading the roll of honour...", "No party has won here yet. Will yours be the first?"), fontSize = 18, color = DIM, width = "auto", height = "auto", halign = "center", vmargin = 30 }
+        end
+        for i,e in ipairs(entries) do
+            --a ranked order numbers its rows; newest-first does not
+            rows[#rows+1] = EntryRow(cond(sort ~= "recent", i, nil), e)
+        end
+        if more then
+            rows[#rows+1] = Button("More...", LoadMore, 220)
+        end
+        listPanel.children = rows
+    end
+
+    local titleParts = Title("The Hall of Heroes", "Every party that has conquered an Encounter of the Week. Choose one to relive their victory.")
+    dlg = ModalFrame{
+        width = 1000,
+        height = 860,
+        children = {
+            titleParts[1],
+            titleParts[2],
+            gui.Panel{
+                width = "94%",
+                height = "auto",
+                halign = "center",
+                flow = "horizontal",
+                wrap = true,
+                tmargin = 4,
+                create = function(element)
+                    tabsPanel = element
+                    Rebuild()
+                end,
+            },
+            gui.Panel{
+                width = "94%",
+                height = "auto",
+                halign = "center",
+                flow = "horizontal",
+                vmargin = 4,
+                create = function(element)
+                    sortPanel = element
+                    Rebuild()
+                end,
+            },
+            gui.Panel{
+                width = "94%",
+                height = "100%-300",
                 halign = "center",
                 flow = "vertical",
                 vscroll = true,

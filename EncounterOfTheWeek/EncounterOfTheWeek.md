@@ -628,6 +628,29 @@ graveyard.
   roster and buried in the Graveyard location, where players can browse the
   fallen: name, ancestry and class, the encounter they fell in, when, and who
   played them.
+- **The Hall of Heroes** (BUILT 2026-10-21, NOT run). Every party that wins
+  a Town Gate encounter (current or past week, any series part; never the
+  Proving Pits) gets one entry: its heroes and their players, when, the
+  HOST's play time, rounds of combat (every fight in the game), and deaths.
+  Decided with the user: newest first by default, also sortable by fastest /
+  fewest rounds / fewest deaths; a tab per encounter; players' display names
+  shown. Clicking an entry replays the victory screen the party saw.
+  - Game side (`EncounterOfTheWeek.lua`, "the Hall of Heroes"): the host
+    builds the entry right after the automatic Victory award, while combat is
+    still live, and sends the city's `hall-record`. It waits in the
+    `eotw:pendingHall` preference until the city answers; one left there
+    when the game closes is sent by the town (`EotwRoster` FlushPendingHall,
+    after each roster refresh).
+  - The victory screen (`Draw Steel UI/DSVictoryScreen.lua`) now draws its
+    cards from plain data: `CaptureSnapshot(live, outcome)` ->
+    `SavedSnapshot` (still portraits, no tokens) is what the Hall stores, and
+    `ShowReplay(parent, snapshot, {caption})` draws it again anywhere (Close
+    button, Escape, the award drop replayed).
+  - Town: the Hall of Heroes location (trophy, ~0.33, 0.2 -- placeholder
+    spot, check it against the art) opens `EotwRoster.ShowHall`.
+  - City: `hall-record` / `list-hall` / `get-hall-entry`, table `city_hall`,
+    `/city/hallRev` (see `cloudflare-game-server/CLAUDE.md`). Needs a worker
+    deploy before it does anything.
 
 ## Locations on the map
 
@@ -640,6 +663,7 @@ already has natural homes (fractions of the 6160x4480 canvas):
 |---|---|---|
 | **Town Gate** | the walled city gate, top centre (~0.53, 0.13) | labeled "City Gate" on the source map |
 | **Graveyard** | the green churchyard beside the Cathedral (~0.31, 0.85) | |
+| **Hall of Heroes** | placeholder (0.33, 0.2), between the Inn and the Gate | BUILT 2026-10-21, not run; spot not yet checked against the art |
 | **Hero's Guild** | the small walled green island with a lone building in the canal (0.44, 0.42) | chosen when building (2026-10-02); the Safe House block (~0.54, 0.60) was the alternative |
 | **Blue Fish Inn** | the canal-side building west of the Guild (0.235, 0.455); moved 2026-10-11 (user direction) from the "Drunken Fool" tavern (0.335, 0.575), which the hero cards along the bottom covered | BUILT 2026-10-10 (Downtime); hidden until heroes first come home, then revealed once (2026-10-11, see "The inn's reveal") |
 | **Arcane Market** | the shop the "Front and Back" label points at (0.695, 0.18) | BUILT 2026-10-10; since 2026-10-11 hidden until the player finds it (see "Leads") |
