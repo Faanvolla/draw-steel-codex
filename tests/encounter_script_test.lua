@@ -2114,7 +2114,7 @@ end)()
     check(EncounterScript.ParseEffects("+2 malice")[1].kind == "malice", "+2 malice is still malice")
 
     --declarations
-    local decl = EncounterScript.ParseTrackDeclaration("Rite's Progress (Hidden) -- how close the cult is")
+    local decl = assert(EncounterScript.ParseTrackDeclaration("Rite's Progress (Hidden) -- how close the cult is"))
     check(decl.name == "Rite's Progress" and decl.hidden and decl.description == "how close the cult is", "a hidden track with a description")
     check(not EncounterScript.ParseTrackDeclaration("Dread").hidden, "a shown track")
 
@@ -2182,7 +2182,9 @@ Failure: Rite's Progress +2
 The fight lasted 5 or more rounds: Rite's Progress +1
 ]==])
     check(#p1.tracks == 2 and p1.trackKeys["rite's progress"].hidden, "two tracks, one hidden")
-    check(p1.results ~= nil and p1.results.bars.total == 1 and p1.results.bars.partial == 0, "the Outcome bars")
+    local bars = p1.results ~= nil and p1.results.bars or nil
+    ---@cast bars {total: number, partial: number}?
+    check(bars ~= nil and bars.total == 1 and bars.partial == 0, "the Outcome bars")
     check(#p1.results.lines == 4, "four Results lines")
     check(p1.results.lines[2].effects[1].kind == "track" and p1.results.lines[2].effects[1].delta == 1, "a Results line changes a track")
     check(p1.results.lines[4].cond.op == "this" and p1.results.lines[4].cond.what == "rounds", "this part's rounds")
