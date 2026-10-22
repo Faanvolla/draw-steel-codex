@@ -505,15 +505,20 @@ local function ParseEncounterKey(key)
     return moduleid, mapName, part
 end
 
+--Helpers and state for series parts, kept in one table so this file stays
+--under Lua's limit of 200 local variables. testPart is the part a test is
+--setting up; arrivalKey is the encounter this client arrived for.
+local Series = {}
+
 --A series part can have its own map: "Encounter: The Crypt (Part 2)".
 --A part without one plays on "Encounter: The Crypt".
 --The town and both publishers have copies of these two; keep them the same.
-local function PartMapName(seriesMapName, part)
+function Series.PartMapName(seriesMapName, part)
     return string.format("%s (Part %d)", seriesMapName, part)
 end
 
 --The series map's name and the part, if `name` is a part map's name.
-local function SplitPartMapName(name)
+function Series.SplitPartMapName(name)
     local base, number = string.match(name or "", "^(.-) %(Part (%d+)%)$")
     if base == nil or base == "" then
         return nil, nil
@@ -535,7 +540,7 @@ function EncounterOfTheWeekGame.EncounterInfo()
     end
     local name = tostring(map.description or "")
     --a part map is titled as its series.
-    name = SplitPartMapName(name) or name
+    name = Series.SplitPartMapName(name) or name
     local title = string.match(name, "^[^:]+:%s*(.+)$") or name
 
     --a series names the part: "The Crypt -- Part 2: The Ossuary".
@@ -564,19 +569,13 @@ function EncounterOfTheWeekGame.EncounterInfo()
     return { title = title, mapid = mapid, moduleid = moduleid }
 end
 
---The part an authoring test plays while it sets up (before data.test holds
---it), and the encounter key this client arrived with (before the host has
---stamped one). See ActivePart.
-local m_testPart = nil
-local m_arrivalKey = nil
-
 --Which part of a series this game plays: the test's choice, else the part in
 --the game's encounter key (the host's stamp, else the key this client
 --arrived with). 1 for every encounter that is not a series. The script, its
 --encounter island, and so the region and start area all follow it.
 function EncounterOfTheWeekGame.ActivePart()
-    if m_testPart ~= nil then
-        return m_testPart
+    if Series.testPart ~= nil then
+        return Series.testPart
     end
     local data = nil
     pcall(function() data = mod:GetDocumentSnapshot(STATE_DOC_ID).data end)
@@ -589,14 +588,14 @@ function EncounterOfTheWeekGame.ActivePart()
             return part
         end
     end
-    if type(m_arrivalKey) == "string" and m_arrivalKey ~= "" then
-        local _, _, part = ParseEncounterKey(m_arrivalKey)
+    if type(Series.arrivalKey) == "string" and Series.arrivalKey ~= "" then
+        local _, _, part = ParseEncounterKey(Series.arrivalKey)
         return part
     end
     --authoring on a part map: that map's part.
     local partOfMap = nil
     pcall(function()
-        local _, n = SplitPartMapName(game.currentMap.description)
+        local _, n = Series.SplitPartMapName(game.currentMap.description)
         partOfMap = n
     end)
     if partOfMap ~= nil and partOfMap >= 1 then
@@ -616,8 +615,8 @@ end
 
 --The map a part plays on: its own part map if the series has one, else the
 --plain-named map (every encounter that is not a series).
-local function FindPartMap(seriesMapName, part)
-    local map = FindMapByName(PartMapName(seriesMapName, part or 1))
+function Series.FindPartMap(seriesMapName, part)
+    local map = FindMapByName(Series.PartMapName(seriesMapName, part or 1))
     if map ~= nil then
         return map
     end
@@ -686,7 +685,7 @@ local function EnsureEncounterModule(moduleid, mapName, part)
     part = part or 1
     local data = mod:GetDocumentSnapshot(STATE_DOC_ID).data
     if data.encounterModule == moduleid then
-        local map = FindMapById(data.encounterMapId) or FindPartMap(mapName, part)
+        local map = FindMapById(data.encounterMapId) or Series.FindPartMap(mapName, part)
         if map ~= nil then
             return map
         end
@@ -726,7 +725,7 @@ local function EnsureEncounterModule(moduleid, mapName, part)
     --wait for the map itself, with a grace period after a success.
     --Prefer the part's own map. For a series, give it a few seconds to
     --arrive before settling for the plain-named map.
-    local partMapName = PartMapName(mapName, part)
+    local partMapName = Series.PartMapName(mapName, part)
     local waited = 0
     local sinceInstalled = 0
     local sincePlainMap = nil
@@ -743,7 +742,7 @@ local function EnsureEncounterModule(moduleid, mapName, part)
                 end
                 if map.description == mapName then
                     plainMap = map
-                elseif SplitPartMapName(map.description) == mapName then
+                elseif Series.SplitPartMapName(map.description) == mapName then
                     isSeries = true
                 end
             end
@@ -766,7 +765,7 @@ local function EnsureEncounterModule(moduleid, mapName, part)
             if sinceInstalled > 10 then
                 --installed but no new map: the module was already in the
                 --game (its maps keep their ids), so take its map by name.
-                local map = FindPartMap(mapName, part)
+                local map = Series.FindPartMap(mapName, part)
                 if map ~= nil then
                     RecordEncounterModule(moduleid)
                 end
@@ -791,7 +790,7 @@ local function OnRequestedEncounterMap(requested)
     if moduleid ~= OFFICIAL_MODULE then
         return false
     end
-    local map = FindPartMap(name, part)
+    local map = Series.FindPartMap(name, part)
     return map ~= nil and game.currentMapId == map.id
 end
 
@@ -836,7 +835,7 @@ local function EnsureOnEncounterMap(requested)
         map = EnsureEncounterModule(moduleid, name, part)
     end
     if map == nil then
-        map = FindPartMap(name, part)
+        map = Series.FindPartMap(name, part)
     end
     if map == nil and key ~= DEFAULT_ENCOUNTER_MAP then
         printf("EotW: this game has no map for the encounter \"%s\"; falling back to \"%s\"", key, DEFAULT_ENCOUNTER_MAP)
@@ -2128,13 +2127,12 @@ function EncounterOfTheWeekGame.RecordPendingSurvey(outcome)
     printf("EotW: beta survey (%s, %d min) waiting for the town", outcome, math.floor(seconds / 60))
 end
 
-local OUTCOME_LABELS = { total = "Total success", partial = "Partial success", failure = "Failure" }
-
 --A series part's recap under its Conclusion: the montage outcome, the
 --round the fight was won in, and every shown track (D14), e.g.
 --"Montage: Partial success." / "Won in round 4." / "Renown rose to 2."
 --nil for anything that is not a won series part.
-local function SeriesRecap(script)
+function Series.SeriesRecap(script)
+    local OUTCOME_LABELS = { total = "Total success", partial = "Partial success", failure = "Failure" }
     local montage = rawget(_G, "EncounterMontage")
     if montage == nil or montage.Story == nil or script == nil or script.parse == nil or script.parse.part == nil then
         return nil
@@ -2395,7 +2393,7 @@ local function OutcomeStory(outcome)
             text = EncounterScript.ResolveStoryText(section, montage.Story())
         end
         if outcome == "victory" then
-            local recap = SeriesRecap(script)
+            local recap = Series.SeriesRecap(script)
             if recap ~= nil then
                 text = cond(text == "", recap, text .. "\n\n" .. recap)
             end
@@ -3122,7 +3120,7 @@ local m_findingMapEncounter = false
 
 --A fight with variants: the first [[encounter]] island whose "When" line
 --holds for the story so far. nil when no island has a "When" line.
-local function GatedIslandEntry(script)
+function Series.GatedIslandEntry(script)
     local beat = nil
     for _, b in ipairs(script.parse.beats or {}) do
         if b.kind == "encounter" then
@@ -3169,7 +3167,7 @@ local function FindMapEncounter()
             if #(script.seriesParts or {}) > 0 then
                 partDocs = montage.ScriptDocuments(script)
             end
-            gatedEntry = GatedIslandEntry(script)
+            gatedEntry = Series.GatedIslandEntry(script)
         end)
         m_findingMapEncounter = false
     end
@@ -4764,7 +4762,7 @@ end
 --forward"): `carried` is the City's story for the host's account (arrival
 --args) or a test's Story so far, nil for Part 1 or when nothing came. A
 --story already seeded for this part (a resumed host) is kept.
-local function SeedSeriesStory(carried)
+function Series.SeedSeriesStory(carried)
     local montage = rawget(_G, "EncounterMontage")
     if montage == nil or montage.SeedStory == nil then
         return
@@ -5541,7 +5539,7 @@ function EncounterOfTheWeekGame.SetupOnArrival(args)
         m_myPlacedHeroes = nil
         --a series' part rides the key; until the host stamps it, this is
         --where ActivePart reads it (a member placing heroes early).
-        m_arrivalKey = args.encounterMap
+        Series.arrivalKey = args.encounterMap
         m_analyticsWeek = tonumber(args.week)
 
         if IsDMOrPlayerHost() and args.fastLaunch then
@@ -5589,7 +5587,7 @@ function EncounterOfTheWeekGame.SetupOnArrival(args)
             --a series part starts from the story the earlier parts left
             --(the City's, for the host's account): before the region, which
             --a fight with variants picks by it, and before the opening beat.
-            SeedSeriesStory(args.story)
+            Series.SeedSeriesStory(args.story)
 
             --the encounter's region bounds the map from now on (a series'
             --part plays in its own corner of the map). Before any hero lands.
@@ -5784,9 +5782,9 @@ end
 function EncounterOfTheWeekGame.CanStartTest(modeid, part)
     if part ~= nil and EncounterOfTheWeekGame.GetTest() == nil then
         --the script that would play is that part's.
-        m_testPart = tonumber(part) or 1
+        Series.testPart = tonumber(part) or 1
         local ok, a, b = pcall(EncounterOfTheWeekGame.CanStartTest, modeid)
-        m_testPart = nil
+        Series.testPart = nil
         if not ok then
             return false, tostring(a)
         end
@@ -6038,7 +6036,7 @@ local function TestArrival(pending)
     local montage = EncounterMontage
     --a series: the part under test picks the script (and so the island,
     --region and start tiles) until data.test carries it.
-    m_testPart = tonumber(pending.part) or 1
+    Series.testPart = tonumber(pending.part) or 1
     local script = montage.FindMapScript(true)
     local index, beat = EncounterOfTheWeekGame.TestStartBeat(script, pending.mode)
     if index == nil then
@@ -6074,16 +6072,16 @@ local function TestArrival(pending)
             by = userid,
             startedAt = dmhub.serverTime,
             mapid = game.currentMapId,
-            part = m_testPart,
+            part = Series.testPart,
             heroes = pending.heroes,
             saved = saved,
         }
     end, "Encounter test: setting up")
-    m_testPart = nil
+    Series.testPart = nil
 
     --a series part: the Story so far the tester set (nil = nothing
     --carried). Before the region, which a fight with variants picks by it.
-    SeedSeriesStory(pending.story)
+    Series.SeedSeriesStory(pending.story)
 
     --bounded to the encounter's region like a real game (released at the
     --end of the test).
@@ -6265,7 +6263,7 @@ local function TestTeardown()
     ElevateToHostPermissions()
     ReleasePlayRegion()
     DropHostPermissions()
-    m_testPart = nil
+    Series.testPart = nil
 
     --the hero copies, and the settings and hero tokens the test overrode.
     local copies = {}
