@@ -400,11 +400,13 @@ local function CreateImageEditorChooser()
 		multimonitor = {"imageeditor", "imageeditor:usedefault"},
 		events = {
 			monitor = function(element)
+				---@cast element Dropdown
 				element.options = BuildOptions()
 				element.idChosen = CurrentChoice()
 			end,
 
 			change = function(element)
+				---@cast element Dropdown
 				local id = element.idChosen
 				if id == "__browse__" then
 					element.idChosen = CurrentChoice()
@@ -1684,7 +1686,7 @@ local function CreateLocalAssetsSection()
 			flow = "horizontal",
 			width = "100%",
 			height = "auto",
-			searchInput,
+			searchInput --[[@as Panel]],
 		}
 		if changesOnlyCheck ~= nil then
 			toolbarArgs[#toolbarArgs+1] = changesOnlyCheck
@@ -1783,6 +1785,15 @@ local function CreateLocalAssetsSection()
 		--assembled programmatically: GitPathRow() is nil on engine builds
 		--without the git bridges, and a nil hole in the positional children
 		--would truncate everything after it.
+		---@type Panel
+		local browseTitle = gui.Label{
+			width = "100%",
+			height = "auto",
+			fontSize = 16,
+			bold = true,
+			vmargin = 4,
+			text = "Browse Files",
+		}
 		local rootArgs = {
 			flow = "vertical",
 			width = "90%",
@@ -1791,14 +1802,7 @@ local function CreateLocalAssetsSection()
 			vmargin = 6,
 			styles = browserStyles,
 
-			gui.Label{
-				width = "100%",
-				height = "auto",
-				fontSize = 16,
-				bold = true,
-				vmargin = 4,
-				text = "Browse Files",
-			},
+			browseTitle,
 		}
 		local gitRow = GitPathRow()
 		if gitRow ~= nil then
@@ -2914,6 +2918,7 @@ local function CreateCreatorOrganizationsSection()
 				connectedText = string.format("%s   (connected %s)", connectedText, os.date("%d %b %Y", math.floor(data.connectedAt / 1000)))
 			end
 
+			---@type Panel[]
 			local children = { Heading() }
 
 			children[#children+1] = gui.Label{
@@ -3236,6 +3241,7 @@ local function CreateCreatorOrganizationsSection()
 				return
 			end
 
+			---@type Panel[]
 			local children = { Heading() }
 
 			children[#children+1] = gui.Label{
@@ -3306,6 +3312,7 @@ local function CreateCreatorOrganizationsSection()
 		ShowChooseCampaign = function(campaigns)
 			m_pollGeneration = m_pollGeneration + 1
 
+			---@type Panel[]
 			local children = { Heading() }
 
 			children[#children+1] = gui.Label{
@@ -6016,6 +6023,7 @@ local CreatePatreonAccountPanel = function()
 	--CreateCreatorOrganizationsSection and are not in scope here, so this
 	--follows the MCDM Shop section's two-step button instead of a modal.
 	ShowConfirmDisconnect = function(data)
+		---@type Panel[]
 		local children = {
 			Heading(),
 			gui.Label{
@@ -6338,6 +6346,27 @@ function CreateSettingsScreen(dialog, args)
 			children = panels,
 		}
 
+	end
+
+	--A heading over a section, hidden when nothing is registered in it (e.g. at the
+	--title screen, before the code mods that register its settings have loaded).
+	local SettingsHeadedSection = function(title, section)
+		local empty = true
+		for _,s in ipairs(SettingsOrdered) do
+			if s.section ~= nil and string.lower(s.section) == string.lower(section) then
+				empty = false
+				break
+			end
+		end
+
+		return gui.Panel{
+			classes = {cond(empty, "collapsed")},
+			flow = "vertical",
+			width = "100%",
+			height = "auto",
+			SettingsHeading(title),
+			SettingsSection(section),
+		}
 	end
 
 	local CreateTab = function(args)
@@ -7103,6 +7132,7 @@ function CreateSettingsScreen(dialog, args)
 							halign = "right",
 							hmargin = 20,
 						},
+						Setting('tabletop:surface'),
 
 						--Setting('dice:gravity'),
 						--Setting('dice:velocity'),
@@ -7119,6 +7149,8 @@ function CreateSettingsScreen(dialog, args)
 						CreateBetaBranchEditor(),
 
 						Setting("codemod:safemode"),
+
+						SettingsHeadedSection("Encounter of the Week", "EncounterOfTheWeek"),
 						} end,
 					},
 

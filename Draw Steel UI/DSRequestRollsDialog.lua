@@ -481,6 +481,7 @@ end
 --keeps the old dialog. Move one type over at a time.
 local g_timelineRollTypes = {
     opposed_power_roll = true,
+    resistance_power_roll = true,
 }
 
 --Wraps the old floating dialog so callers can treat both dialogs the same way.
@@ -522,9 +523,11 @@ local function ShowTimelinePrompt(check, dialogParams)
         casterToken = dmhub.GetTokenById(checkOptions.casterid)
     end
 
+    --cardAbility: a roll whose `ability` option feeds modifier filters (a
+    --resistance roll) passes the card to show separately.
     local mount = CharacterPanel.EmbedPromptRollDialog{
         token = casterToken,
-        ability = checkOptions.ability,
+        ability = checkOptions.cardAbility or checkOptions.ability,
     }
 
     if mount == nil or mount.dialog == nil or not mount.dialog.valid
@@ -534,9 +537,15 @@ local function ShowTimelinePrompt(check, dialogParams)
 
     --The Timeline roller shows no title of its own, so hand it the same two
     --lines the old dialog printed above the roll.
+    --The title ("... for <creature>") names who is rolling, which matters when
+    --one player rolls the same request for several heroes.
     local headerLines = {}
-    if dialogParams.description ~= nil and dialogParams.description ~= "" then
-        headerLines[#headerLines+1] = string.format("<b>%s</b>", dialogParams.description)
+    local headline = dialogParams.title
+    if headline == nil or headline == "" then
+        headline = dialogParams.description
+    end
+    if headline ~= nil and headline ~= "" then
+        headerLines[#headerLines+1] = string.format("<b>%s</b>", headline)
     end
     if dialogParams.explanation ~= nil and dialogParams.explanation ~= "" then
         headerLines[#headerLines+1] = dialogParams.explanation
@@ -662,6 +671,15 @@ local function ShowRollPrompt(check, dialogParams)
 
     local customInfo = check:CustomInfo()
     if customInfo ~= nil and customInfo.ShowDialog ~= nil then
+        --A custom check moved to the Timeline exposes PrepareDialog: it fills in
+        --the options its ShowDialog would, without showing the old dialog.
+        if g_timelineRollTypes[check.type] and customInfo.PrepareDialog ~= nil then
+            customInfo.PrepareDialog(check, dialogParams)
+            local handle = ShowTimelinePrompt(check, dialogParams)
+            if handle ~= nil then
+                return handle
+            end
+        end
         return LegacyPromptHandle(customInfo.ShowDialog(check, dialogParams))
     end
 
@@ -674,6 +692,49 @@ local function ShowRollPrompt(check, dialogParams)
     end
 
     return LegacyPromptHandle(gamehud.rollDialog.data.ShowDialog(dialogParams))
+end
+
+--Whether this client puts up the roll a request asks of `tok`. A plain player
+--rolls for what they control; the Director or host rolls for non-player tokens
+--(or for anything when no players are online); a player host also rolls for its
+--OWN heroes -- ownership is the discriminator there.
+--
+--tok.canControl is elevation-aware: on a player host (Encounter of the Week) it
+--is false for the monsters the machine hosts unless host automation is running.
+--This listener runs from a plain UI refresh, so the host test reads
+--IsDMOrPlayerHost() directly. Without it nobody rolled a monster's half of a
+--roll a hero started (the Hide test against Search for Hidden Creatures) and the
+--hero's cast waited on it until the request timed out.
+--- @param tok CharacterToken|nil
+--- @param info table the request's entry for this token
+--- @param havePlayersOnline boolean
+--- @return boolean
+local function ShouldPromptForToken(tok, info, havePlayersOnline)
+	if tok == nil or not tok.properties then
+		return false
+	end
+
+	if info.forceuserid ~= nil then
+		return info.forceuserid == dmhub.loginUserid
+	end
+
+	local hostRollsForMonster = IsDMOrPlayerHost() and tok.playerControlled == false
+	if not (tok.canControl or hostRollsForMonster) then
+		return false
+	end
+
+	--(playerHostMode reads nil on engine builds without it, keeping the old behavior exactly.)
+	return IsDMOrPlayerHost() == false or tok.playerControlled == false or not havePlayersOnline
+		or (dmhub.playerHostMode == true and tok.ownerId == dmhub.loginUserid)
+end
+
+--The creature a request names. Off the current map (a hero on a table card or
+--in a scene, or a player with no map open) it is the off-board character, so
+--its controller is still prompted.
+--- @param tokid string
+--- @return CharacterToken|nil
+local function RequestedToken(tokid)
+	return dmhub.GetTokenById(tokid) or dmhub.GetCharacterById(tokid)
 end
 
 --this is a hidden panel which just listens for required rolls.
@@ -765,14 +826,9 @@ function GameHud:RequireRollListenerPanel()
 						local tokid = tokid_tmp
 						local info = info_tmp
 						if info.status == nil then
-							local tok = dmhub.GetTokenById(tokid)
+							local tok = RequestedToken(tokid)
 							local rollid = k .. tokid
-							--who does this client prompt for: a plain player, anything they control;
-							--a DM/host, non-player tokens (or anything with no players online); a
-							--player host additionally their OWN tokens -- canControl is host-wide
-							--for them, so ownership is the discriminator. (playerHostMode reads
-							--nil on engine builds without it, keeping the old behavior exactly.)
-							if tok ~= nil and tok.properties and ((info.forceuserid == nil and tok.canControl and (IsDMOrPlayerHost() == false or tok.playerControlled == false or not havePlayersOnline or (dmhub.playerHostMode == true and tok.ownerId == dmhub.loginUserid))) or info.forceuserid == dmhub.loginUserid) and not currentRolls[rollid] then
+							if ShouldPromptForToken(tok, info, havePlayersOnline) and not currentRolls[rollid] then
 								numPrompts = numPrompts+1
 							end
 						end
@@ -783,14 +839,10 @@ function GameHud:RequireRollListenerPanel()
 						local tokid = tokid_tmp
 						local info = info_tmp
 						if info.status == nil then
-							local tok = dmhub.GetTokenById(tokid)
+							local tok = RequestedToken(tokid)
 							local rollid = k .. tokid
-							--who does this client prompt for: a plain player, anything they control;
-							--a DM/host, non-player tokens (or anything with no players online); a
-							--player host additionally their OWN tokens -- canControl is host-wide
-							--for them, so ownership is the discriminator. (playerHostMode reads
-							--nil on engine builds without it, keeping the old behavior exactly.)
-							if tok ~= nil and tok.properties and ((info.forceuserid == nil and tok.canControl and (IsDMOrPlayerHost() == false or tok.playerControlled == false or not havePlayersOnline or (dmhub.playerHostMode == true and tok.ownerId == dmhub.loginUserid))) or info.forceuserid == dmhub.loginUserid) and not currentRolls[rollid] then
+							if ShouldPromptForToken(tok, info, havePlayersOnline) and not currentRolls[rollid] then
+								---@cast tok -nil
 
 								local checks = {}
 
@@ -847,10 +899,12 @@ function GameHud:RequireRollListenerPanel()
 									--hidden monster makes against Search for Hidden Creatures)
 									--should not stop on a prompt: roll it and proceed as the AI
 									--would. rawget: the Monster AI module may not be loaded.
+									--A player host (no Director) has no one to hand a monster's
+									--roll to, so it rolls it automatically even with the AI stopped.
 									local aiRoll = false
 									if IsDMOrPlayerHost() and tok.playerControlled == false then
 										local monsterAI = rawget(_G, "MonsterAI")
-										if monsterAI ~= nil and monsterAI.IsAIRunning ~= nil and monsterAI.IsAIRunning() then
+										if (monsterAI ~= nil and monsterAI.IsAIRunning ~= nil and monsterAI.IsAIRunning()) or dmhub.playerHostMode == true then
 											aiRoll = true
 										end
 									end
@@ -1036,6 +1090,8 @@ end
 function GameHud:CreatePartyTokenPoolSelector(args)
 	local initiative = args.initiative
 	args.initiative = nil
+	local offBoardHeroes = args.offBoardHeroes
+	args.offBoardHeroes = nil
 	local resultPanel
 	local tokenPanels = {}
 
@@ -1060,11 +1116,33 @@ function GameHud:CreatePartyTokenPoolSelector(args)
 
 	local candidateTokens = dmhub.GetTokens{ playerControlled = true, haveProperties = true }
 
+	--Heroes with a card on the table or in an open scene, though not on this
+	--map. They are off-board wrappers, so compare them by charid, never with ==.
+	if offBoardHeroes then
+		local have = {}
+		for _,tok in ipairs(candidateTokens) do
+			have[tok.charid] = true
+		end
+		local charids = Tabletop.TableCardCharids()
+		for _,target in ipairs(SceneElements.CreatureCardTargets(false, nil)) do
+			charids[#charids+1] = target.charid
+		end
+		for _,charid in ipairs(charids) do
+			if not have[charid] then
+				have[charid] = true
+				local tok = dmhub.GetCharacterById(charid)
+				if tok ~= nil and tok.properties ~= nil and tok.playerControlled then
+					candidateTokens[#candidateTokens+1] = tok
+				end
+			end
+		end
+	end
+
 	local selectedTokens = dmhub.selectedTokens
 	for _,tok in ipairs(selectedTokens) do
 		local found = false
 		for _,existing in ipairs(candidateTokens) do
-			if existing == tok then
+			if existing.charid == tok.charid then
 				found = true
 			end
 
@@ -1108,7 +1186,7 @@ function GameHud:CreatePartyTokenPoolSelector(args)
 	for i,tok in ipairs(candidateTokens) do
 		tokenPanels[#tokenPanels+1] = CreateTokenPanel(tok)
 		for i,selectedTok in ipairs(selectedTokens) do
-			if selectedTok == tok then
+			if selectedTok.charid == tok.charid then
 				startingSelection[#startingSelection+1] = tokenPanels[#tokenPanels]
 			end
 		end
@@ -1914,6 +1992,7 @@ function ShowRequireRollDialog(args)
 				gamehud:CreatePartyTokenPoolSelector{
 					poolWidth = TOKEN_POOL_WIDTH,
 					initiative = (args.checkType == "Initiative"),
+					offBoardHeroes = true,
 					changeSelection = function(element, tokenids)
 						tokenIdsSelected = tokenids
 						---@cast g_requireRollDialog -nil
@@ -2084,11 +2163,11 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 	local iscomplete = false
 
 	local closeButton = gui.Button{
+			classes = {"sizeS"},
 			text = 'Cancel',
-			floating = true,
 			halign = 'right',
 			valign = 'bottom',
-			margin = 24,
+			margin = 12,
 			click = function(element)
 				resultTable.result = iscomplete
 				resultTable.action = dmhub.GetPlayerActionRequest(actionid)
@@ -2123,7 +2202,15 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 
 	local summaryPanel = gui.Label{
 		text = string.format("Requested a %s", action.info:Describe()),
-		classes = {"modalTitle"},
+		classes = {"sizeL"},
+		bold = true,
+		width = "100%",
+		height = "auto",
+		textAlignment = "center",
+		tmargin = 14,
+		bmargin = 6,
+		hpad = 16,
+		borderBox = true,
 		interactable = false,
 	}
 
@@ -2161,7 +2248,7 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
             local checkInfo = action.info.checks[1]
 
 			local outcomeLabel = gui.Label{
-				classes = {"sizeL", "resultOutcomeLabel"},
+				classes = {"sizeM", "resultOutcomeLabel"},
 				text = "",
 			}
 
@@ -2176,7 +2263,8 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 					classes = {"sizeS"},
 					text = "Re-roll",
 					halign = "right",
-					margin = 16,
+					valign = "center",
+					hmargin = 6,
 					data = {
 						takeroll = false,
 					},
@@ -2209,7 +2297,8 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 				classes = {"sizeS", "hidden"},
 				text = "Remove",
 				halign = "right",
-				margin = 16,
+				valign = "center",
+				hmargin = 6,
 				click = function(element)
 					action:BeginChanges()
 					action.info.tokens[k] = nil
@@ -2227,9 +2316,11 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 			local waitingLabel = gui.Label{
 				classes = {"sizeS", "hidden"},
 				text = "Waiting...",
-				halign = "right",
+				width = "auto",
+				height = "auto",
+				halign = "left",
 				valign = "center",
-				rmargin = 100,
+				lmargin = 8,
 			}
 
 			panel = gui.Panel{
@@ -2240,10 +2331,18 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 					height = 32,
 					halign = "left",
 					valign = "center",
+					rmargin = 8,
 				}),
 
+				--Status and result on the first line, what it did to the creature below.
+				gui.Panel{
+					classes = {"resultInfoColumn"},
+
+				gui.Panel{
+					classes = {"resultStatusRow"},
+
 				gui.Label{
-					classes = {"sizeL", "resultStatusLabel"},
+					classes = {"sizeM", "resultStatusLabel"},
 					create = function(element)
 						element:FireEvent('refreshAction')
 					end,
@@ -2386,13 +2485,15 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 
 				outcomeLabel,
 
+				waitingLabel,
+				},
+
 				consequencesTable,
+				},
 
 				againButton,
 
 				removeButton,
-
-				waitingLabel,
 			}
 
 			resultsPanels[#resultsPanels+1] = panel
@@ -2403,6 +2504,18 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
     ---@cast g_requireRollDialog -nil
     if numLocal == 1 and numTokens == 1 then
         g_requireRollDialog.parent:SetClass("hidden", true)
+    end
+
+    --The summary is a status panel, not the Director's full Request Rolls
+    --window: keep it narrow and park it on the left, beside the icon rail, so
+    --the map and the roll sidebar on the right stay visible.
+    g_requireRollDialog.selfStyle.width = 440
+    g_requireRollDialog.selfStyle.height = "auto"
+    local window = g_requireRollDialog.parent
+    if window ~= nil then
+        window.selfStyle.halign = "left"
+        window.selfStyle.valign = "center"
+        window.selfStyle.lmargin = 76
     end
 
 	local resultPanelScroll = gui.Panel{
@@ -2416,16 +2529,33 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 			{
 				selectors = {"resultPanelScroll"},
 				width = "94%",
-				height = 340,
-				valign = "center",
+				height = "auto",
+				maxHeight = 360,
+				valign = "top",
 				flow = "vertical",
 			},
 			{
 				selectors = {"resultPanel"},
 				flow = "horizontal",
 				width = "100%",
-				height = 70,
+				height = "auto",
+				vpad = 6,
+				hpad = 4,
+				borderBox = true,
 				valign = "top",
+			},
+			{
+				selectors = {"resultInfoColumn"},
+				flow = "vertical",
+				width = "100% available",
+				height = "auto",
+				valign = "center",
+			},
+			{
+				selectors = {"resultStatusRow"},
+				flow = "horizontal",
+				width = "100%",
+				height = "auto",
 			},
 			{
 				selectors = {"resultStatusLabel"},
@@ -2437,10 +2567,8 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 			},
 			{
 				selectors = {"resultOutcomeLabel"},
-				-- fontSize = 14,
-				-- color = "@fgStrong",
-				width = 100,
-				lmargin = 12,
+				width = "auto",
+				lmargin = 8,
 				textAlignment = "left",
 				height = "auto",
 				halign = "left",
@@ -2448,14 +2576,14 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 			},
 			{
 				selectors = {"resultConsequencesTable"},
-				width = 140,
+				width = "100%",
 				flow = "vertical",
 				height = "auto",
-				valign = "center",
+				halign = "left",
 			},
 			{
 				selectors = {"consequenceLabel"},
-				width = 140,
+				width = "100%",
 				fontSize = 14,
 				color = "@danger",
 				height = "auto",
@@ -2493,11 +2621,13 @@ function GameHud:ShowRollSummaryDialog(actionid, resultTable)
 	}
 
 	local consequencesLabel = gui.Label{
-		width = "55%",
+		width = "100%",
 		height = "auto",
 		fontSize = 14,
-		halign = "left",
-		hmargin = 80,
+		halign = "center",
+		hpad = 16,
+		tmargin = 6,
+		borderBox = true,
 		text = "",
 		refreshAction = function(element)
 			local checkInfo = action.info.checks[1]
@@ -2557,6 +2687,210 @@ function AwaitRequestedActionCoroutine(actionid, resultTable)
 	resultTable.result = false
 
 	return resultTable
+end
+
+--Rolls a Monster AI cast requests ---------------------------------------
+--
+--When the Monster AI casts an ability that makes heroes roll (Swamp Stink's
+--Might resistance roll for every hero), its host never opens the Director's
+--summary dialog above. The AI accepts the rolls itself once every target has
+--rolled, and meanwhile tells the whole table why it has paused through its
+--waiting notice (MonsterAI.SetWaiting). Like the AI's other player waits this
+--has no timer. A declined roll is asked for again. If the AI is stopped while
+--it waits, the request goes to the summary dialog so a person can finish it.
+
+--A declined roll is asked for again at most this often. A player who chose
+--"roll all" and then cancelled has every later prompt of the request
+--auto-cancelled, so without this the re-ask would churn every poll.
+local AI_REASK_SECONDS = 2
+
+--The waiting notice names at most this many heroes who still have to roll.
+local AI_NOTICE_MAX_NAMES = 3
+
+--True while the Monster AI process is running on this client. rawget: the
+--Monster AI module may not be loaded.
+local function MonsterAIRunning()
+	local monsterAI = rawget(_G, "MonsterAI")
+	return monsterAI ~= nil and monsterAI.active == true
+		and monsterAI.IsAIRunning ~= nil and monsterAI.IsAIRunning()
+end
+
+--True when the Monster AI is driving this caster's actions right now: it holds
+--the caster (MonsterAI:BeginTokenControl), or it has an activity open on this
+--client (MonsterAI:ExecuteAbility holds one for the whole cast) and the caster
+--is not a player's. The activity check was added while the AI's control could
+--be wiped mid-cast (fixed: the control now lives in Creature.lua, off the
+--token's properties); it stays as a safety net for a cast the AI drives
+--without holding the caster.
+--- @param casterToken CharacterToken?
+--- @return boolean
+function RollRequestIsForAICaster(casterToken)
+	if casterToken == nil or casterToken.properties == nil or not MonsterAIRunning() then
+		return false
+	end
+	if creature.IsTokenAIControlled(casterToken.charid) then
+		return true
+	end
+	return creature.GetAIActivityInProgress() ~= nil and not casterToken.playerControlled
+end
+
+--"Waiting for resistance rolls to be processed before proceeding (Shadow,
+--Rook)". Only heroes are named: monster rolls are rolled automatically on the
+--host, and naming a monster could reveal a name the players cannot see.
+local function AIRollWaitNotice(action, outstandingHeroes)
+	local check = action.info.checks[1]
+	local rollType = check ~= nil and check.type or nil
+	local noun = "rolls"
+	if rollType == "resistance_power_roll" then
+		noun = "resistance rolls"
+	elseif rollType == "test_power_roll" then
+		noun = "tests"
+	end
+
+	local text = string.format("Waiting for %s to be processed before proceeding", noun)
+	if #outstandingHeroes > 0 then
+		table.sort(outstandingHeroes)
+		local names = {}
+		for i,name in ipairs(outstandingHeroes) do
+			if i <= AI_NOTICE_MAX_NAMES then
+				names[#names+1] = name
+			end
+		end
+		local list = table.concat(names, ", ")
+		if #outstandingHeroes > AI_NOTICE_MAX_NAMES then
+			list = string.format("%s and %d more", list, #outstandingHeroes - AI_NOTICE_MAX_NAMES)
+		end
+		text = string.format("%s (%s)", text, list)
+	end
+	return text
+end
+
+--The Monster AI's version of ShowRollSummaryDialog / AwaitRequestedActionCoroutine.
+--Run from the cast's coroutine. Sets resultTable.result true and
+--resultTable.action once every target has rolled; false if the request
+--disappears. Returns resultTable, whose result is still nil if the wait was
+--handed to the summary dialog (the caller keeps waiting on it as usual).
+--- @param actionid string
+--- @param resultTable table?
+--- @return table
+function AwaitAIRequestedActionCoroutine(actionid, resultTable)
+	resultTable = resultTable or {}
+	local monsterAI = rawget(_G, "MonsterAI")
+	local noticeSet = false
+	local handOver = false
+	local reaskedAt = {}
+
+	print("AWAIT:: AI accepting rolls for request", actionid)
+
+	local ok, err = pcall(function()
+		while true do
+			if mod.unloaded then
+				if dmhub.GetPlayerActionRequest(actionid) ~= nil then
+					dmhub.CancelActionRequest(actionid)
+				end
+				resultTable.result = false
+				return
+			end
+
+			local action = dmhub.GetPlayerActionRequest(actionid)
+			if action == nil then
+				resultTable.result = false
+				return
+			end
+
+			if not MonsterAIRunning() then
+				handOver = true
+				return
+			end
+
+			local now = dmhub.Time()
+			local outstanding = 0
+			local outstandingHeroes = {}
+			local reask = {}
+			local remove = {}
+			for k,info in pairs(action.info.tokens) do
+				local tok = dmhub.GetTokenById(k)
+				if tok == nil or not tok.valid then
+					--Nobody can roll for a creature that has left the map; drop it
+					--so the cast skips it, as the dialog's Remove button would.
+					remove[#remove+1] = k
+				elseif info.status ~= 'complete' then
+					outstanding = outstanding + 1
+					if tok.playerControlled then
+						outstandingHeroes[#outstandingHeroes+1] = tok.name or "a hero"
+					end
+					if info.status == 'cancel' and now - (reaskedAt[k] or -math.huge) >= AI_REASK_SECONDS then
+						reaskedAt[k] = now
+						reask[#reask+1] = k
+					end
+				end
+			end
+
+			if #reask > 0 or #remove > 0 then
+				action:BeginChanges()
+				for _,k in ipairs(remove) do
+					action.info.tokens[k] = nil
+				end
+				for _,k in ipairs(reask) do
+					--Back to "not yet prompted", which makes the rolling client
+					--prompt again. team/checks/forceuserid are kept.
+					local entry = action.info.tokens[k]
+					entry.status = nil
+					entry.userid = nil
+				end
+				action:CompleteChanges("Monster AI: ask for declined rolls again")
+			end
+
+			if outstanding == 0 and #remove == 0 then
+				resultTable.result = true
+				resultTable.action = action
+				dmhub.CancelActionRequest(actionid)
+				return
+			end
+
+			if monsterAI ~= nil then
+				monsterAI.SetWaiting("rolls", AIRollWaitNotice(action, outstandingHeroes))
+				noticeSet = true
+			end
+
+			coroutine.yield(0.2)
+		end
+	end)
+
+	if noticeSet and monsterAI ~= nil then
+		pcall(monsterAI.ClearWaiting)
+	end
+
+	if not ok then
+		print("AWAIT:: AI roll wait failed, handing the request to the summary dialog:", tostring(err))
+		handOver = true
+	end
+
+	if handOver and resultTable.result == nil then
+		print("AWAIT:: Monster AI no longer running; showing the summary dialog for request", actionid)
+		gamehud:ShowRollSummaryDialog(actionid, resultTable)
+	end
+
+	return resultTable
+end
+
+--Wait for the rolls a cast requested of its targets: the Monster AI accepts
+--them itself when it is the caster (see above), a silent ability waits
+--without a dialog, otherwise the Director gets the summary dialog. Sets
+--resultTable.result (true = rolls accepted) and resultTable.action; the
+--caller waits until result is set. Run from the cast's coroutine.
+--- @param casterToken CharacterToken?
+--- @param actionid string
+--- @param resultTable table
+--- @param silent boolean?
+function AwaitCastRollRequest(casterToken, actionid, resultTable, silent)
+	if RollRequestIsForAICaster(casterToken) then
+		AwaitAIRequestedActionCoroutine(actionid, resultTable)
+	elseif silent then
+		AwaitRequestedActionCoroutine(actionid, resultTable)
+	else
+		gamehud:ShowRollSummaryDialog(actionid, resultTable)
+	end
 end
 
 

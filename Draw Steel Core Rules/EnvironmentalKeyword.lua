@@ -22,8 +22,10 @@ local mod = dmhub.GetModLoading()
 --- @field terrainKeywords table<string, boolean>|nil Ability keywords (keyword -> true, e.g. {Magic = true}) attached to the difficult terrain of areas marked with this keyword. Folded onto the aura's difficultTerrainKeywords by ApplyToAura; a creature whose Ignore Difficult Terrain modifier names any of them ignores that difficult terrain. No class default: absent = none.
 --- @field water boolean If true, an area marked with this keyword counts as water. Uses the same terrain rule flag name as tiles (asset.rules.water).
 --- @field concealment boolean If true, an area marked with this keyword grants concealment. Uses the same terrain rule flag name as tiles (asset.rules.concealment).
+--- @field coversSky boolean If true, an area marked with this keyword shelters creatures from the sky (a tree canopy, an awning): a creature in it is not "Exposed To Sky" even on a floor with no ceiling. No terrain effect of its own.
 --- @field climbable boolean If true, an area marked with this keyword can be climbed, like a climbable wall: creatures in it may climb up to the ceiling of the floor.
 --- @field climbersOnly boolean Only meaningful when climbable is true: restricts climbing to natural climbers (climb speed >= walk speed), matching walls' "Climbable (Climbers Only)". Uses the same terrain rule flag name as tiles (rules.climbersOnly).
+--- @field stepped boolean "Stepped Terrain": a 1-square change in ground height whose HIGHER tile is in an area marked with this keyword is a sharp step, not a slope. Forced movement bangs into the step going up (a collision) and is carried out over it going down (falling at the end), exactly like a cliff. Walking is unaffected. Solid building blocks are always stepped without it. Engine: Aura.stepped -> TileGameRules.stepped, read by CharacterToken.FindStraightLinePath.
 --- @field dynamicLight boolean If true, the Map Markup zone palette offers the "Dynamic Light" option for this keyword (its zones/blanket apply only where the light added by light sources is at or below a per-map threshold; ambient light is ignored). Purely a UI/eligibility gate: the sampling and carving live in MapMarkupPanel.lua; unchecking disables an already-configured threshold without deleting it.
 --- @field dispels string[]|nil Ids (environmentalKeywords table keys) of keywords this keyword dispels. Painting a zone of this keyword deletes the overlap from zones of a dispelled keyword (and a dispelled keyword cannot be painted over this one); an aura carrying this keyword suppresses zones of dispelled keywords beneath it for as long as the aura covers them. No class default: assigned per instance by the editor (a class-level default table would be shared-mutable).
 --- @field movedamage string Damage type dealt to creatures moving through an area with this keyword, or "none" for no damage. Uses the same field names as Aura so the values copy straight onto zone auras.
@@ -57,8 +59,10 @@ EnvironmentalKeyword.iconid = "ui-icons/skills/1.png"
 EnvironmentalKeyword.difficultTerrain = false
 EnvironmentalKeyword.water = false
 EnvironmentalKeyword.concealment = false
+EnvironmentalKeyword.coversSky = false
 EnvironmentalKeyword.climbable = false
 EnvironmentalKeyword.climbersOnly = false
+EnvironmentalKeyword.stepped = false
 EnvironmentalKeyword.dynamicLight = false
 EnvironmentalKeyword.movedamage = "none"
 EnvironmentalKeyword.damage = 0
@@ -158,6 +162,9 @@ function EnvironmentalKeyword.ApplyToAura(auraDef, keywordid)
 			if keyword:try_get("climbersOnly", false) == true then
 				auraDef.climbersOnly = true
 			end
+		end
+		if keyword:try_get("stepped", false) == true then
+			auraDef.stepped = true
 		end
 		--the area extends one tile outward for enter/start-of-turn trigger
 		--contact (adjacent tiles never take terrain rules or modifiers, so
@@ -2034,6 +2041,20 @@ local SetData = function(tableName, keywordPanel, keyid)
 		},
 	}
 
+	--creatures in an area marked with this keyword are sheltered from the
+	--sky (the "Exposed To Sky" symbol), e.g. under a tree canopy.
+	children[#children+1] = gui.Panel{
+		classes = {"formStackedRow"},
+		gui.Check{
+			value = keyword:try_get("coversSky", false),
+			text = "Covers the Sky",
+			change = function(element)
+				keyword.coversSky = element.value
+				UploadKeyword()
+			end,
+		},
+	}
+
 	--an area marked with this keyword can be climbed (like a climbable wall:
 	--creatures in it may climb up to the ceiling of the floor). The second
 	--checkbox restricts it to natural climbers (climb speed >= walk speed),
@@ -2065,6 +2086,21 @@ local SetData = function(tableName, keywordPanel, keyid)
 			end,
 		},
 		climbersOnlyCheck,
+	}
+
+	--Stepped Terrain: 1-square height changes at the edge of this area are
+	--sharp steps rather than slopes, but only for forced movement.
+	children[#children+1] = gui.Panel{
+		classes = {"formStackedRow"},
+		gui.Check{
+			value = keyword:try_get("stepped", false),
+			text = "Stepped Terrain",
+			hover = gui.Tooltip("A 1-square rise or drop whose higher side is in this area is a sharp step, not a slope. A creature force moved into the step collides with it, and one force moved off it is carried out over the edge and falls, as at a cliff. Walking is unaffected. Solid blocks are always stepped."),
+			change = function(element)
+				keyword.stepped = element.value
+				UploadKeyword()
+			end,
+		},
 	}
 
 	--How far up a zone painted with this keyword reaches, by default. Zone bands
@@ -3514,6 +3550,89 @@ creature.RegisterSymbol {
 		desc = "The names of the Environmental Keywords of the map zones the creature is inside or adjacent to (any of the 8 surrounding squares). Use it for things a creature can do next to a zone, like deactivating a trap.",
 		seealso = {"Environment"},
 		examples = {"AdjacentEnvironment has \"Flammable Oil\""},
+	},
+}
+
+--True if the floor the token stands on is capped by a ceiling (layers report
+--their parent floor's). A token whose floor cannot be found counts as covered.
+--- @param token CharacterToken
+--- @return boolean
+local function TokenFloorHasCeiling(token)
+	local map = game.currentMap
+	local loc = token.loc
+	if map == nil or loc == nil then
+		return true
+	end
+	for _,floor in ipairs(map.floors) do
+		if floor.floorIndex == loc.floor then
+			return floor.hasCeiling == true
+		end
+	end
+	return true
+end
+
+--True if a zone over the squares the token occupies shelters it from the sky:
+--its keyword has coversSky, its band overlaps the token's vertical extent, and
+--its creature filter (e.g. "Size <= 4" on a tree canopy) admits the token.
+--- @param token CharacterToken
+--- @return boolean
+local function TokenUnderSkyCover(token)
+	local tokenLoc = token.loc
+	if tokenLoc == nil then
+		return false
+	end
+
+	local keywordsTable = dmhub.GetTable(EnvironmentalKeyword.tableName) or {}
+	local tokenBottom = tokenLoc.altitude
+	local tokenTop = tokenBottom + (token.tileSize or 1) - 1
+	local locsOccupying = token.locsOccupying or {}
+
+	--measure ground-relative bands from the highest ground under the token,
+	--as the engine's Aura.BandBaseForToken does.
+	local tokenGround = nil
+	for _,occupied in ipairs(locsOccupying) do
+		local ground = occupied.withGroundAltitude.altitude
+		if tokenGround == nil or ground > tokenGround then
+			tokenGround = ground
+		end
+	end
+
+	for _,occupied in ipairs(locsOccupying) do
+		local span = { bottom = tokenBottom, top = tokenTop, ground = tokenGround }
+		for _,instance in ipairs(AuraInstancesCoveringSquare(occupied, span)) do
+			local auraDef = instance:try_get("aura")
+			local keywordid = auraDef ~= nil and auraDef:try_get("environmentalKeywordId") or nil
+			local keyword = keywordid ~= nil and keywordsTable[keywordid] or nil
+			if keyword ~= nil and keyword:try_get("coversSky", false) then
+				local passes = true
+				pcall(function() passes = instance:CreaturePassesFilterForToken(token) ~= false end)
+				if passes then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+creature.RegisterSymbol {
+	symbol = "exposedtosky",
+	lookup = function(c)
+		local token = dmhub.LookupToken(c)
+		if token == nil or not token.valid then
+			return false
+		end
+		if TokenFloorHasCeiling(token) then
+			return false
+		end
+		return not TokenUnderSkyCover(token)
+	end,
+	help = {
+		name = "Exposed To Sky",
+		type = "boolean",
+		desc = "True if nothing is between the creature and the sky: its floor has no ceiling (see the floor's Ceiling setting) and it is not in a map zone whose type covers the sky, such as a Tree Canopy.",
+		seealso = {"Environment"},
+		examples = {"Exposed To Sky"},
 	},
 }
 

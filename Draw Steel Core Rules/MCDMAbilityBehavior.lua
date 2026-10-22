@@ -435,6 +435,8 @@ local g_tablesLookup = {}
 local function GetTableNameRegex(tableName, key, nameKey)
     nameKey = nameKey or "name"
     local table = dmhub.GetTable(tableName) or {}
+    --rows of whichever table was named; only their name fields are read.
+    ---@cast table table<string, table>
     g_tablesLookup[tableName] = {}
     local pattern = ""
     for k,v in pairs(table) do
@@ -684,6 +686,8 @@ local g_rulePatterns = {
 
             local description = string.format("You may %s the target %d square%s", match.movement, range, range > 1 and "s" or "")
 
+            --ability fields to overwrite on the standard ability's clone.
+            ---@type table<string, any>
             local abilityAttr = {
                 name = string.gsub(match.movement, "^%l", string.upper) .. "!",
                 range = range,
@@ -712,7 +716,29 @@ local g_rulePatterns = {
                 abilityAttr.promptOverride = abilityAttr.promptOverride .. " (" .. table.concat(adjustments, ", ") .. ")"
             end
 
-            if executeOnRemote and casterToken.activeControllerId then
+            if match.straightup then
+                --"straight up N" has exactly one destination, so there is nothing to choose:
+                --resolve it here, even when the push was handed to another creature's
+                --controller. It still runs the standard forced-movement ability, so the
+                --forced-move events, collisions and falling all apply as for any push.
+                local abilityClone = DeepCopy(MCDMUtils.GetStandardAbility(abilityName))
+                MCDMUtils.DeepReplace(abilityClone, "<<range>>", string.format("%d", range))
+                for k,v in pairs(abilityAttr) do
+                    --with no prompt text the invoke casts at targetArgs instead of asking.
+                    if k ~= "promptOverride" then
+                        abilityClone[k] = v
+                    end
+                end
+                abilityClone.forcedMovementStraightUp = true
+
+                options.targetArgs = {
+                    {
+                        loc = targetToken.loc:WithAltitude(targetToken.loc.altitude + range),
+                    }
+                }
+                InvokeAbility(ability, abilityClone, targetToken, casterToken, options)
+                options.targetArgs = nil
+            elseif executeOnRemote and casterToken.activeControllerId then
                 ability:CommitToPaying(casterToken, options)
                 InvokeAbilityRemote(abilityName, targetToken, casterToken, abilityAttr, options)
             else
@@ -722,14 +748,6 @@ local g_rulePatterns = {
                     abilityClone[k] = v
                 end
 
-                if match.straightup then
-                    options.targetArgs = {
-                        {
-                            loc = targetToken.loc:WithAltitude(targetToken.loc.altitude + range),
-                        }
-                    }
-                end
-                
                 InvokeAbility(ability, abilityClone, targetToken, casterToken, options)
                 options.targetArgs = nil
             end
@@ -822,7 +840,10 @@ local g_rulePatterns = {
             end
 
             local movementAllowed = casterToken.properties:CurrentMovementSpeed() - movedThisTurn
-            abilityClone.range = math.min(tonumber(match.distance), movementAllowed)
+            --the pattern only captures digits, so this always parses.
+            local jumpDistance = tonumber(match.distance)
+            ---@cast jumpDistance -nil
+            abilityClone.range = math.min(jumpDistance, movementAllowed)
 
             local startingMovement = options.symbols.cast.spacesMoved
             InvokeAbility(ability, abilityClone, casterToken, casterToken, options)
@@ -1150,7 +1171,8 @@ local g_rulePatterns = {
         end,
     },
     {
-        pattern = "^(?<condition>prone|grabbed)",
+        --"knocked prone" is the book's usual wording for the same condition.
+        pattern = "^(knocked )?(?<condition>prone|grabbed)",
         execute = function(behavior, ability, casterToken, targetToken, options, match)
             ability:CommitToPaying(casterToken, options)
             local cond = match.condition
@@ -1515,6 +1537,7 @@ local g_applyConditionIndex = nil
 local g_gainConditionWithRiderIndex = nil
 local g_gainHeroicResourceIndex = nil
 local g_gainConditionByNameWithRiderIndex = nil
+local g_applyOngoingEffectIndex = nil
 
 -- A condition rider rides along on its host condition, so its duration always
 -- matches the condition's. When a rider rule supplies an explicit
@@ -1544,7 +1567,7 @@ dmhub.RegisterEventHandler("refreshTables", function(keys)
         return
     end
 
-	if keys ~= nil and (not keys[CharacterResource.tableName]) and (not keys[Class.tableName]) and (not keys[CharacterCondition.tableName]) and (not keys[CharacterCondition.ridersTableName]) then
+	if keys ~= nil and (not keys[CharacterResource.tableName]) and (not keys[Class.tableName]) and (not keys[CharacterCondition.tableName]) and (not keys[CharacterCondition.ridersTableName]) and (not keys[CharacterOngoingEffect.tableName]) then
 		return
 	end
 
@@ -1747,6 +1770,49 @@ dmhub.RegisterEventHandler("refreshTables", function(keys)
                             break
                         end
                     end
+                end,
+            }
+        end,
+    }
+
+    -- "<ongoing effect> (eoe|eot|save ends)" applies a CharacterOngoingEffect
+    -- such as Wet, e.g. a zone type's "Effect on Enter" of "wet (EoE)". The
+    -- duration is required so an effect name never matches plain prose, and
+    -- conditions (the pattern above) win when a name is both.
+    g_applyOngoingEffectIndex = g_applyOngoingEffectIndex or #g_rulePatterns + 1
+
+    --There are ~1000 ongoing effects, so rather than inline every name (a huge
+    --regex, printed in full on each match) the pattern takes any name and
+    --validate looks it up; GetTableNameRegex fills g_tablesLookup for it.
+    GetTableNameRegex(CharacterOngoingEffect.tableName)
+    g_rulePatterns[g_applyOngoingEffectIndex] = {
+        pattern = "^(?<effect>[a-z0-9][a-z0-9 ]*?) \\((?<duration>eot|eoe|save ends)\\)",
+        validate = function(entry, match)
+            return (g_tablesLookup[CharacterOngoingEffect.tableName] or {})[match.effect] ~= nil
+        end,
+        execute = function(behavior, ability, casterToken, targetToken, options, match)
+            local effectid = (g_tablesLookup[CharacterOngoingEffect.tableName] or {})[match.effect]
+            if effectid == nil then
+                return
+            end
+            ability:CommitToPaying(casterToken, options)
+
+            local duration = "eoe"
+            local typed = string.lower(match.duration or "")
+            if typed == "eot" then
+                duration = "end_of_next_turn"
+            elseif string.starts_with(typed, "save") then
+                duration = "save_ends"
+            end
+
+            local casterInfo = nil
+            if casterToken ~= nil then
+                casterInfo = { tokenid = casterToken.charid }
+            end
+            targetToken:ModifyProperties{
+                description = "Apply Ongoing Effect",
+                execute = function()
+                    targetToken.properties:ApplyOngoingEffect(effectid, duration, casterInfo)
                 end,
             }
         end,
@@ -2025,6 +2091,7 @@ function ActivatedAbilityDrawSteelCommandBehavior:ExecuteCommandInternal(ability
                     return
                 end
 
+                ---@type boolean?
                 local result = false
                 if options.powerRollPass == nil or options.powerRollPass == (entry.pass or "target") then
                     result = entry.execute(self, ability, casterToken, targetToken, options, match)
@@ -2286,6 +2353,78 @@ local function ScanOrStructure(lowerText)
     return segments, orSpans, commaPositions
 end
 
+--A damage clause offering a choice of type: "23 cold, fire, or sonic damage",
+--"6 + I fire or lightning damage". The list must follow an amount (a number,
+--optionally "+ characteristic") and end in "damage".
+local g_orDamageTypeListPattern = "[0-9](\\s*\\+\\s*[marip](?![a-z]))?\\s+(?<list>[a-z]+(?:,\\s*[a-z]+)*,?\\s+or\\s+[a-z]+)\\s+damage(?![a-z])"
+
+--Try to read one segment as a damage clause with a damage-type list. Returns
+--a group whose alternatives are the type words themselves, or nil. The text
+--around the list stays shared: "23 " before it, and the rest of the clause
+--(" damage", "(half)", ...) as a suffix every alternative takes, so resolving
+--option 2 yields "23 fire damage". headS marks where the clause starts, so the
+--display can show "23 " at full strength instead of dimming it as an
+--unparseable fragment.
+local function BuildDamageTypeOrGroup(text, lowerText, seg, Validates)
+    local lowerSeg = string.sub(lowerText, seg.s, seg.e)
+    local match = regex.MatchGroups(lowerSeg, g_orDamageTypeListPattern, {indexes = true})
+    if match == nil or match.list == nil then
+        return nil
+    end
+
+    local listS = seg.s + match.list.index - 1
+    local listE = listS + match.list.length - 1
+    local listText = string.sub(lowerText, listS, listE)
+
+    local alts = {}
+    for wordStart, word, wordEnd in string.gmatch(listText, "()(%a+)()") do
+        if word ~= "or" then
+            --only real damage types: keeps prose like "3 more or less damage" out.
+            if rules == nil or rules.damageTypesToInfo == nil or rules.damageTypesToInfo[word] == nil then
+                return nil
+            end
+            alts[#alts+1] = {s = listS + wordStart - 1, e = listS + wordEnd - 2, useSuffix = true}
+        end
+    end
+    if #alts < 2 then
+        return nil
+    end
+
+    local clauseS = seg.s
+    while clauseS < listS and string.sub(text, clauseS, clauseS) == " " do
+        clauseS = clauseS + 1
+    end
+
+    --every alternative must resolve to a clause the executor understands.
+    local head = string.sub(text, seg.s, listS - 1)
+    local tail = string.sub(text, listE + 1, seg.e)
+    for _,alt in ipairs(alts) do
+        if not Validates(head .. string.sub(text, alt.s, alt.e) .. tail) then
+            return nil
+        end
+    end
+
+    return {
+        alts = alts,
+        suffixS = alts[#alts].e + 1,
+        suffixE = seg.e,
+        headS = clauseS,
+        damageTypes = true,
+    }
+end
+
+--Mirror ExecuteCommandInternal's normalization before validating a candidate
+--alternative. The trim matters: a mid-text segment's gate prefix carries the
+--leading space from after the ";", and the rule patterns are ^-anchored (the
+--executor sheds that space when it strips the "; " separator, so trimming
+--matches it).
+local function OrCandidateValidates(candidate)
+    candidate = regex.ReplaceAll(candidate, "<[^<>]*?>", "")
+    candidate = candidate:gsub("'", "")
+    candidate = trim(candidate)
+    return candidate ~= "" and ActivatedAbilityDrawSteelCommandBehavior.ValidateRule(candidate) == true
+end
+
 local function BuildOrGroups(text)
     local lowerText = string.lower(text)
     local segments, orSpans, commaPositions = ScanOrStructure(lowerText)
@@ -2297,7 +2436,13 @@ local function BuildOrGroups(text)
                 segOrs[#segOrs+1] = sp
             end
         end
+        local damageGroup = nil
         if #segOrs > 0 and seg.e >= seg.s then
+            damageGroup = BuildDamageTypeOrGroup(text, lowerText, seg, OrCandidateValidates)
+        end
+        if damageGroup ~= nil then
+            groups[#groups+1] = damageGroup
+        elseif #segOrs > 0 and seg.e >= seg.s then
             local lowerSeg = string.sub(lowerText, seg.s, seg.e)
 
             --a potency gate prefix distributes to every alternative.
@@ -2383,17 +2528,7 @@ local function BuildOrGroups(text)
                 end
 
                 --every alternative must validate as an executable rule.
-                --mirror ExecuteCommandInternal's normalization. The trim
-                --matters: a mid-text segment's gate prefix carries the
-                --leading space from after the ";", and the rule patterns
-                --are ^-anchored (the executor sheds that space when it
-                --strips the "; " separator, so trimming matches it).
-                local Validates = function(candidate)
-                    candidate = regex.ReplaceAll(candidate, "<[^<>]*?>", "")
-                    candidate = candidate:gsub("'", "")
-                    candidate = trim(candidate)
-                    return candidate ~= "" and ActivatedAbilityDrawSteelCommandBehavior.ValidateRule(candidate) == true
-                end
+                local Validates = OrCandidateValidates
 
                 --an alternative takes the distributed suffix only when it
                 --needs it to validate: "M<2 prone or bleeding (eot)" must
@@ -2430,8 +2565,10 @@ local function BuildOrGroups(text)
 end
 
 --- Parse "or" choice groups out of power table rule text.
+--- Damage-type groups ("23 cold, fire, or sonic damage") set damageTypes =
+--- true; their alternatives are the type words and headS is the clause start.
 --- @param text string
---- @return nil|{alts: {s: number, e: number}[], suffixS: number, suffixE: number}[]
+--- @return nil|{alts: {s: number, e: number, useSuffix: boolean}[], suffixS: number, suffixE: number, headS: number|nil, damageTypes: boolean|nil}[]
 function ActivatedAbilityDrawSteelCommandBehavior.ParseOrGroups(text)
     if type(text) ~= "string" or text == "" then
         return nil
@@ -2645,7 +2782,7 @@ end
 
 --- @param caster creature
 --- @param rule string
---- @param notes {string}|nil
+--- @param notes? string[] Explanations of the substitutions made are appended here.
 --- @return string
 function ActivatedAbilityDrawSteelCommandBehavior.NormalizeDamageRuleTextForCreature(caster, rule, notes)
     local original = rule
@@ -2695,11 +2832,12 @@ end
 
 --- @param caster creature
 --- @param rule string
---- @param notes {string}|nil
+--- @param notes? string[] Explanations of the substitutions made are appended here.
 --- @return string
 function ActivatedAbilityDrawSteelCommandBehavior.NormalizeRuleTextForCreature(caster, rule, notes)
     local result = ActivatedAbilityDrawSteelCommandBehavior.NormalizeDamageRuleTextForCreature(caster, rule, notes)
-    result = StringInterpolateGoblinScript(result, caster)
+    --non-nil: result is a string.
+    result = StringInterpolateGoblinScript(result, caster) --[[@as string]]
     return result
 end
 
@@ -2848,8 +2986,8 @@ local g_diagnosticStopwords = {
     -- positives during the Silver+ compendium sweep. Most are
     -- modals, pronouns, or quantifiers that share short edit
     -- distance with mechanical vocab (e.g. "can" -> "cant",
-    -- "other" -> "another", "whose" -> "choose").
-    ["can"] = true, ["cant"] = true,
+    -- "other" -> "another", "whose" -> "choose"). ("can" is listed above.)
+    ["cant"] = true,
     ["other"] = true, ["others"] = true,
     ["whose"] = true, ["whom"] = true, ["who"] = true,
     ["which"] = true, ["whether"] = true,
@@ -3453,7 +3591,9 @@ local function DiagnoseUnparsedSegment(segment, vocab, compendiumKeywords, known
     -- knownWordsLookup is the union of every vocab bucket so we
     -- don't suggest typo corrections for words that legitimately
     -- live in vocab (e.g. rider-name components like "tail").
+    ---@type string?
     local kind1Word = nil
+    ---@type string?
     local kind1Suggestion = nil
     local conditionAlreadyFlagged = nil
     if #findings > 0 and findings[1].kind == "duration_missing" then
@@ -3471,6 +3611,8 @@ local function DiagnoseUnparsedSegment(segment, vocab, compendiumKeywords, known
     end
 
     if kind1Word ~= nil then
+        --set together with kind1Word.
+        ---@cast kind1Suggestion -nil
         findings[#findings+1] = {
             kind = "near_miss",
             severity = "warning",
@@ -3905,6 +4047,21 @@ function ActivatedAbility:Cast(casterToken, targets, options)
                 print(string.format("ForcedMovement:: could not convert %s to %s (template=%s range=%s)",
                     nativeType, chosenType, tostring(template ~= nil), tostring(self:try_get("range"))))
             end
+        end
+    end
+
+    --The caster is always the last target, however the ability was cast.
+    if self.forceCasterTarget and self.targetType == "target" and casterToken ~= nil then
+        local hasCaster = false
+        for _, target in ipairs(targets or {}) do
+            if target.token ~= nil and target.token.charid == casterToken.charid then
+                hasCaster = true
+                break
+            end
+        end
+        if not hasCaster then
+            targets = table.shallow_copy(targets or {})
+            targets[#targets + 1] = { loc = casterToken.loc, token = casterToken }
         end
     end
 

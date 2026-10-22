@@ -715,6 +715,27 @@ local function CreateTriggeredAbilityPanel()
     return resultPanel
 end
 
+-- Called after an ability is added to a hero from the sheet. A Companion-keyword
+-- ability is used by the companion, not the hero, so say so and point to where it is listed.
+local function WarnIfCompanionAbility(creature, ability)
+    if not ability:has_key("keywords") or not ability:HasKeyword("Companion") then
+        return
+    end
+
+    -- Only warn when it really is hidden
+    local guid = ability:try_get("guid")
+    for _, a in ipairs(creature:GetActivatedAbilities {}) do
+        if a:try_get("guid") == guid then
+            return
+        end
+    end
+
+    gui.ModalMessage {
+        title = "Companion Ability",
+        message = string.format("%s has the Companion keyword. It does not appear with your own abilities - you can find it, edit it or delete it under Companion Abilities.", ability.name),
+    }
+end
+
 local function CreateAbilityListPanel()
     local resultPanel
 
@@ -795,11 +816,31 @@ local function CreateAbilityListPanel()
         },
     }
 
+    -- Companion-keyword abilities are hidden from the normal lists (they belong
+    -- to the beastheart's companion), so they get their own section here.
+    -- Without it, ones stored on the hero could never be edited or deleted.
+    local m_companionAbilityPanels = {}
+    local m_companionLabel = gui.Label {
+        classes = { "submenuHeading", "collapsed" },
+        data = { ord = "companion" },
+        width = "100%",
+        text = "Companion Abilities",
+        press = function(element)
+            element:SetClassTree("collapseSet", not element:HasClass("collapseSet"))
+            resultPanel:FireEvent("refreshToken")
+        end,
+        gui.CollapseArrow {
+            halign = "right",
+            valign = "center",
+        },
+    }
+
     m_mainActionsLabel:SetClassTree("collapseSet", true)
     m_maneuversLabel:SetClassTree("collapseSet", true)
     m_triggersLabel:SetClassTree("collapseSet", true)
     m_otherActionsLabel:SetClassTree("collapseSet", true)
     m_villainActionsLabel:SetClassTree("collapseSet", true)
+    m_companionLabel:SetClassTree("collapseSet", true)
 
     local function IsVillainAction(ability)
         local v = ability:try_get("villainAction")
@@ -933,6 +974,7 @@ local function CreateAbilityListPanel()
         m_triggersLabel,
         m_otherActionsLabel,
         m_villainActionsLabel,
+        m_companionLabel,
         m_villainSlotsPanel,
         styles = buildActionMenuStyles(),
         --The malice/heroic cost diamond on each ability row deliberately sticks
@@ -995,6 +1037,28 @@ local function CreateAbilityListPanel()
                 showAbilities[g_villainActionId] = true
             end
 
+            -- Companion abilities: the Companion-keyword ones the default
+            -- query dropped. Some characters already list them normally (the
+            -- usecompanionabilities attribute), so skip any already shown.
+            local shownGuids = {}
+            for _, ability in ipairs(abilities) do
+                shownGuids[ability:try_get("guid", "")] = true
+            end
+            local companionAbilities = {}
+            for _, ability in ipairs(c:GetActivatedAbilities { excludeKeywords = {} }) do
+                if ability:has_key("keywords") and ability:HasKeyword("Companion")
+                    and not shownGuids[ability:try_get("guid", "")] then
+                    companionAbilities[#companionAbilities + 1] = ability
+                end
+            end
+            m_companionLabel:SetClass("collapsed", #companionAbilities == 0)
+            if m_companionLabel:HasClass("collapseSet") then
+                companionAbilities = {}
+            end
+            table.sort(companionAbilities, function(a, b)
+                return a.name < b.name
+            end)
+
             local filteredAbilities = {}
             for _, ability in ipairs(abilities) do
                 local actionResource = GetActionId(ability)
@@ -1055,8 +1119,18 @@ local function CreateAbilityListPanel()
                 children[#children + 1] = m_triggeredAbilityPanels[i]
             end
 
+            while #m_companionAbilityPanels < #companionAbilities do
+                m_companionAbilityPanels[#m_companionAbilityPanels + 1] = CreateAbilityPanel()
+            end
+
+            for i = 1, #companionAbilities do
+                m_companionAbilityPanels[i]:FireEventTree("ability", companionAbilities[i], c)
+                m_companionAbilityPanels[i].data.ord = "companion"
+                children[#children + 1] = m_companionAbilityPanels[i]
+            end
+
             --now insert the headings at the right locations.
-            local headings = { m_mainActionsLabel, m_maneuversLabel, m_triggersLabel, m_otherActionsLabel, m_villainActionsLabel }
+            local headings = { m_mainActionsLabel, m_maneuversLabel, m_triggersLabel, m_otherActionsLabel, m_villainActionsLabel, m_companionLabel }
             local j = 1
             while #headings > 0 and j <= #children do
                 for n, heading in ipairs(headings) do
@@ -1097,6 +1171,11 @@ local function CreateAbilityListPanel()
             for i = #triggeredAbilities + 1, #m_triggeredAbilityPanels do
                 m_triggeredAbilityPanels[i]:SetClass("collapsed", true)
                 children[#children + 1] = m_triggeredAbilityPanels[i]
+            end
+
+            for i = #companionAbilities + 1, #m_companionAbilityPanels do
+                m_companionAbilityPanels[i]:SetClass("collapsed", true)
+                children[#children + 1] = m_companionAbilityPanels[i]
             end
 
             element.children = children
@@ -1212,7 +1291,8 @@ local function CreateAbilityListPanel()
 
     ThemeEngine.OnThemeChanged(mod, function()
         if resultPanel ~= nil and resultPanel.valid then
-            resultPanel.styles = buildActionMenuStyles()
+            --MergeTokens returns nil only for a nil rule list; this one is a literal.
+            resultPanel.styles = buildActionMenuStyles() --[[@as StyleArgs[] ]]
         end
     end)
 
@@ -2555,6 +2635,7 @@ local EditResistanceEntry = function(creature, resistanceEntry, params)
                     end,
 
                     refresh = function(element)
+                        ---@cast element Dropdown
                         element.idChosen = cond(resistanceEntry.dr >= 0, "immunity", "vulnerability")
                     end,
                 },
@@ -5108,7 +5189,11 @@ local function DSCharSheet()
                                             end,
                                         }
                                     }
-                                    CharacterSheet.instance:AddChild(CharacterSkillDialog.CreateAsChild(options))
+                                    --nil when the sheet's token is not a hero or follower.
+                                    local dialog = CharacterSkillDialog.CreateAsChild(options)
+                                    if dialog ~= nil then
+                                        CharacterSheet.instance:AddChild(dialog)
+                                    end
                                 end,
                             },
 
@@ -5226,6 +5311,7 @@ local function DSCharSheet()
                                     CharacterSheet.instance.data.info.token.properties:AddInnateActivatedAbility(
                                         newAbility)
                                     CharacterSheet.instance:FireEvent("refreshAll")
+                                    WarnIfCompanionAbility(CharacterSheet.instance.data.info.token.properties, newAbility)
                                 end,
                                 cancel = function(element)
                                 end,
@@ -5266,6 +5352,7 @@ local function DSCharSheet()
                             CharacterSheet.instance.data.info.token.properties:AddInnateActivatedAbility(
                                 clipboardItem)
                             CharacterSheet.instance:FireEvent("refreshAll")
+                            WarnIfCompanionAbility(CharacterSheet.instance.data.info.token.properties, clipboardItem)
                         end,
 
                         refreshToken = function(element, info)
@@ -5670,7 +5757,8 @@ local function DSCharSheet()
                                         end
                                         ThemeEngine.OnThemeChanged(mod, function()
                                             if element ~= nil and element.valid then
-                                                element.styles = rebuild()
+                                                --MergeTokens returns nil only for a nil rule list; this one is a literal.
+                                                element.styles = rebuild() --[[@as StyleArgs[] ]]
                                             end
                                         end)
                                     end,
@@ -6331,7 +6419,6 @@ local function DSCharSheet()
 
                             width = 220,
                             height = 70,
-                            halign = "horizontal",
                             valign = "top",
 
                             lmargin = 20,
@@ -6478,7 +6565,6 @@ local function DSCharSheet()
 
                             width = 120,
                             height = 120,
-                            halign = "horizontal",
                             valign = "center",
 
                             lmargin = -2,
@@ -6706,8 +6792,6 @@ local function DSCharSheet()
                                 bgcolor = "clear",
                                 width = "auto",
                                 height = "50%",
-                                bgimage = true,
-                                bgcolor = "clear",
 
                                 valign = "center",
                                 halign = "center",

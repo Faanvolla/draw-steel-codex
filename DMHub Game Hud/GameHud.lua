@@ -503,10 +503,8 @@ function GameHud.TooltipPlacementOutsideBox(minx, miny, maxx, maxy)
 	--the map. (This used dmhub.mouseLoc, which does not exist, so it never ran.)
 	local mouseLoc = dmhub.GetMouseWorldPoint()
 	local usable = dmhub.cameraUsableBounds
-	if usable ~= nil and (mouseLoc.x < usable.x1 or mouseLoc.x > usable.x2 or mouseLoc.y < usable.y1 or mouseLoc.y > usable.y2) then
-		mouseLoc = nil
-	end
-	if mouseLoc ~= nil then
+	local mouseOnMap = usable == nil or not (mouseLoc.x < usable.x1 or mouseLoc.x > usable.x2 or mouseLoc.y < usable.y1 or mouseLoc.y > usable.y2)
+	if mouseOnMap then
 		local cursorPad = 1.2
 		if mouseLoc.x - cursorPad < minx then minx = mouseLoc.x - cursorPad end
 		if mouseLoc.x + cursorPad > maxx then maxx = mouseLoc.x + cursorPad end
@@ -644,7 +642,7 @@ function GameHud.TokenMoving(self, token, path)
 	local diagonals = dmhub.GetSettingValue("truediagonals") and math.floor(path.numDiagonals/2) or 0
 
 	local distance = path.numSteps + diagonals
-	distance = distance * dmhub.FeetPerTile
+	distance = distance * dmhub.unitsPerSquare
 
     local forcedText = ""
 
@@ -681,20 +679,20 @@ function GameHud.TokenMoving(self, token, path)
 		local moveType = token.properties:CurrentMoveType()
 		if moveType == "walk" or moveType == "swim" then
 
-			local waterSteps = math.floor(path.waterSteps) * dmhub.FeetPerTile
+			local waterSteps = math.floor(path.waterSteps) * dmhub.unitsPerSquare
 			if waterSteps > 0 and waterSteps < distance then
 				text = string.format("%s; swim %s %s", text, MeasurementSystem.NativeToDisplayString(waterSteps), string.lower(MeasurementSystem.UnitName()))
 				walkAndSwim = true
 			end
 
-			local difficultDistance = math.floor(path.difficultSteps) * dmhub.FeetPerTile
+			local difficultDistance = math.floor(path.difficultSteps) * dmhub.unitsPerSquare
 			if difficultDistance == distance and distance > 0 then
 				text = string.format("%s; all in difficult terrain", text)
 			elseif difficultDistance > 0 then
 				text = string.format("%s; %s %s in difficult terrain", text, MeasurementSystem.NativeToDisplayString(difficultDistance), string.lower(MeasurementSystem.UnitName()))
 			end
 
-			local squeezeDistance = math.floor(path.squeezeSteps) * dmhub.FeetPerTile
+			local squeezeDistance = math.floor(path.squeezeSteps) * dmhub.unitsPerSquare
 			if squeezeDistance == distance and distance > 0 then
 				text = string.format("%s; squeezing through a tight space", text)
 			elseif squeezeDistance > 0 then
@@ -749,7 +747,7 @@ function GameHud.TokenMoving(self, token, path)
 
 		local distMoved = creature:DistanceMovedThisTurn()
 		if distMoved > 0 then
-			text = string.format("%s\nAlready moved %s %s this turn.", text, MeasurementSystem.NativeToDisplayString(distMoved*dmhub.FeetPerTile), string.lower(MeasurementSystem.UnitName()))
+			text = string.format("%s\nAlready moved %s %s this turn.", text, MeasurementSystem.NativeToDisplayString(distMoved*dmhub.unitsPerSquare), string.lower(MeasurementSystem.UnitName()))
 		end
 	end
 
@@ -1497,6 +1495,11 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 	local m_presentDialogParentElement = nil
 	local m_presentDialogUpdateTime = nil
 
+	--A map dialog this client presented, until its echo brings the server
+	--timestamp: then it is noted shown, so the tabletop late-dialog path
+	--never replays this client's own presentation (the "Draw Steel" banner).
+	local m_ownMapPresentation = nil
+
     local m_recordedPopup = nil
 
 	local parentPanel = gui.Panel({
@@ -1532,6 +1535,10 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 				m_presentedDialogArgs = {dialog = dialog, args = args}
 
                 local args = DeepCopy(m_presentedDialogArgs)
+                m_ownMapPresentation = nil
+                if type(args.args) == "table" and args.args.mapid ~= nil then
+                    m_ownMapPresentation = DeepCopy(args)
+                end
 
                 local dialogInfo = g_presentableDialogs[dialog]
                 if dialogInfo ~= nil and not dialogInfo.keeplocal then
@@ -1576,7 +1583,18 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 				end
 
 				if data.dialog ~= nil then
-                    if data.dialog.args.ttl ~= nil and TimestampAgeInSeconds(data.timestamp) > data.dialog.args.ttl then
+                    --the timestamp is a placeholder string until the server echo.
+                    if m_ownMapPresentation ~= nil and type(data.timestamp) == "number"
+                            and dmhub.DeepEqual(m_ownMapPresentation, data.dialog) then
+                        Tabletop.NoteMapDialogShown(data)
+                        m_ownMapPresentation = nil
+                    end
+
+                    --past its ttl a dialog is dropped -- unless it is one for a map
+                    --this client never showed because no window showed the map
+                    --(the tabletop view): it waits for that map's window instead.
+                    if data.dialog.args.ttl ~= nil and TimestampAgeInSeconds(data.timestamp) > data.dialog.args.ttl
+                            and not Tabletop.ShowLateMapDialog(data) then
                         return
 					end
 
@@ -1584,19 +1602,39 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
                         return
                     end
 
+                    --A dialog presented for one map (the "Draw Steel" banner) opens
+                    --over that map, inside its map window; with no window
+                    --showing the map, wait for one.
+                    local mapHost = nil
+                    if data.dialog.args.mapid ~= nil then
+                        mapHost = Tabletop.MapOverlayHost()
+                        if mapHost == nil then
+                            return
+                        end
+                    end
+
 					if m_presentedDialog ~= nil and m_presentedDialog.valid and dmhub.DeepEqual(m_presentedDialogArgs, data.dialog) then
 						return
 					end
 
 					m_presentedDialogArgs = DeepCopy(data.dialog)
+                    if data.dialog.args.mapid ~= nil then
+                        Tabletop.NoteMapDialogShown(data)
+                    end
                     local dialogInfo = g_presentableDialogs[m_presentedDialogArgs.dialog]
                     if dialogInfo ~= nil then
                         m_presentedDialog = dialogInfo.create(m_presentedDialogArgs.args)
                         if m_presentedDialog ~= nil then
-                            GameHud.instance.documentsPanel:AddChild(m_presentedDialog)
+                            (mapHost or GameHud.instance.documentsPanel):AddChild(m_presentedDialog)
                         end
 					elseif LaunchablePanel.LaunchPanelByName(data.dialog.dialog, data.dialog.args) then
 						m_presentedDialog = gui.GetFocus()
+						--a launched panel opens over the screen; one presented for a map
+						--(the "Draw Steel" banner) moves into that map's window.
+						if mapHost ~= nil and m_presentedDialog ~= nil and m_presentedDialog.valid then
+							m_presentedDialog:Unparent()
+							mapHost:AddChild(m_presentedDialog)
+						end
 					else
 						--panels that used to be launchable are dockable now;
 						--a remote request to present one by name still has to
@@ -1732,9 +1770,18 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 		},
 
 		children = {
+			--bottom of the stack: a maximized tabletop map window sits here,
+			--under everything else, as a full-screen map does (Tabletop.lua).
+			Tabletop.CreateLayer(),
+
             gamehud:CreateAdventureDocumentsManager(),
-		    gamehud:CreateInitiativeBar(tokenInfo),
-			gamehud:CreateShapesLayer(),
+			--initiative is per map: the bar moves into the live map window
+			--(Tabletop.MapHudSlot). The Director's Shapes overlay is drawn in
+			--that window too (#ShapesView), not over the whole screen.
+		    Tabletop.MapHudSlot(gamehud:CreateInitiativeBar(tokenInfo)),
+			--the Director's pre-combat bar for an encounter in prep, in the
+			--initiative bar's place until Draw Steel (EncounterPrep.lua).
+		    Tabletop.MapHudSlot(gamehud:CreateEncounterPrepBar()),
 
 			gamehud:RequireRollListenerPanel(),
 			FullscreenDisplay.Create{belowui = true},
@@ -1756,7 +1803,21 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 			--Documents now come first, putting the roll UI above floating windows
 			--while still leaving it below mainDialog / modal / popup / rollDialog,
 			--so modals and the dice dialog continue to win.
+			--the Director's Screen: a band down the right of the table, under
+			--the windows that lie on it (DirectorScreen.lua).
+			DirectorScreen.CreateLayer(),
 			gamehud:CreateDocumentsPanel(),
+			--minimized tabletop map windows float on the table over the
+			--windows and journals (Tabletop.lua).
+			Tabletop.CreateButtonLayer(),
+			--the Director's Screen's tab and drop hint, over the windows.
+			DirectorScreen.CreateTabLayer(),
+			--3D dice resting on the table: the Director's dice button and the
+			--dice sync (TableDice.lua; the dice themselves draw in the engine).
+			(rawget(_G, "TableDice") ~= nil and TableDice.CreateLayer()) or gui.Panel{width = 1, height = 1, interactable = false},
+			--mode banners (e.g. the encounter builder's staging banner) sit over
+			--every window, so click-to-front on a map window cannot bury them.
+			gamehud:CreateBannerLayer(),
 
 			--The action bar sits ABOVE the documents layer for the same reason.
 			--Everything the bar floats out of its strip -- the drawer menus, the
@@ -1792,6 +1853,13 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 			gamehud.rollDialog,
 
 			FullscreenDisplay.Create{belowui = false},
+			--a maximized tabletop scene on show over the UI (Tabletop.lua).
+			Tabletop.CreateTopLayer(),
+			--a maximized map or scene window's strip under the app title bar:
+			--chrome, so it is over everything the windows can be under.
+			Tabletop.CreateChromeLayer(),
+			--the Ctrl+Tab window switcher's cards, over every window and the strip.
+			WindowSwitcher.CreateLayer(),
 
 			DramaticBanner.Create(),
 
@@ -2211,6 +2279,21 @@ function GameHud:CreatePopupPanel()
 	return self.popupPanel
 end
 
+--The layer just above the documents (window) layer, for banners that show
+--a mode the user is in. Windows raise themselves within their own layer on
+--press, so a banner in the documents layer could end up under a map window;
+--one here cannot. It has no image, so it takes no mouse when empty.
+function GameHud:CreateBannerLayer()
+	self.bannerLayer = gui.Panel{
+		id = "hudBannerLayer",
+		width = "100%",
+		height = "100%",
+		interactable = false,
+	}
+
+	return self.bannerLayer
+end
+
 function GameHud:CreateFrozenLabel()
 
 	local freezebind = dmhub.GetCommandBinding("togglefreeze")
@@ -2400,11 +2483,19 @@ end
 --so a source may read replicated state (a shared document, token
 --properties) without any monitor of its own. Dismiss hides only the
 --current text of the current notice; new text shows again.
+--text() may also return a controls table, re-read every tick, that decides
+--the banner buttons: {dismiss = nil|fun(), action = nil|{text, press}}.
+--With controls, Dismiss shows only when controls.dismiss is set (it runs
+--before the banner hides) and action adds a button on the left. Without
+--controls, Dismiss shows and only hides the banner.
 --Stored on Tip so hot-reloading this file keeps sources registered from
 --other modules (the Monster AI registers its "waiting on a player" notice).
 Tip.notices = Tip.notices or {}
 
----@param spec {id: string, priority: nil|number, text: fun(): nil|string}
+---@alias TipNoticeControls {dismiss: nil|fun(), action: nil|{text: string, press: fun()}}
+---@alias TipNoticeText fun(): string|nil, TipNoticeControls|nil
+
+---@param spec {id: string, priority: nil|number, text: TipNoticeText}
 function Tip.RegisterNotice(spec)
 	Tip.notices[spec.id] = spec
 end
@@ -2484,6 +2575,8 @@ Tip.Register{
 		if q ~= nil and not q.hidden then return false end
 		local sel = dmhub.selectedTokens
 		if sel == nil or #sel ~= 1 then return false end
+		--(a creature selected off the board, a tabletop card's, has no token here.)
+		if not sel[1].onBoard then return false end
 		return true
 	end,
 	whenShown = function(state)
@@ -2535,6 +2628,7 @@ Tip.Register{
 		if dmhub.frozen then return false end
 		local sel = dmhub.selectedTokens
 		if sel == nil or #sel ~= 1 then return false end
+		if not sel[1].onBoard then return false end
 		local tok = sel[1]
 		local lightId = tok.properties:GetEquippedLightSource()
 		if lightId == nil then return false end
@@ -2609,6 +2703,7 @@ Tip.Register{
 	eligible = function()
 		local sel = dmhub.selectedTokens
 		if sel == nil or #sel ~= 1 then return false end
+		if not sel[1].onBoard then return false end
 		local tok = sel[1]
 		if tok.properties == nil then return false end
 		if tok.properties:GetCompanionType() == nil then return false end
@@ -2661,32 +2756,38 @@ function GameHud:CreateTipBanner()
 	}
 
 	--Floating so it pins to the right edge regardless of sibling layout.
-	local dismissButton = gui.Label{
+	local dismissButton = gui.Button{
 		id = "tipBannerDismiss",
-		classes = {"tipBannerContent", "sizeS"},
+		classes = {"tipBannerContent", "sizeM"},
 		text = "Dismiss",
-		color = "white",
-		fontSize = 14,
-		bold = true,
-		width = "auto",
-		height = "auto",
 		floating = true,
 		halign = "right",
 		valign = "center",
 		hmargin = 24,
-		styles = {
-			{
-				selectors = {"hover"},
-				color = "#ffe39a",
-				brightness = 1.1,
-			},
-			{
-				selectors = {"press"},
-				brightness = 0.7,
-			},
-		},
 		press = function(element)
 			GameHud.instance:HideTip()
+		end,
+	}
+
+	--A notice's extra button (e.g. "Select Shadow"), pinned to the left edge
+	--opposite Dismiss. Collapsed unless the notice's controls ask for it.
+	local actionButton = gui.Button{
+		id = "tipBannerAction",
+		classes = {"tipBannerContent", "sizeM", "collapsed"},
+		text = "",
+		floating = true,
+		halign = "left",
+		valign = "center",
+		hmargin = 24,
+		--action: the {text, press} currently shown, set by _ApplyTipControls.
+		data = {},
+		press = function(element)
+			local action = element.data.action
+			if action ~= nil then
+				action.press()
+				--hide at once; the next driver tick re-reads the controls.
+				element:SetClass("collapsed", true)
+			end
 		end,
 	}
 
@@ -2753,15 +2854,46 @@ function GameHud:CreateTipBanner()
 
 		tipLabel,
 		dismissButton,
+		actionButton,
 	}
 
 	self.tipBanner = banner
 	self.tipBannerLabel = tipLabel
+	self.tipBannerDismiss = dismissButton
+	self.tipBannerAction = actionButton
 
 	return banner
 end
 
-function GameHud:ShowTip(text)
+--Set the banner buttons from a notice's controls (see Tip.RegisterNotice).
+--nil controls (every tip, and a notice that returns none) means a plain
+--Dismiss and no action button.
+---@param controls nil|TipNoticeControls
+function GameHud:_ApplyTipControls(controls)
+	local banner = self:try_get("tipBanner")
+	if banner == nil or not banner.valid then
+		return
+	end
+	banner.data.controls = controls
+
+	local dismiss = self:try_get("tipBannerDismiss")
+	if dismiss ~= nil and dismiss.valid then
+		dismiss:SetClass("collapsed", controls ~= nil and controls.dismiss == nil)
+	end
+
+	local actionButton = self:try_get("tipBannerAction")
+	if actionButton ~= nil and actionButton.valid then
+		local action = controls ~= nil and controls.action or nil
+		actionButton.data.action = action
+		if action ~= nil and actionButton.text ~= action.text then
+			actionButton.text = action.text
+		end
+		actionButton:SetClass("collapsed", action == nil)
+	end
+end
+
+---@param controls nil|TipNoticeControls
+function GameHud:ShowTip(text, controls)
 	local banner = self:try_get("tipBanner")
 	if banner == nil or not banner.valid then
 		return
@@ -2771,6 +2903,7 @@ function GameHud:ShowTip(text)
 		label.text = text or ""
 	end
 	banner.data.currentText = text or ""
+	self:_ApplyTipControls(controls)
 	banner:SetClass("visible", true)
 	banner.interactable = true
 end
@@ -2802,6 +2935,15 @@ function GameHud:HideTip()
 	local activeNotice = self:try_get("activeNoticeId")
 	if activeNotice ~= nil then
 		local banner = self:try_get("tipBanner")
+		--A notice that supplies its own dismiss (the Monster AI dismissing
+		--the hero's prompt) runs it; the banner hides either way.
+		local controls = banner ~= nil and banner.valid and banner.data.controls or nil
+		if controls ~= nil and controls.dismiss ~= nil then
+			local ok, err = pcall(controls.dismiss)
+			if not ok then
+				print("TIP:: notice dismiss failed:", err)
+			end
+		end
 		self._noticeDismissed = {
 			id = activeNotice,
 			text = banner ~= nil and banner.valid and banner.data.currentText or "",
@@ -2829,26 +2971,28 @@ function GameHud:_HideNoticeBanner()
 	end
 end
 
---Poll every notice source; return the highest-priority one with text.
+--Poll every notice source; return the highest-priority one with text, and
+--its controls.
 function GameHud:_TipFindNotice()
-	local best, bestText = nil, nil
+	local best, bestText, bestControls = nil, nil, nil
 	for _, spec in pairs(Tip.notices) do
-		local ok, text = pcall(spec.text)
+		local ok, text, controls = pcall(spec.text)
 		if ok and type(text) == "string" and text ~= "" then
 			if best == nil or (spec.priority or 0) > (best.priority or 0) then
 				best = spec
 				bestText = text
+				bestControls = type(controls) == "table" and controls or nil
 			end
 		end
 	end
-	return best, bestText
+	return best, bestText, bestControls
 end
 
 --Notice half of the driver tick. Returns true when a notice owns the
 --banner this tick (shown, dismissed, or blocked by a dialog), in which case
 --the tip half must not run.
 function GameHud:_TipDriverNoticeTick()
-	local notice, noticeText = self:_TipFindNotice()
+	local notice, noticeText, noticeControls = self:_TipFindNotice()
 	local activeNotice = self:try_get("activeNoticeId")
 	if notice == nil then
 		if activeNotice ~= nil then
@@ -2879,7 +3023,10 @@ function GameHud:_TipDriverNoticeTick()
 	if activeNotice ~= notice.id or currentText ~= noticeText
 		or (banner ~= nil and banner.valid and not banner:HasClass("visible")) then
 		self.activeNoticeId = notice.id
-		self:ShowTip(noticeText)
+		self:ShowTip(noticeText, noticeControls)
+	else
+		--Same text, but the buttons can still change (the hero got selected).
+		self:_ApplyTipControls(noticeControls)
 	end
 	return true
 end

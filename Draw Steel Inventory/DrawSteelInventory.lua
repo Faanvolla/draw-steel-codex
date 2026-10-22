@@ -2359,7 +2359,7 @@ function GameHud.CreateInventoryDialog(self, options)
 									val[currency.id] = quantity
 								end
 
-								local spend = Currency.CalculateSpend(nil, Currency.CalculatePriceInStandard(val, standardid), standardid, true)
+								local spend = Currency.CalculatePayment(Currency.CalculatePriceInStandard(val, standardid), standardid, true)
 
 								printf("SPEND:: %s", json(spend))
 
@@ -2419,7 +2419,7 @@ function GameHud.CreateInventoryDialog(self, options)
 						val[currencyid] = token.properties:GetCurrency(currencyid)
 					end
 
-					local spend = Currency.CalculateSpend(nil, Currency.CalculatePriceInStandard(val, standardid), standardid, true)
+					local spend = Currency.CalculatePayment(Currency.CalculatePriceInStandard(val, standardid), standardid, true)
 
 					token:BeginChanges()
 					for i,currency in ipairs(standardEntry) do
@@ -3959,6 +3959,9 @@ CharSheet.RegisterTab{
 	id = "Inventory",
 	text = "Inventory",
 	panel = CreateCharSheetInventory,
+	--its three inventory dialogs are the most expensive part of the sheet, which
+	--is built with every game's hud; the tab opens its token on charsheetActivate.
+	lazy = true,
 }
 
 dmhub.RefreshCharacterSheet()

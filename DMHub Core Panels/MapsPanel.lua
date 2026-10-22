@@ -95,6 +95,48 @@ local RefreshMapDialogs = function()
 	end
 end
 
+--The map the user just clicked, shown as selected straight away while the
+--travel is still loading or dissolving in. game.currentMapId takes over once
+--the travel lands; a travel that never lands gives up after the timeout.
+local g_pendingMap = nil
+local PENDING_MAP_TIMEOUT = 30
+
+local SelectedMapId = function()
+	if g_pendingMap ~= nil then
+		if g_pendingMap.id ~= game.currentMapId and dmhub.Time() < g_pendingMap.time + PENDING_MAP_TIMEOUT then
+			return g_pendingMap.id
+		end
+		g_pendingMap = nil
+	end
+	return game.currentMapId
+end
+
+--Click on a map row: highlight it in every open map list now, then travel.
+local TravelToMap = function(map)
+	g_pendingMap = { id = map.id, time = dmhub.Time() }
+	RefreshMapDialogs()
+
+	--travel a frame later, so the highlight is drawn before the dissolve
+	--freezes a snapshot of the screen.
+	dmhub.Coroutine(function()
+		coroutine.yield(0)
+		if mod.unloaded or not map.valid then
+			return
+		end
+		--the map opens in a window on the table (the focused one, or a new
+		--one), which travels there.
+		Tabletop.OpenMap(map.id)
+	end)
+
+	--if the travel never lands, put the highlight back on the current map.
+	dmhub.Schedule(PENDING_MAP_TIMEOUT + 0.5, function()
+		if mod.unloaded then
+			return
+		end
+		RefreshMapDialogs()
+	end)
+end
+
 --Party tokens grouped by the map they are standing on -- the portrait strip
 --on each map row reads it. Rebuilt at the top of every refresh pass (a
 --dialog's own refreshMaps runs before its children's, top-down), so one
@@ -124,6 +166,22 @@ local RebuildTokensPerMap = function()
 
 	g_tokensPerMap = result
 	return result
+end
+
+--Whether a dragged row is out over the table, the map or a map window
+--rather than over a panel. The engine picks a drag target by overlap, not by what is under the
+--mouse, and a scrolled list's off-screen folders still overlap a row released
+--below the list -- which re-filed the map. Read once a frame, since
+--canDragOnto runs for every target in the list.
+local g_offPanelFrame = -1
+local g_offPanel = false
+local function DragIsOffPanel()
+	local frame = dmhub.FrameCount()
+	if frame ~= g_offPanelFrame then
+		g_offPanelFrame = frame
+		g_offPanel = dmhub.panelDropSurface ~= nil or Tabletop.MapRowOverTable()
+	end
+	return g_offPanel
 end
 
 local DragNode = function(element, target)
@@ -691,13 +749,54 @@ local CreateMapNode = function(map)
 		draggable = true,
 
 		refreshMaps = function(element)
-			element:SetClass("selected", map.valid and map.id == game.currentMapId)
+			element:SetClass("selected", map.valid and map.id == SelectedMapId())
 		end,
 
+		--mapDragTarget: this list's folders and gaps (re-files the map).
+		--mapDropTarget: a slot elsewhere that takes a map, e.g. the encounter
+		--builder's map; it is sent dropMap(mapid).
 		canDragOnto = function(element, target)
-            return target ~= nil and target:HasClass("mapDragTarget")
+            return target ~= nil and (target:HasClass("mapDragTarget") or target:HasClass("mapDropTarget")) and not DragIsOffPanel()
 		end,
-		drag = DragNode,
+		--tabletop view: over the bare table the row shows as the window a
+		--drop there opens.
+		dragging = function(element, target)
+			ChatItemLinks.Dragging(function() return {ChatItemLinks.MapItem(map.id)} end)
+			if target == nil then
+				Tabletop.MapRowDragging(element, map.id)
+			else
+				Tabletop.MapRowDragEnded(element)
+			end
+		end,
+		drag = function(element, target)
+			Tabletop.MapRowDragEnded(element)
+			--dropped on the chat: a link to the map.
+			if ChatItemLinks.Dropped() then
+				return
+			end
+			if target == nil then
+				if map.valid and Tabletop.MapRowDropped(map.id) and newMapMarker ~= nil then
+					newMapMarker:DestroySelf()
+					newMapMarker = nil
+					module.RemoveNovelContent("map", map.id)
+				end
+				return
+			end
+			if target:HasClass("mapDropTarget") then
+				if map.valid then
+					target:FireEvent("dropMap", map.id)
+				end
+				return
+			end
+			DragNode(element, target)
+		end,
+
+		--start syncing the map so the click that usually follows skips the loading screen.
+		hover = function(element)
+			if map.valid and map.id ~= game.currentMapId then
+				map:Prefetch()
+			end
+		end,
 
 		search = function(element, text)
 			local mapName = string.lower(map.description)
@@ -715,11 +814,39 @@ local CreateMapNode = function(map)
 		rightClick = function(element)
 			local entries = {}
 
+			for _,entry in ipairs(Tabletop.MapContextMenuEntries(map.id)) do
+				local click = entry.click
+				entries[#entries+1] = {
+					text = entry.text,
+					click = function()
+						element.popup = nil
+						click()
+					end,
+				}
+			end
+
 			entries[#entries+1] = {
 				text = "Map Settings...",
 				click = function()
 					element.popup = nil
 					ShowMapSettings(map)
+				end,
+			}
+
+			--only the map you are on can be rendered (MAP_THUMBNAILS.md).
+			entries[#entries+1] = {
+				text = "Refresh Thumbnail",
+				click = function()
+					element.popup = nil
+					if map.id ~= game.currentMapId then
+						gui.ModalMessage{
+							owner = element,
+							title = "Enter Map",
+							message = "You must enter the map before refreshing its thumbnail.",
+						}
+						return
+					end
+					MapThumbnail.Refresh(map)
 				end,
 			}
 
@@ -797,7 +924,9 @@ local CreateMapNode = function(map)
 				return
 			end
 
-			if (not map.valid) or map.id == game.currentMapId then
+			--the current map still takes a click: its window may be closed,
+			--or need bringing forward.
+			if not map.valid then
 				return
 			end
 
@@ -807,7 +936,7 @@ local CreateMapNode = function(map)
 				module.RemoveNovelContent("map", map.id)
 			end
 
-			map:Travel()
+			TravelToMap(map)
 		end,
 
 		data = {
@@ -1135,12 +1264,20 @@ GetPlayerAccessibleMaps = function()
 		end
 	end
 
+	--maps the Director has shared to the players' tables.
+	for _,m in ipairs(game.maps) do
+		if m.valid and result[m.id] == nil and Tabletop.CanAccessMap(m.id) then
+			result[m.id] = true
+		end
+	end
+
 	return result
 end
 
 --Read-only map row shown to players. Unlike CreateMapNode it has no rename,
---drag, delete/duplicate context menu or cover-art editor -- clicking the row
---simply travels to the map.
+--reorder drag, delete/duplicate context menu or cover-art editor -- clicking
+--the row simply opens the map. It can be dragged onto the table to open the
+--map in a window there.
 local CreatePlayerMapNode = function(map)
 	local resultPanel
 
@@ -1165,8 +1302,27 @@ local CreatePlayerMapNode = function(map)
 		idprefix = "player-map-panel",
 		classes = {"mapRow"},
 
+		--a drag goes onto the table, as a window.
+		draggable = true,
+		canDragOnto = function(element, target)
+			return false
+		end,
+		dragging = function(element, target)
+			ChatItemLinks.Dragging(function() return {ChatItemLinks.MapItem(map.id)} end)
+			Tabletop.MapRowDragging(element, map.id)
+		end,
+		drag = function(element, target)
+			Tabletop.MapRowDragEnded(element)
+			if ChatItemLinks.Dropped() then
+				return
+			end
+			if map.valid then
+				Tabletop.MapRowDropped(map.id)
+			end
+		end,
+
 		refreshMaps = function(element)
-			element:SetClass("selected", map.valid and map.id == game.currentMapId)
+			element:SetClass("selected", map.valid and map.id == SelectedMapId())
 		end,
 
 		search = function(element, text)
@@ -1175,9 +1331,39 @@ local CreatePlayerMapNode = function(map)
 			element:SetClass("collapsed", string.find(mapName, searchText) == nil)
 		end,
 
-		click = function(element)
+		--start syncing the map so the click that usually follows skips the loading screen.
+		hover = function(element)
 			if map.valid and map.id ~= game.currentMapId then
-				map:Travel()
+				map:Prefetch()
+			end
+		end,
+
+		click = function(element)
+			if element.popup ~= nil then
+				element.popup = nil
+				return
+			end
+			if map.valid then
+				TravelToMap(map)
+			end
+		end,
+
+		rightClick = function(element)
+			local entries = {}
+			for _,entry in ipairs(Tabletop.MapContextMenuEntries(map.id)) do
+				local click = entry.click
+				entries[#entries+1] = {
+					text = entry.text,
+					click = function()
+						element.popup = nil
+						click()
+					end,
+				}
+			end
+			if #entries > 0 then
+				element.popup = gui.ContextMenu{
+					entries = entries,
+				}
 			end
 		end,
 

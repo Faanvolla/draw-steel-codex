@@ -1,5 +1,10 @@
 local mod = dmhub.GetModLoading()
 
+--Regex for the optional damage type between a tier's amount and "damage":
+--one type ("5 fire damage") or a choice of types ("23 cold, fire, or sonic
+--damage", an "or" choice group; see ParseOrGroups). One capture group.
+local g_tierDamageTypes = "([a-zA-Z]+(?:(?:,\\s*[a-zA-Z]+)*,?\\s+or\\s+[a-zA-Z]+)?\\s+)?"
+
 CharacterModifier.DeregisterType("d20")
 
 CharacterModifier.displayCondition = ""
@@ -233,9 +238,11 @@ function CharacterModifier:CheckRollRequirement(rollInfo, enabledModifiers, roll
     elseif requirement == "doubleedge" then
         return edges >= 2 and banes <= 0
     elseif requirement == "nobane" then
-        return banes <= 0
+        --Edges and banes cancel one for one, so "no bane" means the NET result is not a bane
+        --(1 edge + 1 bane is a normal roll). Same cancellation as the "bane" case above.
+        return not (banes > edges and edges < 2)
     elseif requirement == "noedge" then
-        return edges <= 0
+        return not (edges > banes and banes < 2)
     elseif requirement == "skilled" or requirement == "unskilled" then
         local hasSkill = false
         for _,mod in ipairs(enabledModifiers) do
@@ -264,6 +271,34 @@ function CharacterModifier:CheckRollRequirement(rollInfo, enabledModifiers, roll
     end
 
     return true
+end
+
+--A hero's power-roll trigger accepted on a Monster AI roll (e.g. In All This
+--Confusion on a monster's strike) resolves its custom trigger only after the
+--monster's cast ends, so no event marks it as a reaction the AI must wait on.
+--This marks it at roll-confirm, while the AI's activity is still in flight on
+--this client (only the AI host has one), and returns the ids, or nil when no
+--AI is acting or the trigger's owner is not a player's hero.
+--- @param token CharacterToken|nil The trigger's owner.
+--- @param modifier CharacterModifier The power modifier carrying the custom trigger.
+--- @return string|nil activityId
+--- @return string|nil reactionId
+local function BeginRollTriggerAIReaction(token, modifier)
+    local activityId = creature.GetAIActivityInProgress()
+    if activityId == nil or token == nil or not token.valid or not token.playerControlled then
+        return nil, nil
+    end
+
+    local reactionId = dmhub.GenerateGuid()
+    local abilityName = modifier:try_get("name")
+    if type(abilityName) ~= "string" or abilityName == "" then
+        local customTrigger = modifier:try_get("customTrigger")
+        abilityName = customTrigger ~= nil and customTrigger.name or nil
+    end
+    --"resolving": the player already chose on the roll, so there is no prompt
+    --card for the AI to match the marker to.
+    token.properties:BeginPendingAIActivityReaction(activityId, reactionId, abilityName, "resolving")
+    return activityId, reactionId
 end
 
 CharacterModifier.TypeInfo.power = {
@@ -296,6 +331,7 @@ CharacterModifier.TypeInfo.power = {
             --going through the (already deferred) remoteInvokes queue. It also
             --lifts the trigger's cast out of the ModifyProperties execute
             --block this runs inside (see ConsumeResource in DSRollDialog).
+            local aiActivityId, aiReactionId = BeginRollTriggerAIReaction(token, modifier)
             ActivatedAbility.RunWhenCastsComplete(function()
                 if token == nil or not token.valid then
                     return
@@ -303,7 +339,25 @@ CharacterModifier.TypeInfo.power = {
                 --The contextual target types (abilitycaster / abilitytarget /
                 --triggerer) resolve inside Trigger's targeting from the
                 --symbols appended here; no subject resolution is needed.
-                modifier.customTrigger:Trigger(modifier, creature, modifier:AppendSymbols{}, nil, modContext)
+                local symbols = modifier:AppendSymbols{}
+                local argOptions = {}
+                if aiActivityId ~= nil then
+                    --The trigger's cast completes the marker when it finishes, and
+                    --symbols.aiActivityId hands it on to anything that resolves on
+                    --another machine (a runOnController invoke, a custom trigger).
+                    symbols.aiActivityId = aiActivityId
+                    argOptions.aiActivityId = aiActivityId
+                    argOptions.aiReactionId = aiReactionId
+                end
+                modifier.customTrigger:Trigger(modifier, creature, symbols, nil, modContext, argOptions)
+
+                --Release the marker when the trigger's cast never took it over:
+                --a gate in Trigger stopped it, or a prompted trigger replaced it
+                --with a marker of its own (the prompt card then holds the AI).
+                if aiActivityId ~= nil and (argOptions.aiReactionId ~= aiReactionId
+                        or not argOptions.aiReactionHandedOff) then
+                    token.properties:CompletePendingAIActivityReaction(aiActivityId, aiReactionId)
+                end
             end)
 		end
 
@@ -340,12 +394,21 @@ CharacterModifier.TypeInfo.power = {
 				end
 			end
 
+			--Duration 0 expires instantly outside combat (see
+			--CharacterOngoingEffectInstance:Expired). armEffectIndefinite applies the
+			--marker with no duration instead; the marker must then purge itself.
+			---@type number|nil
+			local armDuration = 0
+			if modifier:try_get("armEffectIndefinite", false) then
+				armDuration = nil
+			end
+
 			local armToken = dmhub.LookupToken(armSubject)
 			if armToken ~= nil and armToken.valid then
 				if armSubject == creature then
 					--the owner's properties are already inside the caller's
 					--ModifyProperties block (see ConsumeResource in DSRollDialog).
-					armToken.properties:ApplyOngoingEffect(armEffect, 0, nil, {})
+					armToken.properties:ApplyOngoingEffect(armEffect, armDuration, nil, {})
 				else
 					--a different token: needs its own ModifyProperties or the
 					--mutation never uploads.
@@ -353,10 +416,15 @@ CharacterModifier.TypeInfo.power = {
 						description = "Arm Triggered Effect",
 						undoable = false,
 						execute = function()
-							armToken.properties:ApplyOngoingEffect(armEffect, 0, nil, {})
+							armToken.properties:ApplyOngoingEffect(armEffect, armDuration, nil, {})
 						end,
 					}
 				end
+
+				--Damage resolves in the same frame as roll-confirm, so drop the cached
+				--modifier list now; otherwise the marker's own modifiers (e.g. an
+				--immunity) are invisible to that damage and to its cleanup triggers.
+				armToken.properties:Invalidate()
 			end
 		end
 
@@ -916,7 +984,7 @@ CharacterModifier.TypeInfo.power = {
                 for i,tier in ipairs(rollProperties.tiers) do
                     if damageModifierType == "none" then
                         --add to existing damage
-                        local match = regex.MatchGroups(tier, "(?<damage>\\d+)\\s+([a-zA-Z]+\\s+)?damage", {indexes = true})
+                        local match = regex.MatchGroups(tier, "(?<damage>\\d+)\\s+" .. g_tierDamageTypes .. "damage", {indexes = true})
                         if match ~= nil then
                             local index = match.damage.index
                             local length = match.damage.length
@@ -939,7 +1007,7 @@ CharacterModifier.TypeInfo.power = {
                         local extraDamage = string.format("%s %s damage", damage, damageModifierType)
 
                         --try to find existing damage and place after it if possible.
-                        local match = regex.MatchGroups(tier, "^(?<prefix>.*?)(?<damage>\\d+\\s+([a-zA-Z]+\\s+)?damage)(?<suffix>.*)$")
+                        local match = regex.MatchGroups(tier, "^(?<prefix>.*?)(?<damage>\\d+\\s+" .. g_tierDamageTypes .. "damage)(?<suffix>.*)$")
                         if match ~= nil then
                             tier = string.format("%s%s; %s %s", match.prefix, match.damage, extraDamage, match.suffix)
                         else
@@ -956,7 +1024,7 @@ CharacterModifier.TypeInfo.power = {
         local damageMultiplier = self:try_get("damageMultiplier", "full")
         if damageMultiplier ~= "full" then
             for i,tier in ipairs(rollProperties.tiers) do
-                local match = regex.MatchGroups(tier, "(?<damage>\\d+\\s+([a-zA-Z]+\\s+)?damage)", {indexes = true})
+                local match = regex.MatchGroups(tier, "(?<damage>\\d+\\s+" .. g_tierDamageTypes .. "damage)", {indexes = true})
                 if match ~= nil then
                     local index = match.damage.index
                     local length = match.damage.length
@@ -979,7 +1047,7 @@ CharacterModifier.TypeInfo.power = {
             reduction = tonumber(reduction) or 0
             if reduction > 0 then
                 for i,tier in ipairs(rollProperties.tiers) do
-                    local match = regex.MatchGroups(tier, "(?<damage>\\d+)\\s+(\\+\\s*\\d+d\\d+\\s+)?([a-zA-Z]+\\s+)?damage", {indexes = true})
+                    local match = regex.MatchGroups(tier, "(?<damage>\\d+)\\s+(\\+\\s*\\d+d\\d+\\s+)?" .. g_tierDamageTypes .. "damage", {indexes = true})
                     if match ~= nil then
                         local index = match.damage.index
                         local length = match.damage.length

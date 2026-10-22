@@ -19,7 +19,7 @@ local mod = dmhub.GetModLoading()
 --- @field knownCantrips string[] Ids of known cantrips.
 --- @field knownSpells string[] Ids of known spells.
 --- @field memorizedSpells string[] Ids of memorized (prepared) spells.
---- @field grantedSpells string[] Ids of spells automatically granted by this feature.
+--- @field grantedSpells {spellid: string, source: string}[] Spells automatically granted by this feature, with the name of the modifier granting each (see ModifierGrantSpells).
 --- @field upcastingType string When upcasting is allowed: "cast", "prepared", or "none".
 --- @field canUseSpellSlots boolean If true, the caster can spend spell slots.
 --- @field ritualCasting boolean If true, the caster can cast rituals without expending a slot.

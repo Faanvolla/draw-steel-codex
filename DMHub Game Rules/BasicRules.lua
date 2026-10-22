@@ -69,8 +69,8 @@ DamageInstance = RegisterGameType("DamageInstance")
 --- @field damageType? string Single-damage form: damage type.
 AttackDefinition = RegisterGameType("AttackDefinition")
 
---- Returns an Attack object generated from this definition for the given character.
---- @param char character
+--- Returns an Attack object generated from this definition for the given creature.
+--- @param char creature Any creature: creature:GetAttackActions passes its innate attacks here.
 --- @return Attack
 --Returns an Attack based on this definition.
 function AttackDefinition.GenerateAttackInstance(self, char)
@@ -161,6 +161,7 @@ ResistanceEntry.stacks = false
 --- @class Loc: GameType
 --- @field new fun(o?: table): Loc
 --- @field _tmp_loc table Internal engine loc object (not serialized).
+--- @field _tmp_casterid? string Charid of the casting token, set while a location target filter runs (not serialized).
 --- Wrapper around the engine's Loc type that exposes position info to GoblinScript.
 --wrapper for Locs from the engine.
 Loc = RegisterGameType("Loc")

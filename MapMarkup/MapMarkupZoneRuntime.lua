@@ -6,6 +6,13 @@ local mod = dmhub.GetModLoading()
 local MM = MapMarkupImpl
 local K, m, gs = MM.K, MM.m, MM.gs
 
+--One sampled light state in m.dynamicLight.states, written by the light
+--sampler below and read when carving dynamic-light zones.
+---@class MarkupDynamicLightState
+---@field state string The engine's hash of the sample (passed back as knownState).
+---@field dark table<string, boolean> Dark tiles, keyed by MM.ZoneLocKey.
+---@field sampled table<string, boolean>|nil Tiles sampled in locs mode; nil in rect mode.
+
 --============================================================================
 --ZoneManager: the cache of zone records resolved against their keywords,
 --rebuilt whenever the records (dmhub.markupZonesSeq), the map, or the
@@ -557,6 +564,7 @@ function m.entireMap.Rebuild(floors)
                 --sampler currently reports dark. No sample yet = covers
                 --nothing: on a lit map that avoids a flash of whole-map
                 --darkness in the second before the first sample lands.
+                ---@type MarkupDynamicLightState|nil
                 local darkState = nil
                 if dynPct ~= nil then
                     darkState = m.dynamicLight.states[m.dynamicLight.StateKey(floorInfo.floorid, dynPct)]
@@ -567,8 +575,9 @@ function m.entireMap.Rebuild(floors)
                     for y = y0, y1 do
                         for x = x0, x1 do
                             local key = MM.ZoneLocKey(x, y)
+                            --inside this block darkState is nil exactly when dynPct is nil.
                             if blocked[key] == nil
-                                and (dynPct == nil or darkState.dark[key] ~= nil) then
+                                and (darkState == nil or darkState.dark[key] ~= nil) then
                                 locs[#locs+1] = { x = x, y = y }
                             end
                         end
@@ -1078,6 +1087,8 @@ function m.dispelState.RebuildLists()
         if suppressed == nil then
             instances[#instances+1] = instance
         else
+            --suppressed is only set when entry is non-nil.
+            ---@cast entry -nil
             local filtered = {}
             for _,loc in ipairs(entry.locsUserdata or {}) do
                 if suppressed[MM.ZoneLocKey(math.floor(loc.x + 0.5), math.floor(loc.y + 0.5))] == nil then
@@ -1495,8 +1506,9 @@ pcall(function()
         EnsureZoneCache()
         EnsureKeywordAuraZones(true)
         local base = m.zoneAuraInstances
-        if m.dispelState.auraInstances ~= nil then
-            base = m.dispelState.auraInstances
+        local dispelledInstances = m.dispelState.auraInstances
+        if dispelledInstances ~= nil then
+            base = dispelledInstances
         end
 
         --Objectless keyword ability auras ride along as rules-only clones
@@ -1565,8 +1577,9 @@ pcall(function()
             --dispelled render with the suppressed tiles removed, matching
             --the reduced aura registered for them.
             local auraZones = EnsureKeywordAuraZones(false)
-            if m.dispelState.overlayZones ~= nil then
-                zones = m.dispelState.overlayZones
+            local dispelledZones = m.dispelState.overlayZones
+            if dispelledZones ~= nil then
+                zones = dispelledZones
             end
             if #auraZones > 0 then
                 local combined = {}
@@ -1755,10 +1768,67 @@ end)
 --(keyword-aura zones - a monster's Darkness - are always on screen for
 --everyone and count as player-visible). Non-DM clients only receive the
 --player-visible types, so the menu cannot leak hidden zone types.
+--Only zones reaching the map's current bounds count, so during an encounter
+--terrain outside its region is not listed.
 --Lives on a global table so the title bar can reach it with rawget: the
 --module may be absent (lobby game) or not yet loaded.
 if rawget(_G, "MapMarkup") == nil then
     MapMarkup = {}
+end
+
+--The current map's tiles as inclusive {x0, y0, x1, y1}, or nil. An encounter
+--shrinks the map's dimensions to its region (Encounter.ApplyRegion), so this
+--is the encounter's bounds while one is running.
+local function CurrentMapTileBounds()
+    local dims = nil
+    pcall(function()
+        local map = game.currentMap
+        if map ~= nil then
+            dims = map.dimensions
+        end
+    end)
+    if dims == nil then
+        return nil
+    end
+    --dimensions = (dimMin.x, dimMin.y, dimMax.x+1, dimMax.y+1); see ZoneAreaDescription.
+    return { x0 = dims.x, y0 = dims.y, x1 = dims.z - 1, y1 = dims.w - 1 }
+end
+
+--True when any of a zone's tiles lies inside bounds. The tiles' bounding box
+--is cached on the entry (keyed by its locs table, so a replaced list is
+--re-measured), making a zone wholly inside or outside the bounds O(1); only a
+--zone straddling the edge scans its tiles, stopping at the first one inside.
+local function ZoneTouchesBounds(entry, bounds)
+    local locs = entry.locs
+    if locs == nil or #locs == 0 then
+        return false
+    end
+    if entry._boundsLocs ~= locs then
+        local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+        for _,l in ipairs(locs) do
+            local x, y = l.x, l.y
+            if x < minX then minX = x end
+            if x > maxX then maxX = x end
+            if y < minY then minY = y end
+            if y > maxY then maxY = y end
+        end
+        entry._boundsLocs = locs
+        entry._bbox = { minX, minY, maxX, maxY }
+    end
+    local bbox = entry._bbox
+    if bbox[3] < bounds.x0 or bbox[1] > bounds.x1 or bbox[4] < bounds.y0 or bbox[2] > bounds.y1 then
+        return false
+    end
+    if bbox[1] >= bounds.x0 and bbox[3] <= bounds.x1 and bbox[2] >= bounds.y0 and bbox[4] <= bounds.y1 then
+        return true
+    end
+    for _,l in ipairs(locs) do
+        local x, y = l.x, l.y
+        if x >= bounds.x0 and x <= bounds.x1 and y >= bounds.y0 and y <= bounds.y1 then
+            return true
+        end
+    end
+    return false
 end
 
 function MapMarkup.GetZoneTypesOnMap()
@@ -1770,10 +1840,27 @@ function MapMarkup.GetZoneTypesOnMap()
         EnsureKeywordAuraZones(false)
     end)
 
+    --a zone type is only on the map if one of its zones reaches the map's
+    --bounds: during an encounter, terrain painted outside its region is not
+    --part of the fight.
+    local bounds = CurrentMapTileBounds()
+
     local seen = {}
     local result = {}
-    local function Add(keywordid, name, color, playerVisible)
+    local function Add(zone, keywordid, name, color, playerVisible)
         if keywordid == nil then
+            return
+        end
+        local existing = seen[keywordid]
+        if existing ~= nil and (existing.playerVisible or playerVisible ~= true) then
+            --this zone could add nothing: skip its bounds test.
+            return
+        end
+        if playerVisible ~= true and not dmhub.isDM then
+            --dropped for players below anyway.
+            return
+        end
+        if bounds ~= nil and not ZoneTouchesBounds(zone, bounds) then
             return
         end
         --normalize colors to "#rrggbb": overlay feed colors carry the "bf"
@@ -1799,19 +1886,19 @@ function MapMarkup.GetZoneTypesOnMap()
 
     for _,entry in ipairs(m.zoneCache) do
         if entry.floorIndex ~= nil and entry.floorIndex >= 0 then
-            Add(entry.keywordid, entry.keywordName or entry.name, entry.patternColor, entry.playerVisible)
+            Add(entry, entry.keywordid, entry.keywordName or entry.name, entry.patternColor, entry.playerVisible)
         end
     end
     --"Entire Map" blankets: the type is in force even though nothing is drawn
     --for it (except dynamic-light blankets, which stripe their dark tiles).
     --Never player-visible.
     for _,entry in ipairs(m.entireMap.entries) do
-        Add(entry.keywordid, entry.keywordName or entry.name, entry.patternColor, false)
+        Add(entry, entry.keywordid, entry.keywordName or entry.name, entry.patternColor, false)
     end
     --keyword-carrying auras (abilities, monster traits): on screen for
     --everyone already.
     for _,zone in ipairs(m.keywordAuraOverlay.zones or {}) do
-        Add(zone.keywordid, zone.label, zone.color, true)
+        Add(zone, zone.keywordid, zone.label, zone.color, true)
     end
 
     if not dmhub.isDM then
@@ -1843,8 +1930,10 @@ function MapMarkup.GetHoleTypeOnMap()
         return nil
     end
     EnsureZoneCache()
+    local bounds = CurrentMapTileBounds()
     for _,entry in ipairs(m.holes.cache) do
-        if entry.floorIndex ~= nil and entry.floorIndex >= 0 then
+        if entry.floorIndex ~= nil and entry.floorIndex >= 0
+            and (bounds == nil or ZoneTouchesBounds(entry, bounds)) then
             return {
                 color = m.holes.color,
                 angleRadians = K.ZONE_ANGLE_A,

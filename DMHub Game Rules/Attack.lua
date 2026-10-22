@@ -21,6 +21,7 @@ local mod = dmhub.GetModLoading()
 --- @field meleeRange nil|number If set, the attack is melee when within this range (for thrown weapons).
 --- @field attrid nil|string Attribute id used for this attack (e.g. "str", "dex").
 --- @field consumeAmmo nil|table<string, number> Map of item id to quantity consumed as ammo.
+--- @field ammoType nil|string Equipment category of the ammunition the weapon uses (its ammunitionType).
 --- @field outOfAmmo nil|boolean If true, there is no available ammo for this attack.
 --- @field properties nil|table Weapon property objects keyed by property id.
 --- @field weaponid nil|string Gear id of the equipped weapon this attack comes from.
@@ -127,6 +128,8 @@ end
 --- @return boolean
 function Attack:IsRanged(attackerToken, defenderToken)
 	if self:has_key("melee") then
+		--D&D 5e reach in feet: Distance counts a diagonal as 7 under 5e's 5 units per square.
+		---@diagnostic disable-next-line: deprecated
 		if self:has_key("meleeRange") and attackerToken ~= nil and defenderToken ~= nil and attackerToken:DistanceInFeet(defenderToken) > self.meleeRange then
 			--outside of melee range so this becomes a ranged attack.
 			return true

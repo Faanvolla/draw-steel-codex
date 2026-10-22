@@ -35,10 +35,11 @@
 --                                              put on another test, for
 --                                              WHOEVER takes it
 --    turn = nil | { seq, userid, heroid, entryId,
---                   status = "scene"|"choosing"|"rolling"|"assist"|"assisting"|"resolved",
+--                   status = "scene"|"choosing"|"rolling"|"perk"|"pardon"|"dice"|"resolved",
 --                   scene = { id, part = "intro"|"option"|"outcome",
 --                             steps = { { kind = "narrate"|"say", text, speaker,
 --                                         side = "left"|"right", lang, garbled,
+--                                         plain (a garbled line's own words),
 --                                         cast = { { name, monster }, ... },
 --                                         emotes = nil | { { name, side, emote }, ... } }, ... },
 --                             cast },   -- the lines playing on the stage (see
@@ -68,13 +69,24 @@
 --                                              where it landed.
 --                   optionIndex, rollSeq, tier, total, natural, applied = {...}, resolvedAt,
 --                   attrid, skillid,        -- what the acting hero rolled with
---                   baseTier, baseTotal,    -- the test's own result, before an assist
---                   assistOpenedAt,         -- when the assist window opened
---                   assist = nil | { userid, heroid, heroName, skillid, skillName,
---                                    status = "rolling"|"resolved", rollSeq,
---                                    tier, total, natural, outcome } },
---                   -- "assist": the test landed below tier 3 and a hero with an
---                      applicable skill may still lend a hand (see ASSIST_TIERS).
+--                   baseTier, baseTotal,    -- the test's result before any perk
+--                   pardon = nil | { userid, heroid, heroName, rollSeq, startedAt },
+--                   -- "pardon": another hero with Pardon My Friend is re-rolling
+--                      the failed Presence test in the hero's place. }
+--    dice = nil | { seq, purpose = "turn"|"consequence", entryName, entryId,
+--                   tier, userid (turn: what ApplyResolution resumes with),
+--                   consequenceIndex (consequence: which one it is for),
+--                   rolls = { { key, kind = "table"|"recovery", dice, label,
+--                               heroid, heroName, userid, total }, ... },
+--                   openedAt }
+--                  -- the dice a landed tier or a consequence needs before it
+--                     applies ("roll on Flotsam", "loses 1d3 recoveries"):
+--                     each is rolled on the screen by the player of its hero
+--                     (EncounterMontage.ClientTick), then the effects apply
+--                     with those totals (ApplyEffects' ctx.diceTotals). The
+--                     turn waits in status "dice"; a consequence waits with
+--                     its Continue hidden. DICE_ROLL_SECONDS rolls for anyone
+--                     who never does.
 --    consequences = { entryId, ... }, consequenceIndex, lastApplied = {...},
 --    requests = { [userid] = { seq, kind, ... } }, handled = { [userid] = seq },
 --    log = { { round, heroid, heroName, entryId, entryName, optionName, tier, applied }, ... },
@@ -137,26 +149,14 @@ local DIALOG_ID = "eotwmontage"
 --how long the finished montage (its last consequence) stays on screen
 --before the beat ends and the stage hides.
 local DONE_LINGER_SECONDS = 6
---how long the assist window stays open before the host takes the test's
---own result. A backstop only -- the acting player can close it at once --
---so an absent party cannot wedge the montage.
-local ASSIST_WINDOW_SECONDS = 30
---and how long a claimed assist may sit unrolled (a client that closed the
---dialog without cancelling, or went away) before the slot is handed back.
-local ASSIST_ROLL_SECONDS = 90
-
---The fixed tier table of an assist roll (user direction 2026-09-18). It is
---not authored: every assist, whatever the test, offers the same three
---outcomes.
-local ASSIST_TIERS = {
-    "The test has a bane on it.",
-    "The test has an edge on it.",
-    "The test has a double edge on it.",
-}
---tier -> what it does to the test it is assisting.
-local ASSIST_OUTCOMES = { "bane", "edge", "doubleedge" }
-
-EncounterMontage.ASSIST_TIERS = ASSIST_TIERS
+--how long a Pardon My Friend re-roll may sit unrolled and unaccepted (a
+--client that closed the dialog without cancelling, or went away) before the
+--hero's own roll stands. Generous: once the dice land the table may stop to
+--talk (and ping) over whether to spend a hero token.
+local PARDON_ROLL_SECONDS = 300
+--how long a montage dice roll (a table roll, a hero's share of "loses 1d3
+--recoveries") waits on its player before the host rolls it for them.
+local DICE_ROLL_SECONDS = 45
 
 --- the document ------------------------------------------------------------
 
@@ -192,6 +192,61 @@ function EncounterMontage.GetItems(heroid)
             end
         end
     end)
+    return result
+end
+
+--What the stage shows beside a hero's card: the montage haul in grant
+--order, then every other consumable the hero carries -- items brought from
+--town can be used in a montage too (user direction 2026-10-09).
+--{ { itemid, name, qty, haul }, ... }; `haul` = gained in this montage
+--(only those can be handed to another hero). A consumable's qty is what the
+--hero really holds, so a used one shrinks or leaves at once.
+function EncounterMontage.GetStripItems(heroid)
+    local result, seen = {}, {}
+    local tok = dmhub.GetCharacterById(heroid)
+    local props = (tok ~= nil and tok.valid) and tok.properties or nil
+    local valid = props ~= nil
+    local gear = dmhub.GetTable("tbl_Gear") or {}
+    local function Held(itemid)
+        local qty = 0
+        if props ~= nil then
+            pcall(function() qty = props:GetItemQuantity(itemid) end)
+        end
+        return qty
+    end
+    for _, entry in ipairs(EncounterMontage.GetItems(heroid)) do
+        seen[entry.itemid] = true
+        local item = gear[entry.itemid]
+        local qty = entry.qty or 1
+        if valid and item ~= nil and EquipmentCategory.IsConsumable(item) then
+            --carried copies of the same item ride on the haul's icon.
+            qty = Held(entry.itemid)
+        end
+        if qty > 0 then
+            result[#result + 1] = { itemid = entry.itemid, name = entry.name, qty = qty, haul = true }
+        end
+    end
+    if props ~= nil then
+        local carried = {}
+        pcall(function()
+            for itemid, info in pairs(props:try_get("inventory", {})) do
+                local item = gear[itemid]
+                local qty = type(info) == "table" and tonumber(info.quantity) or 0
+                if not seen[itemid] and item ~= nil and (qty or 0) > 0 and EquipmentCategory.IsConsumable(item) then
+                    carried[#carried + 1] = { itemid = itemid, name = item.name, qty = qty, haul = false }
+                end
+            end
+        end)
+        table.sort(carried, function(a, b)
+            if a.name ~= b.name then
+                return tostring(a.name) < tostring(b.name)
+            end
+            return a.itemid < b.itemid
+        end)
+        for _, entry in ipairs(carried) do
+            result[#result + 1] = entry
+        end
+    end
     return result
 end
 
@@ -247,6 +302,154 @@ function EncounterMontage.GetIntelligence()
     local n = 0
     pcall(function() n = tonumber(mod:GetDocumentSnapshot(DOC_ID).data.intelligence) or 0 end)
     return n
+end
+
+--Per-hero Intelligence. data.intelligenceByHero = { [charid] = n } is what
+--each hero earned and has not spent yet; data.intelligence stays the party
+--TOTAL (what the pools strip shows), so the two are only ever written
+--together, by CreditIntelligence and SpendIntelligence below. Any part of
+--the total no hero holds (Intelligence earned before per-hero tracking, or
+--with no heroes on the map) is "shared": any player may spend it.
+function EncounterMontage.GetHeroIntelligence(charid)
+    local n = 0
+    pcall(function()
+        local byHero = mod:GetDocumentSnapshot(DOC_ID).data.intelligenceByHero
+        if type(byHero) == "table" then
+            n = tonumber(byHero[charid]) or 0
+        end
+    end)
+    return n
+end
+
+--The shared part of the total (see above). `data` is a snapshot's or an
+--OPEN document's data table; nil reads the current snapshot.
+function EncounterMontage.SharedIntelligence(data)
+    local n = 0
+    pcall(function()
+        data = data or mod:GetDocumentSnapshot(DOC_ID).data
+        local held = 0
+        for _, amount in pairs(data.intelligenceByHero or {}) do
+            held = held + (tonumber(amount) or 0)
+        end
+        n = math.max(0, (tonumber(data.intelligence) or 0) - held)
+    end)
+    return n
+end
+
+--What a player running the heroes `heroids` may spend: those heroes' own
+--Intelligence plus the shared part. `data` as for SharedIntelligence.
+function EncounterMontage.SpendableIntelligence(heroids, data)
+    local n = 0
+    pcall(function()
+        data = data or mod:GetDocumentSnapshot(DOC_ID).data
+        local byHero = data.intelligenceByHero or {}
+        for _, charid in ipairs(heroids or {}) do
+            n = n + (tonumber(byHero[charid]) or 0)
+        end
+    end)
+    return n + EncounterMontage.SharedIntelligence(data)
+end
+
+--Host, inside an OPEN change on the script document: change heroes'
+--Intelligence and the party total with them. credits = { { charid, name,
+--qty }, ... }; a negative qty is a loss, which never takes a hero below 0.
+--sharedQty (optional) goes to the total with no hero holding it. Writes one
+--history line for the strip's tooltip, naming who earned what.
+function EncounterMontage.CreditIntelligence(doc, credits, who, note, sharedQty)
+    local byHero = doc.data.intelligenceByHero or {}
+    local before = tonumber(doc.data.intelligence) or 0
+    local delta = sharedQty or 0
+    local parts = {}
+    for _, credit in ipairs(credits or {}) do
+        local have = tonumber(byHero[credit.charid]) or 0
+        local change = math.max(tonumber(credit.qty) or 0, -have)
+        if change ~= 0 then
+            byHero[credit.charid] = cond(have + change > 0, have + change, nil)
+            delta = delta + change
+            parts[#parts + 1] = string.format("%s %+d", tostring(credit.name), change)
+        end
+    end
+    doc.data.intelligenceByHero = byHero
+    if delta == 0 then
+        return 0
+    end
+    doc.data.intelligence = math.max(0, before + delta)
+    local log = doc.data.intelligenceLog or {}
+    if #parts > 0 then
+        note = string.format("%s (%s)", tostring(note), table.concat(parts, ", "))
+    end
+    log[#log + 1] = {
+        value = doc.data.intelligence,
+        amount = delta,
+        who = who,
+        note = note,
+        at = dmhub.serverTime,
+    }
+    doc.data.intelligenceLog = log
+    return delta
+end
+
+--Intelligence no single hero earned (a consequence, a choice the party
+--agreed on), divided evenly across `heroes`. The odd points go to whoever
+--holds the least (a loss: the most), ties in roster order. Returns credits
+--for CreditIntelligence.
+function EncounterMontage.SplitIntelligence(doc, heroes, qty)
+    local credits = {}
+    if #heroes == 0 or qty == 0 then
+        return credits
+    end
+    local byHero = doc.data.intelligenceByHero or {}
+    local sign = cond(qty < 0, -1, 1)
+    local amount = math.abs(qty)
+    local base = math.floor(amount / #heroes)
+    local remainder = amount - base * #heroes
+    local order = {}
+    for i, hero in ipairs(heroes) do
+        credits[i] = { charid = hero.charid, name = hero.name, qty = sign * base }
+        order[i] = { index = i, have = tonumber(byHero[hero.charid]) or 0 }
+    end
+    table.sort(order, function(a, b)
+        if a.have ~= b.have then
+            return cond(sign > 0, a.have < b.have, a.have > b.have)
+        end
+        return a.index < b.index
+    end)
+    for i = 1, remainder do
+        local credit = credits[order[i].index]
+        credit.qty = credit.qty + sign
+    end
+    return credits
+end
+
+--Host, inside an OPEN change: take `qty` Intelligence off the player who
+--runs `heroids` -- from their hero holding the most each point (ties in the
+--order given), then from the shared part. Returns false when they do not
+--have it; true and the names it came from otherwise. Writes no history line
+--(the caller knows what it was spent on).
+function EncounterMontage.SpendIntelligence(doc, heroids, qty, names)
+    if EncounterMontage.SpendableIntelligence(heroids, doc.data) < qty then
+        return false
+    end
+    local byHero = doc.data.intelligenceByHero or {}
+    local from = {}
+    for _ = 1, qty do
+        local best, bestHave = nil, 0
+        for _, charid in ipairs(heroids or {}) do
+            local have = tonumber(byHero[charid]) or 0
+            if have > bestHave then
+                best, bestHave = charid, have
+            end
+        end
+        if best ~= nil then
+            byHero[best] = cond(bestHave > 1, bestHave - 1, nil)
+            from[#from + 1] = (names or {})[best] or best
+        else
+            from[#from + 1] = "the party"
+        end
+    end
+    doc.data.intelligenceByHero = byHero
+    doc.data.intelligence = math.max(0, (tonumber(doc.data.intelligence) or 0) - qty)
+    return true, from
 end
 
 --The pool's change history, in the shape gui.StatsHistoryTooltip wants
@@ -416,14 +619,67 @@ end
 --Returns { docid, doc, parse, text } or a script with no beats.
 --The markdown documents filed under a map's journal folder, sorted by name:
 --the candidates for its script. Returns a list of { docid, doc }.
-local function MapScriptCandidates(mapid)
+--Is this document name an "Encounter Rules" document: the players' rules
+--reference, read from the HUD's rules button once combat begins, never a
+--script. "Encounter Rules" covers every part of a series; a series may also
+--give one part its own, "Encounter Rules: Part 2" (also "- Part 2" or
+--"(Part 2)"). Returns isRules, partNumber (nil for the general one).
+function EncounterMontage.RulesDocumentPart(name)
+    local s = string.lower(string.match(tostring(name or ""), "^%s*(.-)%s*$"))
+    if s == "encounter rules" then
+        return true, nil
+    end
+    local n = string.match(s, "^encounter rules%s*[:%-]?%s*%(?part%s+(%d+)%)?$")
+    if n ~= nil then
+        return true, tonumber(n)
+    end
+    return false, nil
+end
+
+--The map's markdown documents filed under its journal folder, split into
+--script candidates and Encounter Rules documents (each list { docid, doc }).
+local function MapJournalDocuments(mapid)
     local docsTable = dmhub.GetTable("documents") or {}
     local candidates = {}
+    local rules = {}
     for docid, doc in unhidden_pairs(docsTable) do
         if doc.typeName == "MarkdownDocument" and CustomDocument.IsDocInAccessibleRoot(doc, { [mapid] = true }) then
-            candidates[#candidates + 1] = { docid = docid, doc = doc }
+            if EncounterMontage.RulesDocumentPart(doc.description) then
+                rules[#rules + 1] = { docid = docid, doc = doc }
+            else
+                candidates[#candidates + 1] = { docid = docid, doc = doc }
+            end
         end
     end
+    return candidates, rules
+end
+
+--The Encounter Rules document for this map and series part: the part's own
+--when it has one, else the general one; nil when the map has none. Returns
+--the document (a MarkdownDocument) or nil.
+function EncounterMontage.FindRulesDocument(mapid, part)
+    mapid = mapid or game.currentMapId
+    if mapid == nil then
+        return nil
+    end
+    --EncounterMontage.ActivePart: the local is declared further down.
+    part = part or EncounterMontage.ActivePart()
+    local _, rules = MapJournalDocuments(mapid)
+    local general = nil
+    for _, r in ipairs(rules) do
+        local _, n = EncounterMontage.RulesDocumentPart(r.doc.description)
+        if n == part then
+            return r.doc
+        elseif n == nil and (general == nil or r.docid < general.docid) then
+            general = r
+        end
+    end
+    return general ~= nil and general.doc or nil
+end
+
+--Encounter Rules documents are filed there too but are never candidates.
+local function MapScriptCandidates(mapid)
+    local candidates = MapJournalDocuments(mapid)
     table.sort(candidates, function(a, b)
         local na, nb = a.doc.description or "", b.doc.description or ""
         if na ~= nb then
@@ -434,10 +690,27 @@ local function MapScriptCandidates(mapid)
     return candidates
 end
 
+--Which part of a series the game is playing (EncounterOfTheWeekGame.ActivePart:
+--the part in the game's encounter key, or the one an authoring test picked).
+--1 when nothing says otherwise, which is also every map that is not a series.
+local function ActivePart()
+    local part = 1
+    local eotw = rawget(_G, "EncounterOfTheWeekGame")
+    if eotw ~= nil and eotw.ActivePart ~= nil then
+        pcall(function() part = eotw.ActivePart() end)
+    end
+    return math.floor(tonumber(part) or 1)
+end
+EncounterMontage.ActivePart = ActivePart
+
 --Parse every candidate and pick the map's script: the first (by name) that
 --declares beats and is not part of another, preferring an explicit one.
---Returns best (nil if none), allIncluded ({docid -> true}).
-local function ChooseMapScript(candidates, mapid)
+--A map whose scripts say "# Part N" is a SERIES: each part is its own
+--script and `part` picks which one plays (nil best when it has no such part;
+--documents without a part heading are then notes, never the script).
+--Returns best (nil if none), allIncluded ({docid -> true}), parts (the
+--series' part scripts sorted by number then name; empty when not a series).
+local function ChooseMapScript(candidates, mapid, part)
     local loaded = {}
     local allIncluded = {}
     for _, c in ipairs(candidates) do
@@ -446,6 +719,30 @@ local function ChooseMapScript(candidates, mapid)
         for docid in pairs(script ~= nil and script.parse.included or {}) do
             allIncluded[docid] = true
         end
+    end
+
+    local parts = {}
+    for _, script in ipairs(loaded) do
+        if script ~= nil and not allIncluded[script.docid] and script.parse.part ~= nil then
+            parts[#parts + 1] = script
+        end
+    end
+    if #parts > 0 then
+        --stable: candidates are already in name order.
+        table.sort(parts, function(a, b)
+            if a.parse.part.number ~= b.parse.part.number then
+                return a.parse.part.number < b.parse.part.number
+            end
+            return (a.doc.description or "") < (b.doc.description or "")
+        end)
+        local best = nil
+        for _, script in ipairs(parts) do
+            if script.parse.part.number == part and #script.parse.beats > 0 then
+                best = script
+                break
+            end
+        end
+        return best, allIncluded, parts
     end
 
     local best = nil
@@ -459,18 +756,29 @@ local function ChooseMapScript(candidates, mapid)
             end
         end
     end
-    return best, allIncluded
+    return best, allIncluded, parts
+end
+
+--{ {number, title}, ... } for a series' part scripts (see ChooseMapScript).
+local function PartSummaries(parts)
+    local result = {}
+    for _, script in ipairs(parts or {}) do
+        result[#result + 1] = { number = script.parse.part.number, title = script.parse.part.title }
+    end
+    return result
 end
 
 --The script of any map in the game, not just the current one, for the
 --publish dialog's Encounter of the Week module type (ModShare.lua). Uncached
 --and with no info-bubble fallback (that reads the current map only).
 --Returns { script = { docid, doc, parse, text } or nil, documents = {docid ->
---true} }, documents being every document the script could be built from:
---the map's journal documents and everything they include.
+--true}, parts }, documents being every document the script could be built
+--from: the map's journal documents and everything they include. For a
+--series, script is part 1's and parts lists every part's script (sorted by
+--number; a repeated number appears twice so the publisher can refuse it).
 function EncounterMontage.ScriptForMap(mapid)
     local candidates = MapScriptCandidates(mapid)
-    local best, allIncluded = ChooseMapScript(candidates, mapid)
+    local best, allIncluded, parts = ChooseMapScript(candidates, mapid, 1)
     local documents = {}
     for _, c in ipairs(candidates) do
         documents[c.docid] = true
@@ -478,25 +786,160 @@ function EncounterMontage.ScriptForMap(mapid)
     for docid in pairs(allIncluded) do
         documents[docid] = true
     end
-    return { script = best, documents = documents }
+    --the Encounter Rules documents are not script candidates but ship too.
+    local _, rules = MapJournalDocuments(mapid)
+    for _, r in ipairs(rules) do
+        documents[r.docid] = true
+    end
+    return { script = best, documents = documents, parts = parts }
+end
+
+--- Secret Twin's assassin --------------------------------------------------
+--
+--A town respite can mark a Secret Twin hero eotwAssassinPending
+--(EotwDowntime). The first montage that hero plays then gets an extra
+--threat, "An Assassin Hunts <hero>": one test can stop it, else the hero
+--takes 4d6 damage. The host records it in m.assassins (AddAssassins); every
+--client puts the entry into the beat when it reads the script
+--(InjectAssassins), since it is not in the script document.
+
+local ASSASSIN_FIELD = "eotwAssassinPending"
+
+--"An Assassin Hunts Kira". A heading's "(...)" are tags and ":" ends its
+--kind, so the hero's name loses those characters.
+local function AssassinThreatName(heroName)
+    local name = trim((string.gsub(tostring(heroName or ""), "[%(%):]", "")))
+    return "An Assassin Hunts " .. name
+end
+
+--Parsed threat entries by "<charid>|<name>": built once per client.
+local m_assassinEntries = {}
+
+--The threat entry for one m.assassins record, built by the script parser
+--from a snippet so it has every field a written threat has. It is
+--"(Locked)" and unlocked by AddAssassins: an entry that appears through an
+--unlock gets its card on the stage even after the round began.
+local function AssassinEntry(record)
+    local name = AssassinThreatName(record.name)
+    local key = string.format("%s|%s", tostring(record.charid), name)
+    if m_assassinEntries[key] ~= nil then
+        return m_assassinEntries[key]
+    end
+    local heroName = string.sub(name, #"An Assassin Hunts " + 1)
+    local text = table.concat({
+        "# Montage",
+        "",
+        string.format("## Threat: %s (Locked)", name),
+        string.format("Someone from %s's past has caught up with them: a killer is closing in.", heroName),
+        "",
+        string.format("Consequence: %s takes 4d6 damage.", heroName),
+        "",
+        "### Ambush the Assassin",
+        "|Ambush Test: Agility or Intuition (Alertness, Sneak)",
+        "|The assassin slips away into the shadows.",
+        "|You lose 3 stamina, the threat is vanquished.",
+        "|The threat is vanquished.",
+    }, "\n")
+    local entry = nil
+    local ok, err = pcall(function()
+        entry = EncounterScript.MontageEntries(EncounterScript.Parse(text).beats[1])[1]
+    end)
+    if not ok or entry == nil then
+        printf("EotW montage: could not build the assassin threat: %s", tostring(err))
+        return nil
+    end
+    --the grammar has no clause for dice damage to a named hero.
+    local consequence = string.format("%s takes 4d6 damage", heroName)
+    entry.consequence = entry.consequence or { text = consequence .. "." }
+    entry.consequence.effects = {
+        { kind = "damage", heroid = record.charid, dice = "4d6", label = "Assassin's blade", text = consequence },
+    }
+    entry.injected = true
+    m_assassinEntries[key] = entry
+    return entry
+end
+
+--Put the montage's assassin threats into its beat's first round, replacing
+--any put there before (the cached parse is reused between reads).
+local function InjectAssassins(script)
+    local beats = script.parse ~= nil and script.parse.beats or {}
+    for _, beat in ipairs(beats) do
+        for _, round in ipairs(beat.rounds or {}) do
+            for i = #round.entries, 1, -1 do
+                if round.entries[i].injected then
+                    table.remove(round.entries, i)
+                end
+            end
+        end
+    end
+    local m = EncounterMontage.GetDoc().data.montage
+    if type(m) ~= "table" or type(m.assassins) ~= "table" then
+        return
+    end
+    local beat = beats[m.beatIndex]
+    local round = beat ~= nil and beat.kind == "montage" and (beat.rounds or {})[1] or nil
+    if round == nil then
+        return
+    end
+    for _, record in ipairs(m.assassins) do
+        local entry = AssassinEntry(record)
+        if entry ~= nil then
+            round.entries[#round.entries + 1] = entry
+        end
+    end
+end
+
+--Host, as the party arrives at a montage: hunt each hero marked by the
+--town, once per game (doc.data.assassinsSent, which also tells the town to
+--clear the mark: OutcomesFor). Call inside an open change of `doc`.
+local function AddAssassins(doc, m)
+    for _, hero in ipairs(EncounterMontage.Heroes()) do
+        local pending = false
+        pcall(function() pending = hero.token.properties:try_get(ASSASSIN_FIELD, false) == true end)
+        doc.data.assassinsSent = doc.data.assassinsSent or {}
+        if pending and not doc.data.assassinsSent[hero.charid] then
+            doc.data.assassinsSent[hero.charid] = true
+            m.assassins = m.assassins or {}
+            m.assassins[#m.assassins + 1] = { charid = hero.charid, name = hero.name }
+            m.unlocked = m.unlocked or {}
+            m.unlocked[EncounterScript.MatchKey(AssassinThreatName(hero.name))] = m.round or 1
+            printf("EotW montage: an assassin hunts %s", tostring(hero.name))
+        end
+    end
+end
+
+--Has a montage in this game sent the assassin after this hero (game charid)?
+---@param charid string
+---@return boolean
+function EncounterMontage.AssassinSent(charid)
+    local sent = EncounterMontage.GetDoc().data.assassinsSent
+    return type(sent) == "table" and sent[charid] == true
 end
 
 function EncounterMontage.FindMapScript(force)
     local mapid = game.currentMapId
     local docsTable = dmhub.GetTable("documents") or {}
     local candidates = MapScriptCandidates(mapid)
+    local part = ActivePart()
 
     if m_scriptCache ~= nil and not force and m_scriptCache.docid ~= nil and m_scriptCache.mapid == mapid
+        and m_scriptCache.part == part
         and m_scriptCache.signature == ScriptSignature(candidates, m_scriptCache.allIncluded) then
         if m_scriptCache.docid ~= nil then
             m_scriptCache.doc = docsTable[m_scriptCache.docid] or m_scriptCache.doc
         end
+        InjectAssassins(m_scriptCache)
         return m_scriptCache
     end
 
-    local best, allIncluded = ChooseMapScript(candidates, mapid)
+    local best, allIncluded, parts = ChooseMapScript(candidates, mapid, part)
 
-    if best == nil then
+    if best == nil and #parts > 0 then
+        --a series with no script for this part: nothing to play (and no
+        --info-bubble fallback, which would play some other part's fight).
+        printf("EotW: this map is a series but has no script for part %d", part)
+        best = { docid = nil, doc = nil, parse = { beats = {}, warnings = {}, hasEncounterTag = false }, text = "" }
+    elseif best == nil then
         --no document script: an info-bubble encounter is still an encounter.
         local entry = nil
         local eotw = rawget(_G, "EncounterOfTheWeekGame")
@@ -510,10 +953,29 @@ function EncounterMontage.FindMapScript(force)
         best = { docid = nil, doc = nil, parse = { beats = beats, warnings = {}, hasEncounterTag = entry ~= nil }, text = "" }
     end
     best.mapid = mapid
+    best.part = part
+    --{ {number, title}, ... } when the map is a series, else empty.
+    best.seriesParts = PartSummaries(parts)
     best.allIncluded = allIncluded
     best.signature = ScriptSignature(candidates, allIncluded)
     m_scriptCache = best
+    InjectAssassins(best)
     return best
+end
+
+--The documents the current script is made of (its own and every document
+--it includes), as {docid -> true}; empty when the map has no script
+--document. Where a series' encounter islands are looked for.
+function EncounterMontage.ScriptDocuments(script)
+    local result = {}
+    if script == nil or script.docid == nil then
+        return result
+    end
+    result[script.docid] = true
+    for docid in pairs(script.parse.included or {}) do
+        result[docid] = true
+    end
+    return result
 end
 
 --The first montage beat's scene image (a RichScene annotation's coverart),
@@ -779,15 +1241,9 @@ function EncounterMontage.TurnOver(m)
     return m ~= nil and (m.turn == nil or m.turn.status == "resolved")
 end
 
---Can the local user drag this hero right now? (UI gate; the host re-checks.)
-function EncounterMontage.LocalUserCanAct(heroid)
-    local m = EncounterMontage.GetState()
-    if m == nil or m.phase ~= "rounds" or not EncounterMontage.TurnOver(m) then
-        return false
-    end
-    if (m.acted or {})[heroid] then
-        return false
-    end
+--Does the local user drive this hero? (UI gates; the host re-checks with
+--UserControlsHero.)
+local function LocalControlsHero(heroid)
     local tok = dmhub.GetCharacterById(heroid)
     if tok == nil or not tok.valid then
         return false
@@ -800,14 +1256,19 @@ function EncounterMontage.LocalUserCanAct(heroid)
     return mine == true
 end
 
---- assisting a test ---------------------------------------------------------
---
---A test that lands below tier 3 can still be helped: another hero who is
---skilled in one of the skills the test lists -- and whose skill the acting
---hero is not already using for their own Skilled bonus -- may assist. They
---roll the same characteristic the test used, with their own modifier and an
---automatic Skilled +2, on the fixed ASSIST_TIERS table, and it costs them
---their turn this round whatever it rolls.
+EncounterMontage.LocalControlsHero = LocalControlsHero
+
+--Can the local user drag this hero right now? (UI gate; the host re-checks.)
+function EncounterMontage.LocalUserCanAct(heroid)
+    local m = EncounterMontage.GetState()
+    if m == nil or m.phase ~= "rounds" or not EncounterMontage.TurnOver(m) then
+        return false
+    end
+    if (m.acted or {})[heroid] then
+        return false
+    end
+    return LocalControlsHero(heroid)
+end
 
 --The skills an option's power roll lists, as skill ids.
 function EncounterMontage.OptionSkills(option)
@@ -836,12 +1297,21 @@ end
 --per hero. A copy is returned: callers add `round`.
 local g_factsCache = {}
 local FACTS_CACHE_SECONDS = 2
+--Facts to use for a hero in place of their real ones while an item is being
+--tried on ("what an item could do for the test at hand", below).
+local g_factsOverride = {}
 
 function EncounterMontage.HeroFacts(charid)
     local now = dmhub.Time()
     local cached = g_factsCache[charid or ""]
-    local base
-    if cached ~= nil and now < cached.expires then
+    --an item used in the montage can change a hero's facts (a language, a
+    --flight speed), so a use (consumeSeq) retires the cache.
+    local consumeSeq = nil
+    pcall(function() consumeSeq = (EncounterMontage.GetState() or {}).consumeSeq end)
+    local base = g_factsOverride[charid or ""]
+    if base ~= nil then
+        --being tried on: never cached.
+    elseif cached ~= nil and now < cached.expires and cached.consumeSeq == consumeSeq then
         base = cached.facts
     else
         local tok = dmhub.GetCharacterById(charid)
@@ -850,7 +1320,7 @@ function EncounterMontage.HeroFacts(charid)
         else
             base = TestRiders.CreatureFacts(tok.properties)
         end
-        g_factsCache[charid or ""] = { facts = base, expires = now + FACTS_CACHE_SECONDS }
+        g_factsCache[charid or ""] = { facts = base, expires = now + FACTS_CACHE_SECONDS, consumeSeq = consumeSeq }
     end
     local facts = {}
     for k, v in pairs(base) do
@@ -865,20 +1335,23 @@ function EncounterMontage.HeroFacts(charid)
     return facts
 end
 
---The first knack of `option` this hero meets (and that has a roll or
---rules), as an index into option.knacks; nil when none.
+--Does this hero meet a requirement? Returns met and why (the clause that
+--met it).
+local function HeroRequirementMet(charid, req)
+    local met, why = false, nil
+    pcall(function() met, why = EncounterScript.RequirementMet(req, EncounterMontage.HeroFacts(charid)) end)
+    return met == true, why
+end
+
+--The first knack of `option` that this hero meets and that has a roll or
+--rules, as an index into option.knacks; nil when none.
 function EncounterMontage.KnackIndex(charid, option)
     if option == nil or option.knacks == nil or #option.knacks == 0 or option.delve ~= nil then
         return nil
     end
-    local facts = EncounterMontage.HeroFacts(charid)
     for i, k in ipairs(option.knacks) do
-        if EncounterScript.KnackUsable(k) then
-            local met = false
-            pcall(function() met = EncounterScript.RequirementMet(k.requirement, facts) == true end)
-            if met then
-                return i
-            end
+        if EncounterScript.KnackUsable(k) and HeroRequirementMet(charid, k.requirement) then
+            return i
         end
     end
     return nil
@@ -890,16 +1363,15 @@ function EncounterMontage.KnackReason(charid, option, knackIndex)
     if k == nil then
         return nil
     end
-    local why = nil
-    pcall(function()
-        local _, w = EncounterScript.RequirementMet(k.requirement, EncounterMontage.HeroFacts(charid))
-        why = w
-    end)
+    local met, why = HeroRequirementMet(charid, k.requirement)
+    if not met then
+        return k.requirementText
+    end
     return why or k.requirementText
 end
 
---The version of `option` this hero takes: the first knack they meet, or
---the option itself.
+--The version of `option` this hero takes: the first knack they meet, or the
+--option itself.
 function EncounterMontage.OptionForHero(charid, option)
     return EncounterScript.OptionVersion(option, EncounterMontage.KnackIndex(charid, option))
 end
@@ -995,13 +1467,14 @@ function EncounterMontage.RiderVerdict(charid, option, version)
     if #riders == 0 and #granted == 0 then
         return nil
     end
+    local facts = EncounterMontage.HeroFacts(charid)
     --Declared with a type instead of initialized to nil: the checker would
     --otherwise infer `nil` from the declaration and flag every field read
     --below, since the pcall closure is what actually fills it in.
     ---@type table
     local verdict
     local ok, err = pcall(function()
-        verdict = EncounterScript.EvaluateRiders(riders, EncounterMontage.HeroFacts(charid))
+        verdict = EncounterScript.EvaluateRiders(riders, facts)
     end)
     if not ok then
         printf("EotW montage: rider verdict failed: %s", tostring(err))
@@ -1032,7 +1505,7 @@ function EncounterMontage.OptionVisible(charid, option)
     if not EncounterScript.OptionIsSecret(option) then
         return true
     end
-    local verdict = EncounterMontage.RiderVerdict(charid, option)
+    local verdict = EncounterMontage.RiderVerdict(charid, option, nil)
     return verdict == nil or verdict.allowed
 end
 
@@ -1047,136 +1520,33 @@ function EncounterMontage.DescribeUnmet(verdict)
     return table.concat(parts, "; ")
 end
 
---The skill this hero could assist the option's test with: one the roll
---lists, that the hero is trained in, and that the acting hero is not
---already using. Returns skillid, skillName, or nil.
-function EncounterMontage.AssistSkillFor(charid, option, usedSkillId)
+--The listed skills a hero is trained in, as a set ({ [skillid] = true }).
+--Team Leader's lent exploration skills count.
+local function TrainedSkillSet(charid, skills)
+    local set = {}
     local tok = dmhub.GetCharacterById(charid)
     if tok == nil or not tok.valid or tok.properties == nil then
-        return nil
+        return set
     end
     local skillTable = dmhub.GetTable(Skill.tableName) or {}
-    for _, skillid in ipairs(EncounterMontage.OptionSkills(option)) do
-        if skillid ~= usedSkillId then
-            local skillInfo = skillTable[skillid]
+    for _, skillid in ipairs(skills) do
+        local skillInfo = skillTable[skillid]
+        if skillInfo ~= nil then
             local trained = false
-            if skillInfo ~= nil then
-                pcall(function() trained = tok.properties:ProficientInSkill(skillInfo) end)
-                if not trained and EncounterMontage.TeamLeaderGrants(skillid) then
-                    trained = true
-                end
-            end
-            if trained then
-                --trained is only set when skillInfo was found.
-                ---@cast skillInfo -nil
-                return skillid, skillInfo.name
+            pcall(function() trained = tok.properties:ProficientInSkill(skillInfo) end)
+            if trained or EncounterMontage.TeamLeaderGrants(skillid) then
+                set[skillid] = true
             end
         end
     end
-    return nil
+    return set
 end
 
---Teamwork: in round 1, a hero with the perk may both make a test and
---assist one (once).
-function EncounterMontage.TeamworkAvailable(m, charid)
-    if m == nil or (m.round or 1) ~= 1 or (m.perkUsed or {})["teamwork:" .. tostring(charid)] then
-        return false
-    end
-    return EncounterMontage.HeroHasPerk(charid, "Teamwork")
-end
-
---Every hero who could assist the turn in flight: { charid, skillid,
---skillName }, in Heroes() order. Empty unless a turn is waiting on an
---assist. Used by the host (to decide whether to open the window at all)
---and by the stage (to badge the cards).
-function EncounterMontage.EligibleAssistants(m, beat, heroes)
-    local result = {}
-    local t = m ~= nil and m.turn or nil
-    if t == nil or beat == nil then
-        return result
-    end
-    if t.status ~= "assist" and t.status ~= "rolling" then
-        return result
-    end
-    --a delve is the hero going through alone: nobody assists in it.
-    if t.delve ~= nil then
-        return result
-    end
-    local entry = EncounterMontage.TurnEntry(beat, t)
-    local option = EncounterMontage.TurnOption(entry, t)
-    if option == nil or option.roll == nil then
-        return result
-    end
-    for _, hero in ipairs(heroes or EncounterMontage.Heroes()) do
-        if hero.charid ~= t.heroid and (not (m.acted or {})[hero.charid] or EncounterMontage.TeamworkAvailable(m, hero.charid)) then
-            local skillid, skillName = EncounterMontage.AssistSkillFor(hero.charid, option, t.skillid)
-            if skillid ~= nil then
-                result[#result + 1] = { charid = hero.charid, name = hero.name, skillid = skillid, skillName = skillName }
-            end
-        end
-    end
-    return result
-end
-
---Can the local user drag this hero into the assist slot right now? (UI
---gate; the host re-checks.)
-function EncounterMontage.LocalUserCanAssist(heroid)
-    local m = EncounterMontage.GetState()
-    if m == nil or m.phase ~= "rounds" or m.turn == nil or m.turn.status ~= "assist" then
-        return false
-    end
-    if m.turn.heroid == heroid or (m.acted or {})[heroid] then
-        return false
-    end
-    local beat = EncounterMontage.CurrentBeat()
-    if beat == nil then
-        return false
-    end
-    for _, candidate in ipairs(EncounterMontage.EligibleAssistants(m, beat)) do
-        if candidate.charid == heroid then
-            local tok = dmhub.GetCharacterById(heroid)
-            if tok == nil or not tok.valid then
-                return false
-            end
-            local mine = false
-            pcall(function() mine = tok.canControlAsUser end)
-            if mine == nil then
-                pcall(function() mine = tok.canControl end)
-            end
-            return mine == true
-        end
-    end
-    return false
-end
-
---Apply an assist outcome to the test's own result. Draw Steel: an edge is
---+2 on the roll, a bane -2, and a double edge shifts the tier up by one.
---(RollUtils.DiceResultToTier's own thresholds, 12 and 17, re-applied here
---because the dice are already on the table.)
-function EncounterMontage.ApplyAssistToTier(outcome, baseTier, baseTotal)
-    local total = tonumber(baseTotal)
-    local tier = tonumber(baseTier) or 1
-    if outcome == "none" then
-        return tier, total
-    end
-    if outcome == "doubleedge" then
-        tier = tier + 1
-    elseif total ~= nil then
-        total = total + cond(outcome == "bane", -2, 2)
-        if total >= 17 then
-            tier = 3
-        elseif total >= 12 then
-            tier = 2
-        else
-            tier = 1
-        end
-    end
-    if tier > 3 then
-        tier = 3
-    elseif tier < 1 then
-        tier = 1
-    end
-    return tier, total
+--The listed skill the hero making the turn's test rolls with: the first
+--they are trained in (nil for none).
+function EncounterMontage.MainTestSkill(t, option)
+    local listed = EncounterMontage.OptionSkills(option)
+    return EncounterScript.MainTestSkill(listed, TrainedSkillSet(t.heroid, listed))
 end
 
 --- requests (player side) --------------------------------------------------
@@ -1222,6 +1592,16 @@ end
 function EncounterMontage.LocalUserPacesScene(m)
     local t = m ~= nil and m.turn or nil
     return t ~= nil and t.status == "scene" and t.userid == dmhub.loginUserid
+end
+
+--May the hero on stage still back out of their approach for free? Only
+--while the first line of the entry's intro is up (usually just "X
+--approaches Y..."), before anything about it is shown -- a mis-click guard.
+--Once past it, "Leave" (which spends the turn) is the only way out.
+function EncounterMontage.CanBackOut(m)
+    local t = m ~= nil and m.turn or nil
+    return t ~= nil and t.delve == nil and t.status == "scene" and t.scene ~= nil
+        and t.scene.part == "intro" and EncounterMontage.SceneCursor(m) == 1
 end
 
 --The acting hero's player has finished reading the line on screen.
@@ -1330,6 +1710,12 @@ local function GrantItem(token, itemid, itemName, qty)
         undoable = false,
         execute = function()
             local props = token.properties
+            if qty < 0 then
+                --GiveItem takes it off first when it is worn (treasure is
+                --auto-equipped when found, EncounterOfTheWeek AutoEquipTreasure).
+                props:GiveItem(itemid, qty)
+                return
+            end
             local inventory = props:try_get("inventory", {})
             local current = 0
             if inventory[itemid] ~= nil and type(inventory[itemid].quantity) == "number" then
@@ -1338,6 +1724,8 @@ local function GrantItem(token, itemid, itemName, qty)
             props:SetItemQuantity(itemid, current + qty)
         end,
     }
+    --analytics (host): items the script handed out (or took, qty < 0).
+    EotwAnalytics.Track("eotw_item_grant", { item = itemName, itemid = itemid, qty = qty })
 end
 
 --Remember a granted item on the script document, so the montage stage can
@@ -1403,6 +1791,15 @@ local function InventoryQuantity(token, itemid)
         if inventory[itemid] ~= nil and type(inventory[itemid].quantity) == "number" then
             qty = inventory[itemid].quantity
         end
+    end)
+    return qty
+end
+
+--How many of an item a token holds, worn ones included.
+local function HeldQuantity(token, itemid)
+    local qty = InventoryQuantity(token, itemid)
+    pcall(function()
+        qty = qty + (token.properties:GetEquipmentInAllSlots()[itemid] or 0)
     end)
     return qty
 end
@@ -1605,6 +2002,40 @@ local function EnsureMaxStaminaCurseEffect(amount)
     return dmhub.SetAndUploadTableItem("characterOngoingEffects", effect)
 end
 
+--The ongoing effect behind "you gain poison immunity 2": damage immunity N
+--to one damage type, the same resistance modifier a treasure's immunity uses.
+local function EnsureImmunityBoonEffect(damageType, amount)
+    local name = string.format("Montage Boon: %s Immunity %d", damageType:sub(1, 1):upper() .. damageType:sub(2), amount)
+    local t = dmhub.GetTable("characterOngoingEffects") or {}
+    for id, effect in pairs(t) do
+        if NameMatches(effect.name, name) then
+            return id
+        end
+    end
+    local effect = CharacterOngoingEffect.Create{
+        name = name,
+        source = "Montage",
+        description = string.format("You have %s immunity %d.", damageType, amount),
+        custom = true,
+    }
+    effect.modifiers = {
+        CharacterModifier.new{
+            behavior = "resistance",
+            name = name,
+            source = "Montage",
+            guid = dmhub.GenerateGuid(),
+            resistances = {
+                ResistanceEntry.new{
+                    apply = "Damage Reduction",
+                    damageType = damageType,
+                    dr = amount,
+                },
+            },
+        },
+    }
+    return dmhub.SetAndUploadTableItem("characterOngoingEffects", effect)
+end
+
 --Put one of the montage's ongoing effects on a hero until the next respite.
 --Same cache caveat as the Recovery Value boon (see GrantRecoveryBoon).
 local function ApplyMontageEffect(token, effectid, description)
@@ -1706,6 +2137,7 @@ function EncounterMontage.PrepareBoonAssets(beat)
     local amounts = {}
     local damageAmounts = {}
     local staminaAmounts = {}
+    local immunities = {}
     local any = false
     local function Collect(effects)
         for _, effect in ipairs(effects or {}) do
@@ -1717,6 +2149,9 @@ function EncounterMontage.PrepareBoonAssets(beat)
                 any = true
             elseif effect.kind == "maxstamina" then
                 staminaAmounts[effect.qty] = true
+                any = true
+            elseif effect.kind == "immunityboon" then
+                immunities[effect.damageType .. ":" .. tostring(effect.qty)] = effect
                 any = true
             end
         end
@@ -1752,6 +2187,9 @@ function EncounterMontage.PrepareBoonAssets(beat)
         end
         for amount, _ in pairs(staminaAmounts) do
             EnsureMaxStaminaCurseEffect(amount)
+        end
+        for _, effect in pairs(immunities) do
+            EnsureImmunityBoonEffect(effect.damageType, effect.qty)
         end
     end)
     DropHostPermissions()
@@ -1832,7 +2270,9 @@ end
 --heroEntry), userid, entryName, source ("Montage"/"Narrative"), montage
 --(the state table being mutated), entryId, entry (the parsed entry, whose
 --dice tables a "roll on <table>" clause rolls), doc (the script document,
---inside an open change, for effects that outlive the beat) }. Returns the list of
+--inside an open change, for effects that outlive the beat),
+--splitIntelligence (true: Intelligence is split across the party instead of
+--credited to heroEntry -- an agreed narrative choice) }. Returns the list of
 --human-readable results and the list of ally charids spawned.
 function EncounterMontage.ApplyEffects(effects, ctx)
     local applied = {}
@@ -1869,9 +2309,13 @@ function EncounterMontage.ApplyEffects(effects, ctx)
     --on.
     local runIndex, runText, runSep = nil, nil, ""
 
+    --dice the players rolled for this pass (EncounterMontage.PendingDice
+    --names the keys); anything without one is rolled here.
+    local diceTotals = ctx.diceTotals or {}
+
     ElevateToHostPermissions()
     local ok, err = pcall(function()
-        for _, effect in ipairs(effects or {}) do
+        for effectIndex, effect in ipairs(effects or {}) do
             --a clause the author wrapped in "{...}" is applied exactly as
             --written, but the party is never told: whatever it appends to
             --`applied` below is taken back off at the end of this pass, so
@@ -1910,6 +2354,23 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                     applied[#applied + 1] = string.format("Every hero loses %d Stamina", effect.qty)
                 elseif #names > 0 then
                     applied[#applied + 1] = string.format("%s %d Stamina", Subject(names, "loses", "lose"), effect.qty)
+                end
+            elseif effect.kind == "damage" then
+                --dice damage to one hero named by charid (no script clause
+                --writes it: the Secret Twin assassin's consequence does).
+                --Their player rolls it (PendingDice).
+                local target = nil
+                for _, hero in ipairs(heroes) do
+                    if hero.charid == effect.heroid then
+                        target = hero
+                    end
+                end
+                if target ~= nil then
+                    local amount = tonumber(diceTotals[string.format("d:%d:%s", effectIndex, target.charid)])
+                        or RollDiceExpression(effect.dice)
+                    if pcall(LoseStamina, target.token, amount, SourceLabel(ctx)) then
+                        applied[#applied + 1] = string.format("%s takes %d damage", target.name, amount)
+                    end
                 end
             elseif effect.kind == "heal" then
                 local names = {}
@@ -1956,7 +2417,13 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                 local amounts = {}
                 local nothing = {}
                 for _, target in ipairs(Targets(effect)) do
-                    local callOk, lost = pcall(LoseRecoveries, target.token, effect.qty, SourceLabel(ctx))
+                    --"loses 1d3 recoveries": each hero rolls their own.
+                    local count = effect.qty
+                    if effect.dice ~= nil then
+                        count = tonumber(diceTotals[string.format("r:%d:%s", effectIndex, target.charid)])
+                            or RollDiceExpression(effect.dice)
+                    end
+                    local callOk, lost = pcall(LoseRecoveries, target.token, count, SourceLabel(ctx))
                     lost = cond(callOk, lost or 0, 0)
                     if lost > 0 then
                         if byAmount[lost] == nil then
@@ -2007,24 +2474,41 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                 end)
                 applied[#applied + 1] = string.format("+%s", EncounterScript.Plural(effect.qty, "Hero Token"))
             elseif effect.kind == "intelligence" then
-                --the party's shared Intelligence pool. It is ours, not a
-                --CharacterResource, so it is kept on the script document
-                --with a history of its own for the strip's tooltip.
+                --the party's Intelligence pool, credited to the heroes who
+                --earned it (each spends their own on Tactical Preparation).
+                --It is ours, not a CharacterResource, so it is kept on the
+                --script document (CreditIntelligence). One hero's test is
+                --theirs; every hero who took a narrative option gets the
+                --full amount; with no hero behind it (a consequence, or a
+                --choice the party agreed on -- ctx.splitIntelligence) it is
+                --split evenly across the party.
                 if ctx.doc == nil then
                     printf("EotW montage: no script document open; '%s' not applied", tostring(effect.text))
                 else
-                    local before = tonumber(ctx.doc.data.intelligence) or 0
-                    ctx.doc.data.intelligence = before + effect.qty
-                    local log = ctx.doc.data.intelligenceLog or {}
-                    log[#log + 1] = {
-                        value = before + effect.qty,
-                        amount = effect.qty,
-                        who = ctx.entryName or "Encounter of the Week",
-                        note = SourceLabel(ctx),
-                        at = dmhub.serverTime,
-                    }
-                    ctx.doc.data.intelligenceLog = log
-                    applied[#applied + 1] = string.format("+%s", EncounterScript.Plural(effect.qty, "Intelligence", "Intelligence"))
+                    local targets = Targets(effect)
+                    local split = ctx.splitIntelligence == true or #targets == 0
+                    local credits = {}
+                    if split then
+                        credits = EncounterMontage.SplitIntelligence(ctx.doc, heroes, effect.qty)
+                    else
+                        for _, target in ipairs(targets) do
+                            credits[#credits + 1] = { charid = target.charid, name = target.name, qty = effect.qty }
+                        end
+                    end
+                    --no heroes on the map at all: it still lands, shared.
+                    local shared = cond(#credits == 0, effect.qty, 0)
+                    EncounterMontage.CreditIntelligence(ctx.doc, credits,
+                        ctx.entryName or "Encounter of the Week", SourceLabel(ctx), shared)
+                    local amountText = EncounterScript.Plural(effect.qty, "Intelligence", "Intelligence")
+                    if split then
+                        applied[#applied + 1] = string.format("+%s, shared among the party", amountText)
+                    else
+                        local names = {}
+                        for _, target in ipairs(targets) do
+                            names[#names + 1] = target.name
+                        end
+                        applied[#applied + 1] = string.format("%s %s", Subject(names, "gains", "gain"), amountText)
+                    end
                 end
             elseif effect.kind == "malice" then
                 local before = CharacterResource.GetMalice() or 0
@@ -2238,8 +2722,9 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                 elseif (ctx.tableDepth or 0) >= 2 then
                     printf("EotW montage: '%s' rolls on a table from inside a table roll; ignored", tostring(effect.text))
                 else
-                    for _ = 1, effect.qty do
-                        local total = RollDiceExpression(tableRoll.dice)
+                    for n = 1, effect.qty do
+                        local total = tonumber(diceTotals[string.format("t:%d:%d", effectIndex, n)])
+                            or RollDiceExpression(tableRoll.dice)
                         local row = EncounterScript.ChestRow(tableRoll, total)
                         applied[#applied + 1] = string.format("%s: rolled %d", tableRoll.name, total)
                         if row ~= nil then
@@ -2248,6 +2733,8 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                                 subCtx[k] = v
                             end
                             subCtx.tableDepth = (ctx.tableDepth or 0) + 1
+                            --the row's own clauses count from 1 again.
+                            subCtx.diceTotals = nil
                             local rowApplied, rowAllies = EncounterMontage.ApplyEffects(row.effects, subCtx)
                             for _, text in ipairs(rowApplied) do
                                 applied[#applied + 1] = text
@@ -2272,6 +2759,21 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                     applied[#applied + 1] = string.format("Every hero gains +%d to rolled damage until the next respite", effect.qty)
                 elseif #names > 0 then
                     applied[#applied + 1] = string.format("%s +%d to rolled damage until the next respite", Subject(names, "gains", "gain"), effect.qty)
+                end
+            elseif effect.kind == "immunityboon" then
+                local names = {}
+                local effectid = EnsureImmunityBoonEffect(effect.damageType, effect.qty)
+                for _, target in ipairs(Targets(effect)) do
+                    local grantOk, granted = pcall(ApplyMontageEffect, target.token, effectid,
+                        string.format("Montage: %s immunity %d", effect.damageType, effect.qty))
+                    if grantOk and granted then
+                        names[#names + 1] = target.name
+                    end
+                end
+                if effect.target == "party" then
+                    applied[#applied + 1] = string.format("Every hero gains %s immunity %d until the next respite", effect.damageType, effect.qty)
+                elseif #names > 0 then
+                    applied[#applied + 1] = string.format("%s %s immunity %d until the next respite", Subject(names, "gains", "gain"), effect.damageType, effect.qty)
                 end
             elseif effect.kind == "maxstamina" then
                 local names = {}
@@ -2397,6 +2899,10 @@ function EncounterMontage.RecordAlly(doc, heroid, charid)
 end
 
 function EncounterMontage.ApplyPendingCombatBoons()
+    --an item used in the montage never carries a one-location effect into
+    --the fight (the montage's own sweep normally got there first).
+    pcall(EncounterMontage.EndMontageUses)
+
     local doc = EncounterMontage.GetDoc()
     local pending = doc.data.surges
     if type(pending) ~= "table" or next(pending) == nil then
@@ -2540,6 +3046,7 @@ end
 local STAGE_DISMISS_SECONDS = 0.8
 local STAGE_DISMISS_TIMEOUT = 4
 EncounterMontage.STAGE_DISMISS_SECONDS = STAGE_DISMISS_SECONDS
+EncounterMontage.STAGE_DISMISS_TIMEOUT = STAGE_DISMISS_TIMEOUT
 
 --The moment the host asked the stage to dissolve, or nil.
 function EncounterMontage.DismissAt()
@@ -2585,30 +3092,41 @@ function EncounterMontage.DismissStage()
         return false
     end
 
-    --it has played: take the surface down. The stamp stays until the stage is
-    --really gone (Hide would clear it, and a cleared stamp would just be
-    --re-stamped next tick -- an endless dissolve if the hide never took).
-    pcall(function() GameHud.HidePresentedDialog() end)
     if age >= STAGE_DISMISS_SECONDS + STAGE_DISMISS_TIMEOUT then
         printf("EotW: the script stage would not come down after %.1fs; carrying on without it", age)
         EncounterMontage.ClearDismiss()
         return true
     end
-    return not EncounterMontage.IsPresented()
+
+    --it has played: take the surface down. The stamp stays until the stage is
+    --really gone (Hide would clear it, and a cleared stamp would just be
+    --re-stamped next tick -- an endless dissolve if the hide never took).
+    pcall(function() GameHud.HidePresentedDialog() end)
+
+    --Never report "gone" on the tick that wrote the clear: the caller then
+    --presents the Draw Steel banner, and a clear and a present of the same
+    --presentdialog key in one frame upload as the clear. The banner was torn
+    --down before it could start combat. The next tick sees the stage gone.
+    return false
 end
 
 --- host tick ----------------------------------------------------------------
 
 --The tier table to hand the roll dialog: each tier's teaser where it has
---one, its full text otherwise (EncounterScript.TierDisplayText).
+--one, its full text otherwise (EncounterScript.TierDisplayText). Only tiers
+--1-3: the critical is kept secret until one is rolled, and the stage
+--reveals it then.
 function EncounterMontage.TeaserTiers(roll)
     local tiers = {}
     for t in ipairs(roll.tiers) do
-        tiers[t] = EncounterScript.TierDisplayText(roll, t, false)
+        if t <= 3 then
+            tiers[t] = EncounterScript.TierDisplayText(roll, t, false)
+        end
     end
     return tiers
 end
 
+--A natural 19-20 is the critical tier (4), whatever the modifiers say.
 local function TierIndexForRoll(roll, tier, natural)
     tier = tonumber(tier) or 1
     if tier < 1 then tier = 1 end
@@ -2664,6 +3182,28 @@ local function ExpireTemporaryEntries(m, doc, beat, userid)
     end
 end
 
+--What the montage's last turn did, for the card that follows it (the "over"
+--card or the first consequence), in m.lastApplied's shape. Without it the
+--last turn's rewards were applied in the same tick the montage ended and
+--never shown (2026-10-18 playtest). nil when there is nothing to say.
+local function LastTurnResult(m)
+    local last = (m.log or {})[#(m.log or {})]
+    if last == nil or last.consequence or last.passed then
+        return nil
+    end
+    local lines = {}
+    for _, line in ipairs(last.applied or {}) do
+        lines[#lines + 1] = line
+    end
+    if #lines == 0 and type(last.tierText) == "string" and last.tierText ~= "" then
+        lines[1] = last.tierText
+    end
+    if #lines == 0 then
+        return nil
+    end
+    return { entryId = last.entryId, entryName = last.entryName or "", applied = lines }
+end
+
 --Every hero has acted, or nobody can act (nothing left to approach).
 local function RoundComplete(m, beat, heroes)
     if #heroes == 0 then
@@ -2707,6 +3247,17 @@ end
 
 --What scene conditions ask about the hero, answered with the same facts and
 --matcher the test riders use.
+--Does the hero at the turn's entry speak `language` right now? The stage
+--asks it again while a garbled line is up, so an item that grants the
+--language translates the line in place.
+function EncounterMontage.HeroSpeaks(t, language)
+    if t == nil or language == nil then
+        return false
+    end
+    local ok, req = pcall(EncounterScript.ParseRequirement, "you speak " .. language)
+    return ok and req ~= nil and (HeroRequirementMet(t.heroid, req)) == true
+end
+
 local function SceneEnv(t, option, tier, actors)
     local facts = EncounterMontage.HeroFacts(t.heroid)
     local function Met(text)
@@ -2715,15 +3266,16 @@ local function SceneEnv(t, option, tier, actors)
         end)
         return ok and met == true
     end
+    local function HeroSpeaks(language)
+        return EncounterMontage.HeroSpeaks(t, language)
+    end
     return {
         tier = tier,
         actors = actors or {},
-        speaks = function(language)
-            return Met("you speak " .. language)
-        end,
+        speaks = HeroSpeaks,
         test = function(atom)
             if atom.op == "speaks" then
-                return Met("you speak " .. atom.name)
+                return HeroSpeaks(atom.name)
             elseif atom.op == "is" then
                 --"PC is small" / "PC is immune to fire" first, then "PC is
                 --a Dwarf" (the article is optional in a scene condition).
@@ -2793,6 +3345,10 @@ local function BuildScenePart(m, t, entry, option, part, tier)
                 step.side = "right"
             end
             if step.lang ~= nil and not env.speaks(step.lang) then
+                --the words as written ride along, so the stage can translate
+                --the line if the hero learns the language mid-scene (an
+                --item such as Imp's Tongue).
+                step.plain = step.text
                 step.text = EncounterScript.Garble(step.text, step.lang)
                 step.garbled = true
             end
@@ -2803,11 +3359,153 @@ local function BuildScenePart(m, t, entry, option, part, tier)
     return #steps
 end
 
+--- dice the players roll ---------------------------------------------------------------
+--"Roll on Flotsam" and "each party member loses 1d3 recoveries" are rolled on
+--the screen by the players (user direction 2026-10-17), the way a delve's
+--chest is, not quietly on the host. Before a landed tier or a consequence
+--applies, PendingDice lists the rolls its clauses need; the turn (or the
+--consequence) waits in m.dice while each hero's player rolls, then the
+--effects apply with those totals.
+
+--The player who rolls for a hero: its owner, or `fallback` for a hero the
+--whole party shares.
+local function RollerFor(heroEntry, fallback)
+    local owner = heroEntry ~= nil and heroEntry.ownerId or nil
+    if owner == nil or owner == "" or owner == "PARTY" then
+        return fallback
+    end
+    return owner
+end
+
+--The dice `effects` need, in the order ApplyEffects uses them: key
+--"t:<clause>:<n>" for the nth roll on a table, "r:<clause>:<charid>" for a
+--hero's share of a dice recovery loss, "d:<clause>:<charid>" for dice
+--damage to one hero. ctx is ApplyEffects' context. Hidden
+--"{...}" clauses still roll quietly on the host: dice on the screen would
+--give them away.
+function EncounterMontage.PendingDice(effects, ctx)
+    local rolls = {}
+    for effectIndex, effect in ipairs(effects or {}) do
+        if not effect.hidden then
+            if effect.kind == "rolltable" then
+                local tableRoll = ctx.entry ~= nil and (ctx.entry.tables or {})[effect.key] or nil
+                local hero = ctx.heroEntry
+                if tableRoll ~= nil and hero ~= nil then
+                    for n = 1, effect.qty do
+                        rolls[#rolls + 1] = {
+                            key = string.format("t:%d:%d", effectIndex, n),
+                            kind = "table",
+                            tableKey = effect.key,
+                            dice = tableRoll.dice,
+                            label = tableRoll.name,
+                            heroid = hero.charid,
+                            heroName = hero.name,
+                            userid = ctx.userid or RollerFor(hero, dmhub.loginUserid),
+                        }
+                    end
+                end
+            elseif effect.kind == "damage" then
+                for _, hero in ipairs(EncounterMontage.Heroes()) do
+                    if hero.charid == effect.heroid then
+                        rolls[#rolls + 1] = {
+                            key = string.format("d:%d:%s", effectIndex, hero.charid),
+                            kind = "damage",
+                            dice = effect.dice,
+                            label = effect.label or "Damage",
+                            heroid = hero.charid,
+                            heroName = hero.name,
+                            userid = RollerFor(hero, ctx.userid or dmhub.loginUserid),
+                        }
+                    end
+                end
+            elseif effect.kind == "loserecovery" and effect.dice ~= nil then
+                local targets = {}
+                if effect.target == "party" then
+                    targets = EncounterMontage.Heroes()
+                elseif ctx.heroEntry ~= nil then
+                    targets = { ctx.heroEntry }
+                end
+                for _, hero in ipairs(targets) do
+                    rolls[#rolls + 1] = {
+                        key = string.format("r:%d:%s", effectIndex, hero.charid),
+                        kind = "recovery",
+                        dice = effect.dice,
+                        label = "Recoveries lost",
+                        heroid = hero.charid,
+                        heroName = hero.name,
+                        userid = RollerFor(hero, ctx.userid or dmhub.loginUserid),
+                    }
+                end
+            end
+        end
+    end
+    return rolls
+end
+
+--The lowest and highest a plain dice expression ("1d3", "2d6") can roll.
+local function DiceRange(dice)
+    local count, sides = string.match(string.lower(dice or ""), "^(%d*)d(%d+)$")
+    local n = math.max(1, tonumber(count) or 1)
+    return n, n * math.max(1, tonumber(sides) or 1)
+end
+
+--Put dice out for the players: d = { purpose, entryName, entryId, rolls, ... }.
+local function OpenDice(m, d)
+    m.seq = (m.seq or 0) + 1
+    d.seq = m.seq
+    d.openedAt = dmhub.serverTime
+    m.dice = d
+    printf("EotW montage: %s waits on %d dice", tostring(d.entryName), #d.rolls)
+end
+
+--Apply the consequence the montage is on (m.consequenceIndex) and step on.
+--`totals` are the dice its players rolled; nil the first time, when any dice
+--it needs are put out instead (the consequence then waits in m.dice).
+local function ApplyConsequence(m, doc, beat, userid, totals)
+    local idx = m.consequenceIndex or 1
+    local entryId = (m.consequences or {})[idx]
+    if entryId == nil then
+        m.phase = "done"
+        return "montage done"
+    end
+    local entry = EncounterScript.FindEntry(beat, entryId)
+    local applied = {}
+    if entry ~= nil and entry.consequence ~= nil then
+        local ctx = {
+            heroEntry = nil,
+            userid = userid,
+            entryName = entry.name,
+            entryId = entry.id,
+            entry = entry,
+            montage = m,
+            doc = doc,
+        }
+        if totals == nil then
+            local rolls = EncounterMontage.PendingDice(entry.consequence.effects, ctx)
+            if #rolls > 0 then
+                OpenDice(m, { purpose = "consequence", entryName = entry.name, entryId = entry.id,
+                    consequenceIndex = idx, userid = userid, rolls = rolls })
+                return string.format("consequence of %s waits on the dice", entryId)
+            end
+        end
+        ctx.diceTotals = totals
+        applied = EncounterMontage.ApplyEffects(entry.consequence.effects, ctx)
+    end
+    m.lastApplied = { entryId = entryId, entryName = entry ~= nil and entry.name or "", applied = applied }
+    m.log = m.log or {}
+    m.log[#m.log + 1] = { consequence = true, entryId = entryId, entryName = entry ~= nil and entry.name or "", applied = applied }
+    m.consequenceIndex = idx + 1
+    if m.consequences[idx + 1] == nil then
+        m.phase = "done"
+        m.doneAt = dmhub.serverTime
+    end
+    return string.format("consequence of %s applied", entryId)
+end
+
 --Apply the landed tier of a turn's chosen option and close the turn out:
---effects, allies, the acted/taken bookkeeping, and the log line. Shared by
---the plain "rolled" path and the assisted one, which arrives here with the
---tier the assist shifted it to. An option with outcome lines plays them
---first (ResolveTurn); this runs once they have been read.
+--effects, allies, the acted/taken bookkeeping, and the log line. An option
+--with outcome lines plays them first (ResolveTurn); this runs once they
+--have been read.
 local DelveObstacleResolved
 
 local function ApplyResolution(m, doc, t, entry, option, tierIndex, heroes, userid)
@@ -2818,7 +3516,8 @@ local function ApplyResolution(m, doc, t, entry, option, tierIndex, heroes, user
         return
     end
     local hero = HeroByCharid(heroes, t.heroid)
-    local applied, newAllies = EncounterMontage.ApplyEffects(EncounterMontage.VersionEffects(option, tierIndex), {
+    local effects = EncounterMontage.VersionEffects(option, tierIndex)
+    local ctx = {
         heroEntry = hero,
         userid = userid,
         entryName = entry.name,
@@ -2826,7 +3525,21 @@ local function ApplyResolution(m, doc, t, entry, option, tierIndex, heroes, user
         entry = entry,
         montage = m,
         doc = doc,
-    })
+    }
+    --dice the tier needs go out to the players first; this runs again with
+    --their totals once every roll is in (ResumeDice).
+    if t.diceTotals == nil then
+        local rolls = EncounterMontage.PendingDice(effects, ctx)
+        if #rolls > 0 then
+            OpenDice(m, { purpose = "turn", entryName = entry.name, entryId = entry.id,
+                tier = tierIndex, userid = userid, rolls = rolls })
+            t.status = "dice"
+            return
+        end
+    end
+    ctx.diceTotals = t.diceTotals
+    t.diceTotals = nil
+    local applied, newAllies = EncounterMontage.ApplyEffects(effects, ctx)
     if #newAllies > 0 then
         doc.data.allies = doc.data.allies or {}
         doc.data.allies[t.heroid] = doc.data.allies[t.heroid] or {}
@@ -2852,7 +3565,6 @@ local function ApplyResolution(m, doc, t, entry, option, tierIndex, heroes, user
         m.taken = m.taken or {}
         m.taken[entry.id] = true
     end
-    local a = t.assist
     m.log = m.log or {}
     m.log[#m.log + 1] = {
         round = m.round,
@@ -2863,14 +3575,72 @@ local function ApplyResolution(m, doc, t, entry, option, tierIndex, heroes, user
         optionName = option.name,
         tier = tierIndex,
         total = t.total,
+        --the landed tier's own words, for the hero slot's hover on the stage.
+        tierText = t.tierText,
         applied = applied,
         knack = t.knackReason,
-        assistName = a ~= nil and a.heroName or nil,
-        assistOutcome = a ~= nil and a.outcome or nil,
     }
+
+    --analytics (host): one line per montage test, the hero's class and what
+    --they tried with what result. tier 0 / nil is an option with no roll.
+    local className = nil
+    pcall(function()
+        local tok = dmhub.GetCharacterById(t.heroid)
+        --a montage hero is always a character.
+        local classInfo = tok ~= nil and (tok.properties --[[@as character]]):GetClass() or nil
+        className = classInfo ~= nil and classInfo.name or nil
+    end)
+    EotwAnalytics.Track("eotw_montage_test", {
+        beat = doc.data.beat,
+        round = m.round,
+        entry = entry.name,
+        entryKind = entry.kind,
+        option = option.name,
+        attr = option.roll ~= nil and option.roll.attr or nil,
+        rolled = option.roll ~= nil,
+        tier = tierIndex,
+        total = t.total,
+        natural = t.natural,
+        knack = t.knackReason ~= nil,
+        heroClass = className,
+        owner = userid,
+        effects = #applied,
+    })
 end
 
---A test has landed on its final tier (after any assist): play the option's
+--Every die is in (or the wait ran out): the turn or the consequence that
+--was waiting applies with the totals the players rolled.
+local function ResumeDice(m, doc, beat, heroes)
+    local d = m.dice
+    m.dice = nil
+    if d == nil then
+        return
+    end
+    local totals = {}
+    for _, r in ipairs(d.rolls or {}) do
+        totals[r.key] = r.total
+    end
+    if d.purpose == "consequence" then
+        if m.phase == "consequences" and (m.consequenceIndex or 1) == d.consequenceIndex then
+            ApplyConsequence(m, doc, beat, d.userid, totals)
+        end
+        return
+    end
+    local t = m.turn
+    if t == nil or t.status ~= "dice" then
+        return
+    end
+    local entry = EncounterMontage.TurnEntry(beat, t)
+    local option = EncounterMontage.TurnOption(entry, t)
+    if entry == nil or option == nil then
+        t.status = "choosing"
+        return
+    end
+    t.diceTotals = totals
+    ApplyResolution(m, doc, t, entry, option, d.tier, heroes, d.userid)
+end
+
+--A test has landed on its final tier (after any perk): play the option's
 --outcome lines, if it has any for this tier, before anything is applied --
 --the witch hands over the potions, THEN they arrive in the haul.
 local function ResolveTurn(m, doc, t, entry, option, tierIndex, heroes, userid)
@@ -2987,8 +3757,8 @@ local function ClearTest(t)
     t.baseTotal = nil
     t.attrid = nil
     t.skillid = nil
-    t.assist = nil
-    t.assistOpenedAt = nil
+    t.pardon = nil
+    t.pardoned = nil
     t.chest = nil
     t.knackIndex = nil
     t.knackReason = nil
@@ -3029,6 +3799,8 @@ end
 --in-order delve ("complete": its "## End" scene, if it has one).
 local function DelveLeave(m, doc, t, heroes, why)
     t.delve.obstacleId = nil
+    --kept for the delve's analytics line (DelveFinish).
+    t.delve.leaveWhy = why
     ClearTest(t)
     local lead = nil
     local delve = EncounterMontage.TurnDelve(t)
@@ -3107,6 +3879,17 @@ local function DelveFinish(m, doc, t)
         steps = delve ~= nil and #(delve.obstacles or {}) or nil,
         applied = d.applied or {},
     }
+
+    --analytics (host): how deep the hero went and why they came out.
+    EotwAnalytics.Track("eotw_delve", {
+        beat = doc.data.beat,
+        round = m.round,
+        entry = d.entryName,
+        depth = d.depth or 0,
+        chests = d.chests or 0,
+        steps = delve ~= nil and #(delve.obstacles or {}) or nil,
+        why = d.leaveWhy,
+    })
 end
 
 --Where a delve scene hands over once it has been read (and straight away
@@ -3189,14 +3972,15 @@ end
 --tests, played out in the montage rather than left to the author:
 --  Brawny / Lucky Dog: a failed Might / intrigue test can be raised a tier
 --    for 1d6 + level Stamina (offered to the roller right after the roll).
---  Put Your Back Into It!: an assist that rolls tier 1 imposes no bane;
---    once per montage, raise an ally's tier 1 to tier 2 (offered to the
---    perk's owner when an ally fails).
+--  Put Your Back Into It!: once per montage, raise an ally's tier 1 to
+--    tier 2 (offered to the perk's owner when an ally fails).
+--  Pardon My Friend: when the hero fails a Presence test, another hero with
+--    the perk may make it instead, with a bane; their roll replaces the
+--    hero's. Once per test.
 --  Team Leader: before anyone acts, spend a hero token so every hero tests
 --    as if they had the leader's exploration skills for the montage.
---  Teamwork: in round 1 the hero may both make a test and assist one.
---  Ritualist: once a round, bless the hero at an entry (or yourself): a
---    double edge on their test (EncounterMontage.AppendPerkModifiers).
+--  Ritualist: once a round, bless your own test: a double edge on it
+--    (EncounterMontage.AppendPerkModifiers).
 --  Born Tracker (edge), Polymath / Handy (+1 with no skill that applies),
 --    Power Player (Might for Brag / Flirt / Intimidate): roll chips.
 --  Mighty Leaps (Fury): a Might test to jump never lands below tier 2.
@@ -3260,6 +4044,10 @@ end
 
 local function IsMightAttr(attrid)
     return attrid ~= nil and attrid == AttrIdNamed("might")
+end
+
+local function IsPresenceAttr(attrid)
+    return attrid ~= nil and attrid == AttrIdNamed("presence")
 end
 
 local function PerkUsed(m, key)
@@ -3377,8 +4165,8 @@ local function ApplyTierFloors(t, option, tierIndex)
     return tierIndex
 end
 
---The lowest total that lands on a tier (Draw Steel: 12 and 17), so an
---assist computed off the total keeps a tier a perk paid for.
+--The lowest total that lands on a tier (Draw Steel: 12 and 17), so the
+--total shown with a tier a perk paid for agrees with it.
 local TIER_FLOOR_TOTAL = { [2] = 12, [3] = 17 }
 
 local function RaiseTier(t, by)
@@ -3407,8 +4195,16 @@ local function PerkOffersFor(m, t, option, heroes)
         offers[#offers + 1] = { kind = "stamina", heroid = t.heroid, heroName = t.heroName, perk = "Lucky Dog",
             text = "Lose 1d6 + your level Stamina to raise this failed intrigue test by one tier." }
     end
-    --a delve is the hero alone: only their own perks reach in.
-    for _, hero in ipairs(cond(t.delve == nil, heroes or {}, {})) do
+    --Pardon My Friend: another hero makes the failed Presence test instead.
+    if IsPresenceAttr(t.attrid) and not t.pardoned then
+        for _, hero in ipairs(heroes or {}) do
+            if hero.charid ~= t.heroid and EncounterMontage.HeroHasPerk(hero.charid, "Pardon My Friend") then
+                offers[#offers + 1] = { kind = "pardon", heroid = hero.charid, heroName = hero.name, perk = "Pardon My Friend",
+                    text = string.format("Step in: make this Presence test yourself with a bane. Your roll replaces %s's.", t.heroName or "the hero") }
+            end
+        end
+    end
+    for _, hero in ipairs(heroes or {}) do
         if hero.charid ~= t.heroid and not PerkUsed(m, "backintoit:" .. hero.charid)
             and EncounterMontage.HeroHasPerk(hero.charid, "Put Your Back Into It!") then
             offers[#offers + 1] = { kind = "backintoit", heroid = hero.charid, heroName = hero.name, perk = "Put Your Back Into It!",
@@ -3418,19 +4214,21 @@ local function PerkOffersFor(m, t, option, heroes)
     return offers
 end
 
---A test has landed (after any perk offers): open the assist window if
---someone could help, else resolve it.
+--A test has landed (after any perk offers): resolve it.
 local function AfterTestLanded(m, doc, t, beat, entry, option, heroes, userid)
     t.offers = nil
     t.offerOpenedAt = nil
-    if (t.tier or 1) < 3 and #EncounterMontage.EligibleAssistants(m, beat, heroes) > 0 then
-        t.status = "assist"
-        t.assistOpenedAt = dmhub.serverTime
-        return string.format("%s rolled tier %d on %s -- assistance is offered", t.heroName, t.tier or 1, entry.name)
-    end
     ResolveTurn(m, doc, t, entry, option, t.tier or 1, heroes, userid)
     return string.format("%s rolled tier %d on %s", t.heroName, t.tier or 1, entry.name)
 end
+
+--The dice come out for the hero making the test.
+local function StartRoll(m, t)
+    m.seq = (m.seq or 0) + 1
+    t.rollSeq = m.seq
+    t.status = "rolling"
+end
+
 
 --Use one perk offer: pay its cost and raise the test a tier.
 local function UsePerkOffer(m, doc, t, offer, heroes)
@@ -3461,9 +4259,7 @@ local function FinishScenePart(m, doc, t, beat, heroes)
     end
     local entry = EncounterMontage.TurnEntry(beat, t)
     if after == "rolling" then
-        m.seq = (m.seq or 0) + 1
-        t.rollSeq = m.seq
-        t.status = "rolling"
+        StartRoll(m, t)
     elseif after == "free" then
         --a free option's own lines have played: no dice, straight to its
         --outcome (lines, then effects).
@@ -3489,6 +4285,653 @@ local function FinishScenePart(m, doc, t, beat, heroes)
     end
 end
 
+--- consumables in the montage -------------------------------------------------------
+--Heroes may use their consumables during a montage (user direction
+--2026-10-09). The hero's own player clicks an item beside the hero's card
+--and picks a use; THEIR client casts the item's ability just as the action
+--bar would (same behaviors, the item spent), at no action cost, any time in
+--the rounds except while that hero's own roll is out.
+--
+--How long what it leaves behind lasts:
+--  * a SHORT effect (rounds, end of turn, save ends, end of encounter) lasts
+--    one montage location: the turn the hero is in when they use it, or
+--    else the next turn they take. It
+--    ends when that turn resolves; anything left ends with the montage.
+--  * a LONG effect (until a respite, or with no end) lasts the whole
+--    encounter, combat included.
+--A short duration cannot simply be kept: an effect counted in rounds that
+--is made outside combat expires at once (CharacterOngoingEffectInstance:
+--Expired). So while a montage use is casting, short effects are applied
+--with no duration and marked on the instance itself:
+--  instance.eotwMontageUse = { itemid, item, turnSeq }
+--     -- turnSeq: the turn it lasts through, nil until the hero joins one.
+--The host's tick (MaintainMontageUses) binds, ends and sweeps them. The
+--marker lives on the token, not in a request, because a player's requests
+--share one slot and a quick second click would overwrite the first.
+--
+--  data.montage.consumeSeq = n -- bumped by every use ("consumed"), so the
+--                                 stage rebuilds what it shows: a language
+--                                 from an item can reveal an option.
+
+local Consume = {}
+
+--What a montage use can carry out away from the map: effects on the hero,
+--healing, purging, temporary Stamina, Recoveries. Anything else (strikes,
+--areas, walls, forced movement, raising the dead) needs the battle map.
+Consume.SAFE_BEHAVIORS = {
+    ActivatedAbilityApplyOngoingEffectBehavior = true,
+    ActivatedAbilityHealBehavior = true,
+    ActivatedAbilityPurgeEffectsBehavior = true,
+    ActivatedAbilityGrantTemporaryStaminaBehavior = true,
+    ActivatedAbilityReplenishBehavior = true,
+}
+
+Consume.NEEDS_MAP = "Needs the battle map: use it in combat."
+
+--Durations that outlast a single location: until a respite, or none at all.
+function Consume.IsShort(duration)
+    return not (duration == nil or duration == "until_rest" or duration == "until_long_rest")
+end
+
+--The behaviors of `ability` that run for `mode` (nil = an ability without
+--modes).
+function Consume.BehaviorsForMode(ability, mode)
+    local result = {}
+    for _, b in ipairs(ability:try_get("behaviors", {})) do
+        local modes = b:try_get("modesSelected")
+        if mode == nil or modes == nil or #modes == 0 or table.contains(modes, mode) then
+            result[#result + 1] = b
+        end
+    end
+    return result
+end
+
+--Can a montage use carry this behavior out? An "invoke ability" counts when
+--it only runs a self-targeted ability made of safe behaviors (Giant's-Blood
+--Flame's Coat Weapon).
+function Consume.SafeBehavior(b, depth)
+    local typeName = b.typeName
+    if Consume.SAFE_BEHAVIORS[typeName] then
+        return true
+    end
+    if typeName == "ActivatedAbilityInvokeAbilityBehavior" and (depth or 0) < 2 then
+        local custom = b:try_get("customAbility")
+        if custom ~= nil and b:try_get("targeting", "self") == "self" and custom:try_get("targetType", "self") == "self" then
+            for _, inner in ipairs(custom:try_get("behaviors", {})) do
+                if not Consume.SafeBehavior(inner, (depth or 0) + 1) then
+                    return false
+                end
+            end
+            return true
+        end
+    end
+    return false
+end
+
+--The ongoing effects these behaviors would put on creature `c` using the
+--item on themselves: { { effectid, duration }, ... }. A behavior's target
+--filter is weighed with `c` as both caster and target, as a self-cast
+--would (Growth Potion: "target = caster"; Elixir: "Victories = 3").
+function Consume.EffectsOf(behaviors, c, depth, out)
+    out = out or {}
+    for _, b in ipairs(behaviors) do
+        if b.typeName == "ActivatedAbilityApplyOngoingEffectBehavior" then
+            local effectid = b:try_get("ongoingEffect")
+            if b:try_get("ongoingEffectSource", "specific") == "specific" and type(effectid) == "string" then
+                local pass = true
+                local filter = b:try_get("filterTarget", "")
+                if type(filter) == "string" and filter ~= "" and c ~= nil then
+                    pcall(function()
+                        pass = GoblinScriptTrue(ExecuteGoblinScript(filter, c:LookupSymbol({ target = c, caster = c }), 1, "Montage consumable filter"))
+                    end)
+                end
+                if pass then
+                    out[#out + 1] = { effectid = effectid, duration = b:try_get("duration") }
+                end
+            end
+        elseif b.typeName == "ActivatedAbilityInvokeAbilityBehavior" and (depth or 0) < 2 then
+            local custom = b:try_get("customAbility")
+            if custom ~= nil then
+                Consume.EffectsOf(custom:try_get("behaviors", {}), c, (depth or 0) + 1, out)
+            end
+        end
+    end
+    return out
+end
+
+--Every way a hero could use one of their items in the montage: the item's
+--ability, or each of its modes.
+--  { { mode, label, rules, usable, reason, shortReason,
+--      lasts = "location"|"encounter"|nil, targets = "self"|"group" }, ... }
+--`shortReason` is the few words a greyed menu entry carries ("combat only").
+--`lasts` says how long its effects stay: one location if any is short, the
+--whole encounter if all are long, nil when it leaves no effect (a heal).
+--"group" targets ("you and each ally within 5 squares") reach only the
+--user: a hero is alone at a montage location.
+function EncounterMontage.ConsumableUses(charid, itemid)
+    local gear = dmhub.GetTable("tbl_Gear") or {}
+    local item = gear[itemid]
+    if item == nil or not EquipmentCategory.IsConsumable(item) then
+        return {}
+    end
+    local ability = item:try_get("consumable")
+    if type(ability) ~= "table" then
+        return { { label = "Use", usable = false, reason = "This item has nothing to use." } }
+    end
+    local tok = dmhub.GetCharacterById(charid)
+    local c = tok ~= nil and tok.valid and tok.properties or nil
+
+    local targetType = ability:try_get("targetType", "self")
+    local targets = nil
+    if targetType == "self" then
+        targets = "self"
+    elseif targetType == "target" and ability:try_get("selfTarget", false) then
+        targets = "self"
+    elseif targetType == "all" and ability:try_get("selfTarget", false) and ability:try_get("targetAllegiance", "") == "ally" then
+        targets = "group"
+    end
+
+    local filterReason = nil
+    if c ~= nil then
+        pcall(function() filterReason = ability:AbilityFilterFailureMessage(c) end)
+    end
+
+    --false stands for "no mode": an ability without modes is one use.
+    ---@type (integer|false)[]
+    local modes = { false }
+    local modeList = ability:try_get("modeList", {})
+    if ability:try_get("multipleModes", false) and #modeList > 0 then
+        modes = {}
+        for i = 1, #modeList do
+            modes[i] = i
+        end
+    end
+
+    local result = {}
+    for _, mode in ipairs(modes) do
+        local modeIndex = mode ~= false and mode or nil
+        local behaviors = Consume.BehaviorsForMode(ability, modeIndex)
+        local usable, reason, shortReason = true, nil, nil
+        if #behaviors == 0 then
+            usable, reason, shortReason = false, "Used in combat, not in a montage.", "combat only"
+        elseif targets == nil then
+            usable, reason, shortReason = false, Consume.NEEDS_MAP, "combat only"
+        else
+            for _, b in ipairs(behaviors) do
+                if not Consume.SafeBehavior(b, 0) then
+                    usable, reason, shortReason = false, Consume.NEEDS_MAP, "combat only"
+                    break
+                end
+            end
+        end
+        if usable and filterReason ~= nil then
+            usable, reason, shortReason = false, filterReason, filterReason
+        end
+        local lasts = nil
+        if usable then
+            for _, e in ipairs(Consume.EffectsOf(behaviors, c, 0)) do
+                if Consume.IsShort(e.duration) then
+                    lasts = "location"
+                elseif lasts == nil then
+                    lasts = "encounter"
+                end
+            end
+        end
+        local entry = modeIndex ~= nil and modeList[modeIndex] or nil
+        result[#result + 1] = {
+            mode = modeIndex,
+            label = entry ~= nil and entry.text or "Use",
+            rules = entry ~= nil and entry.rules or nil,
+            usable = usable,
+            reason = reason,
+            shortReason = shortReason,
+            lasts = lasts,
+            targets = targets,
+        }
+    end
+    return result
+end
+
+--Why this hero cannot use an item right now, or nil when they can.
+function EncounterMontage.ConsumeBlockedReason(charid)
+    local m = EncounterMontage.GetState()
+    if m == nil or m.phase ~= "rounds" then
+        return "Items can be used while the montage rounds are under way."
+    end
+    local t = m.turn
+    if t ~= nil then
+        if t.status == "rolling" and t.heroid == charid then
+            return "Not while this hero's test is being rolled."
+        end
+        if t.status == "pardon" and t.pardon ~= nil and t.pardon.heroid == charid then
+            return "Not while this hero is rolling for Pardon My Friend."
+        end
+    end
+    if Consume.capture ~= nil then
+        return "Another item is being used."
+    end
+    return nil
+end
+
+--Is this hero the one at the entry in the turn in flight?
+function Consume.InLiveTurn(t, charid)
+    return t ~= nil and t.status ~= "resolved" and t.heroid == charid
+end
+
+--While a montage use is casting on THIS client: { charids = { [charid] = true },
+--itemid, item, turnSeq }. ApplyOngoingEffect (below) reads it.
+Consume.capture = nil
+
+--Short effects made during a montage use get no duration and the marker
+--the host ends them by (see the section header). Everything else passes
+--straight through.
+local g_baseApplyOngoingEffect = creature.ApplyOngoingEffect
+function creature:ApplyOngoingEffect(ongoingEffectid, duration, casterInfo, options)
+    local capture = Consume.capture
+    if capture == nil then
+        return g_baseApplyOngoingEffect(self, ongoingEffectid, duration, casterInfo, options)
+    end
+    local charid = dmhub.LookupTokenId(self)
+    if charid == nil or not capture.charids[charid] or not Consume.IsShort(duration) then
+        return g_baseApplyOngoingEffect(self, ongoingEffectid, duration, casterInfo, options)
+    end
+    local instance = g_baseApplyOngoingEffect(self, ongoingEffectid, nil, casterInfo, options)
+    if instance ~= nil then
+        instance.eotwMontageUse = { itemid = capture.itemid, item = capture.item, turnSeq = capture.turnSeq }
+    end
+    return instance
+end
+
+--Send "consumed" once the user's previous request has been handled: a
+--player's requests share one slot, so sending over an unhandled one would
+--drop it.
+function Consume.SendWhenFree(kind, args, waited)
+    waited = waited or 0
+    local m = EncounterMontage.GetState()
+    local userid = dmhub.loginUserid
+    local prev = m ~= nil and (m.requests or {})[userid] or nil
+    local handled = m ~= nil and tonumber((m.handled or {})[userid]) or 0
+    if prev ~= nil and (tonumber(prev.seq) or 0) > (handled or 0) and waited < 10 then
+        dmhub.Schedule(0.25, function()
+            if mod.unloaded then
+                return
+            end
+            Consume.SendWhenFree(kind, args, waited + 0.25)
+        end)
+        return
+    end
+    EncounterMontage.SendRequest(kind, args)
+end
+
+--Use one of a hero's items (client side; the local user must control the
+--hero). `mode` picks a mode of a multi-mode item. Returns false and a
+--reason when it cannot be used now.
+function EncounterMontage.ConsumeItem(charid, itemid, mode)
+    local tok = dmhub.GetCharacterById(charid)
+    if tok == nil or not tok.valid or tok.properties == nil then
+        return false, "No such hero."
+    end
+    if not LocalControlsHero(charid) then
+        return false, "That is not your hero."
+    end
+    local blocked = EncounterMontage.ConsumeBlockedReason(charid)
+    if blocked ~= nil then
+        return false, blocked
+    end
+    if tok.properties:GetItemQuantity(itemid) < 1 then
+        return false, "The hero no longer has that item."
+    end
+    local use = nil
+    for _, u in ipairs(EncounterMontage.ConsumableUses(charid, itemid)) do
+        if u.mode == mode then
+            use = u
+        end
+    end
+    if use == nil or not use.usable then
+        return false, use ~= nil and use.reason or "That item cannot be used here."
+    end
+
+    local item = (dmhub.GetTable("tbl_Gear") or {})[itemid]
+    local ability = item:try_get("consumable"):MakeTemporaryClone()
+    ability._tmp_boundCaster = tok.properties
+
+    local m = EncounterMontage.GetState()
+    local t = m ~= nil and m.turn or nil
+    local targets = { { token = tok } }
+    local charids = { [charid] = true }
+
+    local capture = {
+        charids = charids,
+        itemid = itemid,
+        item = item.name,
+        turnSeq = (t ~= nil and Consume.InLiveTurn(t, charid)) and t.seq or nil,
+    }
+    Consume.capture = capture
+    local finished = false
+    local function Finish(_ability, _token, options)
+        if finished then
+            return
+        end
+        finished = true
+        if Consume.capture == capture then
+            Consume.capture = nil
+        end
+        local aborted = options ~= nil and options.abort == true
+        Consume.SendWhenFree("consumed", { heroid = charid, itemid = itemid, item = item.name, mode = mode, aborted = aborted })
+    end
+    --a cast that never finishes must not leave every later effect marked.
+    dmhub.Schedule(60, function()
+        if Consume.capture == capture then
+            Consume.capture = nil
+        end
+    end)
+    local ok, err = pcall(function()
+        ability:Cast(tok, targets, {
+            pay = true,
+            --the item is all it costs: no maneuver is spent in a montage.
+            costOverride = { details = {}, consumables = { [itemid] = 1 } },
+            symbols = { mode = mode or 1 },
+            OnFinishCastHandlers = { Finish },
+        })
+    end)
+    if not ok then
+        if Consume.capture == capture then
+            Consume.capture = nil
+        end
+        printf("EotW montage: using %s failed: %s", tostring(item.name), tostring(err))
+        return false, "Something went wrong using that item."
+    end
+    return true
+end
+
+--Host: bind, end and sweep the short effects montage uses left on the
+--heroes (see the section header), and keep the haul strip honest about
+--consumables that have been used. Called from the host tick inside its
+--open document change.
+local function MaintainMontageUses(m, doc, heroes)
+    local t = m.turn
+    for _, hero in ipairs(heroes) do
+        local tok = hero.token
+        local removeIds, bind = {}, {}
+        local any = false
+        for _, inst in ipairs(tok.properties:try_get("ongoingEffects", {})) do
+            local use = inst:try_get("eotwMontageUse")
+            if type(use) == "table" then
+                any = true
+                if m.phase ~= "rounds" then
+                    removeIds[inst.id] = true
+                elseif use.turnSeq ~= nil then
+                    if t == nil or t.seq ~= use.turnSeq or t.status == "resolved" then
+                        removeIds[inst.id] = true
+                    end
+                elseif Consume.InLiveTurn(t, hero.charid) then
+                    bind[inst.id] = true
+                end
+            end
+        end
+        if any and (next(removeIds) ~= nil or next(bind) ~= nil) then
+            ElevateToHostPermissions()
+            local ok, err = pcall(function()
+                tok:ModifyProperties{
+                    description = "Montage: item effects",
+                    undoable = false,
+                    execute = function()
+                        local list = tok.properties:try_get("ongoingEffects", {})
+                        for i = #list, 1, -1 do
+                            local inst = list[i]
+                            if removeIds[inst.id] then
+                                tok.properties:RemoveOngoingEffectBySeq(inst.seq)
+                            elseif bind[inst.id] and t ~= nil then
+                                local use = DeepCopy(inst.eotwMontageUse)
+                                use.turnSeq = t.seq
+                                inst.eotwMontageUse = use
+                            end
+                        end
+                    end,
+                }
+            end)
+            DropHostPermissions()
+            if not ok then
+                printf("EotW montage: item effect upkeep failed for %s: %s", tostring(hero.name), tostring(err))
+            end
+        end
+
+        --a consumable from the haul that has been used leaves the strip.
+        for _, entry in ipairs(EncounterMontage.GetItems(hero.charid)) do
+            local gearItem = (dmhub.GetTable("tbl_Gear") or {})[entry.itemid]
+            if gearItem ~= nil and EquipmentCategory.IsConsumable(gearItem) then
+                local have = InventoryQuantity(tok, entry.itemid)
+                if have < (entry.qty or 1) then
+                    UnrecordItem(doc, hero.charid, entry.itemid, (entry.qty or 1) - have)
+                end
+            end
+        end
+    end
+end
+
+--End every short effect a montage use left on the heroes, whatever turn it
+--was waiting for. The host calls it when combat starts, as a backstop for a
+--montage that never reached its own sweep.
+function EncounterMontage.EndMontageUses()
+    for _, hero in ipairs(EncounterMontage.Heroes()) do
+        local tok = hero.token
+        local seqs = {}
+        for _, inst in ipairs(tok.properties:try_get("ongoingEffects", {})) do
+            if type(inst:try_get("eotwMontageUse")) == "table" then
+                seqs[#seqs + 1] = inst.seq
+            end
+        end
+        if #seqs > 0 then
+            ElevateToHostPermissions()
+            pcall(function()
+                tok:ModifyProperties{
+                    description = "Montage: item effects end",
+                    undoable = false,
+                    execute = function()
+                        for _, seq in ipairs(seqs) do
+                            tok.properties:RemoveOngoingEffectBySeq(seq)
+                        end
+                    end,
+                }
+            end)
+            DropHostPermissions()
+        end
+    end
+end
+
+--- what an item could do for the test at hand ---------------------------------
+--While a hero stands at an entry, any item that would change something
+--there -- reveal a secret option, open a knack, put an edge on the roll --
+--raises an alert on its icon, and hovering it says what and lights up the
+--options it helps (user direction 2026-10-09). Found by trying it: the
+--item's effects are added to the hero as TRANSIENT built-in effects (the
+--_tmp_ list RefreshToken rebuilds; never saved or sent), the same rules
+--code is asked again, and the answers compared. Only the hero at the entry
+--is weighed.
+
+--Run fn(c) while `tok`'s creature also carries `effectids`.
+function Consume.WithEffects(tok, effectids, fn)
+    local c = tok.properties
+    local saved = rawget(c, "_tmp_builtinOngoingEffects")
+    local list = {}
+    for _, e in ipairs(saved or {}) do
+        list[#list + 1] = e
+    end
+    for i, effectid in ipairs(effectids) do
+        list[#list + 1] = CharacterOngoingEffectInstance.new{
+            ongoingEffectid = effectid,
+            stacks = 1,
+            seq = 100000 + i,
+            id = string.format("eotw-try-%d", i),
+            time = TimePoint.Create(),
+        }
+    end
+    c._tmp_builtinOngoingEffects = list
+    c:Invalidate()
+    local ok, err = pcall(fn, c)
+    c._tmp_builtinOngoingEffects = saved
+    c:Invalidate()
+    if not ok then
+        printf("EotW montage: trying an item on failed: %s", tostring(err))
+    end
+end
+
+--The names of the power-roll modifiers that would switch on for this
+--hero's test of `version` ({ [name] = true }).
+function Consume.ActiveRollModifiers(tok, version)
+    local names = {}
+    pcall(function()
+        local _, skills = EncounterScript.ParseAttr(version.roll.attr, creature.attributesInfo, Skill.skillsDropdownOptions)
+        local attrid = EncounterMontage.TestCharacteristic(tok.charid, version)
+        if attrid == nil then
+            return
+        end
+        local mods = tok.properties:GetModifiersForPowerRoll("2d10", "test_power_roll", { attribute = attrid, title = version.roll.name, skills = skills })
+        for _, entry in ipairs(mods) do
+            if entry.hint ~= nil and entry.hint.result and entry.modifier ~= nil then
+                names[entry.modifier.name] = true
+            end
+        end
+    end)
+    return names
+end
+
+local g_benefitCache = {}
+local BENEFIT_CACHE_SECONDS = 2
+
+--What using this item now would do at the entry the hero is at:
+--{ { text, optionIndex }, ... } (optionIndex nil for a secret option that
+--would appear), or nil when it would change nothing here or no test is in
+--hand. Client side, cached briefly.
+function EncounterMontage.ItemBenefits(charid, itemid)
+    local m = EncounterMontage.GetState()
+    if m == nil or m.phase ~= "rounds" then
+        return nil
+    end
+    local t = m.turn
+    if t == nil or not (t.status == "scene" or t.status == "choosing") or t.heroid ~= charid then
+        return nil
+    end
+    local tok = dmhub.GetCharacterById(charid)
+    if tok == nil or not tok.valid or tok.properties == nil or tok.properties:GetItemQuantity(itemid) < 1 then
+        return nil
+    end
+
+    local key = table.concat({ tostring(t.seq), tostring(t.status), tostring(t.optionIndex),
+        tostring((t.delve or {}).obstacleId), tostring(m.consumeSeq), tostring(m.round) }, "|")
+    local cacheKey = charid .. "|" .. itemid
+    local cached = g_benefitCache[cacheKey]
+    if cached ~= nil and cached.key == key and dmhub.Time() < cached.expires then
+        return cached.result
+    end
+
+    local result = nil
+    pcall(function()
+        local beat = EncounterMontage.CurrentBeat()
+        local entry = EncounterMontage.TurnEntry(beat, t)
+        if entry == nil then
+            return
+        end
+        local effectids, seen = {}, {}
+        for _, use in ipairs(EncounterMontage.ConsumableUses(charid, itemid)) do
+            if use.usable then
+                local item = (dmhub.GetTable("tbl_Gear") or {})[itemid]
+                local behaviors = Consume.BehaviorsForMode(item:try_get("consumable"), use.mode)
+                for _, e in ipairs(Consume.EffectsOf(behaviors, tok.properties, 0)) do
+                    if not seen[e.effectid] then
+                        seen[e.effectid] = true
+                        effectids[#effectids + 1] = e.effectid
+                    end
+                end
+            end
+        end
+        if #effectids == 0 then
+            return
+        end
+
+        local options = {}
+        for i, option in ipairs(entry.options) do
+            options[#options + 1] = { index = i, option = option }
+        end
+        --the languages of this scene's garbled lines: an item that teaches
+        --one translates them (the stage does it in place).
+        local garbledLangs = {}
+        for _, step in ipairs((t.scene or {}).steps or {}) do
+            if step.garbled and step.plain ~= nil and step.lang ~= nil then
+                garbledLangs[step.lang] = true
+            end
+        end
+
+        local function Evaluate()
+            local out = {}
+            out.langs = {}
+            for lang, _ in pairs(garbledLangs) do
+                out.langs[lang] = EncounterMontage.HeroSpeaks(t, lang)
+            end
+            for _, o in ipairs(options) do
+                local rec = { visible = EncounterMontage.OptionVisible(charid, o.option) }
+                rec.knack = EncounterMontage.KnackIndex(charid, o.option)
+                local version = EncounterMontage.OptionForHero(charid, o.option)
+                if rec.visible and version ~= nil and version.roll ~= nil then
+                    local verdict = EncounterMontage.RiderVerdict(charid, o.option, version)
+                    rec.net = verdict ~= nil and ((verdict.boons or 0) - (verdict.banes or 0)) or 0
+                    rec.mods = Consume.ActiveRollModifiers(tok, version)
+                end
+                out[o.index] = rec
+            end
+            return out
+        end
+
+        local before = Evaluate()
+        local after = nil
+        Consume.WithEffects(tok, effectids, function(c)
+            local facts = TestRiders.CreatureFacts(c)
+            g_factsOverride[charid] = facts
+            local ok, res = pcall(Evaluate)
+            g_factsOverride[charid] = nil
+            if ok then
+                after = res
+            end
+        end)
+        if after == nil then
+            return
+        end
+
+        local benefits = {}
+        for lang, _ in pairs(garbledLangs) do
+            if (after.langs or {})[lang] and not (before.langs or {})[lang] then
+                benefits[#benefits + 1] = { text = string.format("Lets you understand the %s being spoken.", lang) }
+            end
+        end
+        for _, o in ipairs(options) do
+            local b, a = before[o.index] or {}, after[o.index] or {}
+            local name = o.option.name or "this option"
+            if a.visible and not b.visible then
+                benefits[#benefits + 1] = { text = "Could reveal a hidden option here." }
+            elseif a.visible then
+                if a.knack ~= nil and a.knack ~= b.knack then
+                    benefits[#benefits + 1] = { text = string.format("Opens a knack for %s.", name), optionIndex = o.index }
+                end
+                if (a.net or 0) > (b.net or 0) then
+                    local gain = (a.net or 0) - (b.net or 0)
+                    benefits[#benefits + 1] = { text = string.format("%s on %s.", cond(gain >= 2, "A double edge", "An edge"), name), optionIndex = o.index }
+                end
+                for modName, _ in pairs(a.mods or {}) do
+                    if not (b.mods or {})[modName] then
+                        benefits[#benefits + 1] = { text = string.format("%s helps the test for %s.", modName, name), optionIndex = o.index }
+                    end
+                end
+            end
+        end
+        if #benefits > 0 then
+            result = benefits
+        end
+    end)
+
+    g_benefitCache[cacheKey] = { key = key, result = result, expires = dmhub.Time() + BENEFIT_CACHE_SECONDS }
+    return result
+end
+
 --Handle one player request against the (mutable) state. Returns a string
 --describing what happened, for the log.
 local function HandleRequest(m, doc, userid, req, beat, heroes)
@@ -3509,6 +4952,7 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
             return "ignored approach: entry unavailable"
         end
         m.seq = (m.seq or 0) + 1
+        --the entry's intro scene plays, then the hero chooses.
         m.turn = {
             seq = m.seq,
             userid = userid,
@@ -3518,9 +4962,10 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
             status = "choosing",
             startedAt = dmhub.serverTime,
         }
-        if BuildScenePart(m, m.turn, entry, nil, "intro") > 0 then
-            m.turn.status = "scene"
-            m.turn.sceneAfter = "choosing"
+        local t = m.turn
+        if BuildScenePart(m, t, entry, nil, "intro") > 0 then
+            t.status = "scene"
+            t.sceneAfter = "choosing"
         end
         return string.format("%s approaches %s", hero.name, entry.name)
     elseif kind == "pass" then
@@ -3548,6 +4993,16 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         }
         m.turn = nil
         return string.format("%s does nothing", t.heroName or "A hero")
+    elseif kind == "backout" then
+        --undo a mis-clicked approach: the hero has not acted and nothing is
+        --logged, so they (or anyone) can go somewhere else this round.
+        local t = m.turn
+        if t == nil or t.userid ~= userid or not EncounterMontage.CanBackOut(m) then
+            return "ignored backout: past the first line"
+        end
+        local entry = EncounterMontage.TurnEntry(beat, t)
+        m.turn = nil
+        return string.format("%s backs out of %s", t.heroName or "A hero", entry ~= nil and entry.name or "?")
     elseif kind == "choose" then
         local t = m.turn
         if t == nil or t.userid ~= userid or t.status ~= "choosing" then
@@ -3590,12 +5045,12 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         end
         --an Allow rider the hero does not meet hides the option (a secret
         --option); the stage never sends this, but the host is the authority.
-        local verdict = EncounterMontage.RiderVerdict(t.heroid, option)
+        local verdict = EncounterMontage.RiderVerdict(t.heroid, option, nil)
         if verdict ~= nil and not verdict.allowed then
             return string.format("ignored choose: %s does not meet '%s'", t.heroName, EncounterMontage.DescribeUnmet(verdict))
         end
-        --the version this hero takes is fixed here, once: a knack they
-        --meet replaces the option's roll (or removes it).
+        --the version this hero takes is fixed here, once: a knack the hero
+        --meets replaces the option's roll (or removes it).
         local knackIndex = EncounterMontage.KnackIndex(t.heroid, option)
         local version = EncounterScript.OptionVersion(option, knackIndex)
         if version.roll == nil and version.free == nil then
@@ -3619,11 +5074,11 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
             ResolveTurn(m, doc, t, entry, version, 0, heroes, userid)
             return string.format("%s chooses %s (no roll)", t.heroName, option.name)
         end
-        m.seq = (m.seq or 0) + 1
-        t.status = "rolling"
-        t.rollSeq = m.seq
+        StartRoll(m, t)
         return string.format("%s chooses %s", t.heroName, option.name)
     elseif kind == "cancel" then
+        --backing out of the roll before the dice are thrown: back to the
+        --options.
         local t = m.turn
         if t ~= nil and t.userid == userid and t.status == "rolling" and t.rollSeq == req.rollSeq then
             t.status = "choosing"
@@ -3649,9 +5104,8 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         --option is only found when entry is.
         ---@cast entry -nil
         local tierIndex = TierIndexForRoll(option.roll, req.tier, req.natural)
-        --what the acting hero rolled WITH: the assist uses the same
-        --characteristic, and a hero may only assist with a skill this one is
-        --not already using.
+        --what the acting hero rolled WITH (perks such as Brawny and Pardon
+        --My Friend ask which characteristic it was).
         t.attrid = req.attrid
         t.skillid = req.skillid
         t.total = req.total
@@ -3673,8 +5127,6 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
             return string.format("%s rolled tier %d on %s -- a perk may help", t.heroName, tierIndex, entry.name)
         end
 
-        --below tier 3, a skilled hero may still lend a hand (never in a
-        --delve: EligibleAssistants is empty there).
         return AfterTestLanded(m, doc, t, beat, entry, option, heroes, userid)
     elseif kind == "perkUse" or kind == "perkPass" then
         local t = m.turn
@@ -3700,12 +5152,74 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
             end
             return AfterTestLanded(m, doc, t, beat, entry, option, heroes, t.userid)
         end
+        if offer.kind == "pardon" then
+            --the other hero's own roll replaces the hero's (pardonRolled).
+            m.seq = (m.seq or 0) + 1
+            t.pardon = {
+                userid = userid,
+                heroid = offer.heroid,
+                heroName = offer.heroName,
+                rollSeq = m.seq,
+                startedAt = dmhub.serverTime,
+            }
+            t.pardoned = true
+            t.offers = nil
+            t.offerOpenedAt = nil
+            t.status = "pardon"
+            return string.format("%s steps in for %s (Pardon My Friend)", offer.heroName or "A hero", t.heroName or "the hero")
+        end
         UsePerkOffer(m, doc, t, offer, heroes)
         local note = string.format("%s uses %s", offer.heroName or "A hero", offer.perk)
         AfterTestLanded(m, doc, t, beat, entry, option, heroes, t.userid)
         return note
+    elseif kind == "pardonRolled" or kind == "pardonCancel" then
+        local t = m.turn
+        local p = t ~= nil and t.pardon or nil
+        if t == nil or p == nil or t.status ~= "pardon" or p.userid ~= userid or p.rollSeq ~= req.rollSeq then
+            return "ignored pardon roll: stale"
+        end
+        local entry = EncounterMontage.TurnEntry(beat, t)
+        local option = EncounterMontage.TurnOption(entry, t)
+        t.pardon = nil
+        if entry == nil or option == nil or option.roll == nil then
+            t.status = "choosing"
+            return "ignored pardon roll: option vanished"
+        end
+        if kind == "pardonCancel" then
+            --backed out before the dice were thrown: the hero's own roll
+            --stands, and the perk is still unspent for this test.
+            t.pardoned = nil
+            local offers = PerkOffersFor(m, t, option, heroes)
+            if #offers > 0 then
+                t.offers = offers
+                t.offerOpenedAt = dmhub.serverTime
+                t.status = "perk"
+                return string.format("%s stays out of it", p.heroName or "A hero")
+            end
+            return AfterTestLanded(m, doc, t, beat, entry, option, heroes, t.userid)
+        end
+        local tierIndex = TierIndexForRoll(option.roll, req.tier, req.natural)
+        t.total = req.total
+        t.natural = req.natural
+        t.baseTotal = req.total
+        t.tier = tierIndex
+        t.baseTier = tierIndex
+        t.perkLines = t.perkLines or {}
+        t.perkLines[#t.perkLines + 1] = string.format("Pardon My Friend: %s stepped in and rolled %s",
+            p.heroName or "another hero", cond(tierIndex == 4, "a critical", string.format("tier %d", tierIndex)))
+        --the new roll can fail too: the other perks get their chance at it.
+        local offers = PerkOffersFor(m, t, option, heroes)
+        if #offers > 0 then
+            t.offers = offers
+            t.offerOpenedAt = dmhub.serverTime
+            t.status = "perk"
+            return string.format("%s rolled tier %d in %s's place -- a perk may help", p.heroName or "A hero", tierIndex, t.heroName or "the hero")
+        end
+        AfterTestLanded(m, doc, t, beat, entry, option, heroes, t.userid)
+        return string.format("%s rolled tier %d in %s's place (Pardon My Friend)", p.heroName or "A hero", tierIndex, t.heroName or "the hero")
     elseif kind == "bless" then
-        --Ritualist: a blessing on the test of the hero at the entry.
+        --Ritualist: the hero at the entry blesses their own test (the ritual
+        --needs a touch, and nobody else is there).
         local t = m.turn
         if t == nil or t.status ~= "choosing" or t.delve ~= nil then
             return "ignored bless: not the moment"
@@ -3713,6 +5227,9 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         local hero = HeroByCharid(heroes, req.heroid)
         if hero == nil or not UserControlsHero(userid, hero) then
             return "ignored bless: not your hero"
+        end
+        if hero.charid ~= t.heroid then
+            return "ignored bless: only the hero at the entry can bless the test"
         end
         local key = string.format("ritual:%d:%s", m.round or 1, hero.charid)
         if not EncounterMontage.HeroHasPerk(hero.charid, "Ritualist") or PerkUsed(m, key) or t.blessing ~= nil then
@@ -3752,38 +5269,6 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         m.teamLeader = { heroid = hero.charid, heroName = hero.name, skills = skills }
         MarkPerkUsed(m, "teamleader:" .. hero.charid)
         return string.format("%s leads the party (Team Leader)", hero.name)
-    elseif kind == "assist" then
-        local t = m.turn
-        if t == nil or t.status ~= "assist" then
-            return "ignored assist: not the moment"
-        end
-        local hero = HeroByCharid(heroes, req.heroid)
-        if hero == nil or not UserControlsHero(userid, hero) then
-            return "ignored assist: not your hero"
-        end
-        local match = nil
-        for _, candidate in ipairs(EncounterMontage.EligibleAssistants(m, beat, heroes)) do
-            if candidate.charid == hero.charid then
-                match = candidate
-                break
-            end
-        end
-        if match == nil then
-            return "ignored assist: hero cannot assist this test"
-        end
-        m.seq = (m.seq or 0) + 1
-        t.assist = {
-            userid = userid,
-            heroid = hero.charid,
-            heroName = hero.name,
-            skillid = match.skillid,
-            skillName = match.skillName,
-            status = "rolling",
-            rollSeq = m.seq,
-            startedAt = dmhub.serverTime,
-        }
-        t.status = "assisting"
-        return string.format("%s steps in to assist %s", hero.name, t.heroName or "the test")
     elseif kind == "giveItem" then
         --a hero's player drags an icon from their haul onto another hero's
         --card (EncounterMontageStage.CreateItemIcon): one unit of the item
@@ -3801,7 +5286,7 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         if entry == nil then
             return "ignored give: hero did not gain that item here"
         end
-        if InventoryQuantity(hero.token, req.itemid) < 1 then
+        if HeldQuantity(hero.token, req.itemid) < 1 then
             --gained here, but already used up or dropped: the icon is stale.
             UnrecordItem(doc, hero.charid, req.itemid, entry.qty or 1)
             return "ignored give: item no longer in the hero's inventory"
@@ -3818,71 +5303,20 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         RecordItem(doc, target.charid, req.itemid, entry.name, 1)
         UnrecordItem(doc, hero.charid, req.itemid, 1)
         return string.format("%s hands %s to %s", hero.name, tostring(entry.name), target.name)
-    elseif kind == "assistCancel" then
-        local t = m.turn
-        local a = t ~= nil and t.assist or nil
-        if a ~= nil and a.userid == userid and a.status == "rolling" and a.rollSeq == req.rollSeq then
-            t.assist = nil
-            t.status = "assist"
-            return "assist withdrawn"
+    elseif kind == "consumed" then
+        --a player used one of their hero's items (EncounterMontage.ConsumeItem
+        --cast it on their own client). The effects carry their own markers;
+        --this only tells every stage to look again, since an item can change
+        --what the hero at an entry is offered.
+        local hero = HeroByCharid(heroes, req.heroid)
+        if hero == nil or not UserControlsHero(userid, hero) then
+            return "ignored consumed: not your hero"
         end
-        return "ignored assist cancel"
-    elseif kind == "assistRolled" then
-        local t = m.turn
-        local a = t ~= nil and t.assist or nil
-        if t == nil or a == nil or a.userid ~= userid or t.status ~= "assisting" or a.rollSeq ~= req.rollSeq then
-            return "ignored assist roll: stale"
+        m.consumeSeq = (m.consumeSeq or 0) + 1
+        if req.aborted then
+            return string.format("%s did not finish using %s", hero.name, tostring(req.item))
         end
-        local entry = EncounterMontage.TurnEntry(beat, t)
-        local option = EncounterMontage.TurnOption(entry, t)
-        if option == nil or option.roll == nil then
-            t.status = "choosing"
-            t.assist = nil
-            return "ignored assist roll: option vanished"
-        end
-        local assistTier = tonumber(req.tier) or 1
-        if assistTier < 1 then assistTier = 1 end
-        if assistTier > 3 then assistTier = 3 end
-        a.tier = assistTier
-        a.total = req.total
-        a.natural = req.natural
-        a.outcome = ASSIST_OUTCOMES[assistTier]
-        --Put Your Back Into It!: a tier 1 assist imposes no bane.
-        if a.outcome == "bane" and EncounterMontage.HeroHasPerk(a.heroid, "Put Your Back Into It!") then
-            a.outcome = "none"
-        end
-        a.status = "resolved"
-        --assisting costs the helper their turn this round, whatever it
-        --rolled -- unless Teamwork lets them assist AND test in round 1.
-        m.acted = m.acted or {}
-        if EncounterMontage.TeamworkAvailable(m, a.heroid) then
-            MarkPerkUsed(m, "teamwork:" .. a.heroid)
-        else
-            m.acted[a.heroid] = true
-        end
-        local tierIndex, newTotal = EncounterMontage.ApplyAssistToTier(a.outcome, t.baseTier, t.baseTotal)
-        tierIndex = TierIndexForRoll(option.roll, tierIndex, t.natural)
-        t.total = newTotal
-        ResolveTurn(m, doc, t, entry, option, tierIndex, heroes, userid)
-        return string.format("%s assists (%s): %s ends on tier %d", a.heroName or "A hero",
-            tostring(a.outcome), t.heroName or "the test", tierIndex)
-    elseif kind == "noassist" then
-        local t = m.turn
-        if t == nil or t.status ~= "assist" then
-            return "ignored noassist"
-        end
-        --only the hero taking the test may wave the offer away.
-        if t.userid ~= userid then
-            return "ignored noassist: not your test"
-        end
-        local entry = EncounterMontage.TurnEntry(beat, t)
-        local option = EncounterMontage.TurnOption(entry, t)
-        if option == nil or option.roll == nil then
-            t.status = "choosing"
-            return "ignored noassist: option vanished"
-        end
-        ResolveTurn(m, doc, t, entry, option, t.baseTier or t.tier or 1, heroes, userid)
-        return string.format("%s takes the result unassisted", t.heroName or "The hero")
+        return string.format("%s used %s", hero.name, tostring(req.item))
     elseif kind == "chestRolling" then
         --the chest's dice are in the air: record them so every client's
         --chest card can follow the tumble (EncounterMontageStage.ChestCard).
@@ -3984,34 +5418,40 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         if m.phase ~= "consequences" then
             return "ignored continue"
         end
-        local idx = m.consequenceIndex or 1
-        local entryId = (m.consequences or {})[idx]
-        if entryId == nil then
-            m.phase = "done"
-            return "montage done"
+        if m.dice ~= nil then
+            return "ignored continue: the dice are out"
         end
-        local entry = EncounterScript.FindEntry(beat, entryId)
-        local applied = {}
-        if entry ~= nil and entry.consequence ~= nil then
-            applied = EncounterMontage.ApplyEffects(entry.consequence.effects, {
-                heroEntry = nil,
-                userid = userid,
-                entryName = entry.name,
-                entryId = entry.id,
-                entry = entry,
-                montage = m,
-                doc = doc,
-            })
+        return ApplyConsequence(m, doc, beat, userid, nil)
+    elseif kind == "diceRolled" then
+        --a player's dice for a table roll or a recovery loss have landed.
+        local d = m.dice
+        if d == nil or d.seq ~= req.diceSeq then
+            return "ignored dice: stale"
         end
-        m.lastApplied = { entryId = entryId, entryName = entry ~= nil and entry.name or "", applied = applied }
-        m.log = m.log or {}
-        m.log[#m.log + 1] = { consequence = true, entryId = entryId, entryName = entry ~= nil and entry.name or "", applied = applied }
-        m.consequenceIndex = idx + 1
-        if m.consequences[idx + 1] == nil then
-            m.phase = "done"
-            m.doneAt = dmhub.serverTime
+        for _, r in ipairs(d.rolls or {}) do
+            if r.key == req.key then
+                if r.total ~= nil then
+                    return "ignored dice: already rolled"
+                end
+                if r.userid ~= userid then
+                    return "ignored dice: not your roll"
+                end
+                local lo, hi = DiceRange(r.dice)
+                r.total = math.max(lo, math.min(hi, math.floor(tonumber(req.total) or lo)))
+                local line = string.format("%s rolls %d (%s, %s)", tostring(r.heroName), r.total, tostring(r.label), tostring(r.dice))
+                local all = true
+                for _, other in ipairs(d.rolls) do
+                    if other.total == nil then
+                        all = false
+                    end
+                end
+                if all then
+                    ResumeDice(m, doc, beat, heroes)
+                end
+                return line
+            end
         end
-        return string.format("consequence of %s applied", entryId)
+        return "ignored dice: unknown roll"
     elseif kind == "reset" then
         --dev: restart the montage from round 1 (state only; effects already
         --applied are not undone).
@@ -4225,6 +5665,61 @@ function EncounterMontage.Begin(script, beat, beatIndex)
     EncounterMontage.Present(beatIndex)
 end
 
+--Host only. Heroes changed hands (a player left and the host took their
+--heroes, they came back, or the host gave a hero away): the turn in
+--progress follows. Whoever now controls the acting hero drives the turn,
+--and the same goes for a Pardon My Friend re-roll. A
+--roll already out stays with its roller unless that player is in `away`
+--({ [userid] = true }); the new controller then rolls it afresh.
+--Returns true when the turn changed.
+function EncounterMontage.SyncTurnToOwners(away)
+    away = away or {}
+    local doc = EncounterMontage.GetDoc()
+    local m = doc.data.montage
+    if type(m) ~= "table" or type(m.turn) ~= "table" then
+        return false
+    end
+
+    --the user who should hold a part of the turn now, or nil to leave it.
+    local function NewHolder(current, charid, rollOut)
+        if charid == nil then
+            return nil
+        end
+        local tok = dmhub.GetCharacterById(charid)
+        local owner = tok ~= nil and tok.ownerId or nil
+        if owner == nil or owner == "PARTY" or owner == current then
+            return nil
+        end
+        if rollOut and not away[current] then
+            return nil
+        end
+        return owner
+    end
+
+    local t = m.turn
+    local mainRollOut = t.status == "rolling" or t.status == "chest" or t.status == "chestlanded"
+    local turnTo = NewHolder(t.userid, t.heroid, mainRollOut)
+    local pardonTo = nil
+    if type(t.pardon) == "table" then
+        pardonTo = NewHolder(t.pardon.userid, t.pardon.heroid, t.status == "pardon")
+    end
+    if turnTo == nil and pardonTo == nil then
+        return false
+    end
+
+    doc:BeginChange()
+    t = doc.data.montage.turn
+    if turnTo ~= nil then
+        printf("EotW montage: %s's turn passes from %s to %s", tostring(t.heroName), tostring(t.userid), turnTo)
+        t.userid = turnTo
+    end
+    if pardonTo ~= nil then
+        t.pardon.userid = pardonTo
+    end
+    doc:CompleteChange("Montage: the turn changes hands", { undoable = false })
+    return true
+end
+
 --Run the montage beat from the host tick. Returns "running" while the
 --montage plays and "done" once every round and consequence has played.
 function EncounterMontage.HostTick(script, beat, beatIndex)
@@ -4241,9 +5736,11 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
         doc:BeginChange()
         doc.data.montage.phase = "rounds"
         RollRemovals(doc.data.montage, beat)
+        AddAssassins(doc, doc.data.montage)
         doc:CompleteChange("Montage: the party has arrived", { undoable = false })
         m = doc.data.montage
         printf("EotW montage: beat %d -- the party has arrived; round 1 begins", beatIndex)
+        printf("[EOTWPROF] server=%.3f app=%.3f host: opening beat opened (party in)", dmhub.serverTimeMilliseconds * 0.001, dmhub.Time())
     end
 
     if m.removed == nil and m.phase ~= "arriving" then
@@ -4317,43 +5814,26 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
         end
     end
 
-    --a claimed assist that never rolls hands the slot back, and the window
-    --below then closes on its own clock.
-    if m.turn ~= nil and m.turn.status == "assisting" and m.turn.assist ~= nil then
-        local age = dmhub.serverTime - (tonumber(m.turn.assist.startedAt) or dmhub.serverTime)
-        if age >= ASSIST_ROLL_SECONDS then
-            printf("EotW montage: %s never rolled their assist; the slot is free again",
-                tostring(m.turn.assist.heroName))
-            m.turn.assist = nil
-            m.turn.status = "assist"
-        end
-    end
-
-    --nobody stepped in: the assist window closes itself so an absent party
-    --cannot wedge the montage, and the test keeps its own result. An empty
-    --window is never shown at all (user direction 2026-09-19) -- with no
-    --eligible hero it closes on the spot rather than waiting out the clock,
-    --which also covers eligibility falling away after it opened.
-    if m.turn ~= nil and m.turn.status == "assist" then
-        local age = dmhub.serverTime - (tonumber(m.turn.assistOpenedAt) or dmhub.serverTime)
-        if #EncounterMontage.EligibleAssistants(m, beat, heroes) == 0 then
-            age = ASSIST_WINDOW_SECONDS
-        end
-        if age >= ASSIST_WINDOW_SECONDS then
-            local t = m.turn
+    --a Pardon My Friend re-roll that never comes: the hero's own roll stands.
+    if m.turn ~= nil and m.turn.status == "pardon" and m.turn.pardon ~= nil then
+        local t = m.turn
+        local age = dmhub.serverTime - (tonumber(t.pardon.startedAt) or dmhub.serverTime)
+        if age >= PARDON_ROLL_SECONDS then
+            printf("EotW montage: %s never rolled for Pardon My Friend; %s's roll stands",
+                tostring(t.pardon.heroName), tostring(t.heroName))
+            t.pardon = nil
             local entry = EncounterMontage.TurnEntry(beat, t)
             local option = EncounterMontage.TurnOption(entry, t)
-            if option ~= nil and option.roll ~= nil then
-                ResolveTurn(m, doc, t, entry, option, t.baseTier or t.tier or 1, heroes, t.userid)
-                printf("EotW montage: no assistance offered for %s; the result stands", tostring(t.heroName))
+            if entry ~= nil and option ~= nil and option.roll ~= nil then
+                AfterTestLanded(m, doc, t, beat, entry, option, heroes, t.userid)
             else
                 t.status = "choosing"
             end
         end
     end
 
-    --a perk offer nobody answers closes itself, like the assist window:
-    --the test keeps its result and moves on.
+    --a perk offer nobody answers closes itself: the test keeps its result
+    --and moves on.
     if m.turn ~= nil and m.turn.status == "perk" then
         local t = m.turn
         local age = dmhub.serverTime - (tonumber(t.offerOpenedAt) or dmhub.serverTime)
@@ -4366,6 +5846,20 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
             else
                 t.status = "choosing"
             end
+        end
+    end
+
+    --dice nobody rolls: the host rolls them, and the wait is over.
+    if m.dice ~= nil then
+        local age = dmhub.serverTime - (tonumber(m.dice.openedAt) or dmhub.serverTime)
+        if age >= DICE_ROLL_SECONDS then
+            for _, r in ipairs(m.dice.rolls or {}) do
+                if r.total == nil then
+                    r.total = RollDiceExpression(r.dice)
+                    printf("EotW montage: nobody rolled %s for %s; the host rolled %d", tostring(r.label), tostring(r.heroName), r.total)
+                end
+            end
+            ResumeDice(m, doc, beat, heroes)
         end
     end
 
@@ -4393,7 +5887,7 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
             end
             m.consequences = list
             m.consequenceIndex = 1
-            m.lastApplied = nil
+            m.lastApplied = LastTurnResult(m)
             if #list == 0 then
                 m.phase = "done"
                 m.doneAt = dmhub.serverTime
@@ -4405,6 +5899,13 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
         end
     end
 
+    --items used in the montage: short effects bound to the turn their hero
+    --joins, ended when it resolves, swept when the rounds are over.
+    local upkeepOk, upkeepErr = pcall(MaintainMontageUses, m, doc, heroes)
+    if not upkeepOk then
+        printf("EotW montage: item upkeep failed: %s", tostring(upkeepErr))
+    end
+
     if resetRequested then
         doc.data.montage = nil
     end
@@ -4413,7 +5914,12 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
     if resetRequested then
         return "running"
     end
-    if doc.data.montage ~= nil and doc.data.montage.phase == "done" then
+    --a montage that ended this tick lingers like one that ended earlier (the
+    --check at the top of the tick): returning "done" at once started the next
+    --beat in the same tick, so nobody saw the "over" card or the last results.
+    local final = doc.data.montage
+    if final ~= nil and final.phase == "done"
+        and dmhub.serverTime - (tonumber(final.doneAt) or 0) >= DONE_LINGER_SECONDS then
         return "done"
     end
     return "running"
@@ -4423,6 +5929,69 @@ end
 
 --the roll the local client has already launched, so a turn is rolled once.
 local m_launchedRollSeq = nil
+--the montage dice roll ("<seq>:<key>", see m.dice) this client has out.
+local m_launchedDice = nil
+--the m.dice seq this user has clicked Roll for. The dice wait on that
+--click (the player is prompted, not rolled for); one click rolls all of
+--this user's dice in that set.
+local m_diceArmedSeq = nil
+
+--True when m.dice has a die for this user that they have not yet clicked
+--Roll for: the stage shows the Roll button while it is.
+function EncounterMontage.MyDiceWaiting()
+    local m = EncounterMontage.GetState()
+    local d = m ~= nil and m.dice or nil
+    if d == nil or m_diceArmedSeq == d.seq then
+        return false
+    end
+    for _, r in ipairs(d.rolls or {}) do
+        if r.total == nil and r.userid == dmhub.loginUserid then
+            return true
+        end
+    end
+    return false
+end
+
+--The Roll button: throw this user's montage dice (ClientTick launches them).
+function EncounterMontage.RollMyDice()
+    local m = EncounterMontage.GetState()
+    if m ~= nil and m.dice ~= nil then
+        m_diceArmedSeq = m.dice.seq
+        EncounterMontage.ClientTick()
+    end
+end
+
+--Roll this user's next montage die (a table roll, a hero's share of a
+--recovery loss), one at a time: the next goes out once the host has
+--recorded the last, so no request overwrites another.
+local function LaunchMontageDice(d)
+    if m_diceArmedSeq ~= d.seq then
+        return
+    end
+    for _, r in ipairs(d.rolls or {}) do
+        if r.total == nil and r.userid == dmhub.loginUserid then
+            local mark = string.format("%s:%s", tostring(d.seq), tostring(r.key))
+            if m_launchedDice == mark then
+                return
+            end
+            m_launchedDice = mark
+            local seq, key = d.seq, r.key
+            dmhub.Roll{
+                roll = r.dice or "1d6",
+                description = string.format("%s: %s", r.heroName or "Hero", r.label or "Montage"),
+                tokenid = r.heroid,
+                complete = function(rollInfo)
+                    if mod.unloaded then
+                        return
+                    end
+                    --diceSeq, not seq: SendRequest numbers its requests in "seq".
+                    EncounterMontage.SendRequest("diceRolled", { diceSeq = seq, key = key, total = rollInfo.total })
+                end,
+            }
+            return
+        end
+    end
+end
 
 --Show a montage roll dialog. Everything both montage rolls share: the wait
 --for a free roll surface, the synthetic test ability in the timeline
@@ -4536,6 +6105,10 @@ local function ShowMontageRoll(args)
                 --once the dice are thrown the result stands: no close (X) or
                 --ESC back to the options, where a failed test could be retried.
                 noCancelOnceThrown = true,
+                --everyone else's read-only copy shows Accept / Re-roll as
+                --ghost buttons they can click to ping at the roller ("spend
+                --a hero token!").
+                pingButtons = true,
 
                 rollProperties = rollProperties,
                 PopulateCustom = ActivatedAbilityPowerRollBehavior.GetPowerTablePopulateCustom(rollProperties),
@@ -4584,34 +6157,29 @@ end
 --characteristic test shows: "Skilled in Empathize", forced on, when the
 --roller is trained in one of the listed skills. Returns the skill id it
 --settled on (nil when the roller is trained in none of them).
---
---"only" narrows the search to one skill -- what an assist does, where the
---helper is by definition assisting with a particular skill.
-local function ApplySkilledModifier(c, modifiers, skills, only)
+local function ApplySkilledModifier(c, modifiers, skills)
     local usedSkillId = nil
     for _, m in ipairs(modifiers) do
         if m.modifier.name == "Skilled" then
             local skillNames = {}
             local found = false
             for _, skillid in ipairs(skills) do
-                if only == nil or skillid == only then
-                    local skillInfo = dmhub.GetTable(Skill.tableName)[skillid]
-                    local lent = skillInfo ~= nil and not c:ProficientInSkill(skillInfo) and EncounterMontage.TeamLeaderGrants(skillid)
-                    if skillInfo ~= nil and (c:ProficientInSkill(skillInfo) or lent) then
-                        found = true
-                        usedSkillId = skillid
-                        m.modifier = DeepCopy(m.modifier)
-                        m.modifier.name = string.format(tr("Skilled in %s"), skillInfo.name)
-                        if lent then
-                            m.modifier.name = string.format("%s (Team Leader)", m.modifier.name)
-                        end
-                        m.modifier.description = string.format(tr("Skill in %s gives you +2 on this roll"), skillInfo.name)
-                        m.modifier.activationCondition = true
-                        m.hint.result = true
-                        break
-                    elseif skillInfo ~= nil then
-                        skillNames[#skillNames + 1] = skillInfo.name
+                local skillInfo = dmhub.GetTable(Skill.tableName)[skillid]
+                local lent = skillInfo ~= nil and not c:ProficientInSkill(skillInfo) and EncounterMontage.TeamLeaderGrants(skillid)
+                if skillInfo ~= nil and (c:ProficientInSkill(skillInfo) or lent) then
+                    found = true
+                    usedSkillId = skillid
+                    m.modifier = DeepCopy(m.modifier)
+                    m.modifier.name = string.format(tr("Skilled in %s"), skillInfo.name)
+                    if lent then
+                        m.modifier.name = string.format("%s (Team Leader)", m.modifier.name)
                     end
+                    m.modifier.description = string.format(tr("Skill in %s gives you +2 on this roll"), skillInfo.name)
+                    m.modifier.activationCondition = true
+                    m.hint.result = true
+                    break
+                elseif skillInfo ~= nil then
+                    skillNames[#skillNames + 1] = skillInfo.name
                 end
             end
             if (not found) and #skillNames > 0 then
@@ -4641,6 +6209,19 @@ local function BestCharacteristic(c, characteristics)
     return attrid, bestModifier or 0
 end
 
+--The characteristic a hero makes this option's test with: the best of the
+--listed ones (Power Player may widen them).
+function EncounterMontage.TestCharacteristic(charid, option)
+    local tok = dmhub.GetCharacterById(charid)
+    if tok == nil or not tok.valid or tok.properties == nil or option == nil or option.roll == nil then
+        return nil
+    end
+    local characteristics, skills = EncounterScript.ParseAttr(option.roll.attr, creature.attributesInfo, Skill.skillsDropdownOptions)
+    characteristics = EncounterMontage.PerkCharacteristics(tok.properties, charid, characteristics, skills)
+    local attrid = BestCharacteristic(tok.properties, characteristics)
+    return attrid
+end
+
 --Show the roll dialog for the current turn's option: 2d10 + the best of
 --the listed characteristics, the Skilled chip for a listed skill, the tiers
 --The rider effects the hero earned ("Edge: you speak Caelian"), plus any
@@ -4656,7 +6237,7 @@ end
 --the listed characteristics, the Skilled chip for a listed skill, the tiers
 --from the script. Mirrors creature:RollCustomPowerTableTest (MCDMCreature.lua)
 --with a completion that reports the tier -- and what it rolled with, which
---is what decides who may assist it -- to the host.
+--the perks ask about -- to the host.
 local function LaunchRoll(turn, entry, option, heroToken)
     local c = heroToken.properties
     local characteristics, skills = EncounterScript.ParseAttr(option.roll.attr, creature.attributesInfo, Skill.skillsDropdownOptions)
@@ -4702,20 +6283,15 @@ local function LaunchRoll(turn, entry, option, heroToken)
     }
 end
 
---Show the assist roll for the hero who stepped in: the SAME characteristic
---the test itself used, with the assisting hero's own modifier and an
---automatic Skilled +2 for the skill they are helping with, against the
---fixed assist tier table (bane / edge / double edge).
-local function LaunchAssistRoll(turn, entry, option, assistToken)
-    local a = turn.assist
-    local c = assistToken.properties
-    local attrid = turn.attrid
-    local attrName = nil
-    if attrid ~= nil and creature.attributesInfo[attrid] ~= nil then
-        attrName = creature.attributesInfo[attrid].description
-    end
-    local title = string.format("Assist %s: %s", turn.heroName or "the test", a.skillName or attrName or option.roll.name)
-
+--Pardon My Friend: another hero makes the failed Presence test in the
+--hero's place, with a bane, on the test's own tier table. Their own skill,
+--edges and perks apply; the hero's blessing does not -- it is a new test,
+--by someone else.
+local function LaunchPardonRoll(turn, entry, option, token)
+    local p = turn.pardon
+    local c = token.properties
+    local _, skills = EncounterScript.ParseAttr(option.roll.attr, creature.attributesInfo, Skill.skillsDropdownOptions)
+    local attrid = AttrIdNamed("presence")
     local modifier = 0
     if attrid ~= nil then
         local attr = c:GetAttribute(attrid)
@@ -4723,29 +6299,35 @@ local function LaunchAssistRoll(turn, entry, option, assistToken)
             modifier = attr:Modifier()
         end
     end
-
+    local title = string.format("%s (for %s): %s", option.roll.name, turn.heroName or "an ally", option.roll.attr)
     local rollType = "test_power_roll"
     local roll = string.format("2d10 + %d", modifier)
     local modifiers = {}
     if attrid ~= nil then
-        modifiers = c:GetModifiersForPowerRoll(roll, rollType, { attribute = attrid, title = title, skills = { a.skillid } })
+        modifiers = c:GetModifiersForPowerRoll(roll, rollType, { attribute = attrid, title = title, skills = skills })
     end
-    --the helper assists WITH a skill, so the chip is never in doubt.
-    ApplySkilledModifier(c, modifiers, { a.skillid }, a.skillid)
+    ApplySkilledModifier(c, modifiers, skills)
+    local base = EncounterMontage.TurnBaseOption(entry, turn)
+    AppendRiderModifiers(modifiers, EncounterMontage.RiderVerdict(token.charid, base or option, option), rollType)
+    EncounterMontage.AppendPerkModifiers(modifiers, c, token.charid, nil, option, skills, attrid)
+    local bane = PerkChip("Bane: Pardon My Friend", "Pardon My Friend: stepping in for an ally, you take a bane.", "bane")
+    if bane ~= nil then
+        modifiers[#modifiers + 1] = bane
+    end
 
     ShowMontageRoll {
         creature = c,
-        heroToken = assistToken,
+        heroToken = token,
         title = title,
         rollType = rollType,
         roll = roll,
         modifiers = modifiers,
-        tiers = ASSIST_TIERS,
-        rollSeq = a.rollSeq,
-        expectedStatus = "assisting",
-        CurrentRollSeq = function(t) return (t.assist or {}).rollSeq end,
-        completeKind = "assistRolled",
-        cancelKind = "assistCancel",
+        tiers = EncounterMontage.TeaserTiers(option.roll),
+        rollSeq = p.rollSeq,
+        expectedStatus = "pardon",
+        CurrentRollSeq = function(t) return (t.pardon or {}).rollSeq end,
+        completeKind = "pardonRolled",
+        cancelKind = "pardonCancel",
     }
 end
 
@@ -4753,6 +6335,12 @@ end
 --dialog once per rollSeq. Called from the per-client driver and the stage.
 function EncounterMontage.ClientTick()
     local m = EncounterMontage.GetState()
+    --montage dice (a table roll, a recovery loss) come before anything else:
+    --nothing else rolls while they are out.
+    if m ~= nil and m.dice ~= nil then
+        LaunchMontageDice(m.dice)
+        return
+    end
     if m == nil or m.turn == nil then
         m_launchedRollSeq = nil
         return
@@ -4796,13 +6384,16 @@ function EncounterMontage.ClientTick()
         }
         return
     end
-    --the test itself, or the assist someone stepped in with: whichever roll
-    --is waiting on THIS user, at most once per rollSeq.
-    local assisting = t.status == "assisting" and t.assist ~= nil and t.assist.userid == dmhub.loginUserid
-    if not assisting and (t.status ~= "rolling" or t.userid ~= dmhub.loginUserid) then
+    --the test itself or a Pardon My Friend re-roll: whichever roll is
+    --waiting on THIS user, at most once per rollSeq.
+    local pardoning = t.status == "pardon" and t.pardon ~= nil and t.pardon.userid == dmhub.loginUserid
+    if not pardoning and (t.status ~= "rolling" or t.userid ~= dmhub.loginUserid) then
         return
     end
-    local rollSeq = assisting and t.assist.rollSeq or t.rollSeq
+    local rollSeq = t.rollSeq
+    if pardoning then
+        rollSeq = t.pardon.rollSeq
+    end
     if m_launchedRollSeq == rollSeq then
         return
     end
@@ -4815,14 +6406,17 @@ function EncounterMontage.ClientTick()
     if option == nil or option.roll == nil then
         return
     end
-    local rollerId = assisting and t.assist.heroid or t.heroid
+    local rollerId = t.heroid
+    if pardoning then
+        rollerId = t.pardon.heroid
+    end
     local heroToken = dmhub.GetCharacterById(rollerId)
     if heroToken == nil or not heroToken.valid then
         return
     end
     m_launchedRollSeq = rollSeq
-    if assisting then
-        LaunchAssistRoll(t, entry, option, heroToken)
+    if pardoning then
+        LaunchPardonRoll(t, entry, option, heroToken)
     else
         LaunchRoll(t, entry, option, heroToken)
     end
@@ -4980,6 +6574,17 @@ function EncounterMontage.ResetTest()
         if zones ~= nil and zones.ResetMap ~= nil then
             zones.ResetMap(doc)
         end
+        --and each encounter script undoes its own map changes (Rising Waters
+        --drains). Every encounter on the map, not just the part being played:
+        --on a series map an earlier part may have done the flooding.
+        local seenEncounters = {}
+        for _, mapEntry in ipairs(Encounter.GetEncountersOnCurrentMap(true)) do
+            local encounter = mapEntry.encounter
+            if encounter ~= nil and not seenEncounters[encounter] then
+                seenEncounters[encounter] = true
+                EncounterScript.ResetEncounter(encounter)
+            end
+        end
     end)
     DropHostPermissions()
     if not ok then
@@ -5006,6 +6611,7 @@ function EncounterMontage.ResetTest()
     doc.data.objectsRevealed = nil
     doc.data.unlocked = nil
     doc.data.intelligence = nil
+    doc.data.intelligenceByHero = nil
     doc.data.intelligenceLog = nil
     doc.data.prep = nil
     doc:CompleteChange("Montage test reset", { undoable = false })

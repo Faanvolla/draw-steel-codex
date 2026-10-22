@@ -609,6 +609,7 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 
                     events = {
                         refresh = function(element)
+                            ---@cast element Dropdown
                             element.idChosen = document:try_get("echelon", 1)
                         end,
                         change = function(element)
@@ -634,6 +635,7 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
                     },
                     events = {
                         refresh = function(element)
+                            ---@cast element Dropdown
                             element.idChosen = document:try_get("imbueTargetType", "armor")
                         end,
                         change = function(element)
@@ -659,6 +661,7 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
                     },
                     events = {
                         refresh = function(element)
+                            ---@cast element Dropdown
                             element.idChosen = document:try_get("imbueLevel", 1)
                         end,
                         change = function(element)
@@ -1288,8 +1291,9 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
                             element.text = tostring(document.armorClass)
                         end,
                         change = function(element)
-                            if tonumber(element.text) ~= nil then
-                                document.armorClass = math.floor(tonumber(element.text))
+                            local n = tonumber(element.text)
+                            if n ~= nil then
+                                document.armorClass = math.floor(n)
                             end
                         end,
                     }
@@ -1315,8 +1319,9 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
                             end
                         end,
                         change = function(element)
-                            if tonumber(element.text) ~= nil then
-                                document.strength = math.floor(tonumber(element.text))
+                            local n = tonumber(element.text)
+                            if n ~= nil then
+                                document.strength = math.floor(n)
                             else
                                 document.strength = nil
                             end
@@ -1338,6 +1343,7 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 
                     events = {
                         refresh = function(element)
+                            ---@cast element Dropdown
                             if element.parent:HasClass('collapsed-anim') then
                                 return
                             end
@@ -1371,8 +1377,9 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
                             end
                         end,
                         change = function(element)
-                            if tonumber(element.text) ~= nil then
-                                document.dexterityLimit = math.floor(tonumber(element.text))
+                            local n = tonumber(element.text)
+                            if n ~= nil then
+                                document.dexterityLimit = math.floor(n)
                             else
                                 document.dexterityLimit = nil
                             end
@@ -1399,8 +1406,9 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
                             element.text = tostring(document.armorClassModifier)
                         end,
                         change = function(element)
-                            if tonumber(element.text) ~= nil then
-                                document.armorClassModifier = math.floor(tonumber(element.text))
+                            local n = tonumber(element.text)
+                            if n ~= nil then
+                                document.armorClassModifier = math.floor(n)
                             end
 
                             element:FireEvent('refresh') --normalize the value.
@@ -1526,6 +1534,7 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 
                     events = {
                         refresh = function(element)
+                            ---@cast element Dropdown
                             element.optionChosen = document:try_get('damageType', 'slashing')
                         end,
 
@@ -1576,6 +1585,7 @@ function DataTables.tbl_Gear.GenerateEditor(document, options)
 
                     events = {
                         refresh = function(element)
+                            ---@cast element Dropdown
                             element.optionChosen = document:try_get('hands', 'One-handed')
                         end,
 

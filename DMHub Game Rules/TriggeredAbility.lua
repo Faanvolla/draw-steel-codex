@@ -141,7 +141,7 @@ TriggeredAbility.TargetTypes = {
 		id = 'attacker',
 		text = 'Creature Attacking Me',
 		condition = function(ability)
-			return ability.trigger == "attacked" or ability.trigger == "hit" or ability.trigger == "losehitpoints" or ability.trigger == "inflictcondition" or ability.trigger == "winded" or ability.trigger == "dying" or ability.trigger == "forcemove"
+			return ability.trigger == "attacked" or ability.trigger == "hit" or ability.trigger == "losehitpoints" or ability.trigger == "inflictcondition" or ability.trigger == "winded" or ability.trigger == "dying" or ability.trigger == "forcemove" or ability.trigger == "objectdestroyed"
 		end,
 	},
 	{
@@ -312,6 +312,48 @@ TriggeredAbility.triggers = {
 
 	},
 	{
+		--Map objects (Targetable components) only: fired by TargetableObject.TakeDamage
+		--when the object's Stamina reaches 0. Objects never reach the creature death
+		--branch (creature:IsDead is false for them), so zerohitpoints/creaturedeath
+		--never fire on an object. The object's onDeath (delete/disable/open) waits
+		--until this trigger's cast has finished.
+		id = "objectdestroyed",
+		text = "Destroyed (Objects)",
+
+		symbols = {
+			damage = {
+				name = "Damage",
+				type = "number",
+				desc = "The amount of damage taken by the hit that destroyed the object.",
+			},
+			damagetype = {
+				name = "Damage Type",
+				type = "text",
+				desc = "The type of damage that destroyed the object.",
+				valueOptionsSource = "damageTypes",
+			},
+			attacker = {
+				name = "Attacker",
+				type = "creature",
+				desc = "The creature that destroyed the object. Only valid if Has Attacker is true.",
+				prose = "the attacker",
+			},
+			hasattacker = {
+				name = "HasAttacker",
+				type = "boolean",
+				desc = "True if the damage that destroyed the object has an attacker.",
+				prose = "there is an attacker",
+			},
+		},
+
+		examples = {
+			{
+				script = "damage type is fire",
+				text = "The triggered ability only activates if the object was destroyed by fire damage.",
+			},
+		},
+	},
+	{
 		id = "kill",
 		text = "Kill a Creature",
         symbols = {
@@ -438,6 +480,16 @@ TriggeredAbility.triggers = {
 	{
 		id = "beginround",
 		text = "Begin Round",
+		hide = function()
+			return not GameSystem.HaveBeginRoundTrigger
+		end,
+	},
+	{
+		--Fires on every creature in initiative as the round ends, before round-scoped
+		--effects expire and before the next round's "beginround". For "at the end of
+		--each round" effects (Topaz Dragon's Topaz Flare).
+		id = "endround",
+		text = "End of Round",
 		hide = function()
 			return not GameSystem.HaveBeginRoundTrigger
 		end,
@@ -907,6 +959,9 @@ TriggeredAbility.effects = {
 ActivatedAbility.name = ""
 ActivatedAbility.castingTime = "none"
 TriggeredAbility.conditionFormula = ""
+--For targetType "aura": when set (GoblinScript), target creatures within this many
+--squares of the aura area's centre square instead of creatures inside the area.
+TriggeredAbility.auraBurstRadius = ""
 TriggeredAbility.save = 'none'
 TriggeredAbility.savedc = '10'
 TriggeredAbility.mandatory = true
@@ -1055,6 +1110,33 @@ end
 --- @field aiActivityId nil|string
 --- @field aiReactionId nil|string
 --- @field alreadyPaid nil|boolean
+
+--- The square at the centre of an area: the one of its squares nearest the mean of
+--- them all (the exact centre of an odd cube or burst). nil for an empty area.
+--- @param area LuaShape
+--- @return Loc|nil
+function TriggeredAbility.AreaCenterLoc(area)
+    local locs = area ~= nil and area.locations or nil
+    if locs == nil or #locs == 0 then
+        return nil
+    end
+
+    local sx, sy = 0, 0
+    for _,loc in ipairs(locs) do
+        sx = sx + loc.x
+        sy = sy + loc.y
+    end
+    local mx, my = sx / #locs, sy / #locs
+
+    local best, bestDist = nil, nil
+    for _,loc in ipairs(locs) do
+        local d = (loc.x - mx)*(loc.x - mx) + (loc.y - my)*(loc.y - my)
+        if bestDist == nil or d < bestDist then
+            best, bestDist = loc, d
+        end
+    end
+    return best
+end
 
 --auraControllerToken: token controlling an aura this is triggered from, or can be nil for a regular trigger attached to the creature it's triggering on.
 --- @param characterModifier CharacterModifier
@@ -1322,9 +1404,25 @@ function TriggeredAbility:Trigger(characterModifier, creature, symbols, auraCont
             return
         end
 
+        --auraBurstRadius: target everyone within that many squares of the centre of
+        --the aura's area instead of everyone inside it ("explodes in a 5 burst
+        --centered on the center of the cube", Topaz Dragon's Thermal Exchange).
+        local burstCenter = nil
+        local burstRadius = nil
+        if trim(tostring(self:try_get("auraBurstRadius", ""))) ~= "" then
+            burstRadius = ExecuteGoblinScript(self.auraBurstRadius, creature:LookupSymbol(symbols), 0, "Aura burst radius")
+            burstCenter = TriggeredAbility.AreaCenterLoc(aura.area)
+        end
+
         local tokens = dmhub.allTokens
         for i,tok in ipairs(tokens) do
-            if tok.id ~= casterToken.charid and aura.area:ContainsToken(tok) and self:TargetPassesFilter(casterToken, tok, symbols) then
+            local inArea
+            if burstCenter ~= nil then
+                inArea = (tonumber(tok:Distance(burstCenter)) or 999) <= burstRadius
+            else
+                inArea = aura.area:ContainsToken(tok)
+            end
+            if tok.id ~= casterToken.charid and inArea and self:TargetPassesFilter(casterToken, tok, symbols) then
                 targets = targets or {}
                 targets[#targets+1] = {
                     loc = tok.loc,
@@ -2003,6 +2101,9 @@ function TriggeredAbility:ExecuteTriggerCast(args)
 	if type(argOptions.aiActivityId) == "string" and type(argOptions.aiReactionId) == "string"
 		and args.casterToken ~= nil and args.casterToken.valid then
 		args.casterToken.properties:SetAIActivityReactionResolving(argOptions.aiActivityId, argOptions.aiReactionId)
+		--From here every exit completes the marker. A caller that made the
+		--marker itself (MCDModifyPowerRolls triggerOnUse) reads this to know.
+		argOptions.aiReactionHandedOff = true
 	end
 	local casterToken = args.casterToken
 	local symbols = args.symbols
@@ -2097,7 +2198,7 @@ function TriggeredAbility:ExecuteTriggerCast(args)
 				return
 			end
 			dmhub.CoroutineSynchronous(TriggeredAbility.TriggerCo, self, targets, args.characterModifier, casterToken, args.creature, symbols, args.auraControllerToken, args.modContext, argOptions)
-		end)
+		end, {casterid = casterToken ~= nil and casterToken.charid or nil})
 	end
 
 	g_triggerDepth = g_triggerDepth - 1
@@ -2166,7 +2267,7 @@ function TriggeredAbility:SendTriggerCastToController(controllerid, args)
 				invokes[#invokes+1] = DeepCopy(invocation)
 			end,
 		}
-	end)
+	end, {casterid = casterToken.charid})
 end
 
 --Invoked by PumpRemoteInvokes on the controlling client. Reconstructs the

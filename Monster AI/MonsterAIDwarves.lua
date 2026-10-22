@@ -102,9 +102,7 @@ local function DefaultTargetScore(targetInfo)
     if targetInfo.token.isObject or targetInfo.token.properties == nil then
         return 0.1
     end
-    local stamina = targetInfo.token.properties:CurrentHitpoints()
-        / math.max(1, targetInfo.token.properties.max_hitpoints)
-    return 1 + (targetInfo.edges or 0)*0.1 + (1 - stamina)*0.08
+    return 1 + (targetInfo.edges or 0)*0.1 + MonsterAI.TargetStaminaBias(targetInfo.token)
 end
 
 -- Keep the chosen targets with the movement plan so execution does not make a
@@ -1306,20 +1304,6 @@ MonsterAI:RegisterTrigger{
                 sleep = stationaryPause,
             },
         }
-    end,
-}
-
-MonsterAI:RegisterTrigger{
-    id = "Dwarf Marauder Lord: End Effect",
-    monsters = {"Dwarf Marauder Lord"},
-    abilityGuids = {"fc4a5c00-3e82-43d1-9492-0f5583fa4f58"},
-    abilities = {"End Effect"},
-    description = "Take 5 damage to end a save-ends effect unless it would reduce the marauder lord to 0 Stamina.",
-    handler = function(ai, token, triggerInfo)
-        if token.properties:CurrentHitpoints() > 5 then
-            return {activate = true}
-        end
-        return {dismiss = true}
     end,
 }
 

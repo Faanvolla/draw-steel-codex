@@ -363,8 +363,8 @@ the FIRST beat of their kind; the Director plays the party-owned heroes.
 
 Driving montage turns without the UI (what the stage itself sends):
 `EncounterMontage.SendRequest("approach", {heroid, entryId})`, then
-`("choose", {optionIndex})`, then `("rolled", {rollSeq = m.turn.rollSeq,
-tier, total, natural})`; `("noassist", {})` declines an assist offer. Skip a
+`("choose", {optionIndex})`, then `("rolled", {rollSeq =
+m.turn.rollSeq, tier, total, natural})`. Skip a
 scene with `doc.data.montageScene = { id = m.turn.scene.id, index =
 #m.turn.scene.steps + 1 }` inside a change on `EncounterMontage.GetDoc()`.
 Each step lands on the dev driver's next host tick (~0.5s), so poll
@@ -385,4 +385,5 @@ end, failure = function(m) print("FAILED", m) end }
 ```
 
 `moduleType` must be `eotw` and `published` true for the encounters to join the
-pool. Then check in the town: Town Gate -> Form a Party lists the module.
+pool. Then check in the town: the Proving Pits list the encounter under
+"Encounters to Try" (the Town Gate shows only the Encounter of the Week).

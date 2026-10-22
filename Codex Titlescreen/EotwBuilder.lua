@@ -104,6 +104,12 @@ local RULES = {
         selectors = { "eotwbCard", "unavailable" },
         opacity = 0.35,
     },
+    --an unavailable card can't be picked, so hovering doesn't highlight it
+    {
+        selectors = { "eotwbCard", "unavailable", "hover" },
+        bgcolor = C.CARD,
+        borderColor = C.BORDER,
+    },
     {
         selectors = { "eotwbCardText" },
         color = C.CREAM,
@@ -143,6 +149,10 @@ local RULES = {
     --a dead language: read, not spoken
     {
         selectors = { "eotwbCard", "dead" },
+        borderColor = "#6b6b8aff",
+    },
+    {
+        selectors = { "eotwbCard", "unavailable", "dead", "hover" },
         borderColor = "#6b6b8aff",
     },
     {
@@ -661,6 +671,11 @@ end
 --  token     the lobby character being built
 --  title     optional heading (default "Create Your Hero")
 --  step      optional step to open on (default: the first incomplete one)
+--  only      optional step id: show only that step (no stepper choice, no
+--            Back / Fill / Next), e.g. "appearance" for Change Appearance
+--  lockedSteps optional set of step ids ({ancestry = true}) whose main pick
+--            is fixed once made: the page shows only the chosen card. A
+--            rebuild locks Ancestry and Class; Create locks nothing.
 --  onFinish  function(token) when the player finishes a complete hero
 --  onClose   function(token) when the player closes without finishing
 ---@param args table
@@ -673,6 +688,8 @@ function EotwBuilder.Open(args)
     local summaryLines
     local page
     local pageContent = nil
+    --above the scrolling page: blocks that stay in view (see BuildPage)
+    local pageHeader
     local detail
     local footer
     local messageLabel
@@ -685,6 +702,9 @@ function EotwBuilder.Open(args)
         --what the detail pane shows; nil = the step's own overview
         detail = nil,
         message = "",
+        --true after Fill in the Rest filled this page: the button then offers
+        --to fill every other tab too. Any other action disarms it.
+        fillAllArmed = false,
         --the page's blocks by key: {signature, panel} (see BuildPage)
         blocks = {},
         stepperSignature = nil,
@@ -705,6 +725,7 @@ function EotwBuilder.Open(args)
         if tok == nil then
             return
         end
+        state.fillAllArmed = false
         local ok, err = pcall(fn, tok)
         if not ok then
             state.message = "Something went wrong: " .. tostring(err)
@@ -863,6 +884,10 @@ function EotwBuilder.Open(args)
         local pills = {}
         for i,stepStatus in ipairs(status.steps) do
             local stepid = stepStatus.id
+            --args.only shows a single step (the hero sheet's Change Appearance)
+            if args.only ~= nil and stepid ~= args.only then
+                goto continue
+            end
             local left = stepStatus.total - stepStatus.filled
             local sub
             --done = complete and not optional: an optional step the player
@@ -936,6 +961,7 @@ function EotwBuilder.Open(args)
                     },
                 },
             }
+            ::continue::
         end
         stepper.children = pills
     end
@@ -1015,12 +1041,22 @@ function EotwBuilder.Open(args)
 
     --- the page ---
 
-    --The cards for a step's main pick.
+    --Whether this step's main pick is fixed (args.lockedSteps) and already made.
+    --An unmade pick is never locked, so a hero missing one can still choose.
+    local function BaseLocked(tok, stepid)
+        return args.lockedSteps ~= nil and args.lockedSteps[stepid] == true and CurrentBaseId(tok, stepid) ~= nil
+    end
+
+    --The cards for a step's main pick. A locked pick shows only its own card.
     local function BaseCards(tok, stepid, options, width)
         local current = CurrentBaseId(tok, stepid)
+        local locked = BaseLocked(tok, stepid)
         local cards = {}
         for _,entry in ipairs(options) do
             local id = entry.id
+            if locked and id ~= current then
+                goto continue
+            end
             cards[#cards+1] = Card{
                 text = entry.name,
                 selected = current == id,
@@ -1065,6 +1101,7 @@ function EotwBuilder.Open(args)
                     end
                 end,
             }
+            ::continue::
         end
         return gui.Panel{
             width = "100%",
@@ -1375,15 +1412,50 @@ function EotwBuilder.Open(args)
             interactable = false,
         }
         local preview
+        local zoomSlider
         preview = gui.Panel{
             width = 240,
             height = 240,
             valign = "top",
             bgimage = "panels/square.png",
             bgcolor = "white",
-            data = { dragging = false, anchor = nil, start = nil },
+            data = { dragging = false, anchor = nil, start = nil, wheelSerial = 0 },
             linger = function(element)
-                gui.Tooltip("Drag to move the portrait within its frame.")(element)
+                gui.Tooltip("Drag to move the portrait within its frame. Scroll to zoom.")(element)
+            end,
+            --The wheel drives the Zoom slider: each notch moves it 5%, and a
+            --whole spin settles into one upload rather than one per notch.
+            wheel = function(element, delta)
+                local t = Tok()
+                if t == nil or zoomSlider == nil or not zoomSlider.valid then
+                    return true
+                end
+                local current = zoomSlider.value or 1
+                local newZoom = current + 0.05 * delta
+                --clamp to the slider's range, but never snap a typed-in value
+                --that already lies outside it back inside.
+                if delta > 0 then
+                    newZoom = math.min(newZoom, math.max(current, 2))
+                else
+                    newZoom = math.max(newZoom, math.min(current, 0.25))
+                end
+                zoomSlider.value = newZoom
+                t.portraitZoom = newZoom
+                element:FireEvent("refreshPreview")
+
+                element.data.wheelSerial = element.data.wheelSerial + 1
+                local serial = element.data.wheelSerial
+                dmhub.Schedule(0.4, function()
+                    if not element.valid or element.data.wheelSerial ~= serial then
+                        return
+                    end
+                    local tt = Tok()
+                    if tt ~= nil then
+                        tt:UploadAppearance()
+                        RefreshChrome()
+                    end
+                end)
+                return true
             end,
             refreshPreview = function(element)
                 local t = Tok()
@@ -1515,7 +1587,9 @@ function EotwBuilder.Open(args)
                                     end,
                                 },
                                 gui.IconEditor{
-                                    library = cond(dmhub.GetSettingValue("popoutavatars"), "popoutavatars", "Avatar"),
+                                    --Always open on plain Avatars: players kept uploading ordinary
+                                    --portraits into Popout Avatars by accident. It stays pickable.
+                                    library = "Avatar",
                                     restrictImageType = "Avatar",
                                     allowPaste = true,
                                     borderColor = C.TAN,
@@ -1566,6 +1640,9 @@ function EotwBuilder.Open(args)
                             unclamped = true,
                             labelFormat = "rawpercent",
                             value = zoom,
+                            create = function(element)
+                                zoomSlider = element
+                            end,
                             change = function(element)
                                 local t = Tok()
                                 if t ~= nil then
@@ -1986,29 +2063,35 @@ function EotwBuilder.Open(args)
     --is unchanged keeps its existing panel, so a pick only redraws the
     --blocks it changed (rebuilding the whole page made it flicker).
     --keepScroll false (a new step) starts a fresh page at the top.
+    --A pinned block sits in pageHeader, above the scrolling area, and stays
+    --in view; pinned blocks must come before every unpinned one.
     local function BuildPage(tok, stepStatus, keepScroll)
         local stepid = stepStatus.id
         local step = EotwBuild.STEP_BY_ID[stepid]
         local hero = tok.properties --[[@as character]]
 
+        --the Skills & Languages page keeps its list of choices in view while
+        --the cards scroll, so the title and intro above it stay too.
+        local pinHeader = stepid == "skills"
+
         local specs = {}
-        local function Add(key, signature, build)
-            specs[#specs+1] = { key = key, signature = signature, build = build }
+        local function Add(key, signature, build, pinned)
+            specs[#specs+1] = { key = key, signature = signature, build = build, pinned = pinned or false }
         end
 
         Add("title", stepid, function()
             return gui.Label{ classes = { "eotwbHeading" }, text = step.title, fontSize = 34 }
-        end)
+        end, pinHeader)
         Add("intro", stepid, function()
             return Text(StepIntro(stepid), { "eotwbText", "muted" }, { fontSize = 16, tmargin = 4 })
-        end)
+        end, pinHeader)
 
         if stepid == "skills" then
             local skillView = EotwBuild.PoolTable(tok, "skill")
             local languageView = EotwBuild.PoolTable(tok, "language")
             Add("poolsummary", PoolViewSignature(skillView) .. "#" .. PoolViewSignature(languageView), function()
                 return PoolSummary(skillView, languageView)
-            end)
+            end, true)
             Add("skillsheader", "", function()
                 return gui.Label{ classes = { "eotwbSection" }, text = "Skills" }
             end)
@@ -2076,14 +2159,24 @@ function EotwBuilder.Open(args)
                 local optional = baseRow ~= nil and baseRow.optional == true
                 local done = baseRow ~= nil and baseRow.complete and not optional
                 local statusText = cond(optional, "Optional", cond(done, "Done", "Choose one"))
-                Add("baseheader", statusText, function()
+                local locked = BaseLocked(tok, stepid)
+                Add("baseheader", statusText .. tostring(locked), function()
+                    local heading = string.format(cond(locked, "Your %s", "Choose your %s"), string.lower(step.base))
                     return gui.Panel{
                         width = "100%",
                         height = "auto",
-                        flow = "horizontal",
+                        flow = "vertical",
                         children = {
-                            gui.Label{ classes = { "eotwbSection" }, text = string.format("Choose your %s", string.lower(step.base)), width = "auto" },
-                            gui.Label{ classes = Classes("eotwbStatus", { done = done }), text = statusText, valign = "center", lmargin = 14, tmargin = 12 },
+                            gui.Panel{
+                                width = "100%",
+                                height = "auto",
+                                flow = "horizontal",
+                                children = {
+                                    gui.Label{ classes = { "eotwbSection" }, text = heading, width = "auto" },
+                                    gui.Label{ classes = Classes("eotwbStatus", { done = done }), text = statusText, valign = "center", lmargin = 14, tmargin = 12 },
+                                },
+                            },
+                            locked and Text(string.format("Your %s is chosen when the hero is created and can't be changed.", string.lower(step.base)), { "eotwbText", "muted" }, { bmargin = 6 }) or nil,
                         },
                     }
                 end)
@@ -2136,6 +2229,7 @@ function EotwBuilder.Open(args)
         end
         local offset = keepScroll and ScrollOffset() or 0
         local panels = {}
+        local pinnedPanels = {}
         local cache = {}
         for _,spec in ipairs(specs) do
             local cached = state.blocks[spec.key]
@@ -2146,11 +2240,17 @@ function EotwBuilder.Open(args)
                 panel = spec.build()
             end
             if panel ~= nil then
-                panels[#panels+1] = panel
+                if spec.pinned then
+                    pinnedPanels[#pinnedPanels+1] = panel
+                else
+                    panels[#panels+1] = panel
+                end
                 cache[spec.key] = { signature = spec.signature, panel = panel }
             end
         end
         state.blocks = cache
+        pageHeader.children = pinnedPanels
+        pageHeader:SetClass("collapsed", #pinnedPanels == 0)
 
         if keepScroll and pageContent ~= nil and pageContent.valid then
             --same step: swap the changed blocks in place; the kept ones are
@@ -2190,8 +2290,15 @@ function EotwBuilder.Open(args)
     local function UpdateFooter(status)
         local index = StepIndex(state.step)
         local stepStatus = status.steps[index]
-        backButton:SetClass("hidden", index == 1)
-        fillButton:SetClass("disabled", stepStatus.complete and not stepStatus.stale)
+        backButton:SetClass("hidden", index == 1 or args.only ~= nil)
+        --a single-step builder (args.only) has nowhere to go and nothing to fill
+        fillButton:SetClass("hidden", args.only ~= nil)
+        nextButton:SetClass("hidden", args.only ~= nil)
+        if status.complete then
+            state.fillAllArmed = false
+        end
+        fillButton.text = cond(state.fillAllArmed, "For All Tabs?", "Fill in the Rest")
+        fillButton:SetClass("disabled", not state.fillAllArmed and stepStatus.complete and not stepStatus.stale)
         if index == #EotwBuild.STEPS then
             nextButton.text = "Finish"
         elseif stepStatus.complete then
@@ -2251,6 +2358,7 @@ function EotwBuilder.Open(args)
         state.step = stepid
         state.detail = nil
         state.swapAttr = nil
+        state.fillAllArmed = false
         Refresh(true)
     end
 
@@ -2333,14 +2441,32 @@ function EotwBuilder.Open(args)
         },
     }
 
+    pageHeader = gui.Panel{
+        classes = { "collapsed" },
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        rpad = 16,
+        bmargin = 4,
+        borderBox = true,
+    }
+
     page = gui.Panel{
-        width = string.format("100%%-%d", SUMMARY_WIDTH + DETAIL_WIDTH + 40),
-        height = "100%",
-        hmargin = 20,
+        width = "100%",
+        height = "100% available",
         flow = "vertical",
         vscroll = true,
         rpad = 16,
         borderBox = true,
+    }
+
+    --the page's column: the pinned header over the scrolling page.
+    local pageColumn = gui.Panel{
+        width = string.format("100%%-%d", SUMMARY_WIDTH + DETAIL_WIDTH + 40),
+        height = "100%",
+        hmargin = 20,
+        flow = "vertical",
+        children = { pageHeader, page },
     }
 
     --holds either a scrolling body or the full-bleed art view (ShowDetail).
@@ -2384,22 +2510,36 @@ function EotwBuilder.Open(args)
         height = 48,
         hmargin = 8,
         linger = function(element)
-            gui.Tooltip("Fill every choice on this page you have not made yet with a sensible default or a random pick. Your own choices are kept.")(element)
+            if state.fillAllArmed then
+                gui.Tooltip("Fill every choice you have not made yet on all the other tabs too, completing the hero. Your own choices are kept.")(element)
+            else
+                gui.Tooltip("Fill every choice on this page you have not made yet with a sensible default or a random pick. Your own choices are kept.")(element)
+            end
         end,
+        --First click fills this page and arms the button as "For All Tabs?";
+        --a second click fills every remaining tab.
         click = function(element)
             local tok = Tok()
             if tok == nil or element:HasClass("disabled") then
                 return
             end
-            local ok, picks = pcall(EotwBuild.Fill, tok, state.step)
+            local allTabs = state.fillAllArmed
+            local ok, picks
+            if allTabs then
+                ok, picks = pcall(EotwBuild.FillAll, tok)
+            else
+                ok, picks = pcall(EotwBuild.Fill, tok, state.step)
+            end
             if not ok then
                 state.message = "Something went wrong: " .. tostring(picks)
                 printf("EotW builder: %s", tostring(picks))
             elseif picks == nil or #picks == 0 then
-                state.message = "Nothing left to fill on this page."
+                state.message = cond(allTabs, "Nothing left to fill.", "Nothing left to fill on this page.")
             else
-                state.message = string.format("Filled %d choice%s.", #picks, cond(#picks == 1, "", "s"))
+                state.message = string.format("Filled %d choice%s%s.", #picks, cond(#picks == 1, "", "s"), cond(allTabs, " across all tabs", ""))
             end
+            --UpdateFooter disarms it again once the whole hero is complete.
+            state.fillAllArmed = ok and not allTabs
             state.detail = nil
             state.swapAttr = nil
             --the Appearance page's inputs show the filled name, so rebuild it.
@@ -2527,6 +2667,10 @@ function EotwBuilder.Open(args)
                                     closeButton = element
                                 end,
                                 linger = function(element)
+                                    --the draft / finish wording does not fit a single-step edit
+                                    if args.only ~= nil then
+                                        return
+                                    end
                                     if state.allComplete then
                                         gui.Tooltip("Your hero is complete. Finish and add them to your roster.")(element)
                                     else
@@ -2547,7 +2691,7 @@ function EotwBuilder.Open(args)
                 height = string.format("100%%-%d", HEADER_HEIGHT + FOOTER_HEIGHT),
                 halign = "center",
                 flow = "horizontal",
-                children = { summary, page, detail },
+                children = { summary, pageColumn, detail },
             },
             footer,
         },

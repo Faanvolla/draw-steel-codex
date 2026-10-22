@@ -201,7 +201,7 @@ end
 --- @return integer numSelected
 --- @return integer numAvailable
 function CBFeatureCache:GetStatusSummary(hero)
-    self:CalculateStatus(hero)
+    self:CalculateStatus()
     return self:try_get("numSelected", 0), self:try_get("numAvailable", 0)
 end
 
@@ -454,7 +454,7 @@ function CBFeatureWrapper:GetDescription()
     return self.feature:GetDescription()
 end
 
---- @return string
+--- @return string|nil nil when the feature has no rules text.
 function CBFeatureWrapper:GetDetailedSummaryText()
     if self:_hasFn("GetDetailedSummaryText") then
         return self.feature:GetDetailedSummaryText()
@@ -556,7 +556,10 @@ end
 
 --- @return RollTable
 function CBFeatureWrapper:GetRollTable()
-    return self.feature.characteristic:GetRollTable()
+    --Only called when HasRoll(), i.e. the feature carries a characteristic
+    --(incident and complication choices); CharacterChoice itself has none.
+    local characteristic = self.feature:try_get("characteristic")
+    return characteristic:GetRollTable()
 end
 
 --- Get the list of items selected on the hero.
@@ -607,7 +610,7 @@ function CBFeatureWrapper:GetStatus()
     }
     local fn = self:_hasFn("GetStatus")
     if fn then
-        local innerStatus = self.feature:GetStatus()
+        local innerStatus = fn(self.feature)
         for k,v in pairs(innerStatus) do
             status[k] = v
         end
@@ -691,8 +694,9 @@ end
 --- Return a structure of UI injections or nil
 --- @return table
 function CBFeatureWrapper:UIInjections()
-    if self:_hasFn("UIInjections") then
-        return self:GetFeature():UIInjections() or {}
+    local fn = self:_hasFn("UIInjections")
+    if fn then
+        return fn(self:GetFeature()) or {}
     end
     return {}
 end
@@ -917,8 +921,9 @@ function CBFeatureWrapper:Update(hero)
     local pointsSpent = 0
     local selectedNames = {}
 
-    if _hasFn(self.feature, "GetEntries") then
-        local featureEntries = self.feature:GetEntries(hero)
+    local getEntries = _hasFn(self.feature, "GetEntries")
+    if getEntries then
+        local featureEntries = getEntries(self.feature, hero)
         for _,entry in ipairs(featureEntries) do
             local wrappedEntry = CBOptionWrapper.CreateNew(entry)
             options[#options+1] = wrappedEntry
@@ -932,7 +937,8 @@ function CBFeatureWrapper:Update(hero)
         end
     else
         -- TODO: Remove this once we've refactored all choice types
-        local featureOptions = self.feature:GetOptions(levelChoices, hero)
+        --the base CharacterChoice:GetOptions returns nil; only subclasses list options.
+        local featureOptions = self.feature:GetOptions(levelChoices, hero) or {}
         for _,option in ipairs(featureOptions) do
             local wrappedOption = CBOptionWrapper.CreateNew(option)
             options[#options+1] = wrappedOption
@@ -1487,8 +1493,9 @@ end
 --- @param addEntry function
 local function categoriserAddBuildFeatures(creature, addEntry)
     if creature.typeName ~= "character" then return end
+    local hero = creature --[[@as character]]
 
-    local ok, details = pcall(function() return creature:GetClassFeaturesAndChoicesWithDetails() end)
+    local ok, details = pcall(function() return hero:GetClassFeaturesAndChoicesWithDetails() end)
     if not ok or type(details) ~= "table" then return end
 
     --Pass 1: resolve the chosen option features of every made generic
@@ -1749,18 +1756,6 @@ local function categoriserAddTreasures(creature, addEntry)
     end
 end
 
---- Build the categorised per-creature feature index.
----
---- Returns:
----   features : array of normalised entries (see categoriserNormalise) in source
----              order, deduped by guid.
----   groups   : { [bucketId] = { bucket = <descriptor>, items = { entry, ... } } }
----   order    : array of bucket ids that actually have entries, in display order.
----   counts   : { [bucketId] = n }
----   total    : total entry count.
----
---- @param creature creature
---- @return table index
 --- Resolve a modifier `attribute` id to a human-readable display name. Custom
 --- attributes (GUID ids) carry their name in the customAttributes table -- this
 --- is the Tier-2 win: a feature whose modifier sets the "Can Shift In Difficult
@@ -1833,6 +1828,18 @@ local function categoriserEntrySearchText(entry)
     return table.concat(parts, " ")
 end
 
+--- Build the categorised per-creature feature index.
+---
+--- Returns:
+---   features : array of normalised entries (see categoriserNormalise) in source
+---              order, deduped by guid.
+---   groups   : { [bucketId] = { bucket = <descriptor>, items = { entry, ... } } }
+---   order    : array of bucket ids that actually have entries, in display order.
+---   counts   : { [bucketId] = n }
+---   total    : total entry count.
+---
+--- @param creature creature|nil nil gives an empty index.
+--- @return table index
 function FeatureCategoriser.BuildIndex(creature)
     local features = {}
     local seenGuid = {}
@@ -1909,7 +1916,7 @@ end
 local CATEGORISER_CACHE_TTL = 1.0
 local g_categoriserCache = setmetatable({}, { __mode = "k" })
 
---- @param creature creature
+--- @param creature creature|nil nil gives an empty index.
 --- @return table index
 function FeatureCategoriser.BuildIndexCached(creature)
     if creature == nil then return FeatureCategoriser.BuildIndex(creature) end
@@ -2090,6 +2097,33 @@ local function categoriserFeatureGrantsResource(feature)
     return found
 end
 
+--- Whether a feature grants skills or languages (shown in their own lists).
+--- @param feature any
+--- @return boolean
+function FeatureCategoriser.FeatureGrantsSkillOrLanguage(feature)
+    return categoriserFeatureGrantsSkillOrLanguage(feature)
+end
+
+--- Whether a feature only raises the five characteristics (shown as numbers).
+--- @param feature any
+--- @return boolean
+function FeatureCategoriser.FeatureIsOnlyCharacteristics(feature)
+    return categoriserFeatureIsOnlyCharacteristics(feature)
+end
+
+--- The section a choice slot belongs to by what it offers ("skill",
+--- "language", "perk", "ancestry"), or nil for a feature that is not one of
+--- those choice slots. A skill or language slot found inside a class feature
+--- belongs to the Skills / Languages lists, not a feature list.
+--- @param feature any
+--- @return string|nil
+function FeatureCategoriser.ChoiceBucket(feature)
+    local tn = nil
+    pcall(function() tn = feature.typeName end)
+    if tn == nil then return nil end
+    return CATEGORISER_CHOICE_BUCKET[tn]
+end
+
 --- Whether a RESOLVED feature is a passive capability worth a chip on the tac
 --- panel. Excludes perks (the Perks section -- a CharacterFeat that is not a
 --- Title or Complication, both of which are CharacterFeat-derived but kept),
@@ -2165,9 +2199,12 @@ end
 --- groups, order, counts, total) containing only the passive "what else"
 --- entries. Reuses the cached full index, so the per-call cost is the
 --- predicate sweep.
---- @param creature creature
+--- @param creature creature|nil nil gives an empty index.
 --- @return table index
 function FeatureCategoriser.BuildTacIndex(creature)
+    if creature == nil then
+        return { features = {}, groups = {}, order = {}, counts = {}, total = 0 }
+    end
     local full = FeatureCategoriser.BuildIndexCached(creature)
 
     --Owned domains: the build pipeline lists EVERY domain's features (and the
@@ -2336,14 +2373,15 @@ function FeatureCategoriser.BuildTacIndex(creature)
     }
 end
 
+local g_tacIndexCache = setmetatable({}, { __mode = "k" })
+
 --- Short-TTL memo over BuildTacIndex, mirroring BuildIndexCached. The tac panel
 --- rebuilds on every refreshCharacter and, while a title-bar query is active,
 --- applyGlobalQuery builds the index a second time in the same refresh to test
 --- for matches; both now share this cache so the curation sweep + recursive
 --- collectLeaves runs at most once per creature per second.
---- @param creature creature
+--- @param creature creature|nil nil gives an empty index.
 --- @return table index
-local g_tacIndexCache = setmetatable({}, { __mode = "k" })
 function FeatureCategoriser.BuildTacIndexCached(creature)
     if creature == nil then return FeatureCategoriser.BuildTacIndex(creature) end
 

@@ -74,10 +74,11 @@ function lobby:ListRollbackBookmarks(gameid, callback) end
 --- @param options table Target + callbacks.
 function lobby:PerformRollback(gameid, options) end
 
---- Enters the game with the given ID, optionally executing a Lua function after entering.
+--- Enters the game with the given ID, optionally executing a Lua function after entering. options.startMap names a map (by its name) to start on when this player has no saved position or token in the game, instead of the game's first map.
 --- @param gameid string The ID of the game to enter.
 --- @param executeFunction nil|function Optional function to execute after entering the game.
-function lobby:EnterGame(gameid, executeFunction) end
+--- @param options nil|{startMap: nil|string} Optional entry options.
+function lobby:EnterGame(gameid, executeFunction, options) end
 
 --- Looks up a game by its ID asynchronously. Calls the callback with a LuaGameInfo if found, or with no arguments if not found.
 --- @param gameid string The ID of the game to look up.

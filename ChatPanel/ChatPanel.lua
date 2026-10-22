@@ -166,6 +166,10 @@ local function CreateChatAttachmentHeader(message)
 	}
 end
 
+--The "<nick>:" line over a message that is not plain text (attachments,
+--item links in ChatItemLinks.lua).
+ChatAttachmentHeader = CreateChatAttachmentHeader
+
 local function CreateChatImageAttachment(attachment)
 	local source = "md5:" .. attachment.chatAttachmentBlobId
 	return gui.Panel{
@@ -745,6 +749,20 @@ CreateChatPanel = function()
 		else
 			fileDragLabel.text = string.format("Release to post %d attachments in chat", count)
 		end
+		fileDragOverlay:SetClass("collapsed", false)
+	end
+
+	--The same overlay while an item (a map, scene, journal entry, character)
+	--is dragged over the chat; nil hides it. See ChatItemLinks.lua.
+	local function SetItemDropPreview(text)
+		if fileDragOverlay == nil or fileDragOverlay.valid == false then
+			return
+		end
+		if text == nil then
+			fileDragOverlay:SetClass("collapsed", true)
+			return
+		end
+		fileDragLabel.text = text
 		fileDragOverlay:SetClass("collapsed", false)
 	end
 
@@ -1509,7 +1527,7 @@ CreateChatPanel = function()
 			SetImageDropPreview(nil)
 		end,
 		dropfiles = DropChatImages,
-		width = 330,
+		width = "100%",
 		text = "preview text",
 		italics = true,
 		monitorGame = mod:GetDocumentSnapshot("chatEvents").path,
@@ -1606,8 +1624,11 @@ CreateChatPanel = function()
             },
         },
         flow = "horizontal",
-        width = 330,
-        height = 20,
+        --In a narrow chat window the language picker moves to a second line.
+        --It used to stick out past the edge of the window.
+        wrap = true,
+        width = "100%",
+        height = "auto",
         create = function(element)
             element:FireEventTree("refreshSelectedTokens")
         end,
@@ -2121,6 +2142,33 @@ CreateChatPanel = function()
 	chat.events:Listen(inputPanel)
 
 	local resultPanel = gui.Panel{
+		--anything that can go on the table can be dropped here as a link:
+		--map tokens through the engine's token drop events, dragged panels
+		--through ChatItemLinks.Dragging / Dropped.
+		classes = {"chatItemDropTarget"},
+		tokenDropTarget = true,
+		--the engine finds drop targets by raycast, which only hits panels
+		--with an image; a clear one makes the whole chat a target.
+		bgimage = true,
+		bgcolor = "clear",
+		chatItemDragHover = function(element, text)
+			SetItemDropPreview(text)
+		end,
+		tokenDragEnter = function(element, info)
+			local count = #(info.charids or {})
+			if count == 1 then
+				SetItemDropPreview("Release to share this character in chat")
+			elseif count > 1 then
+				SetItemDropPreview(string.format("Release to share %d characters in chat", count))
+			end
+		end,
+		tokenDragLeave = function(element)
+			SetItemDropPreview(nil)
+		end,
+		dropTokens = function(element, info)
+			SetItemDropPreview(nil)
+			ChatItemLinks.SendCharacters(info.charids or {info.charid})
+		end,
 		dragAndDropExtensions = imageDropExtensions,
 		dragfilesenter = function(element, paths)
 			SetImageDropPreview(paths)

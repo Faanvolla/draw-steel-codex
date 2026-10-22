@@ -12,9 +12,6 @@ local ChangeLabelValue = function(info, label, newtext)
 
 	label.text = newtext
 	label.data.charid = info.charid
-
-	previousCharId = info.charid
-	
 end
 
 
@@ -2604,7 +2601,7 @@ function CharSheet.CharacterSheetEditPassiveSensesPopup(element, info)
 				change = function(element)
 					local val = tonumber(element.text)
 					creature:SetBasePassiveModOverride(skillInfo, val)
-					element.text = val or "--"
+					element.text = val ~= nil and tostring(val) or "--"
 					CharacterSheet.instance:FireEvent('refreshAll')
 				end,
 			},

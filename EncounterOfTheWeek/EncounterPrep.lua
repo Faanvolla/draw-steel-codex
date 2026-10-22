@@ -9,7 +9,8 @@
 --                     surprised". It OPENS on whatever the montage decided
 --                     (EncounterMontage.GetInitiativeOutcome), so a party
 --                     that got the jump starts higher up the bar.
---  * Traps         -- 0: nothing known. 1: how many traps are out there.
+--  * Traps         -- 0: nothing known. 1: two of the placed traps, drawn
+--                     at random, are marked (EncounterZones.BankPartialReveal).
 --                     2: every trap on the map is marked (the montage clause
 --                     "Reveal Traps", banked the same way).
 --  * Enemy Stamina -- 0: no bars at all. 1: bars with no numbers. 2: bars
@@ -17,10 +18,12 @@
 --                     "enemystambardisplay", which the EotW host re-asserts
 --                     every tick (EncounterOfTheWeek.lua EnforceStrictRules).
 --
---Each notch costs 1 Intelligence, ANY player may spend, and nobody sees the
---levels above the one they are on -- only what they know now. Once the pool
---is empty (or nothing is left to raise) each player presses Proceed, and the
---encounter begins when every player has.
+--Each notch costs 1 Intelligence. Each player spends the Intelligence their
+--own heroes earned (EncounterMontage.GetHeroIntelligence), plus any shared
+--part no hero holds; nobody sees the levels above the one they are on --
+--only what they know now. Once a player's own Intelligence is spent (or
+--nothing is left to raise) they press Proceed, and the encounter begins
+--when every player has.
 --
 --Design: EncounterOfTheWeek.md, "Tactical Preparation".
 --
@@ -42,8 +45,9 @@
 --    startedAt, resolvedAt, doneAt, seq,
 --  }
 --
---The pool itself is data.intelligence, at the top level of the same document
---(EncounterMontage.GetIntelligence), because it spans every beat.
+--The pool itself is data.intelligence (the party total) and
+--data.intelligenceByHero (each hero's share), at the top level of the same
+--document (EncounterMontage.GetIntelligence), because it spans every beat.
 
 local mod = dmhub.GetModLoading()
 
@@ -82,14 +86,8 @@ local STAMINA_LEVELS = {
 --them: no bar, a bar with no number, or a bar with the exact Stamina.
 local STAMINA_SETTING = { [0] = "none", [1] = "bar", [2] = "val" }
 
---"4 Snare Traps" from an encounter beat's setup instruction.
-local function InstructionCount(ins)
-    local name = tostring(ins.object or "trap")
-    if (tonumber(ins.qty) or 0) ~= 1 then
-        name = name .. "s"
-    end
-    return string.format("%d %s", tonumber(ins.qty) or 0, name)
-end
+--How many of the placed traps level 1 of the traps bar marks.
+local PARTIAL_TRAP_REVEALS = 2
 
 --Every "place N objects in <zone> zones" instruction of the encounter beat.
 --These are what the traps bar is about: with none, the bar is not offered.
@@ -103,24 +101,14 @@ function EncounterPrep.TrapInstructions(beat)
     return result
 end
 
---Level 1 of the traps bar: what the party learns for their first point --
---"There are 4 Snare Traps hidden on the map."
+--Level 1 of the traps bar: for their first point the party learns where a
+--few of the traps are (PARTIAL_TRAP_REVEALS of them, marked when the zones
+--go down), but not how many there are in all.
 function EncounterPrep.TrapsDescription(beat)
-    local instructions = EncounterPrep.TrapInstructions(beat)
-    if #instructions == 0 then
+    if #EncounterPrep.TrapInstructions(beat) == 0 then
         return "There are no traps on the map."
     end
-    local parts = {}
-    local total = 0
-    for _, ins in ipairs(instructions) do
-        parts[#parts + 1] = InstructionCount(ins)
-        total = total + (tonumber(ins.qty) or 0)
-    end
-    local list = parts[1]
-    for i = 2, #parts do
-        list = cond(i == #parts, string.format("%s and %s", list, parts[i]), string.format("%s, %s", list, parts[i]))
-    end
-    return string.format("There %s %s hidden on the map.", cond(total == 1, "is", "are"), list)
+    return "You know where some of the traps are."
 end
 
 --The bar's display: its title and the text of every level, so the stage
@@ -244,8 +232,13 @@ local function StartingTrapsLevel(doc, beat)
     end
     local banked = doc.data.revealZones or {}
     local revealed = doc.data.zonesRevealed or {}
+    --a partial reveal (this bar's own level 1) only marks a few of the
+    --traps, so it does not count as the zone being revealed.
+    local function Full(entry)
+        return entry ~= nil and entry.partial == nil
+    end
     for _, ins in ipairs(instructions) do
-        if banked[ins.zone] == nil and revealed[ins.zone] == nil then
+        if not Full(banked[ins.zone]) and not Full(revealed[ins.zone]) then
             return 0
         end
     end
@@ -274,6 +267,27 @@ function EncounterPrep.VoterKeyForUser(userid, heroes)
     return nil
 end
 
+--The heroes a voter (a player's userid, or "PARTY") runs: whose
+--Intelligence that player spends.
+function EncounterPrep.VoterHeroids(key, heroes)
+    for _, voter in ipairs(EncounterPrep.Voters(heroes)) do
+        if voter.key == key then
+            return voter.heroids
+        end
+    end
+    return {}
+end
+
+--What the local player may spend right now: their own heroes' Intelligence
+--plus the shared part. 0 for an onlooker.
+function EncounterPrep.LocalSpendable()
+    local key = EncounterPrep.VoterKeyForUser(dmhub.loginUserid, nil)
+    if key == nil then
+        return 0
+    end
+    return EncounterMontage.SpendableIntelligence(EncounterPrep.VoterHeroids(key, nil))
+end
+
 --Who is still to press Proceed, as display names. skipKey drops one voter
 --from the list -- the stage passes the local player's own key, because a
 --screen that says "waiting for you" next to your own Proceed button reads
@@ -290,16 +304,17 @@ end
 
 --- what the local client may do ------------------------------------------------
 
---Is there anything left to buy? (Both gates: a point to spend it, and a bar
---that can still take one.)
---`pool` overrides what is in the pool: the host passes what the OPEN
---document says, so a Proceed handled in the same tick as the spend that
---emptied it is judged against the new number, not a stale snapshot.
+--Can this player buy anything? (Both gates: a point of their own to spend,
+--and a bar that can still take one.)
+--`pool` is what the player may spend; nil means the local player
+--(LocalSpendable). The host passes what the OPEN document says for the
+--player whose request it is handling, so a Proceed handled in the same
+--tick as the spend that emptied it is judged against the new number.
 function EncounterPrep.CanSpend(m, beat, pool)
     if m == nil or m.phase ~= "spending" then
         return false
     end
-    if (pool or EncounterMontage.GetIntelligence()) < SPEND_COST then
+    if (pool or EncounterPrep.LocalSpendable()) < SPEND_COST then
         return false
     end
     for _, bar in ipairs(m.bars or {}) do
@@ -310,9 +325,10 @@ function EncounterPrep.CanSpend(m, beat, pool)
     return false
 end
 
---The Proceed button is offered once the Intelligence is spent -- either
---because the pool is empty or because there is nothing left to raise (an
---Intelligence nobody can spend must not wedge the encounter).
+--A player's Proceed button is offered once their Intelligence is spent --
+--either because they have none left or because there is nothing left to
+--raise (an Intelligence nobody can spend must not wedge the encounter).
+--`pool` as for CanSpend.
 function EncounterPrep.CanProceed(m, beat, pool)
     return m ~= nil and m.phase == "spending" and not EncounterPrep.CanSpend(m, beat, pool)
 end
@@ -424,7 +440,17 @@ local function Resolve(m, doc, beat, heroes)
     local traps = EncounterPrep.Level(m, "traps")
     if traps ~= nil then
         local start = tonumber((m.start or {}).traps) or traps
-        if traps >= 1 and start < 1 then
+        --level 1 alone marks a couple of the traps; level 2 marks them all,
+        --so a party that bought both only needs the full reveal.
+        if traps == 1 and start < 1 then
+            local zones = {}
+            for _, ins in ipairs(EncounterPrep.TrapInstructions(beat)) do
+                zones[#zones + 1] = ins.zone
+            end
+            local zoneApi = rawget(_G, "EncounterZones")
+            if zoneApi ~= nil and zoneApi.BankPartialReveal ~= nil then
+                zoneApi.BankPartialReveal(doc, zones, PARTIAL_TRAP_REVEALS, EncounterPrep.TITLE)
+            end
             applied[#applied + 1] = EncounterPrep.TrapsDescription(beat)
         end
         if traps >= 2 and start < 2 then
@@ -496,10 +522,11 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
     if req.kind == "spend" then
         --read the pool off the OPEN document, not a fresh snapshot: several
         --players' spends can be handled in one tick, and the second must see
-        --what the first took.
-        local pool = tonumber(doc.data.intelligence) or 0
+        --what the first took. A player spends their own heroes' share.
+        local heroids = EncounterPrep.VoterHeroids(key, heroes)
+        local pool = EncounterMontage.SpendableIntelligence(heroids, doc.data)
         if pool < SPEND_COST then
-            return string.format("%s spent Intelligence the party does not have", name)
+            return string.format("%s spent Intelligence they do not have", name)
         end
         local bar = nil
         for _, b in ipairs(m.bars or {}) do
@@ -516,13 +543,18 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
             return string.format("%s raised %s, which is already as high as it goes", name, EncounterPrep.BarInfo(beat, bar.id).title)
         end
         bar.level = level + 1
-        doc.data.intelligence = pool - SPEND_COST
+        local heroNames = {}
+        for _, hero in ipairs(heroes or EncounterMontage.Heroes()) do
+            heroNames[hero.charid] = hero.name
+        end
+        local _, from = EncounterMontage.SpendIntelligence(doc, heroids, SPEND_COST, heroNames)
         local log = doc.data.intelligenceLog or {}
         log[#log + 1] = {
-            value = pool - SPEND_COST,
+            value = tonumber(doc.data.intelligence) or 0,
             amount = -SPEND_COST,
             who = name,
-            note = string.format("%s: %s", EncounterPrep.TITLE, EncounterPrep.BarInfo(beat, bar.id).title),
+            note = string.format("%s: %s (%s)", EncounterPrep.TITLE, EncounterPrep.BarInfo(beat, bar.id).title,
+                table.concat(from or {}, ", ")),
             at = dmhub.serverTime,
         }
         doc.data.intelligenceLog = log
@@ -531,8 +563,9 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         --a spend can make Proceed possible, and a player who had nothing to
         --wait for should not be left holding a stale Ready from before it.
         m.seq = (tonumber(m.seq) or 0) + 1
-        return string.format("%s raised %s to level %d (%d Intelligence left)",
-            name, EncounterPrep.BarInfo(beat, bar.id).title, bar.level, doc.data.intelligence)
+        return string.format("%s raised %s to level %d (%d of their Intelligence left, %d in the party)",
+            name, EncounterPrep.BarInfo(beat, bar.id).title, bar.level,
+            EncounterMontage.SpendableIntelligence(heroids, doc.data), tonumber(doc.data.intelligence) or 0)
     end
 
     if req.kind == "ready" or req.kind == "unready" then
@@ -542,8 +575,9 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
             m.seq = (tonumber(m.seq) or 0) + 1
             return string.format("%s is no longer ready", name)
         end
-        if not EncounterPrep.CanProceed(m, beat, tonumber(doc.data.intelligence) or 0) then
-            return string.format("%s is ready, but there is Intelligence still to spend", name)
+        local own = EncounterMontage.SpendableIntelligence(EncounterPrep.VoterHeroids(key, heroes), doc.data)
+        if not EncounterPrep.CanProceed(m, beat, own) then
+            return string.format("%s is ready, but has Intelligence still to spend", name)
         end
         m.ready[key] = { name = name, at = dmhub.serverTime }
         m.seq = (tonumber(m.seq) or 0) + 1
@@ -776,7 +810,9 @@ local function PrintState()
             #info.levels - 1, tostring((m.start or {})[bar.id]), tostring(info.levels[(bar.level or 0) + 1]))
     end
     for _, voter in ipairs(EncounterPrep.Voters(nil)) do
-        printf("  %s: %s", tostring(voter.name), cond((m.ready or {})[voter.key] ~= nil, "ready", "still preparing"))
+        printf("  %s: %s, %d Intelligence to spend", tostring(voter.name),
+            cond((m.ready or {})[voter.key] ~= nil, "ready", "still preparing"),
+            EncounterMontage.SpendableIntelligence(voter.heroids))
     end
     for _, line in ipairs(m.applied or {}) do
         printf("  applied: %s", tostring(line))
@@ -787,7 +823,7 @@ pcall(function()
     Commands.RegisterMacro{
         name = "eotwprep",
         summary = "inspect or drive the Encounter of the Week Tactical Preparation screen",
-        doc = "Usage: /eotwprep start | stop | state | force | reset | unlock | intelligence <n>\nstart runs the encounter beat's preparation right here (a dev host tick, for the authoring game); stop halts that driver; state prints the bars and who is ready; force resolves on the players already ready; reset clears the preparation state so the encounter beat opens it again; unlock turns the Intelligence feature on without a script; intelligence <n> sets the party's pool.",
+        doc = "Usage: /eotwprep start | stop | state | force | reset | unlock | intelligence <n>\nstart runs the encounter beat's preparation right here (a dev host tick, for the authoring game); stop halts that driver; state prints the bars and who is ready; force resolves on the players already ready; reset clears the preparation state so the encounter beat opens it again; unlock turns the Intelligence feature on without a script; intelligence <n> sets the party's pool, split evenly across the heroes.",
         command = function(str)
             local arg = string.lower(string.gsub(str or "", "^%s*(.-)%s*$", "%1"))
             local amount = string.match(arg, "^intelligence%s+(%-?%d+)$")
@@ -808,7 +844,15 @@ pcall(function()
             elseif amount ~= nil then
                 local doc = EncounterPrep.GetDoc()
                 doc:BeginChange()
-                doc.data.intelligence = tonumber(amount)
+                --start from nothing, then credit it the way a party-wide
+                --award lands, so every hero holds an even share.
+                doc.data.intelligence = 0
+                doc.data.intelligenceByHero = {}
+                local heroes = EncounterMontage.Heroes()
+                local n = tonumber(amount) or 0
+                local credits = EncounterMontage.SplitIntelligence(doc, heroes, n)
+                EncounterMontage.CreditIntelligence(doc, credits, "/eotwprep", "Intelligence set",
+                    cond(#credits == 0, n, 0))
                 doc:CompleteChange("Intelligence set", { undoable = false })
                 printf("EotW preparation: the party has %s Intelligence", tostring(amount))
             elseif arg == "unlock" then

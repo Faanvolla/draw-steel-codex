@@ -45,6 +45,28 @@ local g_numHeroesSetting = setting {
     }
 }
 
+--The party encounters are balanced against is worked out from the player
+--party until the Director overrides it in the encounter builder; from then on
+--these hold the override (with numheroes as the hero count). No editor: the
+--builder's party bar is their only UI.
+local g_partyManualSetting = setting {
+    id = "encounterpartymanual",
+    storage = "game",
+    default = false,
+}
+
+local g_partyLevelSetting = setting {
+    id = "encounterpartylevel",
+    storage = "game",
+    default = 1,
+}
+
+local g_partyVictoriesSetting = setting {
+    id = "encounterpartyvictories",
+    storage = "game",
+    default = 0,
+}
+
 --- @class Encounter: GameType
 --- @field new fun(o?: table): Encounter
 --- @field id string Key of this row in its data table; SetAndUploadTableItem sets it.
@@ -56,6 +78,16 @@ Encounter.name = 'New Encounter'
 Encounter.description = ''
 
 Encounter.tableName = 'encounters'
+
+--The id of the map in this game the encounter takes place on, or "" when
+--none is chosen. Set in the encounter builder; a record, nothing enforces it.
+Encounter.mapid = ''
+
+--A Map Library (map pack) map the encounter is set on, as
+--"pack|<pack>|<map id>|<name>" (CustomDocument.LibraryMapValue), or "".
+--Shipped encounters use it: their mapid and staging name the pack map's id,
+--which a game only has once the map is added (Encounter.ResolveMapRef).
+Encounter.mapRef = ''
 
 Encounter.monsters = {}
 
@@ -107,6 +139,8 @@ end
 function Encounter.GetVictoryConditions(encounter)
     local result = {
         { id = "all_defeated", text = "All Monsters Defeated" },
+        --the book's usual ending: minions left standing flee once the rest fall.
+        { id = "nonminions_defeated", text = "All Non-Minions Defeated" },
         { id = "heroes_outnumber", text = "Heroes Outnumber Monsters" },
         { id = "heroes_outnumber_two_to_one", text = "Heroes Outnumber Monsters Two-to-One" },
         { id = "half_defeated", text = "Half Monsters Defeated" },
@@ -197,6 +231,49 @@ function Encounter.GetTargetableObjectsWithKeyword(keyword)
     end
 
     return result
+end
+
+--- The map water level (WATER_LEVEL_REFERENCE.md), for encounter and map scripts:
+--- ground lower than the level by 1 square or more is deep water (creatures float
+--- on it and can dive), by less is shallow water (difficult terrain without a swim
+--- speed). The engine moves creatures with the water and draws it. Sets the current
+--- map's level (a multiple of 0.5; nil removes the water). options.floor picks the
+--- floor. Runs with host rights, so a directorless game's player host can use it.
+--- Returns true, or false and a reason.
+--- @param level number|nil
+--- @param options nil|{floor: nil|string}
+--- @return boolean, string|nil
+function Encounter.SetWaterLevel(level, options)
+    local map = game.currentMap
+    if map == nil then
+        return false, "no current map"
+    end
+
+    local elevate = rawget(_G, "ElevateToHostPermissions")
+    local drop = rawget(_G, "DropHostPermissions")
+    if elevate ~= nil then
+        elevate()
+    end
+    local ok, err = pcall(function()
+        map:SetWaterLevel(level, options)
+    end)
+    if drop ~= nil then
+        drop()
+    end
+    if not ok then
+        return false, tostring(err)
+    end
+    return true
+end
+
+--- The current map's water level in squares, or nil when it has none.
+--- @return number|nil
+function Encounter.GetWaterLevel()
+    local map = game.currentMap
+    if map == nil then
+        return nil
+    end
+    return map:GetWaterLevel()
 end
 
 --Returns the display name to show for a boss-bar token. Object tokens carry their renamed
@@ -432,6 +509,97 @@ function Encounter.PartyStrength(args)
         victoryHeroes = victoryHeroes,
         numHeroes = numHeroes,
     }
+end
+
+--The party worked out from the heroes in the game's player party, wherever
+--they are: { numHeroes =, level =, victories = } with level and victories
+--averaged. numHeroes is held to the party sizes encounters balance for.
+--An empty player party gives four level 1 heroes with no victories.
+function Encounter.AutoParty()
+    local totalLevel = 0
+    local totalVictories = 0
+    local count = 0
+    for _, charid in ipairs(dmhub.GetCharacterIdsInParty(GetDefaultPartyID()) or {}) do
+        local tok = dmhub.GetCharacterById(charid)
+        local props = tok ~= nil and tok.properties or nil
+        if props ~= nil and props:IsHero() then
+            count = count + 1
+            totalLevel = totalLevel + props:CharacterLevel()
+            totalVictories = totalVictories + props:GetVictories()
+        end
+    end
+
+    if count == 0 then
+        return { numHeroes = 4, level = 1, victories = 0 }
+    end
+
+    local minHeroes = Encounter.RebalanceHeroCounts[1]
+    local maxHeroes = Encounter.RebalanceHeroCounts[#Encounter.RebalanceHeroCounts]
+    return {
+        numHeroes = math.max(minHeroes, math.min(maxHeroes, count)),
+        level = math.max(1, round(totalLevel / count)),
+        victories = math.max(0, round(totalVictories / count)),
+    }
+end
+
+--The party encounters are balanced against, as the builder's party bar holds
+--it: { numHeroes =, level =, victories =, manual = }. Auto-calculated from the
+--player party unless the Director has overridden it (manual = true).
+function Encounter.CurrentParty()
+    if g_partyManualSetting:Get() then
+        return {
+            numHeroes = g_numHeroesSetting:Get(),
+            level = g_partyLevelSetting:Get(),
+            victories = g_partyVictoriesSetting:Get(),
+            manual = true,
+        }
+    end
+
+    local party = Encounter.AutoParty()
+    party.manual = false
+    return party
+end
+
+--Placement, reinforcements and journal rosters all read the hero count from
+--numheroes, so while the party is auto-calculated that setting has to follow
+--the player party. Director only: game settings are not writable by players.
+local function SyncPartySizeToPlayerParty()
+    local party = Encounter.AutoParty()
+    if party.numHeroes ~= g_numHeroesSetting:Get() then
+        g_numHeroesSetting:Set(party.numHeroes)
+    end
+end
+
+function Encounter.SyncAutoPartySize()
+    if not g_partyManualSetting:Get() then
+        SyncPartySizeToPlayerParty()
+    end
+end
+
+--Save the Director's override of the party; it stops auto-calculating.
+function Encounter.SetManualParty(party)
+    if g_numHeroesSetting:Get() ~= party.numHeroes then
+        g_numHeroesSetting:Set(party.numHeroes)
+    end
+    if g_partyLevelSetting:Get() ~= party.level then
+        g_partyLevelSetting:Set(party.level)
+    end
+    if g_partyVictoriesSetting:Get() ~= party.victories then
+        g_partyVictoriesSetting:Set(party.victories)
+    end
+    if not g_partyManualSetting:Get() then
+        g_partyManualSetting:Set(true)
+    end
+end
+
+--Drop the Director's override and go back to the auto-calculated party,
+--which is returned.
+function Encounter.ClearManualParty()
+    if g_partyManualSetting:Get() then
+        g_partyManualSetting:Set(false)
+    end
+    SyncPartySizeToPlayerParty()
+    return Encounter.AutoParty()
 end
 
 --Compute a party's encounter strength from a list of hero/ally tokens.
@@ -1212,8 +1380,7 @@ end
 --Count the non-minion monsters across the WHOLE encounter (start groups + every
 --reinforcement wave) at the given hero count. Uses CloneForNumberOfHeroes so the
 --count reflects what actually spawns (minHeroes filtering + per-hero balancing).
---Minions are deliberately excluded. This is the total the victory checks measure
---against (e.g. the denominator for "Half Monsters Defeated").
+--Minions are left out.
 -- Counts the non-minion monsters in the encounter for a given number of heroes
 -- (including reinforcement waves). If org is given (a lowercase organization keyword
 -- such as "leader"), only monsters of that organization are counted.
@@ -1230,6 +1397,49 @@ function Encounter.CountNonMinionMonsters(self, numHeroes, org)
         end
     end
     return count
+end
+
+--How many minion squads this group is placed as. Fewer than 8 minions make one
+--squad; 8 or more are split into squads of the group's squad size.
+function Encounter.GroupMinionSquadCount(group)
+    for monsterid, quantity in pairs(group.monsters or {}) do
+        local monster = assets.monsters[monsterid]
+        if monster ~= nil and monster.properties.minion and quantity ~= nil and quantity > 0 then
+            if quantity >= 8 then
+                return math.ceil(quantity / (group.squadSize or 4))
+            end
+            return 1
+        end
+    end
+    return 0
+end
+
+--How many monsters the heroes face, including reinforcements. Each minion squad
+--counts as one monster (KFG3P24T).
+function Encounter.CountVictoryUnits(self, numHeroes)
+    local count = self:CountNonMinionMonsters(numHeroes)
+    local clone = self:CloneForNumberOfHeroes(numHeroes)
+    for _, group in ipairs(clone.groups) do
+        count = count + Encounter.GroupMinionSquadCount(group)
+    end
+    return count
+end
+
+--Which monster this token counts as when checking for victory, or nil if it
+--doesn't count. Every minion in a squad returns the same answer, so the squad
+--counts once. Summoned minions don't count.
+function Encounter.VictoryUnitKey(token)
+    local props = token.properties
+    if props == nil or not props:IsMonster() then
+        return nil
+    end
+    if not props.minion then
+        return token.charid
+    end
+    if token.summonerid ~= nil and token.summonerid ~= "" then
+        return nil
+    end
+    return "squad:" .. tostring(props:MinionSquad())
 end
 
 function Encounter.Describe(self)
@@ -1535,9 +1745,10 @@ LiveEncounter = RegisterGameType("LiveEncounter", "Encounter")
 -- Its own table name so it is distinguished from authored encounters.
 LiveEncounter.tableName = "liveencounters"
 
--- The non-minion monster count captured at the onset of combat (start groups + all
--- reinforcement waves). Used as the denominator for the "Half Monsters Defeated"
--- victory check so it stays stable as monsters die / reinforcements arrive.
+-- The monster count captured at the onset of combat (start groups + all
+-- reinforcement waves), with each minion squad counted as one monster. Used as the
+-- denominator for the "Half Monsters Defeated" victory check so it stays stable as
+-- monsters die / reinforcements arrive.
 LiveEncounter.onsetMonsterCount = 0
 
 -- For the "Destroy the Thing!" victory condition: the number of Targetable objects on
@@ -1631,9 +1842,9 @@ function LiveEncounter.Create(encounter)
     result.typeName = "LiveEncounter"
     result.tableName = LiveEncounter.tableName
     setmetatable(result, LiveEncounter.mt)
-    --record the full non-minion monster count (including reinforcements that will
-    --arrive) at the onset of combat.
-    result.onsetMonsterCount = result:CountNonMinionMonsters()
+    --record the full monster count (including reinforcements that will arrive) at
+    --the onset of combat. Each minion squad counts as one monster.
+    result.onsetMonsterCount = result:CountVictoryUnits()
     --for "Destroy the Thing!", record how many matching Targetable objects are on the
     --map at the onset of combat (the denominator / boss-bar trigger for that objective).
     if result:try_get("victoryCondition") == "destroy_thing" then
@@ -1645,6 +1856,11 @@ function LiveEncounter.Create(encounter)
     --this guards an encounter that never actually had a leader from being won instantly.
     if result:try_get("victoryCondition") == "leader_defeated" then
         result.onsetLeaderCount = result:CountNonMinionMonsters(nil, "leader")
+    end
+    --for "All Non-Minions Defeated": the progress denominator, and the guard that an
+    --encounter with no non-minions falls back to "All Monsters Defeated".
+    if result:try_get("victoryCondition") == "nonminions_defeated" then
+        result.onsetNonMinionCount = result:CountNonMinionMonsters(nil)
     end
     --per-hero statistics for this encounter (see LiveEncounter:IncrementStat).
     --keyed by hero tokenid; sub-tables are vivified on first increment.
@@ -2004,10 +2220,17 @@ function LiveEncounter:GetMonsterGroups()
     end
 
     if q ~= nil then
+        --sorted: q.entries is a hash whose order differs between clients, and
+        --victory role ties are broken by group order.
+        local extraids = {}
         for initiativeid, _ in pairs(q.entries) do
             if not seenGroups[initiativeid] and q:IsEntryPlayer(initiativeid) == false then
-                AddGroup(initiativeid, nil, nil)
+                extraids[#extraids+1] = initiativeid
             end
+        end
+        table.sort(extraids)
+        for _, initiativeid in ipairs(extraids) do
+            AddGroup(initiativeid, nil, nil)
         end
     end
 
@@ -2023,7 +2246,7 @@ end
 -- anywhere in the game; their stats and role history key off charid as normal.
 -- Heroes appear as long as combat is live even when the onset snapshot was
 -- never captured (the snapshot only adds the removed ones back). Returns a
--- list of tokens.
+-- list of tokens sorted by charid, the same on every client.
 function LiveEncounter:GetBattleHeroTokens()
     local q = dmhub.initiativeQueue
     local result = {}
@@ -2055,6 +2278,9 @@ function LiveEncounter:GetBattleHeroTokens()
             end
         end
     end
+    --q.entries is a hash whose iteration order differs between clients; sort so
+    --every client sees the same order (victory role ties are broken by it).
+    table.sort(result, function(a, b) return a.charid < b.charid end)
     return result
 end
 
@@ -3387,6 +3613,479 @@ function Encounter.ClearReadiedEncounter()
     g_readiedEncounter = nil
 end
 
+-- ===========================================================================
+-- Encounter region and hero start zone
+-- ===========================================================================
+--
+-- Both are drawn in the encounter builder (EncounterPanel.lua) on the
+-- encounter's map.
+--
+-- region: the rectangle of the map the encounter takes place in, in tile
+-- coordinates, corners inclusive: { x1, y1, x2, y2 }. Unset = the entire
+-- map. When combat starts on it the map's bounds shrink to the region, and
+-- they grow back when combat ends. The original bounds are kept in a shared
+-- document, not in memory, so a crash or a combat ended from anywhere (the
+-- victory screen, End Combat, a respite) still restores them.
+--
+-- heroStartLocs: the tiles heroes may start on, { {x, y, floor = floorid} }.
+-- Unset or empty = no start zone. Once the encounter is placed on the map,
+-- every client shows the zone and players' tokens can only move inside it,
+-- until combat starts.
+
+--- @alias EncounterRegion {x1: number, y1: number, x2: number, y2: number}
+--- @alias EncounterStartLoc {x: number, y: number, floor: string}
+
+--- @return EncounterRegion|nil
+function Encounter:GetRegion()
+    local region = self:try_get("region")
+    if type(region) ~= "table" or region.x1 == nil then
+        return nil
+    end
+    return region
+end
+
+--- @param region EncounterRegion|nil nil = the entire map.
+function Encounter:SetRegion(region)
+    self.region = region
+end
+
+--- @return EncounterStartLoc[]
+function Encounter:GetHeroStartLocs()
+    local locs = self:try_get("heroStartLocs")
+    if type(locs) ~= "table" then
+        return {}
+    end
+    return locs
+end
+
+--- @param locs EncounterStartLoc[]|nil nil or empty = no start zone.
+function Encounter:SetHeroStartLocs(locs)
+    if locs ~= nil and #locs == 0 then
+        locs = nil
+    end
+    self.heroStartLocs = locs
+end
+
+--- @alias EncounterMapRef {pack: string, mapid: string, name: string}
+
+--The Map Library map the encounter is set on (see Encounter.mapRef), or nil.
+--- @return EncounterMapRef|nil
+function Encounter:GetMapRef()
+    local value = self:try_get("mapRef")
+    if type(value) ~= "string" or value == "" or rawget(_G, "CustomDocument") == nil then
+        return nil
+    end
+    return CustomDocument.ParseLibraryMap(value)
+end
+
+--The map in this game that a library map ref names, or nil if it has not
+--been added. Found by where the map came from (packSource), so a second
+--copy, which gets fresh ids, is found too; the copy keeping the pack's id wins.
+--- @param ref EncounterMapRef
+--- @return MapManifestLua|nil
+function Encounter.FindLibraryMap(ref)
+    local found = nil
+    for _, map in ipairs(game.maps) do
+        local source = map.packSource
+        if map.valid and source ~= nil and source.pack == ref.pack and source.mapid == ref.mapid then
+            if map.id == ref.mapid then
+                return map
+            end
+            found = found or map
+        end
+    end
+    return found
+end
+
+--Where a shipped encounter comes from, for grouping it in the Encounters
+--list, or nil for one made in this game. Shipped delve encounters carry
+--{source = "Draw Steel: Encounters", delve = "Aixco Hollow", level = 1, area = "A1", page = 11}.
+--- @alias EncounterBookInfo {source: string, delve: string, level: number, area: string, page: number|nil}
+--- @return EncounterBookInfo|nil
+function Encounter:GetBookInfo()
+    local book = self:try_get("book")
+    if type(book) ~= "table" or type(book.delve) ~= "string" then
+        return nil
+    end
+    return book
+end
+
+--The start tiles that lie on the current map's floors, as placeable locs.
+--Tiles on a floor the map no longer has are skipped.
+--- @param startLocs EncounterStartLoc[]
+--- @return Loc[]
+function Encounter.StartLocsOnCurrentMap(startLocs)
+    local floorIndexById = {}
+    local map = game.currentMap
+    if map ~= nil then
+        for _, floor in ipairs(map.floors or {}) do
+            pcall(function()
+                if floor.floorIndex >= 0 then
+                    floorIndexById[floor.floorid] = floor.floorIndex
+                end
+            end)
+        end
+    end
+
+    local result = {}
+    for _, l in ipairs(startLocs or {}) do
+        local floorIndex = floorIndexById[l.floor or ""]
+        if floorIndex ~= nil then
+            result[#result + 1] = core.Loc { x = l.x, y = l.y, floorIndex = floorIndex }
+        end
+    end
+    return result
+end
+
+--{ [mapid] = {x1, y1, x2, y2, appliedAt} }: the bounds a map had before an
+--encounter's region replaced them. x2/y2 inclusive, the way the
+--map.dimensions setter takes them.
+local REGION_BOUNDS_DOC = "encounterRegionBounds"
+
+--{ [mapid] = {locs = EncounterStartLoc[], encounterid, name, at} }: the start
+--zone of the encounter placed on each map, shown until combat starts there.
+local START_ZONE_DOC = "encounterStartZones"
+
+--The map dimensions getter reports x2/y2 one PAST the last tile, while the
+--setter takes the last tile itself, so they are converted here.
+local function ReadMapBounds(map)
+    local dim = map.dimensions
+    return { x1 = dim.x1, y1 = dim.y1, x2 = dim.x2 - 1, y2 = dim.y2 - 1 }
+end
+
+--MarkUndo first, on the same map object: Upload's undo restores the snapshot
+--MarkUndo took, and with none it DELETES the whole map manifest on Ctrl+Z.
+local function WriteMapBounds(map, bounds, description)
+    map:MarkUndo()
+    map.dimensions = { x1 = bounds.x1, y1 = bounds.y1, x2 = bounds.x2, y2 = bounds.y2 }
+    map:Upload(description)
+end
+
+--Combat is starting on the current map with this encounter (called as the
+--initiative queue is created, on the client creating it). Shrinks the map to
+--the encounter's region and takes down its start zone and its prep.
+--- @param encounter Encounter
+function Encounter.OnCombatStarting(encounter)
+    local mapid = game.currentMapId
+    Encounter.ClearStartZone(mapid)
+    Encounter.SetPrep(mapid, nil)
+    Encounter.ApplyRegion(encounter)
+end
+
+--Shrinks the current map to the encounter's region, keeping the original
+--bounds in a shared document so they come back once the encounter is over
+--(see RestoreEndedRegionBounds). Done when prep begins and again, harmlessly,
+--when combat starts.
+--options (all optional):
+--  hold: keep the region until Encounter.RestoreRegionBounds is called,
+--        rather than restoring it once combat ends. For a caller that owns
+--        the map's whole session (Encounter of the Week bounds a game to its
+--        encounter's region from arrival on).
+--  anyMap: apply it even when the encounter names a different map (the
+--        caller knows the encounter belongs to this one).
+--- @param encounter Encounter
+--- @param options nil|{hold: boolean|nil, anyMap: boolean|nil}
+function Encounter.ApplyRegion(encounter, options)
+    options = options or {}
+    local mapid = game.currentMapId
+    local region = encounter:GetRegion()
+    local map = game.currentMap
+    if region == nil or map == nil then
+        return
+    end
+    if not options.anyMap and encounter.mapid ~= "" and encounter.mapid ~= mapid then
+        --the region was drawn on another map.
+        return
+    end
+
+    local doc = mod:GetDocumentSnapshot(REGION_BOUNDS_DOC)
+    doc:BeginChange()
+    local saved = doc.data[mapid]
+    if saved == nil then
+        --a map still shrunk from an earlier encounter (its restore has not
+        --run yet) keeps its true original bounds.
+        saved = ReadMapBounds(map)
+        doc.data[mapid] = saved
+    end
+    saved.appliedAt = dmhub.serverTime
+    if options.hold then
+        saved.held = true
+    end
+    doc:CompleteChange("Encounter region", { undoable = false })
+
+    WriteMapBounds(map, region, "Encounter region")
+end
+
+--Puts back the bounds of any map whose combat has ended. Polled by the
+--driver below on the host; m_combatSeen keeps a bounds change made the
+--moment the queue was created from being undone before the queue lands.
+local m_combatSeen = {}
+local RESTORE_GRACE_SECONDS = 30
+
+local function RestoreEndedRegionBounds()
+    if not dmhub.isDMOrPlayerHost then
+        return
+    end
+
+    local doc = mod:GetDocumentSnapshot(REGION_BOUNDS_DOC)
+    local ended = {}
+    for mapid, saved in pairs(doc.data) do
+        if type(saved) == "table" then
+            local queue = dmhub.GetMapInitiativeQueue(mapid)
+            local inCombat = queue ~= nil and not queue.hidden
+            if inCombat then
+                m_combatSeen[mapid] = true
+            elseif saved.held then
+                --held by its caller (ApplyRegion's hold) until it calls
+                --Encounter.RestoreRegionBounds.
+            elseif Encounter.GetPrep(mapid) ~= nil then
+                --still preparing the encounter: the region stays until it
+                --starts (or the prep is cancelled, which clears the record).
+            elseif m_combatSeen[mapid] or dmhub.serverTime - (saved.appliedAt or 0) > RESTORE_GRACE_SECONDS then
+                ended[#ended + 1] = mapid
+            end
+        end
+    end
+
+    if #ended == 0 then
+        return
+    end
+
+    doc:BeginChange()
+    for _, mapid in ipairs(ended) do
+        local saved = doc.data[mapid]
+        local map = game.GetMap(mapid)
+        if map ~= nil and saved ~= nil then
+            WriteMapBounds(map, saved, "Restore map bounds after encounter")
+        end
+        doc.data[mapid] = nil
+        m_combatSeen[mapid] = nil
+    end
+    doc:CompleteChange("Restore map bounds after encounter", { undoable = false })
+end
+
+--Puts a map's bounds back right away (an encounter prep was cancelled), rather
+--than waiting for the restore driver's grace period.
+--- @param mapid string
+function Encounter.RestoreRegionBounds(mapid)
+    local doc = mod:GetDocumentSnapshot(REGION_BOUNDS_DOC)
+    local saved = doc.data[mapid]
+    if type(saved) ~= "table" then
+        return
+    end
+    local map = game.GetMap(mapid)
+    if map ~= nil then
+        WriteMapBounds(map, saved, "Restore map bounds")
+    end
+    doc:BeginChange()
+    doc.data[mapid] = nil
+    doc:CompleteChange("Restore map bounds", { undoable = false })
+    m_combatSeen[mapid] = nil
+end
+
+--The encounter has just been placed on the current map for play: show its
+--start zone (if it has one) until combat starts.
+--- @param encounter Encounter
+function Encounter.ShowStartZone(encounter)
+    local mapid = game.currentMapId
+    local locs = encounter:GetHeroStartLocs()
+    if #locs == 0 then
+        Encounter.ClearStartZone(mapid)
+        return
+    end
+
+    local doc = mod:GetDocumentSnapshot(START_ZONE_DOC)
+    doc:BeginChange()
+    doc.data[mapid] = {
+        locs = DeepCopy(locs),
+        encounterid = encounter:try_get("id"),
+        name = encounter.name,
+        at = dmhub.serverTime,
+    }
+    doc:CompleteChange("Show hero start zone", { undoable = false })
+end
+
+--- @param mapid string
+--- @param encounterid nil|string only clear it if this encounter's zone is showing.
+function Encounter.ClearStartZone(mapid, encounterid)
+    local doc = mod:GetDocumentSnapshot(START_ZONE_DOC)
+    local entry = doc.data[mapid]
+    if entry == nil then
+        return
+    end
+    if encounterid ~= nil and entry.encounterid ~= encounterid then
+        return
+    end
+    doc:BeginChange()
+    doc.data[mapid] = nil
+    doc:CompleteChange("Clear hero start zone", { undoable = false })
+end
+
+-- ===========================================================================
+-- Encounter prep: the pre-combat phase
+-- ===========================================================================
+--
+-- An encounter placed for play (Start Encounter, or dragging it onto the
+-- board) waits on its map in "prep" until the Director presses Draw Steel:
+-- the map is already shrunk to its region, the start zone shows, heroes are
+-- brought in, and monsters re-balance as the hero count changes. The runtime
+-- and the Director's bar live in Draw Steel V/EncounterPrep.lua; the record
+-- lives here, beside the region and start zone it drives, because documents
+-- belong to the mod that opens them.
+
+--- @class EncounterPrepRecord
+--- @field prepid string unique per prep, so clients can tell one prep on a map from the next.
+--- @field encounterid string id in the "encounters" table ("" = not saved there).
+--- @field name string
+--- @field by string userid of the Director who started it; their client balances.
+--- @field startedAt number
+--- @field placementids table<string, string> "g<group index>" -> the group's placement id for this play.
+--- @field removed table<string, table<string, number>> placement id -> monsterid -> monsters the Director deleted by hand.
+--- @field added table<string, boolean> charids of monsters the Director added by hand.
+--- @field excluded table<string, boolean> hero charids left out of the fight.
+--- @field heroOverride nil|number the hero count to balance for instead of the heroes on the map.
+
+local PREP_DOC = "encounterPrep"
+
+--- @param mapid string|nil
+--- @return EncounterPrepRecord|nil
+function Encounter.GetPrep(mapid)
+    if mapid == nil then
+        return nil
+    end
+    local entry = mod:GetDocumentSnapshot(PREP_DOC).data[mapid]
+    if type(entry) ~= "table" then
+        return nil
+    end
+    return entry
+end
+
+--The path to monitor (monitorGame) for any change to any map's prep.
+--- @return string
+function Encounter.PrepDocPath()
+    return mod:GetDocumentPath(PREP_DOC)
+end
+
+--- @param mapid string
+--- @param record EncounterPrepRecord|nil nil ends the prep on that map.
+function Encounter.SetPrep(mapid, record)
+    local doc = mod:GetDocumentSnapshot(PREP_DOC)
+    if record == nil and doc.data[mapid] == nil then
+        return
+    end
+    doc:BeginChange()
+    doc.data[mapid] = record
+    doc:CompleteChange(cond(record == nil, "End encounter prep", "Encounter prep"), { undoable = false })
+end
+
+--Changes a map's prep record in place: fn(record) mutates it. Does nothing
+--when the map has no prep.
+--- @param mapid string
+--- @param description string
+--- @param fn fun(record: EncounterPrepRecord)
+function Encounter.ModifyPrep(mapid, description, fn)
+    local doc = mod:GetDocumentSnapshot(PREP_DOC)
+    local record = doc.data[mapid]
+    if type(record) ~= "table" then
+        return
+    end
+    doc:BeginChange()
+    fn(doc.data[mapid])
+    doc:CompleteChange(description, { undoable = false })
+end
+
+--This client's view of the current map's start zone: the outline everyone
+--sees, and on players' clients the movement confinement. The Director is
+--never confined: the restriction applies to every token on a client, and the
+--Director has monsters to place.
+local START_ZONE_COLOR = "#79d2a0"
+local m_startZone = {
+    key = nil,
+    marker = nil,
+    restricted = false,
+}
+
+local function ClearStartZoneView()
+    if m_startZone.marker ~= nil then
+        pcall(function() m_startZone.marker:Destroy() end)
+        m_startZone.marker = nil
+    end
+    if m_startZone.restricted then
+        m_startZone.restricted = false
+        pcall(function() dmhub.ClearMovementRestriction() end)
+    end
+    m_startZone.key = nil
+end
+
+local function UpdateStartZoneView()
+    local mapid = game.currentMapId
+    if mapid == nil then
+        ClearStartZoneView()
+        return
+    end
+    local entry = mod:GetDocumentSnapshot(START_ZONE_DOC).data[mapid]
+
+    local queue = dmhub.initiativeQueue
+    local inCombat = queue ~= nil and not queue.hidden
+    if entry ~= nil and inCombat then
+        --combat started without passing through OnCombatStarting.
+        if dmhub.isDMOrPlayerHost then
+            Encounter.ClearStartZone(mapid)
+        end
+        entry = nil
+    end
+
+    if entry == nil or type(entry.locs) ~= "table" or #entry.locs == 0 then
+        ClearStartZoneView()
+        return
+    end
+
+    --rebuilt only when the zone, the map or the floor list changes.
+    local floorCount = 0
+    pcall(function() floorCount = #game.currentMap.floors end)
+    local key = string.format("%s|%s|%s|%d|%s", mapid, tostring(entry.encounterid), tostring(entry.at), floorCount, tostring(dmhub.isDM))
+    if key == m_startZone.key then
+        return
+    end
+
+    ClearStartZoneView()
+    m_startZone.key = key
+
+    local locs = Encounter.StartLocsOnCurrentMap(entry.locs)
+    if #locs == 0 then
+        return
+    end
+
+    m_startZone.marker = dmhub.MarkLocs {
+        locs = locs,
+        color = START_ZONE_COLOR,
+        style = "dashed",
+    }
+
+    if not dmhub.isDM then
+        m_startZone.restricted = true
+        pcall(function() dmhub.SetMovementRestriction { locs = locs } end)
+    end
+end
+
+--The per-client driver: a cheap poll that self-heals across reloads, map
+--changes and combats ended from anywhere.
+dmhub.Coroutine(function()
+    while true do
+        coroutine.yield(0.5)
+        if mod.unloaded then
+            ClearStartZoneView()
+            return
+        end
+        pcall(function()
+            if game.currentMap ~= nil then
+                pcall(UpdateStartZoneView)
+                pcall(RestoreEndedRegionBounds)
+            end
+        end)
+    end
+end)
+
 -- The engine's own click-to-place is armed through GUI focus, not through a
 -- mode flag: dmhub.GetSelectedEncounter reads gui.GetFocus().data.encounter,
 -- so while a panel carrying an encounter holds focus the map draws a ghost of
@@ -3815,12 +4514,13 @@ function LiveEncounter:DeployWave(waveid, initiativeQueue)
     return spawnedCount
 end
 
--- Count the non-minion reinforcement monsters that have NOT yet been deployed (their
--- wave is not in deployedWaves). These are monsters that "will arrive" -- they count
--- toward the monsters the heroes still have to deal with even though they're not yet
--- on the map.
+-- Count the reinforcement monsters that have NOT yet been deployed (their wave is
+-- not in deployedWaves). These are monsters that "will arrive" -- they count toward
+-- the monsters the heroes still have to deal with even though they're not yet on
+-- the map. Each minion squad counts as one monster.
 -- If org is given (a lowercase organization keyword such as "leader"), only pending
--- reinforcement monsters of that organization are counted.
+-- non-minion monsters of that organization are counted; org "*" counts every
+-- pending non-minion and no minion squads.
 function LiveEncounter:CountPendingReinforcements(numHeroes, org)
     numHeroes = numHeroes or dmhub.GetSettingValue("numheroes")
     local clone = self:CloneForNumberOfHeroes(numHeroes)
@@ -3830,9 +4530,12 @@ function LiveEncounter:CountPendingReinforcements(numHeroes, org)
             for monsterid, quantity in pairs(group.monsters) do
                 local monster = assets.monsters[monsterid]
                 if monster ~= nil and not monster.properties.minion and
-                    (org == nil or OrganizationKeyword(monster.properties) == org) then
+                    (org == nil or org == "*" or OrganizationKeyword(monster.properties) == org) then
                     count = count + quantity
                 end
+            end
+            if org == nil then
+                count = count + Encounter.GroupMinionSquadCount(group)
             end
         end
     end
@@ -3841,9 +4544,9 @@ end
 
 -- Walk the active initiative queue and count the live combatants on each side:
 --   heroes  : hero/player tokens with Stamina (hitpoints) > 0
---   monsters: non-minion monster tokens with Stamina > 0 (minions are ignored)
--- Returns heroes, monsters. A combatant counts as "live"/standing while its current
--- Stamina is above 0.
+--   monsters: non-minion monster tokens with Stamina > 0, plus one for each minion
+--             squad that still has a minion standing
+-- Returns heroes, monsters.
 function LiveEncounter:CountLiveCombatants()
     local q = dmhub.initiativeQueue
     local heroes, monsters = 0, 0
@@ -3852,17 +4555,32 @@ function LiveEncounter:CountLiveCombatants()
     end
 
     local seen = {}
+    local countedUnits = {}
     for initiativeid, _ in pairs(q.entries) do
         local tokens = InitiativeQueue.GetTokensForInitiativeId(initiativeid)
         for _, token in ipairs(tokens or {}) do
             if token ~= nil and not seen[token.charid] then
                 seen[token.charid] = true
                 local props = token.properties
-                if props ~= nil and props:CurrentHitpoints() > 0 then
+                if props ~= nil then
                     if props:IsHero() then
-                        heroes = heroes + 1
-                    elseif props:IsMonster() and not props.minion then
-                        monsters = monsters + 1
+                        if props:CurrentHitpoints() > 0 then
+                            heroes = heroes + 1
+                        end
+                    else
+                        --a minion's Stamina is the whole squad's, so ask
+                        --whether this minion is dead instead.
+                        local standing
+                        if props.minion then
+                            standing = not props:IsDead()
+                        else
+                            standing = props:CurrentHitpoints() > 0
+                        end
+                        local unit = Encounter.VictoryUnitKey(token)
+                        if standing and unit ~= nil and not countedUnits[unit] then
+                            countedUnits[unit] = true
+                            monsters = monsters + 1
+                        end
                     end
                 end
             end
@@ -3972,6 +4690,13 @@ end
 -- initiative queue. A defeated leader (0 Stamina) or one removed from the queue is not
 -- counted, which is what drives the "Leader Defeated" victory check.
 function LiveEncounter:CountLiveLeaders()
+    return self:CountLiveNonMinions("leader")
+end
+
+-- Counts the live (Stamina > 0) non-minion monsters in the active initiative queue,
+-- only those of organization org (a lowercase keyword such as "leader") when given.
+-- Drives "Leader Defeated" and "All Non-Minions Defeated".
+function LiveEncounter:CountLiveNonMinions(org)
     local q = dmhub.initiativeQueue
     local count = 0
     if q == nil then
@@ -3985,7 +4710,7 @@ function LiveEncounter:CountLiveLeaders()
                 seen[token.charid] = true
                 local props = token.properties
                 if props ~= nil and props:IsMonster() and not props.minion and
-                    OrganizationKeyword(props) == "leader" and props:CurrentHitpoints() > 0 then
+                    (org == nil or OrganizationKeyword(props) == org) and props:CurrentHitpoints() > 0 then
                     count = count + 1
                 end
             end
@@ -3998,8 +4723,8 @@ end
 -- should be shown. A boss bar is appropriate when:
 --   * the victory condition is "Solo Exhausted" (the objective is literally to wear the
 --     solo down), or
---   * the victory condition is "all monsters defeated" AND the encounter contains exactly
---     one non-minion monster with the Solo role, or
+--   * the victory condition is "all monsters defeated" (or "all non-minions defeated")
+--     AND the encounter contains exactly one non-minion monster with the Solo role, or
 --   * the victory condition is "Leader Defeated" AND the encounter contains a Leader (the
 --     bar tracks that leader's Stamina), or
 --   * the victory condition is "Destroy the Thing!" AND exactly one matching object was
@@ -4029,7 +4754,7 @@ function LiveEncounter:GetBossToken()
         return self:GetFirstMonsterWithOrganization("leader")
     end
 
-    if condition ~= "solo_exhausted" and condition ~= "all_defeated" then
+    if condition ~= "solo_exhausted" and condition ~= "all_defeated" and condition ~= "nonminions_defeated" then
         return nil
     end
 
@@ -4058,7 +4783,7 @@ function LiveEncounter:GetBossToken()
         return solos[1]
     end
 
-    --all_defeated: only surface a boss bar for a single-solo encounter.
+    --all_defeated / nonminions_defeated: only surface a boss bar for a single-solo encounter.
     if #solos == 1 then
         return solos[1]
     end
@@ -4067,7 +4792,7 @@ function LiveEncounter:GetBossToken()
 end
 
 -- Returns true when this encounter's configured victory condition has been met.
--- Minions are never counted. "Monsters remaining" = live non-minion monsters on the
+-- Each minion squad counts as one monster. "Monsters remaining" = live monsters on the
 -- field PLUS reinforcements that have not yet arrived, so victory is not declared
 -- while a wave is still pending. See Encounter.GetVictoryConditions for the ids.
 function LiveEncounter:CheckVictory()
@@ -4106,8 +4831,16 @@ function LiveEncounter:CheckVictory()
     local heroes, monstersOnField = self:CountLiveCombatants()
     local monstersRemaining = monstersOnField + self:CountPendingReinforcements(numHeroes)
 
+    --an encounter with no non-minions at all is judged as "All Monsters Defeated", so
+    --it can never be won before a blow is struck.
+    if condition == "nonminions_defeated" and self:try_get("onsetNonMinionCount", 0) <= 0 then
+        condition = "all_defeated"
+    end
+
     if condition == "all_defeated" then
         return monstersRemaining <= 0
+    elseif condition == "nonminions_defeated" then
+        return self:CountLiveNonMinions() + self:CountPendingReinforcements(numHeroes, "*") <= 0
     elseif condition == "heroes_outnumber" then
         return heroes > 0 and heroes > monstersRemaining
     elseif condition == "heroes_outnumber_two_to_one" then
@@ -4131,7 +4864,7 @@ function LiveEncounter:CheckVictory()
 end
 
 -- Progress toward victory expressed purely as monster defeats: returns
---   defeated : how many non-minion monsters have been defeated so far
+--   defeated : how many monsters (minion squads count as one) have been defeated so far
 --   needed   : how many must be defeated for victory
 -- For the count conditions this is direct; for the "outnumber" conditions we convert
 -- the threshold into a number of kills (how many monsters must be removed so the
@@ -4142,6 +4875,15 @@ function LiveEncounter:GetDefeatProgress()
     local condition = self:try_get("victoryCondition", "all_defeated")
     local onset = self:try_get("onsetMonsterCount", 0)
     local numHeroes = dmhub.GetSettingValue("numheroes")
+
+    --"All Non-Minions Defeated" counts non-minions only; minion squads are ignored.
+    if condition == "nonminions_defeated" and self:try_get("onsetNonMinionCount", 0) > 0 then
+        local remaining = self:CountLiveNonMinions() + self:CountPendingReinforcements(numHeroes, "*")
+        --the Director may have added non-minions during prep, so never report fewer
+        --needed than are still standing.
+        local needed = math.max(self:try_get("onsetNonMinionCount", 0), remaining)
+        return needed - remaining, needed
+    end
     local heroes, monstersOnField = self:CountLiveCombatants()
     local monstersRemaining = monstersOnField + self:CountPendingReinforcements(numHeroes)
 
@@ -4204,6 +4946,9 @@ function LiveEncounter:GetObjectiveText()
     end
 
     local defeated, needed = self:GetDefeatProgress()
+    if condition == "nonminions_defeated" and self:try_get("onsetNonMinionCount", 0) > 0 then
+        return string.format("Objective: Defeat %d/%d non-minions to win", defeated, needed)
+    end
     return string.format("Objective: Defeat %d/%d monsters to win", defeated, needed)
 end
 
@@ -4228,9 +4973,24 @@ function LiveEncounter:GetObjectiveTooltip()
 
     local lines = {}
     if condition == "all_defeated" then
-        lines[#lines + 1] = "Victory when every non-minion monster is defeated."
+        lines[#lines + 1] = "Victory when every monster is defeated. Each minion squad counts as one monster."
+    elseif condition == "nonminions_defeated" then
+        local tooltipLines = {
+            "Victory when every monster that is not a minion is defeated. Minions left standing do not count.",
+            "",
+            string.format("Non-minions at onset: %d", self:try_get("onsetNonMinionCount", 0)),
+            string.format("Non-minions still standing: %d", self:CountLiveNonMinions()),
+        }
+        local pendingNonMinions = self:CountPendingReinforcements(numHeroes, "*")
+        if pendingNonMinions > 0 then
+            tooltipLines[#tooltipLines + 1] = string.format("Non-minions still to arrive: %d", pendingNonMinions)
+        end
+        if self:try_get("onsetNonMinionCount", 0) <= 0 then
+            tooltipLines[#tooltipLines + 1] = "This encounter has no non-minions, so every monster must be defeated."
+        end
+        return table.concat(tooltipLines, "\n")
     elseif condition == "half_defeated" then
-        lines[#lines + 1] = "Victory when at least half of the encounter's non-minion monsters are defeated."
+        lines[#lines + 1] = "Victory when at least half of the encounter's monsters are defeated. Each minion squad counts as one monster."
     elseif condition == "heroes_outnumber" then
         lines[#lines + 1] = "Victory when the living heroes outnumber the remaining monsters, so the monsters lose their nerve and flee. The kill count shows how many monsters must fall to reach that point."
     elseif condition == "heroes_outnumber_two_to_one" then
@@ -4267,7 +5027,7 @@ function LiveEncounter:GetObjectiveTooltip()
     end
 
     lines[#lines + 1] = ""
-    lines[#lines + 1] = string.format("Total monsters (minions excluded): %d", onset)
+    lines[#lines + 1] = string.format("Total monsters (each minion squad counts as one): %d", onset)
     lines[#lines + 1] = string.format("Living on the field: %d", monstersOnField)
     if pending > 0 then
         lines[#lines + 1] = string.format("Reinforcements still to arrive: %d", pending)
@@ -4343,7 +5103,55 @@ end
 --map's own journal folder -- where the encounter lives -- is not in their
 --accessible roots; setup code that must find the encounter to run it passes
 --this. Director-facing UI does not.
+
+--Does the document store any RichEncounter annotation at all? Parsing a
+--document (GetReferencedAnnotations) is expensive -- it runs every `???`
+--query line -- and only RichEncounter annotations can contribute, so a
+--document without one is skipped unparsed. Most journals hold ~100 such docs.
+local function HasEncounterAnnotation(markdownDoc)
+    local annotations = markdownDoc:try_get("annotations")
+    if annotations == nil then
+        return false
+    end
+    for _, annotation in pairs(annotations) do
+        if type(annotation) == "table" and annotation.typeName == "RichEncounter" then
+            return true
+        end
+    end
+    return false
+end
+
+--DIAG (HarvestBurst): GetEncountersOnCurrentMap walks the whole journal, so a
+--caller running it every frame or two made the map stutter during the Draw
+--Steel banner (2026-10-18 playtest, caller never identified). Logs who calls it
+--when it runs more than HARVEST_BURST_CALLS times in HARVEST_BURST_WINDOW
+--seconds, at most once per HARVEST_BURST_LOG_GAP seconds.
+local HARVEST_BURST_CALLS = 4
+local HARVEST_BURST_WINDOW = 2
+local HARVEST_BURST_LOG_GAP = 10
+local g_harvestCallTimes = {}
+local g_harvestLastBurstLog = -1000
+
+local function NoteHarvestCall(elapsedMs, parsedDocs)
+    local now = dmhub.Time()
+    local recent = {}
+    for _, t in ipairs(g_harvestCallTimes) do
+        if now - t < HARVEST_BURST_WINDOW then
+            recent[#recent + 1] = t
+        end
+    end
+    recent[#recent + 1] = now
+    g_harvestCallTimes = recent
+    if #recent > HARVEST_BURST_CALLS and now - g_harvestLastBurstLog > HARVEST_BURST_LOG_GAP then
+        g_harvestLastBurstLog = now
+        printf("PERF:: Encounter.GetEncountersOnCurrentMap called %d times in %ds (last %.1f ms, %d docs parsed); caller:\n%s",
+            #recent, HARVEST_BURST_WINDOW, elapsedMs, parsedDocs, debug.traceback("", 3))
+    end
+end
+
 function Encounter.GetEncountersOnCurrentMap(hostAccess)
+    local startTime = os.clock()
+    local parsedDocs = 0
     local result = {}
     local seenDocs = {}
 
@@ -4358,6 +5166,11 @@ function Encounter.GetEncountersOnCurrentMap(hostAccess)
             end
             seenDocs[docid] = true
         end
+
+        if not HasEncounterAnnotation(markdownDoc) then
+            return
+        end
+        parsedDocs = parsedDocs + 1
 
         for _, ref in ipairs(markdownDoc:GetReferencedAnnotations()) do
             local annotation = ref.annotation
@@ -4417,6 +5230,7 @@ function Encounter.GetEncountersOnCurrentMap(hostAccess)
         end
     end
 
+    NoteHarvestCall((os.clock() - startTime)*1000, parsedDocs)
     return result
 end
 
@@ -4447,6 +5261,7 @@ end
 --       onRound = function(ctx) end,  -- once per round (including round 1)
 --       think   = function(ctx) end,  -- every ~0.7s while combat is live
 --       onEnd   = function(ctx) end,  -- once, when combat ends
+--       onReset = function(ctx) end,  -- an authoring test reset: undo what the script changed on the map
 --   }
 --
 -- victory replaces the encounter's built-in victory-condition dropdown; defeat
@@ -4526,8 +5341,17 @@ EncounterScript.starterTemplate = [==[
 --   ctx.round      current round number
 --   ctx.queue      the initiative queue
 --   ctx.encounter  the LiveEncounter
+-- onPrepare runs once when the encounter is placed for play and waits for
+-- Draw Steel (its pre-combat prep), on the Director's client that placed it:
+-- ctx.queue is nil, ctx.round is 0 and ctx.state is not kept.
+--
 -- ctx methods (call with ':'):
 --   ctx:Announce(text)      send a chat message
+--   ctx:Banner(text, subtitle, bannerType)  show everyone a full-screen dramatic
+--                               banner; bannerType "malice" for the lighter one
+--   ctx:SetWaterLevel(level)    set the map water level (multiples of 0.5; nil
+--                               removes it); creatures float up/settle with it
+--   ctx:GetWaterLevel()     the map water level, or nil
 --   ctx:DeployWave(waveid)  deploy one of the encounter's reinforcement waves
 --   ctx:EnsureButton{...}   add a custom button to the Encounter Actions strip
 --   ctx:DismissButton(id)   remove a custom button
@@ -4560,6 +5384,9 @@ return {
     --     text = function(ctx) return "The Caravan is Destroyed" end,
     --     check = function(ctx) return ctx.state.caravanDestroyed == true end,
     -- },
+
+    onPrepare = function(ctx)
+    end,
 
     onStart = function(ctx)
     end,
@@ -4732,7 +5559,7 @@ local function NormalizeDefinition(def)
         norm.defeat = { check = def.defeat.check, text = text }
     end
 
-    for _, handler in ipairs({ "onStart", "onRound", "think", "onEnd" }) do
+    for _, handler in ipairs({ "onPrepare", "onStart", "onRound", "think", "onEnd", "onReset" }) do
         local fn = def[handler]
         if fn ~= nil and type(fn) ~= "function" then
             return nil, handler .. " must be a function"
@@ -4752,7 +5579,8 @@ local g_definitionCache = {}
 --- Follows the AbilityScript.lua precedent: load(code, name, "t", env) with an
 --- environment that reads globals but keeps writes local to the chunk.
 --- @param code string
---- @return table|nil, string|nil definition, error
+--- @return table|nil definition
+--- @return string|nil error
 function EncounterScript.CompileDefinition(code)
     if code == nil or code == "" then
         return nil, "The script is empty"
@@ -4808,7 +5636,7 @@ function EncounterScript.DescribeDefinition(def)
         parts[#parts + 1] = "custom defeat condition"
     end
     local handlers = {}
-    for _, handler in ipairs({ "onStart", "onRound", "think", "onEnd" }) do
+    for _, handler in ipairs({ "onPrepare", "onStart", "onRound", "think", "onEnd", "onReset" }) do
         if def[handler] ~= nil then
             handlers[#handlers + 1] = handler
         end
@@ -4899,7 +5727,8 @@ function EncounterScriptInstance:GetCode()
 end
 
 --- Resolve + compile this instance's definition.
---- @return table|nil, string|nil definition, error
+--- @return table|nil definition
+--- @return string|nil error
 function EncounterScriptInstance:GetDefinition()
     local code, err = self:GetCode()
     if code == nil then
@@ -5046,7 +5875,8 @@ end
 --- The cached victory text of the first attached script that declares a
 --- victory condition, or nil. This is the CACHED string (safe on player
 --- clients); the live check is GetScriptVictory/EvaluateVictoryCheck.
---- @return string|nil, table|nil text, instance
+--- @return string|nil text
+--- @return table|nil instance
 function Encounter:ScriptVictoryText()
     for _, instance in ipairs(self:try_get("scripts", {})) do
         local text = instance:try_get("victoryText")
@@ -5073,7 +5903,8 @@ end
 --- The cached defeat text of the first attached script that declares a defeat
 --- condition, or nil. Like ScriptVictoryText this is the CACHED string (safe
 --- on player clients); the live check is GetScriptDefeat/EvaluateDefeatCheck.
---- @return string|nil, table|nil text, instance
+--- @return string|nil text
+--- @return table|nil instance
 function Encounter:ScriptDefeatText()
     for _, instance in ipairs(self:try_get("scripts", {})) do
         local text = instance:try_get("defeatText")
@@ -5207,6 +6038,8 @@ local function MakeReadContext(liveEncounter, instance, def)
         return false
     end
     ctx.Announce = NotAllowed
+    ctx.SetWaterLevel = NotAllowed
+    ctx.GetWaterLevel = function(_) return Encounter.GetWaterLevel() end
     ctx.DeployWave = NotAllowed
     ctx.EnsureButton = NotAllowed
     ctx.DismissButton = NotAllowed
@@ -5323,8 +6156,31 @@ local function MakeHostContext(instance)
         pcall(function() chat.Send(tostring(text)) end)
     end
 
+    --the full-screen DramaticBanner; it is a shared document, so everyone sees it.
+    --bannerType is a DramaticBanner.types id ("heroic" swords, the default, or "malice").
+    ctx.Banner = function(_, text, subtitle, bannerType)
+        local banner = rawget(_G, "DramaticBanner")
+        if banner ~= nil then
+            pcall(function() banner.Show{ text = tostring(text), subtitle = subtitle, bannerType = bannerType } end)
+        end
+    end
+
     ctx.Log = function(_, text)
         print(string.format("EncounterScript '%s': %s", instance:try_get("name", "script"), tostring(text)))
+    end
+
+    --The map water level: creatures float up with rising water and settle with
+    --falling water on their own (the engine moves them). nil removes the water.
+    ctx.SetWaterLevel = function(_, level, options)
+        local ok, err = Encounter.SetWaterLevel(level, options)
+        if not ok then
+            print(string.format("EncounterScript '%s': SetWaterLevel: %s", instance:try_get("name", "script"), tostring(err)))
+        end
+        return ok
+    end
+
+    ctx.GetWaterLevel = function(_)
+        return Encounter.GetWaterLevel()
     end
 
     --Deploy one of the encounter's authored reinforcement waves right now.
@@ -5388,6 +6244,85 @@ local function ResolveLiveConditionText(cond, ctx)
     return nil
 end
 
+--Loads an encounter's scripts as it goes into prep: compiles each one, and
+--when runHandlers is set fires its onPrepare once. Returns a summary per
+--script for the prep bar: { name, error, victoryText, defeatText }.
+--- @param encounter Encounter
+--- @param runHandlers boolean
+--- @return {name: string, error: nil|string, victoryText: nil|string, defeatText: nil|string}[]
+function EncounterScript.PrepareEncounter(encounter, runHandlers)
+    local result = {}
+    for _, instance in ipairs(encounter:try_get("scripts", {})) do
+        local entry = { name = instance:try_get("name", "Encounter Script") }
+        local def, err = instance:GetDefinition()
+        if def == nil then
+            entry.error = err or "The script did not compile"
+            PrintScriptError(instance, entry.error)
+        else
+            if def.name ~= nil then
+                entry.name = def.name
+            end
+            local ctx = {
+                params = instance:ResolveParams(def),
+                state = {},
+                round = 0,
+                queue = nil,
+                encounter = encounter,
+                isHost = true,
+            }
+            ctx.IsLive = function()
+                return not mod.unloaded and Encounter.GetPrep(game.currentMapId) ~= nil
+            end
+            ctx.Announce = function(_, text)
+                pcall(function() chat.Send(tostring(text)) end)
+            end
+            ctx.Log = function(_, text)
+                print(string.format("EncounterScript '%s': %s", entry.name, tostring(text)))
+            end
+            entry.victoryText = ResolveLiveConditionText(def.victory, ctx) or instance:try_get("victoryText")
+            entry.defeatText = ResolveLiveConditionText(def.defeat, ctx) or instance:try_get("defeatText")
+            if runHandlers and def.onPrepare ~= nil then
+                local ok, fnErr = pcall(def.onPrepare, ctx)
+                if not ok then
+                    entry.error = tostring(fnErr)
+                    PrintScriptError(instance, entry.error)
+                end
+            end
+        end
+        result[#result + 1] = entry
+    end
+    return result
+end
+
+--- Runs every onReset handler of an encounter's scripts: an authoring test
+--- reset (EncounterMontage.ResetTest) asks each script to put back what it
+--- changed on the map, since the next combat's onStart may be a while off.
+--- Called outside combat, so ctx.queue is nil and ctx.state is a fresh table.
+--- @param encounter Encounter
+function EncounterScript.ResetEncounter(encounter)
+    for _, instance in ipairs(encounter:try_get("scripts", {})) do
+        local def = instance:GetDefinition()
+        if def ~= nil and def.onReset ~= nil then
+            local name = def.name or instance:try_get("name", "Encounter Script")
+            local ctx = {
+                params = instance:ResolveParams(def),
+                state = {},
+                round = 0,
+                queue = nil,
+                encounter = encounter,
+                isHost = true,
+            }
+            ctx.Log = function(_, text)
+                print(string.format("EncounterScript '%s': %s", name, tostring(text)))
+            end
+            local ok, err = pcall(def.onReset, ctx)
+            if not ok then
+                PrintScriptError(instance, tostring(err))
+            end
+        end
+    end
+end
+
 --Run one script instance for one heartbeat. Returns true when its persisted
 --state changed (the caller batches the upload). isLive is false once combat
 --has ended (queue hidden) - that is when onEnd fires.
@@ -5408,10 +6343,9 @@ local function RunInstanceTick(liveEncounter, instance, q, isLive)
     if st.state == nil then
         st.state = {}
     end
-    local ok, before = pcall(dmhub.ToJson, st)
-    if not ok then
-        before = nil
-    end
+    local ok, json = pcall(dmhub.ToJson, st)
+    --nil when the state could not be serialized.
+    local before = ok and json or nil
 
     local ctx = g_runtime.contexts[guid]
     if ctx == nil then
@@ -6159,6 +7093,75 @@ return {
                     end
                 end
             end
+        end
+    end,
+}
+]==],
+}
+
+EncounterScript.RegisterBuiltin{
+    id = "builtin:rising-waters",
+    name = "Rising Waters",
+    description = "Every few turns the map's water level rises, flooding lower ground: creatures float up with it, deep water is swum, and the new shoreline becomes shallow water.",
+    code = [==[
+return {
+    name = "Rising Waters",
+    description = "Every few turns the map's water level rises. Combat starts with the water at the Starting Level; each rise lifts it by Rise Amount squares. Ground 1 square or more under the water is deep water (swimming), less is shallow water (difficult terrain for creatures without a swim speed). Creatures float up with the water. Set how the water looks in Map Settings > Water.",
+
+    params = {
+        { id = "startLevel", name = "Starting Level", type = "number", default = 0, min = -20, max = 20 },
+        { id = "riseAmount", name = "Rise Amount (squares)", type = "number", default = 1, min = 0.5, max = 5 },
+        { id = "turnsPerRise", name = "Turns Between Rises", type = "number", default = 3, min = 1, max = 20 },
+        { id = "rises", name = "Number of Rises", type = "number", default = 2, min = 1, max = 10 },
+        { id = "announce", name = "Announce in Chat", type = "boolean", default = true },
+        { id = "banner", name = "Show a Banner", type = "boolean", default = true },
+    },
+
+    --start at the starting level, so a replayed encounter does not start already flooded.
+    onStart = function(ctx)
+        ctx.state.rises = 0
+        ctx:SetWaterLevel(ctx.params.startLevel)
+    end,
+
+    --a test reset drains the water back to its starting level.
+    onReset = function(ctx)
+        ctx:SetWaterLevel(ctx.params.startLevel)
+    end,
+
+    --counts turns (not rounds) by watching the current turn's id change; the
+    --water rises as the turn after every turnsPerRise-th completed turn begins.
+    think = function(ctx)
+        local st = ctx.state
+        st.rises = st.rises or 0
+        if st.rises >= ctx.params.rises or ctx.queue == nil then
+            return
+        end
+        if ctx.queue:CurrentInitiativeId() == nil then
+            return
+        end
+        local turnid = ctx.queue:GetTurnId()
+        if turnid == nil or turnid == st.lastTurnId then
+            return
+        end
+        st.lastTurnId = turnid
+        st.turnsStarted = (st.turnsStarted or 0) + 1
+
+        local completed = st.turnsStarted - 1
+        local rises = math.min(ctx.params.rises, math.floor(completed / ctx.params.turnsPerRise))
+        if rises <= st.rises then
+            return
+        end
+        st.rises = rises
+
+        ctx:SetWaterLevel(ctx.params.startLevel + rises * ctx.params.riseAmount)
+
+        local amount = ctx.params.riseAmount
+        local squares = (amount == 1) and "1 square" or string.format("%g squares", amount)
+        if ctx.params.announce then
+            ctx:Announce(string.format("The water rises by %s! (%d of %d)", squares, rises, ctx.params.rises))
+        end
+        if ctx.params.banner then
+            ctx:Banner("Rising Waters", string.format("The waters have risen by %s!", squares), "malice")
         end
     end,
 }

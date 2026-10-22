@@ -603,7 +603,8 @@ mod.shared.CreateTriggerPanel = function()
             dismissAllPanel,
 
 			refresh = function(element)
-                g_token = dmhub.selectedOrPrimaryTokens[1]
+                --(a creature selected off the board has no triggers to fire here.)
+                g_token = DrawSteelActionBar._operate.SelectedBoardToken()
 
                 local parentElement = element
 				if g_token == nil or not g_token.valid then
@@ -767,7 +768,7 @@ mod.shared.CreateTriggerPanel = function()
 								text = trigger.activateText,
 								press = function(element)
 
-                                    audio.DispatchSoundEvent("Notify.TriggerUse", {})
+                                    audio.DispatchSoundEvent("Notify.TriggerUse", { tokenid = g_token ~= nil and g_token.charid or nil })
 
 
                                     if (not trigger.triggered) and #trigger.targets > 0 and trigger.powerRollModifier and trigger.powerRollModifier.powerRollModifier:try_get("changeTarget") and not trigger.powerRollModifier.powerRollModifier:try_get("hasTriggerBefore") then
@@ -1001,7 +1002,7 @@ mod.shared.CreateTriggerPanel = function()
                                             return
                                         end
 
-                                        audio.DispatchSoundEvent("Notify.TriggerUse", {})
+                                        audio.DispatchSoundEvent("Notify.TriggerUse", { tokenid = g_token ~= nil and g_token.charid or nil })
 
                                         if (not trigger.triggered) and #trigger.targets > 0 and trigger.powerRollModifier and trigger.powerRollModifier.powerRollModifier:try_get("changeTarget") and not trigger.powerRollModifier.powerRollModifier:try_get("hasTriggerBefore") then
                                             --this changes the target of the trigger.
@@ -1263,7 +1264,7 @@ mod.shared.CreateTriggerPanel = function()
 
                                     print("TRIGGER:: PRESS")
 
-                                    audio.DispatchSoundEvent("Notify.TriggerUse", {})
+                                    audio.DispatchSoundEvent("Notify.TriggerUse", { tokenid = g_token ~= nil and g_token.charid or nil })
 
                                     if (not trigger.triggered) and #trigger.targets > 0 and trigger.powerRollModifier and trigger.powerRollModifier.powerRollModifier:try_get("changeTarget") and not trigger.powerRollModifier.powerRollModifier:try_get("hasTriggerBefore") then
                                         --this changes the target of the trigger.
@@ -1801,7 +1802,7 @@ mod.shared.CreateTriggerPanel = function()
                 gui.Label{
                     classes = {"abilityCostLabel"},
                     rotate = -135,
-                    text = optionCost,
+                    text = tostring(math.tointeger(optionCost) or optionCost),
 
                     ability = function(element, ability)
 --[[
@@ -1852,7 +1853,7 @@ mod.shared.CreateTriggerPanel = function()
                                         end
                                         local targetId = chosenTargetId or trigger:GetTargetId()
 
-                                        audio.DispatchSoundEvent("Notify.TriggerUse", {})
+                                        audio.DispatchSoundEvent("Notify.TriggerUse", { tokenid = g_token ~= nil and g_token.charid or nil })
 
                                         if (not trigger.triggered) and #trigger.targets > 0 and trigger.powerRollModifier and trigger.powerRollModifier.powerRollModifier:try_get("changeTarget") and not trigger.powerRollModifier.powerRollModifier:try_get("hasTriggerBefore") then
                                             --this changes the target of the trigger.

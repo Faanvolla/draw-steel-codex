@@ -40,6 +40,7 @@ CharacterChoice = RegisterGameType("CharacterChoice")
 --- @field guid string Unique id of this choice; choices made are keyed by it.
 --- @field options (CharacterFeature|CharacterFeatureList|CharacterChoice|CharacterSingleFeat)[] The options to choose from (features, feature lists, nested choices, single feats).
 --- @field prerequisites? CharacterPrerequisite[] Prerequisites that must be met to make this choice.
+--- @field imported? string Import guid stamped by the rules importer on the choices it creates.
 CharacterFeatureChoice = RegisterGameType("CharacterFeatureChoice", "CharacterChoice")
 
 --- @class CharacterSubclassChoice:CharacterChoice
@@ -550,7 +551,12 @@ function CharacterChoice:Choices(numOption, existingChoices, creature)
 	return nil
 end
 
-function CharacterChoice:GetOptions(choices)
+--- The options a hero picks from. nil on the base type; subclasses override it,
+--- and some also take the creature making the choice.
+--- @param choices table The hero's level choices.
+--- @param creature? creature
+--- @return table|nil
+function CharacterChoice:GetOptions(choices, creature)
 	return nil
 end
 

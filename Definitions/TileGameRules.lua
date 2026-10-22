@@ -8,6 +8,7 @@
 --- @field concealment boolean
 --- @field climbHeight number
 --- @field climbersOnly boolean
+--- @field stepped boolean
 --- @field surfaceType number
 TileGameRules = {}
 

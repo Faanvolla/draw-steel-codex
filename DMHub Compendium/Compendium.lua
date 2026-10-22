@@ -2760,9 +2760,9 @@ local ShowRacesPanel = function(parentPanel, t)
 
 			click = function(element)
 				dmhub.Debug('ADD CHARACTER RESOURCE')
-				dmhub.SetAndUploadTableItem(tableName, Race.CreateNew{
-					subrace = cond(tableName == "subraces", true)
-				})
+				--Race.CreateNew takes no options (it used to be passed a subrace flag it
+				--dropped; nothing reads one).
+				dmhub.SetAndUploadTableItem(tableName, Race.CreateNew())
 			end,
 		}
 
@@ -2827,8 +2827,7 @@ local ShowBackgroundsPanel = function(parentPanel)
 		AddButton{
 
 			click = function(element)
-				dmhub.SetAndUploadTableItem(tableName, Background.CreateNew{
-				})
+				dmhub.SetAndUploadTableItem(tableName, Background.CreateNew())
 			end,
 		}
 	}
@@ -2891,8 +2890,7 @@ local ShowCharacterTypesPanel = function(parentPanel)
 		AddButton{
 
 			click = function(element)
-				dmhub.SetAndUploadTableItem(tableName, CharacterType.CreateNew{
-				})
+				dmhub.SetAndUploadTableItem(tableName, CharacterType.CreateNew())
 			end,
 		}
 	}
@@ -3082,9 +3080,9 @@ local ShowFeatsPanel = function(parentPanel, tableName)
 			click = function(element)
 				local newFeat
 				if tableName == "creatureTemplates" then
-					newFeat = CharacterTemplate.CreateNew{}
+					newFeat = CharacterTemplate.CreateNew()
 				else
-					newFeat = CharacterFeat.CreateNew{}
+					newFeat = CharacterFeat.CreateNew()
 				end
 
 				dmhub.SetAndUploadTableItem(tableName, newFeat)
@@ -3215,8 +3213,7 @@ local ShowFeaturePrefabsPanel = function(parentPanel)
 		AddButton{
 
 			click = function(element)
-				dmhub.SetAndUploadTableItem(tableName, CharacterFeaturePrefabs.CreateNew{
-				})
+				dmhub.SetAndUploadTableItem(tableName, CharacterFeaturePrefabs.CreateNew())
 			end,
 		}
 	}
@@ -3273,7 +3270,6 @@ local ShowLanguagesPanel = function(parentPanel)
 					key = k,
 					select = element.aliveTime > 0.2,
 					click = function()
-						selectedLanguageId = k
 						languagesPanel.data.SetLanguage(Language.tableName, k)
 					end,
 				}
@@ -3302,7 +3298,7 @@ local leftPanel = gui.Panel{
 	itemListPanel,
 	Compendium.AddButton{
 		click = function()
-			dmhub.SetAndUploadTableItem(Language.tableName, Language.CreateNew{})
+			dmhub.SetAndUploadTableItem(Language.tableName, Language.CreateNew())
 		end,
 	}
 }
@@ -3368,8 +3364,7 @@ local ShowTitlesPanel = function(parentPanel)
 
 			click = function(element)
 				dmhub.Debug('ADD CHARACTER RESOURCE')
-				dmhub.SetAndUploadTableItem(tableName, Title.CreateNew{
-				})
+				dmhub.SetAndUploadTableItem(tableName, Title.CreateNew())
 			end,
 		}
 
@@ -3443,8 +3438,7 @@ local ShowAttributeGeneratorPanel = function(parentPanel)
 		AddButton{
 
 			click = function(element)
-				dmhub.SetAndUploadTableItem(tableName, AttributeGenerator.CreateNew{
-				})
+				dmhub.SetAndUploadTableItem(tableName, AttributeGenerator.CreateNew())
 			end,
 		}
 
@@ -3533,7 +3527,8 @@ local ShowEquipmentCategoriesPanel = function(parentPanel)
 
 				change = function(element)
 					---@cast element Dropdown
-					local val = element.idChosen
+					--the options' ids are category keys (strings) or 'none'.
+					local val = element.idChosen --[[@as string|nil]]
 					if val == 'none' then
 						val = nil
 					end
@@ -5465,6 +5460,9 @@ end
 
 
 local LibraryPanel = function()
+	--assigned below; declared first because the search handlers above it close over it.
+	---@type Panel
+	local resultPanel
 
 
 	local contentPanel = gui.Panel{
@@ -5530,6 +5528,8 @@ local LibraryPanel = function()
 				if not e.valid then
 					return false
 				end
+				--probing every panel for the Input whose placeholder matches.
+				---@cast e Panel|Input
 				local ok, pt = pcall(function() return e.placeholderText end)
 				return ok and pt == "Filter Inventory..."
 			end)
@@ -5952,7 +5952,9 @@ local LibraryPanel = function()
 			end
 
 			if info.click ~= nil then
+				--the click registered with Compendium.Register, which takes the content panel.
 				local fn = info.click
+				---@cast fn fun(contentPanel: Panel)
 				local sectionName = section
 				local itemName = key
 				local contentType = info.contentType
@@ -7497,6 +7499,8 @@ function GlossaryTerm.OpenSourcePage(src)
         return
     end
     local page = src.page or 1
+    --a 0-based page index, or the page's printed label when one matches.
+    ---@type number|string
     local target = math.max(0, (tonumber(page) or 1) - 1)
     pcall(function()
         local want = string.lower(tostring(page))

@@ -68,33 +68,13 @@ function RichEncounter.CreateDisplay(self)
     --party strength for the difficulty pill and EV/budget readout. This must
     --agree with the encounter builder: the hero COUNT comes from the numheroes
     --setting (the same count the roster is balanced for via
-    --CloneForNumberOfHeroes), while level and victories are averaged from the
-    --hero tokens on the current map. Summing raw map tokens instead would
-    --disagree with the builder whenever the map holds more or fewer hero
-    --tokens than the party size setting.
+    --CloneForNumberOfHeroes), while level and victories are the builder's own
+    --(Encounter.CurrentParty: the player party, or the Director's override).
     local function CurrentPartyStrength()
-        local totalLevel = 0
-        local totalVictories = 0
-        local count = 0
-        for _, tok in ipairs(dmhub.allTokens) do
-            local props = tok.properties
-            if props ~= nil and props:IsHero() then
-                count = count + 1
-                totalLevel = totalLevel + props:CharacterLevel()
-                totalVictories = totalVictories + props:GetVictories()
-            end
-        end
-
-        local level = 1
-        local victories = 0
-        if count > 0 then
-            level = math.max(1, round(totalLevel / count))
-            victories = math.max(0, round(totalVictories / count))
-        end
-
+        local party = Encounter.CurrentParty()
         return Encounter.PartyStrength{
-            level = level,
-            victories = victories,
+            level = party.level,
+            victories = party.victories,
         }
     end
 
@@ -782,6 +762,10 @@ function RichEncounter.CreateDisplay(self)
             if initiativeQueue ~= nil and initiativeQueue.hidden then
                 initiativeQueue = nil
             end
+            --the heroes' start zone shows until combat starts.
+            if initiativeQueue == nil then
+                Encounter.ShowStartZone(self.encounter)
+            end
             self.spawns = {}
 
             --CloneForNumberOfHeroes drops groups gated off at this party size, so
@@ -1124,7 +1108,7 @@ function RichEncounter.CreateDisplay(self)
             end
         end,
 
-        multimonitor = {"numheroes"},
+        multimonitor = {"numheroes", "encounterpartymanual", "encounterpartylevel", "encounterpartyvictories"},
         monitor = function(element)
             element:FireEventTree("refreshTag")
         end,
@@ -1307,3 +1291,154 @@ end
 
 
 MarkdownDocument.RegisterRichTag(RichEncounter)
+
+
+--The encounter builder's party bar as a journal widget: the Heroes / Level /
+--Victories every encounter in the game is balanced against (see
+--Encounter.CurrentParty), and the way back to the player party once overridden.
+---@class RichEncounterParty: RichTag
+--- @field new fun(o?: table): RichEncounterParty
+RichEncounterParty = RegisterGameType("RichEncounterParty", "RichTag")
+RichEncounterParty.tag = "encounterparty"
+RichEncounterParty.pattern = "^encounterparty$"
+RichEncounterParty.hasEdit = false
+
+local function PartyStyles(pal)
+    local styles = {}
+
+    if pal ~= nil then
+        styles[#styles + 1] = { selectors = {"label", "~button"}, color = pal.ink }
+        styles[#styles + 1] = { selectors = {"dropdown"}, bgcolor = pal.page, borderColor = pal.border }
+        styles[#styles + 1] = { selectors = {"dropdown-option"}, bgcolor = pal.page, color = pal.ink }
+        styles[#styles + 1] = { selectors = {"dropdown-option", "hover"}, bgcolor = pal.wash }
+        styles[#styles + 1] = { selectors = {"dropdownLabel"}, color = pal.ink }
+    end
+
+    return ThemeEngine.MergeTokens(styles)
+end
+
+function RichEncounterParty.CreateDisplay(self)
+    local resultPanel
+    local m_palSignature = nil
+
+    local function Field(caption, key, min, max)
+        local options = {}
+        for n = min, max do
+            options[#options + 1] = { id = tostring(n), text = tostring(n) }
+        end
+
+        return gui.Panel{
+            flow = "vertical",
+            width = "auto",
+            height = "auto",
+            rmargin = 12,
+
+            gui.Label{
+                width = "auto",
+                height = "auto",
+                fontSize = 11,
+                bold = true,
+                bmargin = 2,
+                text = caption,
+            },
+
+            gui.Dropdown{
+                width = 80,
+                height = 24,
+                fontSize = 13,
+                options = options,
+                idChosen = tostring(Encounter.CurrentParty()[key]),
+                refreshParty = function(element)
+                    ---@cast element Dropdown
+                    element.idChosen = tostring(Encounter.CurrentParty()[key])
+                end,
+                change = function(element)
+                    ---@cast element Dropdown
+                    local party = Encounter.CurrentParty()
+                    party[key] = tonumber(element.idChosen)
+                    Encounter.SetManualParty(party)
+                    resultPanel:FireEventTree("refreshParty")
+                end,
+            },
+        }
+    end
+
+    --only the Director can write the game settings behind this.
+    resultPanel = gui.Panel{
+        classes = cond(dmhub.isDM, {}, {"collapsed"}),
+        width = "auto",
+        height = "auto",
+        halign = "left",
+        flow = "vertical",
+        styles = PartyStyles(nil),
+
+        refreshTag = function(element, tag)
+            local pal = MarkdownDocument.PageSkinPalette((tag or self):GetDocument())
+            local sig = pal ~= nil and (pal.page .. "/" .. pal.ink .. "/" .. pal.accent) or nil
+            if sig ~= m_palSignature then
+                m_palSignature = sig
+                element.styles = PartyStyles(pal)
+            end
+            element:FireEventTree("refreshParty")
+        end,
+
+        multimonitor = {"numheroes", "encounterpartymanual", "encounterpartylevel", "encounterpartyvictories"},
+        monitor = function(element)
+            element:FireEventTree("refreshParty")
+        end,
+
+        gui.Panel{
+            flow = "horizontal",
+            width = "auto",
+            height = "auto",
+
+            Field("Heroes", "numHeroes", Encounter.RebalanceHeroCounts[1], Encounter.RebalanceHeroCounts[#Encounter.RebalanceHeroCounts]),
+            Field("Level", "level", 1, 10),
+            Field("Victories", "victories", 0, 15),
+        },
+
+        gui.Label{
+            width = "auto",
+            height = "auto",
+            halign = "left",
+            fontSize = 11,
+            tmargin = 6,
+            text = "From the player party",
+            refreshParty = function(element)
+                element:SetClass("collapsed", Encounter.CurrentParty().manual)
+            end,
+            create = function(element)
+                element:FireEvent("refreshParty")
+            end,
+        },
+
+        gui.Button{
+            width = 160,
+            height = 24,
+            fontSize = 12,
+            halign = "left",
+            tmargin = 6,
+            text = "",
+            hover = gui.Tooltip("Go back to the Heroes / Level / Victories worked out from the heroes in the player party, and keep them up to date with it."),
+            refreshParty = function(element)
+                local manual = Encounter.CurrentParty().manual
+                element:SetClass("collapsed", not manual)
+                if manual then
+                    local auto = Encounter.AutoParty()
+                    element.text = string.format("Use party: %d / %d / %d", auto.numHeroes, auto.level, auto.victories)
+                end
+            end,
+            create = function(element)
+                element:FireEvent("refreshParty")
+            end,
+            press = function(element)
+                Encounter.ClearManualParty()
+                resultPanel:FireEventTree("refreshParty")
+            end,
+        },
+    }
+
+    return resultPanel
+end
+
+MarkdownDocument.RegisterRichTag(RichEncounterParty)

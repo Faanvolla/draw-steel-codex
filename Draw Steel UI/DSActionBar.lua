@@ -455,6 +455,7 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 	---@type nil|fun(forceCast?: boolean)
 	local CurrentCalculateSpellTargeting = nil
 	local CalculateSpellTargetFocusing = nil
+	---@type nil|number
 	local spellRange = nil
 
 	--{string spell category -> {spell panels}}
@@ -695,6 +696,9 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 		--before it reaches the full distance of the target.
 		local pointTargetShapePathEnd = nil
 		local pointTargetLabelsAtPathEnd = nil
+		--labels marking creatures a point-target path passes through.
+		---@type nil|table[]
+		local pointTargetLabelsAtThroughCreatures = nil
 		local pointTargetPathEndOvershoot = nil
 
 		local m_pointTargetFallingShape = nil
@@ -786,7 +790,7 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
                         --record the targeting as symbols.
                         local targetPairs = {}
                         for i,ray in ipairs(rays) do
-                            targetPairs[#targetPairs+1] = {a = ray.a.id, b = ray.b.id}
+                            targetPairs[#targetPairs+1] = {a = ray.a.charid, b = ray.b.charid}
                         end
 
                         currentSymbols.targetPairs = targetPairs
@@ -1645,7 +1649,9 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 
 					CalculateSpellTargeting()
 
-					if (spell.targetType == "emptyspace" or spell.targetType == "anyspace") and spell.targeting == "pathfind" or spell.targeting == "vacated" then
+					--spellRange stays nil when CalculateSpellTargeting cast at once (nothing
+					--left to target), and the engine's MarkMovementRadius needs a number.
+					if spellRange ~= nil and ((spell.targetType == "emptyspace" or spell.targetType == "anyspace") and spell.targeting == "pathfind" or spell.targeting == "vacated") then
                         local mask = nil
                         if spell.targeting == "vacated" and currentSymbols ~= nil and currentSymbols.cast ~= nil then
                             mask = currentSymbols.cast:GetVacatedSpaces()
@@ -1912,7 +1918,7 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
                         --the ability specifies the rays, we try to fish out the
                         --new one to highlight and maintain any existing ones.
                         for _,ray in ipairs(rays) do
-                            if ray.b.id == targetToken.id and m_targetLineOfSightRays[string.format("%s-%s", ray.a.id, ray.b.id)] == nil then
+                            if ray.b.charid == targetToken.id and m_targetLineOfSightRays[string.format("%s-%s", ray.a.charid, ray.b.charid)] == nil then
                                 print("MARK:: CCC")
                                 m_markLineOfSight = dmhub.MarkLineOfSight(ray.a, ray.b, ray.a.properties:GetPierceWalls())
                                 m_markLineOfSightToken = targetToken
@@ -2038,7 +2044,9 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 					end
 
 
-					local concentration = token.properties:HasConcentration() and token.properties.concentration:try_get("auraid") == spell:try_get("auraid")
+					--creatures keep a concentrationList; there is no creature.concentration field to read.
+					local mostRecentConcentration = token.properties:MostRecentConcentration()
+					local concentration = mostRecentConcentration ~= nil and spell:try_get("auraid") ~= nil and mostRecentConcentration:try_get("auraid") == spell:try_get("auraid")
 					if concentration then
 						entries[#entries+1] = {
 							text = "Cancel Concentration",
@@ -2115,7 +2123,7 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 				--map events that we get when in point targeting mode.
                 --- @param element Panel
                 --- @param loc Loc
-                --- @param point table
+                --- @param point nil|Vector3|"all" nil while the mouse is over UI; "all" when refreshing an 'all' ability (loc is nil then too).
 				maphover = function(element, loc, point)
 					if token == nil or (not token.valid) then
 						spellPanel:FireEvent('cancel')
@@ -2180,6 +2188,8 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
                                 waypoints[#waypoints+1] = pos.loc
                             end
 
+                            --as above: a space target hovers with a real loc.
+                            ---@cast loc -nil
 							local movementInfo = token:MarkMovementArrow(loc, {waypoints = waypoints})
                             if movementInfo ~= nil then
                                 local targets = currentSpell:FindTargetsInMovementVicinity(token, movementInfo.path) or filteredTargets
@@ -2265,8 +2275,11 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 
 									local needRedraw = prevPathEnd == nil or #prevPathEnd ~= #pointTargetShapePathEnd or prevOvershoot ~= pointTargetPathEndOvershoot
 									if not needRedraw then
+										--needRedraw is false only when prevPathEnd was non-nil.
+										---@cast prevPathEnd -nil
 										for i,loc in ipairs(prevPathEnd) do
-											if not loc.str == pointTargetShapePathEnd[i].str then
+											--these are LuaShapes: compare their squares (a LuaShape has no .str).
+											if not loc:Equal(pointTargetShapePathEnd[i]) then
 												needRedraw = true
 												break
 											end
@@ -2470,6 +2483,8 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 							point = nil
 							shape = "RadiusFromCreature"
 						end
+						--the block above replaced "all" with nil.
+						---@cast point nil|Vector3
 						if shape == 'emptyspace' or shape == 'emptyspacefriend' or shape == 'anyspace' then
 							radius = dmhub.unitsPerSquare*0.5
 							requireEmpty = (shape == 'emptyspace')
@@ -2657,7 +2672,8 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 					end
 
 					if destroyLabelsBeforeReturning then
-
+						--the flag starts as "labels exist", and every site above that clears the labels also clears it.
+						---@cast pointTargetLabelsAtPathEnd -nil
 						for _,marker in ipairs(pointTargetLabelsAtPathEnd) do
 							marker:Destroy()
 						end
@@ -2756,6 +2772,9 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 
                             if #waypoints < 2 or waypoints[#waypoints].x ~= waypoints[#waypoints-1].x or waypoints[#waypoints].y ~= waypoints[#waypoints-1].y then
                                 print("MARK:: AREA")
+                                --an emptyspace/anyspace spell still taking targets: the last
+                                --CalculateSpellTargeting found more to select, which sets spellRange.
+                                ---@cast spellRange -nil
                                 local radiusMarker = token:MarkMovementRadius(spellRange, {waypoints = waypoints})
                                 
                                 if radiusMarker ~= nil then
@@ -3148,7 +3167,6 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 				fontSize = 14,
 				color = Styles.textColor,
 				textAlignment = "center",
-				borderWidth = 1,
 				bgimage = "panels/square.png",
 				borderWidth = 1,
 				borderColor = "#ffffff55",
@@ -3346,7 +3364,6 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 				fontSize = 14,
 				color = Styles.textColor,
 				textAlignment = "center",
-				borderWidth = 1,
 				bgimage = "panels/square.png",
 				borderWidth = 1,
 				borderColor = "#ffffff55",
@@ -3389,8 +3406,10 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 			local baseCost = 0
 			if currentSpell.resourceCost == currentSpell.channeledResource then
 				--what we are channeling is also the base cost of the spell, so factor that in.
-				resourcesAvailable = resourcesAvailable - currentSpell.resourceNumber
-				baseCost = currentSpell.resourceNumber
+				--resourceNumber may be a GoblinScript formula; evaluate it as paying the cost does.
+				local resourceNumber = ExecuteGoblinScript(currentSpell.resourceNumber, token.properties:LookupSymbol(currentSymbols or {}), 0, "Channeled base cost for " .. currentSpell.name)
+				resourcesAvailable = resourcesAvailable - resourceNumber
+				baseCost = resourceNumber
 			end
 
 			if resourcesAvailable <= 0 then
@@ -3399,7 +3418,8 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 			end
 
 
-			channeledResourceTitle.text = StringInterpolateGoblinScript(currentSpell.channelDescription, token.properties)
+			--nil only for a nil string; channelDescription defaults to "".
+			channeledResourceTitle.text = StringInterpolateGoblinScript(currentSpell.channelDescription, token.properties) --[[@as string]]
 			local channelIncrement = currentSpell:ChannelIncrement()
 			local maxChannel = currentSpell:MaxChannel(token.properties, currentSymbols)
 
@@ -3699,8 +3719,8 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 			for i,mode in ipairs(currentSpell.modeList) do
 				local available = true
 				if mode.condition ~= nil and mode.condition ~= "" then
-					available = ExecuteGoblinScript(mode.condition, token.properties:LookupSymbol(), 1, "Mode condition")
-					available = type(available) == "number" and available > 0
+					local conditionResult = ExecuteGoblinScript(mode.condition, token.properties:LookupSymbol(), 1, "Mode condition")
+					available = type(conditionResult) == "number" and conditionResult > 0
 				end
 
 				if available then
@@ -4199,7 +4219,6 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
 									classes = {'resourceQuantityLabel'},
 									editable = true,
                                     numeric = true,
-									characterLimit = 2,
 
 									--a floating label which shows up to show how much will be deducted.
 									gui.Label{
@@ -4936,6 +4955,7 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
                                         RuleUtils.RemoveRetargetStrikeTargets(targets, trigger, trigger.targets[1])
                                         local allowOriginal = RuleUtils.RetargetAllowsOriginal(trigger)
 
+                                        ---@type CharacterToken|nil
                                         local sourceToken = token
                                         local range = tonumber(ExecuteGoblinScript(trigger.powerRollModifier.range, token.properties:LookupSymbol(symbols), 10))
                                         local rangeType = trigger.powerRollModifier.powerRollModifier:try_get("changeTargetRange", "none")
@@ -5138,6 +5158,7 @@ function GameHud.CreateActionBar(self, dialog, tokenInfo)
                                             RuleUtils.RemoveRetargetStrikeTargets(targets, trigger, trigger.targets[1])
                                             local allowOriginal = RuleUtils.RetargetAllowsOriginal(trigger)
 
+                                            ---@type CharacterToken|nil
                                             local sourceToken = token
                                             local range = tonumber(ExecuteGoblinScript(trigger.powerRollModifier.range, token.properties:LookupSymbol(symbols), 10))
                                             local rangeType = trigger.powerRollModifier.powerRollModifier:try_get("changeTargetRange", "none")

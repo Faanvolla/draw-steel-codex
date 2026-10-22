@@ -16,9 +16,13 @@ CodeModInterface = {}
 --- @return any
 function CodeModInterface:GetMod() end
 
---- RegisterDocumentForCheckpointBackups
---- @param id? string
+--- Includes one of this mod's shared documents in combat checkpoints, so Revert Turn rolls it back with the rest of the board. Register only state the current turn can change and that should be undone with it (resources, combat logs). Ordinary game saves include every document whether registered or not.
+--- @param id string The document id within this mod.
 function CodeModInterface:RegisterDocumentForCheckpointBackups(id) end
+
+--- Names this mod's document that holds the DM's broadcast mix levels (a 'broadcast' table of mix-group id -> level 0..1). On every game load the engine applies those levels before the game's sounds start, rather than playing at full volume until Lua pushes them. One document at a time; a later call replaces it.
+--- @param id? string
+function CodeModInterface:RegisterBroadcastMixDocument(id) end
 
 --- GetDocumentPath
 --- @param id? string

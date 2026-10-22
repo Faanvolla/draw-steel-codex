@@ -30,8 +30,8 @@ function chat.UpdateCustom(key, properties) end
 function chat.ShareData(data) end
 
 --- Shares a game object from a data table to the chat by table id and object id.
---- @param tableid string The data table identifier.
---- @param objid string The object identifier within the table.
+--- @param tableid nil|string The data table identifier.
+--- @param objid nil|string The object identifier within the table.
 --- @param properties nil|table Optional additional properties to include.
 function chat.ShareObjectInfo(tableid, objid, properties) end
 

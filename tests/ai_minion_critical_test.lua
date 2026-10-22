@@ -8,6 +8,8 @@ local function section(first, last)
     return source:sub(start, assert(source:find(last, start + #first, true)) - 1)
 end
 local function noop() end
+--The AI profiler's file locals are no-ops here.
+ProfBegin, ProfEnd, ProfCount, ProfPhaseBegin, ProfPhaseEnd, ProfRequestReport = noop, noop, noop, noop, noop, noop
 --Exercise the actual manual-targeting rule as well as the AI planner.
 local rulesFile = assert(io.open("Draw Steel Core Rules/MCDMActivatedAbility.lua", "r"))
 local rulesSource = rulesFile:read("*a")
@@ -58,14 +60,25 @@ MonsterAI = {
     AbilityActionLogName = function() return "Main Action" end,
     LogDecision = noop, LogMove = noop, SetLogContext = noop, SetMoveLogContext = noop,
     RefreshCombatants = noop, Sleep = noop,
+    --The squad's speech, reservations and side-by-side movement are covered by
+    --ai_squad_volley_test.lua; here the moves simply run one after another.
+    SpeakNow = noop, ReserveSquadOption = noop,
+    NewSquadReservations = function() return {squares = {}, lanes = {}} end,
+    AnnounceSquadStrike = function(self) self.announcements = (self.announcements or 0) + 1 end,
+    RunConcurrently = function(_, fns) for _,fn in ipairs(fns) do fn() end end,
+    MovementTokenIsAtLoc = function(_, t, loc) return t.loc == loc end,
 }
+--Plan previews (Continue to go on) are off in these tests.
+MonsterAI.PlanPreviewsOn = function() return false end
 local prefix = 'local g_moveResultExecuted="executed"; local g_moveResultNone="none"; local g_moveResultUnsafe="unsafe";\n'
 assert(load(section("function MonsterAI.TargetDistance", "-- Use the real token volume")))()
 assert(load(section("function MonsterAI:FindSquadActionToken()", "function MonsterAI:PlayTurnCoroutine")))()
 assert(load(section("function MonsterAI:ExecuteSquadStrike(ability)", "function MonsterAI:FindBestMoveToUseStrike")))()
 assert(load(section("function MonsterAI:CalculateRemainingMovementPaths", "function MonsterAI:CountPendingActivityReactions")))()
 assert(load(prefix .. section("function MonsterAI:FindAndExecuteMove()", "function MonsterAI:ExecuteAbility(")))()
-local runCycles = assert(load(prefix .. "return function(self, token, queue, initiativeid, squadid)\n" ..
+--The cycle loop also checks that its turn is still current (6TTFJWFP).
+local turnCheck = section("local g_abortTurnTaken", "function MonsterAI:PlayTurnCoroutine")
+local runCycles = assert(load(prefix .. turnCheck .. "return function(self, token, queue, initiativeid, squadid)\n" ..
     section("                    for cycle=1,6 do", "\n                end)") .. "\nend"))()
 
 local checks = 0
@@ -76,13 +89,15 @@ local function fixture(count)
     tokens.enemy = enemy
     dmhub = {
         unitsPerSquare = 1,
-        initiativeQueue = {hidden = false, round = 1},
+        initiativeQueue = {hidden = false, round = 1, current = "turn",
+            CurrentInitiativeId = function(q) return q.current end},
         GetTokenById = function(id) return tokens[id] end,
         Schedule = function(_, fn) fn() end,
         MarkLineOfSight = function() return {DestroyLineOfSight = noop} end,
     }
     local ability = {name = "Whistling Axes", categorization = "Signature Ability"}
     function ability:GetRange() return 1 end
+    function ability:ActionResource() return "action" end
     function ability:CanAfford(t) return t.actions > 0 end
     function ability:UsesSquadStrike() return true end
     function ability:UsesSquadCoordination() return true end
@@ -258,6 +273,24 @@ ai.noTargets = true
 run()
 check(#ai.casts == 0 and ai.moveCounts["1"] == nil, "no legal targets ends the squad turn")
 
+--A maneuver mis-tagged "Signature Ability" (the Quick Snack a pollywog's aura
+--grants) is still affordable after the real signature spends the main action.
+ai, tokens, run = fixture(1)
+local nip = tokens["1"].properties:GetActivatedAbilities()[1]
+local snack = setmetatable({name = "Quick Snack"}, {__index = nip})
+function snack:ActionResource() return "maneuver" end
+function snack:CanAfford() return true end
+tokens["1"].properties.GetActivatedAbilities = function() return {nip, snack} end
+local castNames = {}
+local baseExecute = ai.ExecuteAbility
+function ai:ExecuteAbility(caster, castAbility, targets, options)
+    castNames[#castNames+1] = castAbility.name
+    if castAbility == nip then return baseExecute(self, caster, castAbility, targets, options) end
+end
+run()
+check(#castNames == 1 and castNames[1] == "Whistling Axes",
+    "a maneuver tagged Signature Ability is never cast as the minion signature")
+
 ai, tokens, run = fixture(1)
 ai.noTargets = true
 local advances = 0
@@ -273,6 +306,11 @@ ai, tokens, run = fixture(1)
 ai.afterCast = function() tokens["1"].actions = 1; ai._tmp_abortTurn = true end
 run()
 check(#ai.casts == 1, "stop request prevents the extra action")
+
+ai, tokens, run = fixture(1)
+ai.afterCast = function() tokens["1"].actions = 1; dmhub.initiativeQueue.current = "hero" end
+run()
+check(#ai.casts == 1 and ai._tmp_abortTurn ~= nil, "a turn taken by another entry stops the extra action")
 
 ai, tokens, run = fixture(8)
 run()

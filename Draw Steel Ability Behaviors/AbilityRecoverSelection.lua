@@ -607,7 +607,7 @@ function ActivatedAbilityRecoverySelectionBehavior:Cast(ability, casterToken, ta
         local token = dmhub.GetTokenById(tok)
         --the modal above waits on the user, so a target can leave the map meanwhile.
         if token ~= nil and token.valid then
-            local targetCreature = token:GetCreature()
+            local targetCreature = token.properties
             local numRecoveries = recoveryTargets[token.charid] or 0
             if numRecoveries > 0 then
                 local maySpendRecovery = DeepCopy(MCDMUtils.GetStandardAbility("Prompt Spend Recovery"))

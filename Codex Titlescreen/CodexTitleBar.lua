@@ -25,8 +25,9 @@ g_devInventorySetting:Set(true)
 -- the titlescreen is gone, so we host it on the game hud's dedicated
 -- fullscreen shopPanel instead.
 local function OpenShopScreen(inventory)
-    if dmhub.inGame and not dmhub.isLobbyGame and GameHud.instance and GameHud.instance.shopPanel then
-        local host = GameHud.instance.shopPanel
+    local hud = GameHud.instance
+    local host = hud and hud.shopPanel
+    if dmhub.inGame and not dmhub.isLobbyGame and host then
         host:AddChild(CreateShopScreen{ titlescreen = host, inventory = inventory })
     elseif CodexTitlescreenRoot ~= nil and CodexTitlescreenRoot.valid then
         CodexTitlescreenRoot:AddChild(CreateShopScreen{ titlescreen = CodexTitlescreenRoot, inventory = inventory })
@@ -667,15 +668,36 @@ end
 --of this file also treats as "not in a game" -- there is nothing to interrupt,
 --so the close stays immediate.
 --
---This guards OUR control only. A close that never reaches Lua (Alt+F4, the
+--This generic prompt guards OUR control only. Other closes (Alt+F4, the
 --taskbar menu, the system menu, the native caption in legacy strip mode)
---still quits straight away; catching those would need an engine-side WM_CLOSE
---hook.
+--reach Lua only through OnQuitRequested below, which consults a custom
+--interface's exit confirmation and otherwise lets them quit straight away.
 local m_quitConfirmDialog = nil
+
+--The engine calls this global before ANY quit (dmhub.QuitApplication, the
+--close button, Alt+F4, Cmd+Q). Returning true holds the quit: a custom
+--interface (Encounter of the Week) is showing its own confirmation, which
+--quits with dmhub.ForceQuitApplication if the user goes ahead.
+function OnQuitRequested()
+    if (not dmhub.inGame) or dmhub.isLobbyGame then
+        return false
+    end
+    local hud = rawget(_G, "GameHud")
+    if hud == nil then
+        return false
+    end
+    return hud.CustomInterfaceConfirmExit("quit", function() dmhub.ForceQuitApplication() end)
+end
 
 local function ConfirmCloseWindow()
     if (not dmhub.inGame) or dmhub.isLobbyGame then
         dmhub.CloseWindow()
+        return
+    end
+
+    --a custom interface with its own exit confirmation replaces the
+    --generic prompt below.
+    if OnQuitRequested() then
         return
     end
 
@@ -1085,7 +1107,7 @@ local function CreatePresentationBar()
                 element.selfStyle.hidden = 1
             else
                 element.selfStyle.hidden = 0
-                element.children = {
+                local children = {
                     gui.Label{
                         fontSize = 16,
                         color = Styles.textColor,
@@ -1103,8 +1125,21 @@ local function CreatePresentationBar()
                         change = function(element)
                             presentationInfo.onchange(element.value)
                         end,
-                    }
+                    },
                 }
+                --optional: whether it shows under the game's UI or over it.
+                if presentationInfo.onbelowui ~= nil then
+                    children[#children+1] = gui.Check{
+                        valign = "center",
+                        lmargin = 10,
+                        text = "Below UI",
+                        value = presentationInfo.belowui == true,
+                        change = function(element)
+                            presentationInfo.onbelowui(element.value)
+                        end,
+                    }
+                end
+                element.children = children
             end
         end,
     }
@@ -1332,6 +1367,11 @@ local function CreatePlayerStatusIcon(userid, charid, extraCount)
     return resultPanel
 end
 
+--the zero-size panel beneath the players row that the column hangs from.
+local g_playersToastAnchor = nil
+--the players panel itself, so CodexTitleBar.OpenPlayersPopout can click it.
+local g_connectivityPanel = nil
+
 local function CreateConnectivityPanel()
     local m_wifiIcon
 
@@ -1375,9 +1415,13 @@ local function CreateConnectivityPanel()
             end
             local newCache = {}
             local children = {}
+            --a directorless game's host is a player like the rest (their
+            --session still says dm), so they get a portrait too.
+            local directorless = false
+            pcall(function() directorless = dmhub.directorlessGame == true end)
             for _, userid in ipairs(dmhub.users or {}) do
                 local info = dmhub.GetSessionInfo(userid)
-                if info ~= nil and not info.dm then
+                if info ~= nil and (directorless or not info.dm) then
                     local owned = CharacterIdsOwnedBy(userid)
                     local mainid = info.primaryCharacter or owned[1]
                     local extraCount = 0
@@ -1440,7 +1484,16 @@ local function CreateConnectivityPanel()
                 element.popup = nil
                 return
             end
-            local factory = rawget(_G, "CreateHeroesPanelPopoutContent")
+            --a custom interface (Encounter of the Week) may put its own
+            --content here instead of the Heroes panel.
+            local factory = nil
+            local custom = nil
+            pcall(function() custom = GameHud.CustomInterfacePlayersPopout() end)
+            if custom ~= nil then
+                factory = function() return custom end
+            else
+                factory = rawget(_G, "CreateHeroesPanelPopoutContent")
+            end
             if factory == nil then
                 return
             end
@@ -1514,6 +1567,20 @@ local function CreateConnectivityPanel()
 
         contentPanel,
     }
+
+    --notices about the players hang beneath this panel
+    --(CodexTitleBar.ShowPlayersToast) as a popup of this anchor: the popup
+    --layer draws above the game hud, which the title bar itself does not.
+    --Its own anchor, so a notice never closes the Heroes popout.
+    g_playersToastAnchor = gui.Panel{
+        floating = true,
+        width = 1,
+        height = 1,
+        halign = "left",
+        valign = "bottom",
+    }
+    resultPanel:AddChild(g_playersToastAnchor)
+    g_connectivityPanel = resultPanel
     return resultPanel
 end
 
@@ -1536,6 +1603,253 @@ if rawget(_G, "CodexTitleBar") == nil then
     CodexTitleBar = {}
 end
 
+local PLAYERS_TOAST_STYLES = {
+    {
+        selectors = {"playersToast"},
+        bgcolor = "#1b1c20ff",
+        borderColor = "#6a6f7a",
+    },
+    {
+        selectors = {"playersToast", "create", "~settled"},
+        transitionTime = 0.25,
+        opacity = 0,
+    },
+    {
+        selectors = {"playersToastButton"},
+        bgcolor = "#3a3d46",
+        color = "#e8e8e8",
+    },
+    {
+        selectors = {"playersToastButton", "hover"},
+        bgcolor = "#4e525e",
+    },
+    {
+        selectors = {"playersToastButton", "danger"},
+        bgcolor = "#7a2a2a",
+    },
+    {
+        selectors = {"playersToastButton", "danger", "hover"},
+        bgcolor = "#a03636",
+    },
+}
+
+--Open the popout under the players row (the Heroes panel, or what a custom
+--interface puts there), as if the player had clicked it.
+function CodexTitleBar.OpenPlayersPopout()
+    local panel = g_connectivityPanel
+    if panel == nil or not panel.valid or panel.popup ~= nil then
+        return
+    end
+    panel:FireEvent("click")
+end
+
+--the notices showing now, oldest first: { key, text, actions, fresh }.
+local g_playersToasts = {}
+local g_playersToastSeq = 0
+
+local RebuildPlayersToasts
+
+local function DismissPlayersToast(key)
+    for i, t in ipairs(g_playersToasts) do
+        if t.key == key then
+            table.remove(g_playersToasts, i)
+            RebuildPlayersToasts()
+            return
+        end
+    end
+end
+
+local function BuildPlayersToast(t)
+    local buttons = {}
+    for _, action in ipairs(t.actions or {}) do
+        local fn = action.click
+        buttons[#buttons + 1] = gui.Label{
+            classes = {"playersToastButton", cond(action.danger, "danger", nil)},
+            bgimage = "panels/square.png",
+            text = action.text,
+            fontSize = 13,
+            bold = true,
+            width = "auto",
+            height = "auto",
+            hpad = 10,
+            vpad = 4,
+            borderBox = true,
+            cornerRadius = 4,
+            lmargin = 8,
+            valign = "center",
+            textWrap = false,
+            click = function(element)
+                DismissPlayersToast(t.key)
+                if fn ~= nil then
+                    fn()
+                end
+            end,
+        }
+    end
+
+    --only a notice that just arrived fades in; the rest were already up.
+    local classes = {"playersToast"}
+    if not t.fresh then
+        classes[#classes + 1] = "settled"
+    end
+    t.fresh = false
+
+    return gui.Panel{
+        classes = classes,
+        styles = PLAYERS_TOAST_STYLES,
+        bgimage = "panels/square.png",
+        borderWidth = 1,
+        cornerRadius = 6,
+        flow = "horizontal",
+        width = "auto",
+        height = "auto",
+        maxWidth = 520,
+        hpad = 10,
+        vpad = 8,
+        borderBox = true,
+        tmargin = 4,
+        halign = "left",
+
+        gui.Label{
+            text = t.text or "",
+            fontSize = 14,
+            color = "#ececec",
+            width = "auto",
+            maxWidth = 360,
+            height = "auto",
+            valign = "center",
+            textWrap = true,
+        },
+
+        gui.Panel{
+            flow = "horizontal",
+            width = "auto",
+            height = "auto",
+            valign = "center",
+            children = buttons,
+        },
+
+        --close
+        gui.Panel{
+            bgimage = "ui-icons/close.png",
+            bgcolor = "#a0a0a0",
+            width = 12,
+            height = 12,
+            lmargin = 10,
+            valign = "center",
+            click = function()
+                DismissPlayersToast(t.key)
+            end,
+        },
+    }
+end
+
+--The popup is rebuilt whole, contents included, whenever the list changes:
+--popup placement is worked out from the panel as it is first shown, so a
+--column that grows afterwards spills upward over the bar.
+RebuildPlayersToasts = function()
+    local anchor = g_playersToastAnchor
+    if anchor == nil or not anchor.valid then
+        return
+    end
+    anchor.popup = nil
+    if #g_playersToasts == 0 then
+        return
+    end
+    local panels = {}
+    for _, t in ipairs(g_playersToasts) do
+        panels[#panels + 1] = BuildPlayersToast(t)
+    end
+    --the title bar's below-bar popup recipe (see ShowOverlayMenu): a
+    --sizeless shim placed against the whole players plate, and the column
+    --shifted back by the plate's width so it hangs from the plate's left
+    --edge.
+    local plate = g_connectivityPanel or anchor
+    anchor.popupPositioning = plate
+    anchor.popup = gui.Panel{
+        width = "auto",
+        height = "auto",
+        halign = "right",
+        valign = "bottom",
+        gui.Panel{
+            flow = "vertical",
+            width = "auto",
+            height = "auto",
+            x = -plate.renderedWidth,
+            valign = "bottom",
+            tmargin = 2,
+            children = panels,
+        },
+    }
+end
+
+--Is the notice with this id (ShowPlayersToast's args.id) still showing?
+function CodexTitleBar.HasPlayersToast(id)
+    if g_playersToastAnchor == nil or not g_playersToastAnchor.valid or g_playersToastAnchor.popup == nil then
+        return false
+    end
+    for _, t in ipairs(g_playersToasts) do
+        if t.id == id then
+            return true
+        end
+    end
+    return false
+end
+
+--Take down the notice with this id, if it is showing.
+function CodexTitleBar.DismissPlayersToast(id)
+    for _, t in ipairs(g_playersToasts) do
+        if t.id == id then
+            DismissPlayersToast(t.key)
+            return
+        end
+    end
+end
+
+--Show a notice hanging beneath the title bar's players row: who left, who
+--came back, who controls what. Newer notices stack below older ones.
+--  args.text      the message
+--  args.actions   optional { { text, click = fn, danger = bool }, ... };
+--                 pressing one runs it and dismisses the notice
+--  args.duration  seconds before it goes (default 8; 0 = stays until an
+--                 action or its close button)
+--  args.id        optional: a notice with the same id replaces this one
+--Clicking elsewhere closes the notices, as it does any popup.
+function CodexTitleBar.ShowPlayersToast(args)
+    args = args or {}
+    if g_playersToastAnchor == nil or not g_playersToastAnchor.valid then
+        return
+    end
+    --a click away closed the popup: those notices are gone.
+    if g_playersToastAnchor.popup == nil then
+        g_playersToasts = {}
+    end
+    if args.id ~= nil then
+        for i = #g_playersToasts, 1, -1 do
+            if g_playersToasts[i].id == args.id then
+                table.remove(g_playersToasts, i)
+            end
+        end
+    end
+    g_playersToastSeq = g_playersToastSeq + 1
+    local key = g_playersToastSeq
+    g_playersToasts[#g_playersToasts + 1] = {
+        key = key,
+        id = args.id,
+        text = args.text,
+        actions = args.actions,
+        fresh = true,
+    }
+    RebuildPlayersToasts()
+
+    local duration = args.duration or 8
+    if duration > 0 then
+        dmhub.Schedule(duration, function()
+            DismissPlayersToast(key)
+        end)
+    end
+end
+
 local function CreateInitiativeStatusHost()
     g_initiativeStatusContainer = gui.Panel{
         flow = "horizontal",
@@ -1547,6 +1861,37 @@ local function CreateInitiativeStatusHost()
     return g_initiativeStatusContainer
 end
 
+--The mounted Round panel, and the tabletop map window slot showing it
+--instead of the title bar (nil = the title bar).
+local g_initiativeStatusPanel = nil
+local g_initiativeStatusWindowHost = nil
+
+--Puts the Round panel in whichever host should show it. It is moved, not
+--rebuilt: it belongs to the current GameHud, which only mounts it once.
+local function PlaceInitiativeStatusPanel()
+    local host = g_initiativeStatusContainer
+    if g_initiativeStatusWindowHost ~= nil and g_initiativeStatusWindowHost.valid then
+        host = g_initiativeStatusWindowHost
+    end
+    if host == nil or not host.valid then
+        return
+    end
+
+    local panel = g_initiativeStatusPanel
+    if panel == nil or not panel.valid then
+        g_initiativeStatusPanel = nil
+        if host == g_initiativeStatusContainer then
+            host.children = {}
+        end
+        return
+    end
+
+    if panel.parent ~= host then
+        panel:Unparent()
+        host.children = {panel}
+    end
+end
+
 --Called by GameHud.CreateInitiativeBar. Pass nil to clear.
 function CodexTitleBar.MountInitiativeStatusPanel(panel)
     if g_initiativeStatusContainer == nil or (not g_initiativeStatusContainer.valid) then
@@ -1554,10 +1899,26 @@ function CodexTitleBar.MountInitiativeStatusPanel(panel)
     end
 
     if panel == nil then
+        g_initiativeStatusPanel = nil
         g_initiativeStatusContainer.children = {}
+        return
+    end
+
+    g_initiativeStatusPanel = panel
+    if g_initiativeStatusWindowHost ~= nil and g_initiativeStatusWindowHost.valid then
+        PlaceInitiativeStatusPanel()
     else
         g_initiativeStatusContainer.children = {panel}
     end
+end
+
+--Tabletop map windows (Tabletop.lua): show the Round panel in host, a
+--slot in the focused map window's titlebar, or pass nil to put it back in
+--the title bar. Call with nil BEFORE destroying the host, or the panel goes
+--with it.
+function CodexTitleBar.SetInitiativeStatusHost(host)
+    g_initiativeStatusWindowHost = host
+    PlaceInitiativeStatusPanel()
 end
 
 ----------------------------------------------------------------------
@@ -1585,6 +1946,8 @@ local g_tileIndicator = {
         void       = { tier = 1,  name = "Open Air (no floor)", color = "#000000", stripes = false },
         damaging   = { tier = 2,  name = "Damaging Terrain",    color = "#cc3333", stripes = true },
         water      = { tier = 3,  name = "Water",               color = "#3373d9", stripes = true },
+        --the map water level's shallow water (MapWaterLevel): not a tile rule, a depth.
+        shallow    = { tier = 3,  name = "Shallow Water",       color = "#73d9f2", stripes = true },
         difficult  = { tier = 4,  name = "Difficult Terrain",   color = "#8c5926", stripes = true },
         darkness   = { tier = 5,  name = "Darkness",            color = "#4b2a6b", stripes = true },
         sunlight   = { tier = 6,  name = "Sunlight",            color = "#e2c433", stripes = true },
@@ -1666,6 +2029,7 @@ end
 --string; white means "unset". Same normalization as the Map Markup
 --panel's KeywordColor.
 function g_tileIndicator.KeywordColor(kw)
+    ---@type Color|string|nil
     local color = nil
     pcall(function()
         local display = kw:try_get("display")
@@ -1675,7 +2039,8 @@ function g_tileIndicator.KeywordColor(kw)
     end)
 
     if type(color) == "userdata" then
-        local ok, str = pcall(function() return color.tostring end)
+        local colorValue = color --[[@as Color]]
+        local ok, str = pcall(function() return colorValue.tostring end)
         if ok and type(str) == "string" then
             color = str
         else
@@ -1748,6 +2113,15 @@ function g_tileIndicator.Classify()
     end
     if rules.difficultTerrain then
         Consider(kinds.difficult)
+    end
+    --shallow water from the map water level reads as itself rather than as
+    --plain difficult terrain (it only slows creatures without a swim speed).
+    local floor = game.currentFloor
+    if floor ~= nil then
+        local water = floor:GetWaterAtLoc(loc)
+        if water ~= nil and water.state == "shallow" then
+            Consider(kinds.shallow)
+        end
     end
     if rules.concealment then
         Consider(kinds.concealing)
@@ -1854,11 +2228,21 @@ end
 --The four built-in terrain rule types, styled to match the engine's
 --overlay stripes exactly (TileHeightOverlay ZoneWater/Difficult/
 --Concealment/Climbable colors and alternating angles).
+--rules is the hover card text: the Draw Steel rule for that terrain
+--(Heroes p. 269-270 movement, p. 276 concealment).
 g_tileIndicator.BUILTINS = {
-    { id = "water",       name = "Water",       color = "#3373d9", angle = math.pi * 0.25 },
-    { id = "difficult",   name = "Difficult",   color = "#8c5926", angle = math.pi * 0.75 },
-    { id = "concealment", name = "Concealment", color = "#333333", angle = math.pi * 0.25 },
-    { id = "climbable",   name = "Climbable",   color = "#66cc66", angle = math.pi * 0.75 },
+    { id = "water",       name = "Water",       color = "#3373d9", angle = math.pi * 0.25,
+      rules = "Creatures in water swim. A creature with a swim speed swims at full speed. A creature without one uses 2 squares of movement for each square it swims." },
+    { id = "difficult",   name = "Difficult",   color = "#8c5926", angle = math.pi * 0.75,
+      rules = "It costs 1 additional square of movement to enter a square of difficult terrain. A creature can't shift into or out of difficult terrain, and can't jump out of it." },
+    { id = "concealment", name = "Concealment", color = "#333333", angle = math.pi * 0.25,
+      rules = "A creature here has concealment: strikes made against it take a bane. Concealment doesn't block line of effect." },
+    { id = "climbable",   name = "Climbable",   color = "#66cc66", angle = math.pi * 0.75,
+      rules = "Creatures can climb here. A creature with a climb speed climbs at full speed. A creature without one uses 2 squares of movement for each square it climbs." },
+    --the map water level's shallow water (Map Settings > Water): water less
+    --than a square deep. Listed only on a map with a water level.
+    { id = "shallowwater", name = "Shallow Water", color = "#73d9f2", angle = math.pi * 0.75,
+      rules = "Water less than 1 square deep. It is difficult terrain (Shallow Water) for a creature without a swim speed; creatures here are not in water and do not swim." },
 }
 
 --The shown-built-ins preference (';'-joined ids from BUILTINS) as a set.
@@ -1904,6 +2288,8 @@ function g_tileIndicator.BuiltinTypesOnMap()
             present = flags.difficultTerrain
         elseif entry.id == "concealment" then
             present = flags.concealment
+        elseif entry.id == "shallowwater" then
+            present = flags.shallowWater == true
         else
             present = flags.climbable
         end
@@ -1946,6 +2332,148 @@ function g_tileIndicator.HoleTypeOnMap()
     return nil
 end
 
+--Short rules lines built from a zone type's mechanical flags. Only used
+--when the keyword has no authored description, so the tooltip still says
+--something true about the zone.
+---@param kw EnvironmentalKeyword
+---@return string[]
+function g_tileIndicator.ZoneRulesFromFlags(kw)
+    local lines = {}
+    if kw:try_get("difficultTerrain", false) then
+        lines[#lines+1] = "Difficult terrain."
+    end
+    if kw:try_get("water", false) then
+        lines[#lines+1] = "Water."
+    end
+    if kw:try_get("concealment", false) then
+        lines[#lines+1] = "Creatures here have concealment."
+    end
+    if kw:try_get("climbable", false) then
+        if kw:try_get("climbersOnly", false) then
+            lines[#lines+1] = "Natural climbers can climb here."
+        else
+            lines[#lines+1] = "Creatures can climb here."
+        end
+    end
+    local movedamage = kw:try_get("movedamage", "none")
+    local damage = kw:try_get("damage", 0)
+    if movedamage ~= "none" and type(damage) == "number" and damage > 0 then
+        lines[#lines+1] = string.format("%d %s damage for each square moved through.", damage, movedamage)
+    end
+    local entryRule = kw:try_get("entryEffectRule")
+    if type(entryRule) == "string" and entryRule ~= "" then
+        lines[#lines+1] = string.format("Entering or starting a turn here: %s.", entryRule)
+    end
+    return lines
+end
+
+--Builds the overlay menu's hover card: a colored title, a rules text
+--block, and an optional power roll table (bonus + three tier texts).
+---@param title string
+---@param color string|nil "#rrggbb" for the title; nil = white
+---@param rulesText string
+---@param powerRoll {bonus: number, tiers: string[]}|nil
+---@return Panel
+function g_tileIndicator.RulesTooltip(title, color, rulesText, powerRoll)
+    local textWidth = 380
+    local children = {}
+
+    children[#children+1] = gui.Label{
+        classes = {"sizeM"},
+        fontSize = 18,
+        text = title,
+        bold = true,
+        color = color or "white",
+        width = textWidth,
+        height = "auto",
+        bmargin = 6,
+    }
+
+    children[#children+1] = gui.Label{
+        classes = {"sizeS"},
+        fontSize = 14,
+        text = rulesText,
+        color = "#dddddd",
+        width = textWidth,
+        height = "auto",
+    }
+
+    if powerRoll ~= nil then
+        children[#children+1] = gui.Label{
+            classes = {"sizeS"},
+            fontSize = 14,
+            text = string.format("Power Roll + %d", powerRoll.bonus),
+            bold = true,
+            color = "white",
+            width = textWidth,
+            height = "auto",
+            tmargin = 8,
+            bmargin = 2,
+        }
+        local tierLabels = {"11 or lower", "12-16", "17+"}
+        for i,tierLabel in ipairs(tierLabels) do
+            local tierText = powerRoll.tiers[i]
+            if type(tierText) == "string" and tierText ~= "" then
+                children[#children+1] = gui.Label{
+                    classes = {"sizeS"},
+                    fontSize = 14,
+                    text = string.format("<b>%s:</b> %s", tierLabel, tierText),
+                    color = "#dddddd",
+                    width = textWidth - 8,
+                    height = "auto",
+                    lmargin = 8,
+                }
+            end
+        end
+    end
+
+    return gui.TooltipFrame(gui.Panel{
+        width = "auto",
+        height = "auto",
+        flow = "vertical",
+        children = children,
+    }, { halign = "right", valign = "center" })
+end
+
+--Hover card for a zone type row in the overlay menu: the zone's name, its
+--authored rules text (EnvironmentalKeyword.description, the player-facing
+--text), and its power roll table when the zone has one. Returns nil when
+--the keyword cannot be found.
+---@param zoneType {keywordid: string, name: string, color: string|nil, angleRadians: number|nil}
+---@return Panel|nil
+function g_tileIndicator.ZoneTooltip(zoneType)
+    local keywordsTable = dmhub.GetTable("environmentalKeywords") or {}
+    local kw = keywordsTable[zoneType.keywordid]
+    if kw == nil then
+        return nil
+    end
+
+    local description = kw:try_get("description", "")
+    local paragraphs = {}
+    if type(description) == "string" and description ~= "" then
+        paragraphs[#paragraphs+1] = description
+    else
+        for _,line in ipairs(g_tileIndicator.ZoneRulesFromFlags(kw)) do
+            paragraphs[#paragraphs+1] = line
+        end
+    end
+    if #paragraphs == 0 then
+        paragraphs[1] = "No special rules."
+    end
+
+    --The power roll the zone makes against creatures entering it or
+    --starting their turn there (Lava's Liquid Hot Magma etc.). The
+    --description names the roll; the tiers live only here.
+    local powerRoll = nil
+    local tiers = kw:try_get("powerRollTiers")
+    if kw:try_get("powerRollEnabled", false) and type(tiers) == "table" then
+        powerRoll = { bonus = kw:try_get("powerRollBonus", 0) or 0, tiers = tiers }
+    end
+
+    return g_tileIndicator.RulesTooltip(kw.name or zoneType.name, zoneType.color,
+        table.concat(paragraphs, "\n"), powerRoll)
+end
+
 --The Map object on the floor we are on. A layer's map may live on the
 --layer or on its parent floor, so the whole top-level floor family is
 --searched (GetLayersForFloor returns the floor itself plus its layers).
@@ -1972,7 +2500,10 @@ end
 --switch the map's image. No adding or renaming here; that stays in the
 --Floors panel. Returns nil when there is nothing to choose between
 --(not a Director, no Map object, or only the base image).
-function g_tileIndicator.CreateAppearanceSection()
+--options.noHeader: leave off the "Map Appearance" title (Map Settings
+--draws its own section header).
+function g_tileIndicator.CreateAppearanceSection(options)
+    options = options or {}
     if not dmhub.isDM then
         return nil
     end
@@ -2091,22 +2622,32 @@ function g_tileIndicator.CreateAppearanceSection()
 
     RefreshTiles()
 
-    return gui.Panel{
-        width = "100%",
-        height = "auto",
-        flow = "vertical",
-        bmargin = 8,
-
-        gui.Label{
+    local children = {}
+    if not options.noHeader then
+        children[#children+1] = gui.Label{
             classes = {"bold"},
             text = "Map Appearance",
             width = "100%",
             height = "auto",
             bmargin = 4,
-        },
+        }
+    end
+    children[#children+1] = tilesPanel
 
-        tilesPanel,
+    return gui.Panel{
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        bmargin = 8,
+        children = children,
     }
+end
+
+--- The current floor's map appearance gallery, headerless, for the Map
+--- Settings panel. nil when the map has no alternate appearances.
+--- @return Panel|nil
+function CodexTitleBar.CreateMapAppearancePicker()
+    return g_tileIndicator.CreateAppearanceSection{ noHeader = true }
 end
 
 function g_tileIndicator.CreateOverlayMenu()
@@ -2149,6 +2690,14 @@ function g_tileIndicator.CreateOverlayMenu()
             bg = "white"
         end
 
+        --hovering the swatch or the name shows what the zone does.
+        local function ShowZoneTip(element)
+            local tip = g_tileIndicator.ZoneTooltip(zoneType)
+            if tip ~= nil then
+                element.tooltip = tip
+            end
+        end
+
         return gui.Panel{
             width = "100%",
             height = 24,
@@ -2163,6 +2712,7 @@ function g_tileIndicator.CreateOverlayMenu()
                 gradient = gradient,
                 borderWidth = 1,
                 borderColor = "@border",
+                hover = ShowZoneTip,
             },
 
             gui.Check{
@@ -2171,6 +2721,7 @@ function g_tileIndicator.CreateOverlayMenu()
                 halign = "left",
                 lmargin = 6,
                 style = checkStyle,
+                hover = ShowZoneTip,
                 monitor = "mapoverlay:shownzones",
                 events = {
                     monitor = function(element)
@@ -2194,6 +2745,17 @@ function g_tileIndicator.CreateOverlayMenu()
     --tiles: same swatch+check shape as a zone row, driving the type's entry
     --in mapoverlay:shownbuiltins (built-ins default hidden).
     local function BuiltinRow(builtin)
+        --hovering the swatch or the name shows the terrain's rule.
+        local function ShowBuiltinTip(element)
+            if builtin.rules ~= nil then
+                local color = builtin.color
+                if color == "#333333" then
+                    color = nil --too dark to read on the black card
+                end
+                element.tooltip = g_tileIndicator.RulesTooltip(builtin.name, color, builtin.rules)
+            end
+        end
+
         return gui.Panel{
             width = "100%",
             height = 24,
@@ -2208,6 +2770,7 @@ function g_tileIndicator.CreateOverlayMenu()
                 gradient = g_tileIndicator.StripeGradient(builtin.color, builtin.angle),
                 borderWidth = 1,
                 borderColor = "@border",
+                hover = ShowBuiltinTip,
             },
 
             gui.Check{
@@ -2216,6 +2779,7 @@ function g_tileIndicator.CreateOverlayMenu()
                 halign = "left",
                 lmargin = 6,
                 style = checkStyle,
+                hover = ShowBuiltinTip,
                 monitor = "mapoverlay:shownbuiltins",
                 events = {
                     monitor = function(element)
@@ -2468,6 +3032,150 @@ function g_tileIndicator.CreatePanel()
     }
 end
 
+-- Map name + engine status. Long map descriptions used to eat the bar,
+-- so the box is capped (narrower than the old 420) and the text
+-- ellipsizes rather than wrapping or shrinking away to nothing;
+-- hovering shows the untruncated string (on the cluster's tooltip).
+-- On a narrow bar the fit pass (BarFitApply) narrows this width further,
+-- so BAR_FIT_MAPNAME_FULL must stay in step with the width below.
+local function CreateMapNameLabel(width)
+    return gui.Label{
+        --menuLabel is what flips the text to @bg when the plate fills on
+        --hover. It carries a 16px font for the main menu strip; this cluster
+        --runs at the default 14, so match the neighbours explicitly.
+        classes = {"menuLabel"},
+        fontSize = 14,
+        minFontSize = 10,
+        width = width or 380,
+        height = "100%",
+        hmargin = 0,
+        textAlignment = "left",
+        textWrap = false,
+        textOverflow = "ellipsis",
+        interactable = false,
+        text = "",
+        data = { fullText = "" },
+        thinkTime = 0.1,
+        think = function(element)
+            if (not dmhub.inGame) or dmhub.isLobbyGame then
+                element.data.fullText = ""
+                element.text = ""
+                return
+            end
+            local text
+            if dmhub.mouseOutsideMapView then
+                --Tabletop mode with the mouse off the live map window: there
+                --is no location under it to report, just the map.
+                text = game.currentMap.description
+            elseif g_tileIndicator.ShowsTileInfo() then
+                text = string.format("%s %s", game.currentMap.description, dmhub.status)
+            else
+                --The floor the player is ON, not the one under the mouse
+                --(which is what dmhub.status names), so it holds still.
+                local floor = game.currentFloor
+                local floorName = floor ~= nil and floor.description or nil
+                if type(floorName) == "string" and floorName ~= "" then
+                    text = string.format("%s, %s", game.currentMap.description, floorName)
+                else
+                    text = game.currentMap.description
+                end
+            end
+            if text == element.data.fullText then
+                return
+            end
+            element.data.fullText = text
+            element.text = text
+        end,
+    }
+end
+
+--The shared plate. Structure follows the title bar's other menu items
+--(and the initiative readout): the fill and the click live on the
+--wrapper, both children are interactable = false so the hover lands
+--here rather than on a half. hpad is inline rather than left to the
+--menuItem style so the cluster does not shift sideways on the frames
+--where the class is dropped.
+local function CreateMapClusterPanel(classes, tileChip, mapNameLabel)
+    return gui.Panel{
+        classes = classes,
+        flow = "horizontal",
+        width = "auto",
+        height = "100%",
+        valign = "center",
+        hpad = 8,
+
+        --No hover tooltip (Venla 2026-08-25: bar items are self evident).
+        --Note this also drops the untruncated-map-name hover that the
+        --narrow-bar fit pass relied on for ellipsized names, and the
+        --"tile under cursor" readout.
+
+        click = function(element)
+            g_tileIndicator.ShowOverlayMenu(element)
+        end,
+
+        tileChip,
+        mapNameLabel,
+    }
+end
+
+--Where the mouse is on the live map, for the titlebar of a tabletop map
+--window and its maximized strip (Tabletop.lua), which show the map's name
+--on its own: the terrain chip and the tile's coordinates, on one plate that
+--opens the map overlay menu. With the mouse off the map it keeps the last
+--position, dimmed, so the bar does not jump; with tile info turned off it
+--is empty. While a window shows it, the title bar's own cluster is
+--collapsed (SetMapStatusInWindow).
+--options.width: the readout's width, fixed so the bar does not shift as the
+--mouse moves (default 96).
+function CodexTitleBar.CreateMapPosition(options)
+    options = options or {}
+    local chip = g_tileIndicator.CreatePanel()
+    local label = gui.Label{
+        classes = {"menuLabel"},
+        fontSize = 13,
+        minFontSize = 10,
+        width = options.width or 96,
+        height = "100%",
+        hmargin = 0,
+        textAlignment = "left",
+        textWrap = false,
+        textOverflow = "ellipsis",
+        interactable = false,
+        text = "--",
+        data = {offMap = nil},
+        thinkTime = 0.1,
+        think = function(element)
+            local text = element.text
+            local offMap = dmhub.mouseOutsideMapView == true
+            if (not dmhub.inGame) or dmhub.isLobbyGame or not g_tileIndicator.ShowsTileInfo() then
+                text = ""
+            elseif not offMap then
+                text = dmhub.status or ""
+            end
+            if element.text ~= text then
+                element.text = text
+            end
+            --opacity is per panel, so the chip is dimmed on its own. (A
+            --selfStyle value cannot be read back, hence data.offMap.)
+            if element.data.offMap ~= offMap then
+                element.data.offMap = offMap
+                local opacity = cond(offMap, 0.4, 1)
+                element.selfStyle.opacity = opacity
+                chip.selfStyle.opacity = opacity
+            end
+        end,
+    }
+    return CreateMapClusterPanel({"menuItem"}, chip, label)
+end
+
+--True while a tabletop map window shows the live map's status in its own
+--titlebar; the title bar then collapses its copy (CreateStatusBar's think).
+local g_mapStatusInWindow = false
+
+function CodexTitleBar.SetMapStatusInWindow(inWindow)
+    g_mapStatusInWindow = inWindow == true
+end
+
 local function CreateStatusBar()
     local resultPanel
 
@@ -2478,6 +3186,7 @@ local function CreateStatusBar()
     local m_tileChip
     local m_mapNameLabel
     local m_mapCluster
+    local m_initiativeHost
 
     local function MapClusterAvailable()
         return dmhub.inGame and (not dmhub.isLobbyGame)
@@ -2501,10 +3210,16 @@ local function CreateStatusBar()
     --Driven from the status bar's own think (see resultPanel below), NOT from
     --anything inside the cluster: a collapsed panel's think does not run, so
     --a driver inside it could collapse the cluster but never bring it back.
+    --A tabletop map window showing the live map's status (SetMapStatusInWindow)
+    --also collapses the cluster and the Round host: the window's titlebar
+    --has them instead.
     local function RefreshMapClusterAffordance()
         if m_mapCluster ~= nil and m_mapCluster.valid then
             m_mapCluster:SetClass("menuItem", MapClusterAvailable())
-            m_mapCluster:SetClass("collapsed", ScriptStageCoversMap())
+            m_mapCluster:SetClass("collapsed", ScriptStageCoversMap() or g_mapStatusInWindow)
+        end
+        if m_initiativeHost ~= nil and m_initiativeHost.valid then
+            m_initiativeHost:SetClass("collapsed", g_mapStatusInWindow)
         end
     end
 
@@ -2512,63 +3227,8 @@ local function CreateStatusBar()
     -- characterizing the tile under the mouse (see g_tileIndicator).
     m_tileChip = g_tileIndicator.CreatePanel()
 
-    -- Map name + engine status. Long map descriptions used to eat the bar,
-    -- so the box is capped (narrower than the old 420) and the text
-    -- ellipsizes rather than wrapping or shrinking away to nothing;
-    -- hovering shows the untruncated string (on the cluster's tooltip).
-    -- On a narrow bar the fit pass (BarFitApply) narrows this width further,
-    -- so BAR_FIT_MAPNAME_FULL must stay in step with the width below.
-    m_mapNameLabel = gui.Label{
-        --menuLabel is what flips the text to @bg when the plate fills on
-        --hover. It carries a 16px font for the main menu strip; this cluster
-        --runs at the default 14, so match the neighbours explicitly.
-        classes = {"menuLabel"},
-        fontSize = 14,
-        minFontSize = 10,
-        width = 380,
-        height = "100%",
-        hmargin = 0,
-        textAlignment = "left",
-        textWrap = false,
-        textOverflow = "ellipsis",
-        interactable = false,
-        text = "",
-        data = { fullText = "" },
-        thinkTime = 0.1,
-        think = function(element)
-            if (not dmhub.inGame) or dmhub.isLobbyGame then
-                element.data.fullText = ""
-                element.text = ""
-                return
-            end
-            local text
-            if g_tileIndicator.ShowsTileInfo() then
-                text = string.format("%s %s", game.currentMap.description, dmhub.status)
-            else
-                --The floor the player is ON, not the one under the mouse
-                --(which is what dmhub.status names), so it holds still.
-                local floor = game.currentFloor
-                local floorName = floor ~= nil and floor.description or nil
-                if type(floorName) == "string" and floorName ~= "" then
-                    text = string.format("%s, %s", game.currentMap.description, floorName)
-                else
-                    text = game.currentMap.description
-                end
-            end
-            if text == element.data.fullText then
-                return
-            end
-            element.data.fullText = text
-            element.text = text
-        end,
-    }
+    m_mapNameLabel = CreateMapNameLabel(BAR_FIT_MAPNAME_FULL)
 
-    --The shared plate. Structure follows the title bar's other menu items
-    --(and the initiative readout): the fill and the click live on the
-    --wrapper, both children are interactable = false so the hover lands
-    --here rather than on a half. hpad is inline rather than left to the
-    --menuItem style so the cluster does not shift sideways on the frames
-    --where the class is dropped.
     --(A nil from cond() cannot simply be listed here -- it would truncate
     --the class list -- so the list is assembled.)
     local mapClusterClasses = {}
@@ -2579,26 +3239,7 @@ local function CreateStatusBar()
         mapClusterClasses[#mapClusterClasses+1] = "collapsed"
     end
 
-    m_mapCluster = gui.Panel{
-        classes = mapClusterClasses,
-        flow = "horizontal",
-        width = "auto",
-        height = "100%",
-        valign = "center",
-        hpad = 8,
-
-        --No hover tooltip (Venla 2026-08-25: bar items are self evident).
-        --Note this also drops the untruncated-map-name hover that the
-        --narrow-bar fit pass relied on for ellipsized names, and the
-        --"tile under cursor" readout.
-
-        click = function(element)
-            g_tileIndicator.ShowOverlayMenu(element)
-        end,
-
-        m_tileChip,
-        m_mapNameLabel,
-    }
+    m_mapCluster = CreateMapClusterPanel(mapClusterClasses, m_tileChip, m_mapNameLabel)
 
     --First to go on a narrow bar: the label narrows (stage 2 of the fit
     --pass) and then the whole cluster collapses -- name first, terrain chip
@@ -2607,7 +3248,7 @@ local function CreateStatusBar()
     BarFitRegister("mapName", m_mapNameLabel)
     BarFitRegister("mapChip", m_tileChip)
 
-    local m_initiativeHost = CreateInitiativeStatusHost()
+    m_initiativeHost = CreateInitiativeStatusHost()
     BarFitRegister("initiative", m_initiativeHost)
 
     -- While a CommandBuilder session is active, a floating recorder dialog
@@ -3046,6 +3687,7 @@ local function CreateSearchBar()
         -- merged onto the right-hand type chip: Draw Steel villain/signature
         -- ability names are full sentences, so merging would clip the majority
         -- of monster-ability rows at the search box width.
+        ---@type Panel[]
         local blockChildren = { nameLabel }
 
         if result.subLabel ~= nil then
@@ -4194,7 +4836,7 @@ local g_searchHandlers = {}
 TopBar = {}
 
 
---- @param documentids {string}
+--- @param documentids string[]
 TopBar.SetAdventureDocuments = function(info, documentids)
     if g_adventureDocumentsBar ~= nil and g_adventureDocumentsBar.valid then
         if info then
@@ -4374,7 +5016,7 @@ local function CreateTopBar()
                 thanks = "Your bug report has been submitted. Thank you!",
                 --shown alongside thanks when the ticket bridge exists: a bug
                 --report also opens a ticket the user can follow up on.
-                ticketInfo = "A ticket has been opened for your report. You can find it under Feedback > Your Tickets, where you can add details at any time. When a developer responds, a marker will appear on that menu.",
+                ticketInfo = "A ticket has been opened for your report. You can find it under Feedback -> Your Tickets. We find feedback very helpful in developing the app and our developers will review it soon. We may respond to your ticket if we need more information or when we close it, but not every report will be responded to. If your issue is urgent or you would like a response, then joining our Discord and asking about the issue is the best way to guarantee a human response. You can safely post your ticket ID in the Discord.",
             },
             feature = {
                 title = "Request a Feature",
@@ -4404,13 +5046,12 @@ local function CreateTopBar()
         local m_submitting = false
         local m_submitted = false
         --The ticket id assigned to this report, captured once Submit completes.
-        --Surfaced to the user in statusLabel and copyable by clicking it.
+        --Shown to the user in the confirmation panel and copyable by clicking it.
         local m_reportid = nil
 
         local m_includeLog = isBugReport
         local m_includeScreenshot = false
         local m_allowGameEntry = true
-        local m_contactOnDiscord = true
         local m_mood = nil
 
         --the dialog is hosted in the gamehud modal stack in-game, or as a
@@ -4498,33 +5139,6 @@ local function CreateTopBar()
                 m_allowGameEntry = element.value
             end,
         }
-
-        --Discord follow-up: if the Discord desktop client is running we know the
-        --user's Discord handle and can offer to contact them about the report.
-        --Otherwise explain that we cannot follow up.
-        local discordSection
-        if report.discordUsername ~= nil then
-            discordSection = gui.Check{
-                text = "Contact me on Discord (" .. report.discordUsername .. ") to follow up on this report",
-                tooltip = "If checked, your Discord username is included with the report so a Codex developer can reach out to you about it. Leave unchecked to keep your Discord username private.",
-                value = m_contactOnDiscord,
-                halign = "left",
-                tmargin = 12,
-                change = function(element)
-                    m_contactOnDiscord = element.value
-                end,
-            }
-        else
-            discordSection = gui.Label{
-                fontSize = 15,
-                width = 880,
-                height = "auto",
-                textWrap = true,
-                halign = "left",
-                tmargin = 12,
-                text = "Discord isn't linked, so we won't be able to follow up with you about this report. Run the Discord app alongside Codex if you would like us to be able to reach out.",
-            }
-        end
 
         local m_attachmentsList = gui.Panel{
             width = "100%",
@@ -4621,17 +5235,97 @@ local function CreateTopBar()
             textWrap = true,
             tmargin = 8,
             text = "",
-
-            --After submitting, this label shows the ticket id; clicking copies
-            --it to the clipboard so the user can quote it back to us. No-ops
-            --until a report has actually been submitted (m_reportid is nil).
-            click = function(element)
-                if m_reportid ~= nil and m_reportid ~= "" then
-                    gui.Tooltip{ text = "Copied to Clipboard", valign = "top", borderWidth = 0 }(element)
-                    dmhub.CopyToClipboard(m_reportid)
-                end
-            end,
         }
+
+        --The form. Hidden once the report is sent.
+        local formPanel = gui.Panel{
+            width = "100%",
+            height = 640,
+            vscroll = true,
+            flow = "vertical",
+            halign = "center",
+        }
+
+        --Shown in place of the form once the report is sent, so the user
+        --can't miss that it worked. Filled in by ShowConfirmation.
+        local confirmationPanel = gui.Panel{
+            classes = {"collapsed"},
+            width = "100%",
+            height = 640,
+            flow = "vertical",
+            halign = "center",
+        }
+
+        local SUCCESS_COLOR = "#5cb85c"
+
+        local function ShowConfirmation(reportid)
+            local children = {
+                gui.Panel{
+                    width = 96,
+                    height = 96,
+                    halign = "center",
+                    tmargin = 60,
+                    bgimage = "ui-icons/module-checkmark.png",
+                    bgcolor = SUCCESS_COLOR,
+                    interactable = false,
+                },
+
+                gui.Label{
+                    fontSize = 32,
+                    bold = true,
+                    width = "auto",
+                    height = "auto",
+                    halign = "center",
+                    tmargin = 16,
+                    color = SUCCESS_COLOR,
+                    text = "Sent!",
+                },
+
+                gui.Label{
+                    fontSize = 18,
+                    width = 760,
+                    height = "auto",
+                    halign = "center",
+                    textAlignment = "center",
+                    textWrap = true,
+                    tmargin = 16,
+                    text = kindInfo.thanks,
+                },
+            }
+
+            if kindInfo.ticketInfo ~= nil and TicketBridgeAvailable() then
+                children[#children + 1] = gui.Label{
+                    fontSize = 16,
+                    width = 760,
+                    height = "auto",
+                    halign = "center",
+                    textAlignment = "center",
+                    textWrap = true,
+                    tmargin = 12,
+                    text = kindInfo.ticketInfo,
+                }
+            end
+
+            if reportid ~= nil and reportid ~= "" then
+                --Click to copy, so the user can quote the id back to us.
+                children[#children + 1] = gui.Label{
+                    fontSize = 20,
+                    width = "auto",
+                    height = "auto",
+                    halign = "center",
+                    tmargin = 20,
+                    text = string.format("Your ticket ID is <b>%s</b> (click to copy)", reportid),
+                    click = function(element)
+                        gui.Tooltip{ text = "Copied to Clipboard", valign = "top", borderWidth = 0 }(element)
+                        dmhub.CopyToClipboard(reportid)
+                    end,
+                }
+            end
+
+            confirmationPanel.children = children
+            formPanel:SetClass("collapsed", true)
+            confirmationPanel:SetClass("collapsed", false)
+        end
 
         local submitButton
 
@@ -4641,7 +5335,12 @@ local function CreateTopBar()
             halign = "right",
             hmargin = 8,
             click = function(element)
-                if m_submitting or m_submitted then
+                --After a successful send this is the Close button.
+                if m_submitted then
+                    CloseDialog()
+                    return
+                end
+                if m_submitting then
                     return
                 end
 
@@ -4660,12 +5359,18 @@ local function CreateTopBar()
                     includeLog = m_includeLog,
                     includeScreenshot = m_includeScreenshot,
                     allowGameEntry = m_allowGameEntry,
-                    contactOnDiscord = m_contactOnDiscord,
                     mood = m_mood,
                     attachments = m_attachments,
                     progress = function(ratio)
                         if statusLabel.valid and not m_submitted then
-                            statusLabel.text = string.format("Submitting... %d%%", math.floor(ratio * 100 + 0.5))
+                            --Uploads stop at 95%. The rest is saving the report,
+                            --which sends no progress, so say so instead of
+                            --sitting on a number that looks stuck.
+                            if ratio >= 0.95 then
+                                statusLabel.text = "Upload complete. Saving your report..."
+                            else
+                                statusLabel.text = string.format("Submitting... %d%%", math.floor(ratio * 100 + 0.5))
+                            end
                         end
                     end,
                     complete = function(reportid)
@@ -4673,15 +5378,9 @@ local function CreateTopBar()
                         m_submitted = true
                         m_reportid = reportid
                         if statusLabel.valid then
-                            local text = kindInfo.thanks
-                            if kindInfo.ticketInfo ~= nil and TicketBridgeAvailable() then
-                                text = text .. "\n\n" .. kindInfo.ticketInfo
-                            end
-                            if reportid ~= nil and reportid ~= "" then
-                                text = text .. string.format("\n\nYour ticket ID is %s (click to copy).", reportid)
-                            end
-                            statusLabel.text = text
-                            submitButton:SetClass("hidden", true)
+                            statusLabel.text = ""
+                            ShowConfirmation(reportid)
+                            submitButton.text = "Close"
                         end
 
                         --pick up the freshly created ticket so Your Tickets
@@ -4810,7 +5509,6 @@ local function CreateTopBar()
         end
 
         formChildren[#formChildren + 1] = gameEntryCheck
-        formChildren[#formChildren + 1] = discordSection
 
         if screenshotSection ~= nil then
             formChildren[#formChildren + 1] = screenshotSection
@@ -4818,6 +5516,8 @@ local function CreateTopBar()
 
         formChildren[#formChildren + 1] = attachButton
         formChildren[#formChildren + 1] = m_attachmentsList
+
+        formPanel.children = formChildren
 
         --sized so the whole form is visible without scrolling (the tallest
         --variant is a bug report with a screenshot section); vscroll remains
@@ -4832,15 +5532,8 @@ local function CreateTopBar()
                 flow = "vertical",
                 halign = "center",
 
-                gui.Panel{
-                    width = "100%",
-                    height = 640,
-                    vscroll = true,
-                    flow = "vertical",
-                    halign = "center",
-
-                    children = formChildren,
-                },
+                formPanel,
+                confirmationPanel,
 
                 statusLabel,
 
@@ -5033,14 +5726,15 @@ local function CreateTopBar()
             if type(ms) ~= "number" then
                 return ""
             end
-            return os.date("%b %d, %Y", math.floor(ms / 1000))
+            --a format other than "*t" makes os.date return a string
+            return os.date("%b %d, %Y", math.floor(ms / 1000)) --[[@as string]]
         end
 
         local function FormatTime(ms)
             if type(ms) ~= "number" then
                 return ""
             end
-            return os.date("%b %d, %Y %H:%M", math.floor(ms / 1000))
+            return os.date("%b %d, %Y %H:%M", math.floor(ms / 1000)) --[[@as string]]
         end
 
         --messages arrive as a map keyed by chronologically sortable strings;
@@ -5665,13 +6359,27 @@ local function CreateTopBar()
     --dmhub.SubmitSurveyResponse. A user who already responded is thanked and
     --offered the chance to change their answers, which arrive prefilled from
     --their previous response.
+
+    --The survey definition dmhub.GetSurvey delivers (see its stub).
+    ---@class CodexSurveyDefinition
+    ---@field id string
+    ---@field title? string
+    ---@field intro? string
+    ---@field completedMessage? string
+    ---@field thanks? string
+    ---@field questions table[] each has id, type, prompt and type-specific fields
+
     local function CreateSurveyDialog()
         local m_dialog = nil
         local m_titlescreenModal = nil
 
-        local m_survey = nil     --survey definition table from the cloud.
+        --survey definition table from the cloud; nil if none is published. The
+        --pages that read it are only built once CheckLoadingComplete saw it non-nil.
+        ---@type CodexSurveyDefinition|nil
+        local m_survey = nil
         local m_response = nil   --the user's previous response record, if any.
         local m_answers = {}     --working answers, keyed by question id.
+        ---@type string|integer
         local m_page = "loading" --"loading", "error", "intro", "finished", or a question index.
         local m_errorMessage = nil
         local m_submitting = false
@@ -5748,6 +6456,8 @@ local function CreateTopBar()
         end
 
         local function BuildIntroPage()
+            --only reached once CheckLoadingComplete saw a survey (m_page "intro")
+            ---@cast m_survey -nil
             local alreadyCompleted = (m_response ~= nil)
 
             local message
@@ -5839,6 +6549,8 @@ local function CreateTopBar()
         end
 
         local function BuildFinishedPage()
+            --only reached after submitting the loaded survey (m_page "finished")
+            ---@cast m_survey -nil
             return gui.Panel{
                 width = "100%",
                 height = "100%",
@@ -6224,6 +6936,7 @@ local function CreateTopBar()
                     if not otherInput.valid then
                         return
                     end
+                    ---@type string|nil
                     local text = otherInput.text
                     if text == "" then
                         text = nil
@@ -6281,6 +6994,8 @@ local function CreateTopBar()
         end
 
         local function BuildQuestionPage(index)
+            --question pages follow the intro page, so the survey has loaded
+            ---@cast m_survey -nil
             local questions = m_survey.questions
             local q = questions[index]
             local nquestions = #questions
@@ -6348,6 +7063,7 @@ local function CreateTopBar()
 
             --the question block: prompt (plus an Optional note) and the answer
             --control, gathered into one column centered in the page.
+            ---@type Panel[]
             local questionChildren = {
                 gui.Label{
                     fontSize = 22,
@@ -7069,6 +7785,49 @@ local function CreateTopBar()
             end,
         },
 
+        --Every window on the table, checked while open; a player's also
+        --lists what the Director shared and has open, which they closed
+        --(Tabletop.WindowsMenuEntries).
+        CreateCodexMenuItem{
+            name = "Windows",
+            --a ping for a window this user has closed waits here: the dot
+            --shows, and the item rings as each ping arrives (Tabletop.lua,
+            --DefinePings).
+            data = {pingWaiting = false},
+            newContentCheck = function()
+                local tabletop = rawget(_G, "Tabletop")
+                return tabletop ~= nil and tabletop.HasWindowsMenuPing ~= nil and tabletop.HasWindowsMenuPing()
+            end,
+            calculateVisibility = function(element)
+                --only where there is a table (not the lobby). BarFitMenuDropped:
+                --this item owns its selfStyle.collapsed, as Developer below does.
+                --Audio.lua makes a bare Tabletop table before Tabletop.lua
+                --loads, so check for the function, not just the table.
+                local tabletop = rawget(_G, "Tabletop")
+                local active = tabletop ~= nil and tabletop.IsActive ~= nil and tabletop.IsActive()
+                element.selfStyle.collapsed = cond(active and not BarFitMenuDropped(element), 0, 1)
+                if active and tabletop.HasWindowsMenuPing ~= nil then
+                    tabletop.UpdateWindowsMenuPing(element)
+                    local waiting = tabletop.HasWindowsMenuPing()
+                    if waiting ~= element.data.pingWaiting then
+                        element.data.pingWaiting = waiting
+                        element:FireEventTree("refreshAlert")
+                    end
+                end
+            end,
+            menuItems = function()
+                local tabletop = rawget(_G, "Tabletop")
+                local items = {}
+                if tabletop ~= nil and tabletop.WindowsMenuEntries ~= nil then
+                    items = tabletop.WindowsMenuEntries()
+                end
+                if #items == 0 then
+                    items = {{text = "No windows on the table", disabled = true}}
+                end
+                return items
+            end,
+        },
+
         m_adventureDocumentsBar,
 
         CreateCodexMenuItem{
@@ -7092,6 +7851,14 @@ local function CreateTopBar()
                                 menuItems[#menuItems+1] = entry
                             end
                         end
+                    end
+                end
+                --Encounter of the Week's situational rows (e.g. Skip to
+                --Combat during a montage). rawget: the EotW file may not load.
+                local eotwGame = rawget(_G, "EncounterOfTheWeekGame")
+                if eotwGame ~= nil and eotwGame.DeveloperMenuItems ~= nil then
+                    for _,item in ipairs(eotwGame.DeveloperMenuItems()) do
+                        menuItems[#menuItems+1] = item
                     end
                 end
                 return menuItems
@@ -7144,12 +7911,14 @@ local function CreateTopBar()
                     }
                 end
 
-                items[#items+1] = {
-                    text = "Survey",
-                    click = function()
-                        CreateSurveyDialog()
-                    end,
-                }
+                --Survey is disabled for now. CreateSurveyDialog is kept for
+                --a future survey; re-add this item to bring it back:
+                --  items[#items+1] = {
+                --      text = "Survey",
+                --      click = function()
+                --          CreateSurveyDialog()
+                --      end,
+                --  }
 
                 return items
             end,

@@ -39,7 +39,7 @@ assets = {}
 function assets:GetMonsterNode(id) end
 
 --- Creates and uploads a new artist entry with the given ID.
---- @param id string The artist ID.
+--- @param id? string The artist ID; a new id is generated when nil.
 function assets:AddAndUploadArtist(id) end
 
 --- Searches the built-in phosphor icon set by filename substring (case-insensitive), returning up to maxResults icon ids of the form "phosphor/<name>.png" in sorted order. Only the name index is consulted -- no icon textures are loaded. Pass an empty filter to page from the start of the set.
@@ -110,11 +110,12 @@ function assets:UploadImageAtlasAsset(options) end
 
 --- Uploads a PDF document from a file path. Options include path, guid, parentFolder, description, error, progress, and upload callbacks.
 --- @param options table Upload options.
---- @return string The GUID of the uploaded document.
+--- @return string|nil The GUID of the uploaded document, or nil when the file could not be read (error is called).
 function assets.UploadPDFDocumentAsset(options) end
 
---- Creates and uploads a new document folder from the given table arguments.
+--- Creates and uploads a new document folder from the given table arguments (description, parentFolder, ord, hidden, ownerid, and optionally id to choose the folder's id up front). Returns the new folder's id.
 --- @param tableArgs table The folder properties.
+--- @return string The id of the new folder.
 function assets:UploadNewDocumentFolder(tableArgs) end
 
 --- Uploads an audio file. Automatically converts FLAC and M4A (AAC/MPEG-4) files to MP3, and any other file Unity cannot decode (e.g. Opus) to Ogg Vorbis. Options include path, guid, parentFolder, description, error, progress, and upload callbacks.
@@ -127,7 +128,7 @@ function assets:UploadAudioAsset(options) end
 --- @return nil|string The GUID of the uploaded clipboard asset, or nil on failure.
 function assets:UploadClipboardAsset(options) end
 
---- Uploads a generic image asset. Options include path, description, parentFolder, imageType, ord, error, and upload callbacks. Pass core=true to force the upload into the global Core asset store regardless of the current game; ignored for non-admin users.
+--- Uploads a generic image asset. Options include path, description, parentFolder, imageType, ord, error, and upload callbacks. Pass core=true to force the upload into the global Core asset store regardless of the current game; ignored for non-admin users. An imageType of 'AvatarPopout' on an image with no real transparency is stored as 'Avatar' instead; read assets.imagesTable[guid].imageType in the upload callback for the type actually used.
 --- @param options table Upload options.
 --- @return nil|string The GUID of the uploaded image, or nil on failure.
 function assets:UploadImageAsset(options) end
@@ -217,7 +218,12 @@ function assets:RefreshAssets(cat) end
 --- @return nil|LocalImageOrVideoFileLua
 function assets:LoadImageOrVideoFileLocally(path) end
 
---- Loads an image file (png or jpeg) into the local cache without uploading, downscaling it if needed so its longer edge is at most maxDimension pixels. Pass 'CLIPBOARD' to load from the system clipboard. Returns nil if the file could not be read as an image. Intended for small branding images such as creator organization logos; call Upload on the result to commit it.
+--- Reads an image file's size from its header (PNG, JPEG or WebP) without decoding it, so it is instant even for a huge map. Returns {width, height, bytes}: the size in pixels and the file's length, or nil if the file is missing or not one of those formats.
+--- @param path string A local file path.
+--- @return nil|{width: number, height: number, bytes: number}
+function assets:ReadImageFileInfo(path) end
+
+--- Loads an image file (png, jpeg or webp) into the local cache without uploading, downscaling it if needed so its longer edge is at most maxDimension pixels. Pass 'CLIPBOARD' to load from the system clipboard. Returns nil if the file could not be read as an image. Used for small branding images such as creator organization logos (call Upload on the result to commit it) and for previews of dropped files. Decodes on the main thread, so a large file takes a moment.
 --- @param path string The file path or 'CLIPBOARD'.
 --- @param maxDimension number The maximum size in pixels of the image's longer edge.
 --- @return nil|LocalImageOrVideoFileLua
@@ -230,6 +236,6 @@ function assets:LoadImageFileLocallyResized(path, maxDimension) end
 --- @return nil|{data: LuaByteArray, width: number, height: number, bytes: number, format: 'jpeg'|'png'}
 function assets:ResizeCachedImage(imageid, width, height) end
 
---- Plays a local MP4 or WebM file silently and captures its first frame as an opaque PNG, ready for assets:UploadImageAsset{data = result.data} -- a poster image for the video. Nothing is uploaded. Pass maxWidth/maxHeight to scale the frame down to fit inside them (never up; scaled sizes are rounded to multiples of 4). done(result) is called with result = {data, width, height, videoWidth, videoHeight, duration}, width/height being the PNG's size and duration the video's length in seconds (0 if unknown); error(message) is called instead if the file cannot be played. The file is converted first if needed, as an upload would be, so this can take a few seconds.
---- @param options {path: string, maxWidth: nil|number, maxHeight: nil|number, done: fun(result: {data: LuaByteArray, width: number, height: number, videoWidth: number, videoHeight: number, duration: number}), error: nil|fun(message: string)}
+--- Plays a local MP4 or WebM file silently and captures its first frame as an opaque PNG, ready for assets:UploadImageAsset{data = result.data} -- a poster image for the video. Nothing is uploaded. Pass maxWidth/maxHeight to scale the frame down to fit inside them (never up; scaled sizes are rounded to multiples of 4). done(result) is called with result = {data, imageid, width, height, videoWidth, videoHeight, duration}, imageid being the PNG stored in the local cache (showable at once, not uploaded), width/height being the PNG's size and duration the video's length in seconds (0 if unknown); error(message) is called instead if the file cannot be played. The file is converted first if needed, as an upload would be, so this can take a few seconds.
+--- @param options {path: string, maxWidth: nil|number, maxHeight: nil|number, done: fun(result: {data: LuaByteArray, imageid: string, width: number, height: number, videoWidth: number, videoHeight: number, duration: number}), error: nil|fun(message: string)}
 function assets:ExtractVideoFrame(options) end

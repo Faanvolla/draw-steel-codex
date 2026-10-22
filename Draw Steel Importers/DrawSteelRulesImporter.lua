@@ -25,8 +25,9 @@ local function InitParser()
             g_nameToExistingAbility[string.lower(v.signatureAbility.name)] = v.signatureAbility
         end
 
-        if v:has_key("kitManeuverAbility") then
-            g_nameToExistingManeuver[string.lower(v.kitManeuverAbility.name)] = v.kitManeuverAbility
+        --kitManeuver is false, a bare true in some data, or the maneuver ability.
+        if type(v.kitManeuver) == "table" then
+            g_nameToExistingManeuver[string.lower(v.kitManeuver.name)] = v.kitManeuver
         end
     end
 
@@ -156,7 +157,6 @@ import.Register{
                     if string.find(string.lower(v.name), string.lower(subclassNameMatch.subclass)) ~= nil then
                         subclassid = key
                         print("CLASS:: Match subclass for heroic abilities", v.name, subclassNameMatch.subclass)
-                        found = true
                         break
                     end
                 end

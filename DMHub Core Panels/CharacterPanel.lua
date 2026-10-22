@@ -557,6 +557,13 @@ local CreateBestiaryNode
 --character panels selected beyond the focused one.
 local characterPanelsSelected = {}
 
+--While a party header is dragged, the party's members ARE the selection:
+--the engine (map placement, table cards) and the chat read them through
+--dmhub.GetSelectedCharacters. Members of a collapsed party have no row
+--panels, so this cannot be done by selecting rows.
+---@type string[]|nil
+local g_draggedPartyCharids = nil
+
 dmhub.GetSelectedMonster = function()
     if gui.GetFocus() == nil or (not gui.GetFocus().data.monsterid) then
         return nil
@@ -576,12 +583,22 @@ dmhub.GetSelectedMonster = function()
 end
 
 dmhub.GetSelectedCharacters = function()
+    if g_draggedPartyCharids ~= nil then
+        return g_draggedPartyCharids
+    end
+
     if gui.GetFocus() == nil or (not gui.GetFocus().data.charid) then
         return {}
     end
 
     local result = {}
     result[#result + 1] = gui.GetFocus().data.charid
+
+    --a tabletop card being dragged onto a map places just its own character,
+    --not the rows selected in this panel (Tabletop.lua).
+    if gui.GetFocus().data.tabletopCard then
+        return result
+    end
 
     for _, p in ipairs(characterPanelsSelected) do
         if p.valid and p.data.charid then
@@ -857,6 +874,7 @@ local function CharacterDetailsPanel(token)
 
     local m_characterPanel = CharacterPanel.CreateCharacterDetailsPanel(token)
 
+    local resultPanel
     resultPanel = gui.Panel {
         width = "100%",
         height = "auto",
@@ -965,6 +983,10 @@ local function CreateMonsterEntry(nodeid, startHidden)
 
     ---@type Panel
     local resultPanel = nil
+
+    --a drop on a bestiary folder moves this entry into it.
+    local dropOnFolder = mod.shared.CreateDragTargetFunction(node, function(nodeid) return assets:GetMonsterNode(nodeid) end,
+        "Monsters")
 
     --novel-content pip: lit while this monster is recorded as novel
     --(added or updated by a module install). Viewing the monster --
@@ -1193,12 +1215,32 @@ local function CreateMonsterEntry(nodeid, startHidden)
             beginDrag = function(element)
                 --element:FireEvent('click')
             end,
-            drag = mod.shared.CreateDragTargetFunction(node, function(nodeid) return assets:GetMonsterNode(nodeid) end,
-                "Monsters"),
+            drag = function(element, target)
+                Tabletop.BestiaryRowDragEnded(element)
+                --dropped on the chat: a link to the bestiary entry.
+                if ChatItemLinks.Dropped() then
+                    return
+                end
+                dropOnFolder(element, target)
+            end,
 
             dragging = function(element, target)
+                ChatItemLinks.Dragging(function()
+                    local selected = dmhub.GetSelectedMonster()
+                    if type(selected) == "table" then
+                        selected = selected.monsterid
+                    end
+                    return {ChatItemLinks.MonsterItem(selected)}
+                end)
                 if target == nil then
                     dmhub.SetDraggingMonster()
+                end
+                --tabletop view: over the table the row turns into the cards a
+                --drop makes; over the map only the placement ghost shows. The
+                --engine places what GetSelectedMonster reports.
+                local selected = dmhub.GetSelectedMonster()
+                if selected ~= nil then
+                    Tabletop.BestiaryRowDragging(element, selected.monsterid, selected.quantity)
                 end
             end,
 
@@ -2465,12 +2507,27 @@ CharacterPanel.CreateCharacterEntry = function(charid, party)
         events = {
 
             dragging = function(element, target)
+                ChatItemLinks.Dragging(function()
+                    local items = {}
+                    for _, charid in ipairs(dmhub.GetSelectedCharacters() or {}) do
+                        items[#items+1] = ChatItemLinks.CharacterItem(charid)
+                    end
+                    return items
+                end)
                 if target == nil then
                     dmhub.SetDraggingMonster()
                 end
+                --tabletop view: over the table the row turns into the card a
+                --drop makes; over the map only the placement ghost shows.
+                Tabletop.CharacterRowDragging(element, dmhub.GetSelectedCharacters() or {})
             end,
 
             drag = function(element, target)
+                Tabletop.CharacterRowDragEnded(element)
+                --dropped on the chat: links to the dragged characters.
+                if ChatItemLinks.Dropped() then
+                    return
+                end
                 if target ~= nil and target:HasClass("partyPanel") then
                     target = target.data.header
                 end
@@ -2599,8 +2656,32 @@ CharacterPanel.CreateCharacterEntry = function(charid, party)
 
                 clickTime = dmhub.Time()
 
+                --Pressing a row that is already part of a multi-selection
+                --keeps the selection, so a drag carries every selected
+                --hero. A plain click narrows to this row on release instead
+                --(the engine fires no click after a drag).
+                local modified = dmhub.modKeys['ctrl'] or dmhub.modKeys['shift']
+                element.data.narrowOnClick = (not modified) and #characterPanelsSelected > 0 and
+                    (gui.GetFocus() == element or element:HasClass("selected"))
+                if element.data.narrowOnClick then
+                    return
+                end
+
                 element:FireEvent("select", true)
 
+            end,
+
+            click = function(element)
+                if not element.data.narrowOnClick then
+                    return
+                end
+                element.data.narrowOnClick = false
+                if gui.GetFocus() == element then
+                    --"select" on the focused row would deselect it too.
+                    ClearCharacterPanelSelection()
+                else
+                    element:FireEvent("select", true)
+                end
             end,
 
             rightClick = function(element)
@@ -3093,14 +3174,8 @@ CharacterPanel.CreatePartyCharacters = function(partyid)
             refresh = function(element)
                 element:SetClass('empty', #partyMembers < 1)
             end,
-            press = function(element)
-                if element:HasClass("collapsed") then
-                    --the triangle itself isn't usable.
-                    return
-                end
-
-                ToggleCollapsed()
-            end,
+            --no press handler: a click on the caret bubbles to the header,
+            --which toggles on click (a handler here too toggled twice).
         },
     })
 
@@ -3116,7 +3191,8 @@ CharacterPanel.CreatePartyCharacters = function(partyid)
             partyid = party and party.id,
         },
 
-        draggable = false,
+        --a real party's band drags the whole party (see "dragging").
+        draggable = party ~= nil,
         canDragOnto = function(element, target)
             return false --target:HasClass('monster-drag-target') and not IsMonsterNodeSelfOrChildOf(element.data.nodeid, target.data.nodeid)
         end,
@@ -3147,11 +3223,43 @@ CharacterPanel.CreatePartyCharacters = function(partyid)
 
             --The whole header band toggles the folder (the caret alone was
             --too small a target). Select-all-members, which used to be the
-            --header's press action, moved to the right-click menu.
-            press = function(element, synthetic)
-                if not synthetic then
-                    ToggleCollapsed()
+            --header's press action, moved to the right-click menu. It
+            --toggles on click, not press, so starting a drag of the band
+            --does not fold the party (the engine fires no click after a drag).
+            click = function(element)
+                ToggleCollapsed()
+            end,
+
+            --Dragging the band drags every member of the party, the same as
+            --dragging their multi-selected rows: onto a map, onto the table
+            --as cards, or into the chat as links.
+            dragging = function(element, target)
+                if #partyMembers == 0 then
+                    return
                 end
+                g_draggedPartyCharids = partyMembers
+                ChatItemLinks.Dragging(function()
+                    local items = {}
+                    for _, charid in ipairs(partyMembers) do
+                        items[#items+1] = ChatItemLinks.CharacterItem(charid)
+                    end
+                    return items
+                end)
+                dmhub.SetDraggingMonster()
+                Tabletop.CharacterRowDragging(element, partyMembers)
+            end,
+
+            drag = function(element, target)
+                Tabletop.CharacterRowDragEnded(element)
+                ChatItemLinks.Dropped()
+                --the engine places a map or table drop from the selection
+                --after this event, so the party stays the selection briefly.
+                local charids = g_draggedPartyCharids
+                dmhub.Schedule(0.2, function()
+                    if g_draggedPartyCharids == charids then
+                        g_draggedPartyCharids = nil
+                    end
+                end)
             end,
 
             rightClick = function(element)

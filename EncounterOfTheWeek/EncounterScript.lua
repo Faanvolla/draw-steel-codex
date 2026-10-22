@@ -17,7 +17,11 @@
 --    warnings = { "line N: ...", ... },
 --    hasEncounterTag = bool,    -- a [[encounter]] island anywhere in the text
 --    story = { towngate = storySection, conclusion = ..., defeat = ... },
+--    part = nil | { number, title (nil if untitled), line },
 --  }
+--  part: a "# Part 2: The Ossuary" heading makes the document one part of a
+--    SERIES -- several encounters on one map, unlocked one after another.
+--    Not a beat. See "Encounter series" in EncounterOfTheWeek.md.
 --  storySection = { kind = "story", key, title, line, text, tags,
 --                   sceneTag, sceneLine }
 --    The "# Town Gate", "# Conclusion" and "# Defeat" sections. They are
@@ -102,6 +106,9 @@
 --  A tier line may read "teaser => full text": tiers[t] is the full text
 --  (the only part the effect grammar sees) and teasers[t] is what players
 --  see before the roll lands. Lines without "=>" have no teaser.
+--  tiers always has four entries: [4] is the critical (natural 19-20). When
+--  the author wrote only three, [4] is built from tier 3 plus an additional
+--  hero token (EncounterScript.AutoCriticalText) and roll.critAuto is true.
 --  section = { id, name, line, text = "", prompt = "", sceneTag = nil,
 --              mode = "together"|"individual", modeExplicit = bool,
 --              implicitOption = bool, options = { narrativeOption, ... },
@@ -115,6 +122,7 @@
 --                      effects = { effect, ... } }
 --  effect = { kind = "item"|"stamina"|"heal"|"temphp"|"surges"|"recovery"|
 --                    "loserecovery"|"herotoken"|"intelligence"|"malice"|
+--                    "immunityboon" (damageType = "poison", ...)|
 --                    "ally"|"vanquish"|
 --                    "initiative"|"nosurprise"|"fairinitiative"|
 --                    "knowstamina"|"revealzones"|"unlock"|"testmod"|
@@ -451,6 +459,14 @@ local function ParseClause(clause)
         return { kind = "maxstamina", target = staminaTarget, qty = staminaQty, text = clause }
     end
 
+    --"you gain poison immunity 2": damage immunity until the next respite.
+    --Before the item rule, which would read "you gain 2 poison immunity" as
+    --two items called "poison immunity".
+    local immunityQty, immunityType, immunityTarget = EncounterScript.ParseDamageImmunityClause(lower(clause))
+    if immunityQty ~= nil then
+        return { kind = "immunityboon", target = immunityTarget, qty = immunityQty, damageType = immunityType, text = clause }
+    end
+
     --"you lose a consumable": one consumable item, picked at random from the
     --hero's inventory. A hero with none loses a Recovery instead, quietly.
     local consumableQty, consumableTarget = EncounterScript.ParseLoseConsumableClause(lower(clause))
@@ -523,15 +539,27 @@ local function ParseClause(clause)
         if word ~= nil and EncounterScript.ParseQuantity(word) ~= nil then
             return { kind = "loserecovery", target = target, qty = EncounterScript.ParseQuantity(word), text = clause }
         end
+        --"each party member loses 1d3 recoveries": dice, rolled for each
+        --hero separately when it applies. qty is the most it can take.
+        local dice = word ~= nil and string.match(word, "^(%d*d%d+)$") or nil
+        if dice ~= nil then
+            local count, sides = string.match(dice, "^(%d*)d(%d+)$")
+            return { kind = "loserecovery", target = target, dice = dice,
+                qty = math.max(1, tonumber(count) or 1) * math.max(1, tonumber(sides) or 1), text = clause }
+        end
     end
 
     --"+<n> hero token[s]" / "you gain <n> hero token[s]". Hero tokens are one
     --pool the whole party draws on, so there is no self/party distinction.
-    n = string.match(lc, "^%+?%s*(%S+) hero tokens?$")
-        or string.match(lc, "^you gain (%S+) hero tokens?$")
-        or string.match(lc, "^gain %+?(%S+) hero tokens?$")
-        or string.match(lc, "^the party gains (%S+) hero tokens?$")
-        or string.match(lc, "^each party members? gains? (%S+) hero tokens?$")
+    --"an additional" / "an extra" hero token reads as one (the automatic
+    --critical tier says it that way).
+    local tokenText = string.gsub(lc, " additional hero token", " hero token")
+    tokenText = string.gsub(tokenText, " extra hero token", " hero token")
+    n = string.match(tokenText, "^%+?%s*(%S+) hero tokens?$")
+        or string.match(tokenText, "^you gain (%S+) hero tokens?$")
+        or string.match(tokenText, "^gain %+?(%S+) hero tokens?$")
+        or string.match(tokenText, "^the party gains (%S+) hero tokens?$")
+        or string.match(tokenText, "^each party members? gains? (%S+) hero tokens?$")
     if n ~= nil and EncounterScript.ParseQuantity(n) ~= nil then
         return { kind = "herotoken", qty = EncounterScript.ParseQuantity(n), text = clause }
     end
@@ -935,6 +963,49 @@ function EncounterScript.ParseDamageBoonClause(lc)
         local n = SignedQuantity(string.match(lc, p))
         if n ~= nil then
             return n, "party"
+        end
+    end
+    return nil
+end
+
+--Draw Steel's damage types, the only words a "<type> immunity N" boon takes.
+EncounterScript.DAMAGE_TYPES = { "acid", "cold", "corruption", "fire", "holy", "lightning", "poison", "psychic", "sonic" }
+
+--"You gain poison immunity 2" and its spellings: damage immunity N to one
+--damage type until the next respite. Returns the amount, the damage type
+--(lower case) and "self" / "party", or nil.
+--  "you gain poison immunity 2" / "you gain 2 poison immunity"
+--  "each party member gains fire immunity 1"
+function EncounterScript.ParseDamageImmunityClause(lc)
+    lc = StripEncounterTiming(lc)
+    local function Read(rest)
+        local damageType, n = string.match(rest, "^(%a+) immunity (%S+)$")
+        if damageType == nil then
+            n, damageType = string.match(rest, "^(%S+) (%a+) immunity$")
+        end
+        n = SignedQuantity(n)
+        if n == nil or n <= 0 then
+            return nil
+        end
+        for _, known in ipairs(EncounterScript.DAMAGE_TYPES) do
+            if damageType == known then
+                return n, damageType
+            end
+        end
+        return nil
+    end
+    local rest = string.match(lc, "^you gain (.+)$")
+    if rest ~= nil then
+        local n, damageType = Read(rest)
+        if n ~= nil then
+            return n, damageType, "self"
+        end
+    end
+    rest = string.match(lc, "^each party members? gains? (.+)$")
+    if rest ~= nil then
+        local n, damageType = Read(rest)
+        if n ~= nil then
+            return n, damageType, "party"
         end
     end
     return nil
@@ -1736,12 +1807,16 @@ end
 
 --Every effect list an option can apply: each tier of its roll, its free
 --rules, and the same for each knack. For reference checks and the icons.
-function EncounterScript.OptionEffectLists(option, includeKnacks)
+--`includeCritical` false leaves out the critical tier (the icons: the
+--critical is kept secret until it is rolled).
+function EncounterScript.OptionEffectLists(option, includeKnacks, includeCritical)
     local lists = {}
     local function AddVersion(v)
         if v.roll ~= nil then
             for t in ipairs(v.roll.tiers or {}) do
-                lists[#lists + 1] = v.roll.effects[t] or {}
+                if t <= 3 or includeCritical ~= false then
+                    lists[#lists + 1] = v.roll.effects[t] or {}
+                end
             end
         end
         if v.free ~= nil then
@@ -1790,6 +1865,19 @@ function EncounterScript.OptionTakeable(option)
     return option ~= nil and (option.roll ~= nil or option.free ~= nil or option.delve ~= nil)
 end
 
+--The listed skill the hero making the test rolls with: the first they are
+--trained in, or nil.
+--  listed        the roll's skill ids, in order
+--  mainTrained   { [skillid] = true } the hero making the test is trained in
+function EncounterScript.MainTestSkill(listed, mainTrained)
+    for _, id in ipairs(listed or {}) do
+        if (mainTrained or {})[id] then
+            return id
+        end
+    end
+    return nil
+end
+
 --Split a tier line on its first "=>" into (teaser, fullText). A line with
 --no "=>" returns (nil, line). Both halves are trimmed; an empty teaser is
 --returned as "" so the caller can warn.
@@ -1800,6 +1888,21 @@ function EncounterScript.SplitTeaser(tierText)
     end
     return trim(teaser), trim(fullText)
 end
+
+--The critical tier a test gets when its author wrote only three: tier 3's
+--full text and an additional hero token for the party.
+function EncounterScript.AutoCriticalText(tier3Text)
+    local text = trim(tier3Text or "")
+    if text == "" then
+        return EncounterScript.AUTO_CRITICAL_BONUS
+    end
+    if string.match(text, "[%.,;!%?]$") == nil then
+        text = text .. "."
+    end
+    return text .. " " .. EncounterScript.AUTO_CRITICAL_BONUS
+end
+
+EncounterScript.AUTO_CRITICAL_BONUS = "The party gains an additional hero token."
 
 --What a tier row should read for a viewer: the full text when the tier has
 --landed (or has no teaser), the teaser otherwise.
@@ -2062,6 +2165,9 @@ end
 --  Witch is alarmed                  an emote (alert, scared, alarmed),
 --  Goblin (scared): Let go!          alone or on a line of speech; it
 --                                    plays as the next line appears
+--  ??? (offstage): Who goes there?   an off-stage voice: a speaker who
+--                                    never enters; their name shows over
+--                                    the line, but no portrait comes on
 --  if PC speaks Hyrallic then        branches: if / elseif / else / end
 --  anything else                     narration
 --The compiled scene is a tree of steps; FlattenScene walks it for one hero
@@ -2265,6 +2371,54 @@ function EncounterScript.SceneActors(rawLists)
     return actors
 end
 
+--Is a scene line one of a branch's own lines? Returns "if" / "elseif" (+
+--the condition text), "else", "end", or nil for an ordinary step.
+--Narration may begin with "If" ("If you listen closely..."): it is a branch
+--only when it ends in "then" or reads as a condition.
+function EncounterScript.SceneBranchLine(text)
+    local line = trim(text or "")
+    local lc = lower(line)
+    if lc == "else" or lc == "else:" or lc == "otherwise" then
+        return "else"
+    end
+    if lc == "end" or lc == "end if" or lc == "endif" then
+        return "end"
+    end
+    local function IsBranch(condText)
+        if condText == nil then
+            return false
+        end
+        if string.match(lower(condText), "%s+then$") ~= nil then
+            return true
+        end
+        local _, problems = EncounterScript.ParseCondition(condText)
+        return #problems == 0
+    end
+    local elseifCond = string.match(line, "^[eE][lL][sS][eE]%s*[iI][fF]%s+(.+)$")
+    if IsBranch(elseifCond) then
+        return "elseif", elseifCond
+    end
+    local ifCond = string.match(line, "^[iI][fF]%s+(.+)$")
+    if IsBranch(ifCond) then
+        return "if", ifCond
+    end
+    return nil
+end
+
+--"Stranger (offstage)" / "??? (off-stage)" -> "Stranger" / "???": a voice
+--that speaks without coming on stage. nil when the speaker is not marked.
+local function OffstageSpeaker(speaker)
+    local bare, word = string.match(trim(speaker or ""), "^(.-)%s*%(%s*([%a][%a%s%-]*)%)$")
+    if bare == nil or trim(bare) == "" then
+        return nil
+    end
+    word = string.gsub(lower(trim(word)), "[%s%-]", "")
+    if word ~= "offstage" then
+        return nil
+    end
+    return trim(bare)
+end
+
 --Compile one run of raw scene lines ({ text, line }) into a step tree.
 --`part` is "intro", "option" or "outcome": only an outcome knows the tier.
 --`warn(line, fmt, ...)` reports authoring problems.
@@ -2292,28 +2446,10 @@ function EncounterScript.CompileScene(rawLines, actors, part, warn)
 
     for _, raw in ipairs(rawLines or {}) do
         local line = trim(raw.text)
-        local lc = lower(line)
         local lineNo = raw.line
-        local ifCond = string.match(line, "^[iI][fF]%s+(.+)$")
-        local elseifCond = string.match(line, "^[eE][lL][sS][eE]%s*[iI][fF]%s+(.+)$")
-        --narration may begin with "If" ("If you listen closely..."): it is
-        --a branch only when it ends in "then" or reads as a condition.
-        local function IsBranch(condText)
-            if condText == nil then
-                return false
-            end
-            if string.match(lower(condText), "%s+then$") ~= nil then
-                return true
-            end
-            local _, problems = EncounterScript.ParseCondition(condText)
-            return #problems == 0
-        end
-        if not IsBranch(elseifCond) then
-            elseifCond = nil
-        end
-        if elseifCond == nil and not IsBranch(ifCond) then
-            ifCond = nil
-        end
+        local branchKind, condText = EncounterScript.SceneBranchLine(line)
+        local ifCond = branchKind == "if" and condText or nil
+        local elseifCond = branchKind == "elseif" and condText or nil
         if elseifCond ~= nil then
             local frame = stack[#stack]
             if frame == nil or frame.inElse then
@@ -2330,7 +2466,7 @@ function EncounterScript.CompileScene(rawLines, actors, part, warn)
             local list = Current()
             list[#list + 1] = node
             stack[#stack + 1] = { node = node, steps = branch.steps }
-        elseif lc == "else" or lc == "else:" or lc == "otherwise" then
+        elseif branchKind == "else" then
             local frame = stack[#stack]
             if frame == nil or frame.inElse then
                 warn(lineNo, "'%s' has no 'if' above it; ignored", line)
@@ -2339,7 +2475,7 @@ function EncounterScript.CompileScene(rawLines, actors, part, warn)
                 frame.steps = frame.node.elseSteps
                 frame.inElse = true
             end
-        elseif lc == "end" or lc == "end if" or lc == "endif" then
+        elseif branchKind == "end" then
             if #stack == 0 then
                 warn(lineNo, "'end' has no 'if' above it; ignored")
             else
@@ -2371,15 +2507,22 @@ function EncounterScript.CompileScene(rawLines, actors, part, warn)
                 local speaker, said = string.match(line, "^([^:]+):%s*(.+)$")
                 --"Goblin (scared): Let go!" -- an emote on the speaker.
                 local speakerEmote = nil
+                --"??? (offstage): Who's there?" -- a voice that never comes on stage.
+                local offstage = nil
                 if speaker ~= nil then
                     local bare, word = string.match(trim(speaker), "^(.-)%s*%((%a+)%)$")
                     if bare ~= nil and EncounterScript.SCENE_EMOTES[lower(word)] then
                         speaker = bare
                         speakerEmote = lower(word)
                     end
+                    local voice = OffstageSpeaker(speaker)
+                    if voice ~= nil then
+                        speaker = voice
+                        offstage = true
+                    end
                 end
                 local key = speaker ~= nil and lower(trim(speaker)) or nil
-                if key ~= nil and (key == "pc" or actors[key] ~= nil) then
+                if key ~= nil and (key == "pc" or actors[key] ~= nil or offstage) then
                     local lang, rest = string.match(said, "^%(%s*[iI][nN]%s+([^)]-)%s*%)%s*(.*)$")
                     step = {
                         kind = "say",
@@ -2387,6 +2530,7 @@ function EncounterScript.CompileScene(rawLines, actors, part, warn)
                         text = cond(lang ~= nil, rest, said),
                         lang = lang,
                         emote = speakerEmote,
+                        offstage = offstage,
                         line = lineNo,
                     }
                 else
@@ -2487,7 +2631,7 @@ function EncounterScript.FlattenScene(steps, env, cast)
                     table.remove(cast, i)
                 end
             else
-                if step.kind == "say" and step.speaker ~= "PC" and OnStage(step.speaker) == nil then
+                if step.kind == "say" and step.speaker ~= "PC" and not step.offstage and OnStage(step.speaker) == nil then
                     local actor = (env.actors or {})[lower(step.speaker)]
                     cast[#cast + 1] = { name = step.speaker, monster = actor ~= nil and actor.monster or step.speaker }
                 end
@@ -2722,6 +2866,22 @@ function EncounterScript.AnnotationKey(text, tagText, line)
     return tagText .. "-" .. count
 end
 
+--"Part 2: The Ossuary" (a "#" heading's text) -> 2, "The Ossuary"; "Part 3"
+---> 3, nil. nil when the heading is not a part heading. A series is one
+--encounter map played as several encounters, unlocked in order; each part
+--is its own script document in the map's journal folder.
+function EncounterScript.ParsePartHeading(title)
+    local number, rest = string.match(title or "", "^[Pp][Aa][Rr][Tt]%s+(%d+)(.*)$")
+    if number == nil then
+        return nil, nil
+    end
+    rest = trim(string.gsub(rest, "^%s*[:%-]?", "", 1))
+    if rest == "" then
+        rest = nil
+    end
+    return tonumber(number), rest
+end
+
 --The story sections ("# Town Gate", "# Conclusion", "# Defeat"): lowered
 --heading -> the key they are stored under in parse.story.
 EncounterScript.STORY_SECTIONS = {
@@ -2779,11 +2939,21 @@ function EncounterScript.Parse(text)
         return round
     end
 
+    --Where a paragraph sat: holder[key] collects {first, last} line spans so
+    --the montage builder (EncounterScriptEdit) can rewrite exactly those lines.
+    local spanFirst, spanLast = 0, 0
+    local function AddSpan(holder, key)
+        holder[key] = holder[key] or {}
+        local spans = holder[key]
+        spans[#spans + 1] = { spanFirst, spanLast }
+    end
+
     local function FlushParagraph()
         if #paragraph == 0 then
             return
         end
         local text = trim(table.concat(paragraph, "\n"))
+        spanFirst, spanLast = paragraphLine, paragraphLine + #paragraph - 1
         paragraph = {}
         if text == "" then
             return
@@ -2793,6 +2963,11 @@ function EncounterScript.Parse(text)
             return
         end
         if beat.kind == "story" then
+            beat.text = cond(beat.text == "", text, beat.text .. "\n\n" .. text)
+            AddSpan(beat, "textLines")
+            return
+        end
+        if beat.kind == "part" then
             beat.text = cond(beat.text == "", text, beat.text .. "\n\n" .. text)
             return
         end
@@ -2819,6 +2994,7 @@ function EncounterScript.Parse(text)
             end
             if option ~= nil then
                 option.text = cond(option.text == "", text, option.text .. "\n\n" .. text)
+                AddSpan(option, "textLines")
                 return
             end
             if section ~= nil then
@@ -2833,12 +3009,15 @@ function EncounterScript.Parse(text)
                     if rest ~= "" then
                         section.prompt = cond(section.prompt == "", rest, section.prompt .. "\n\n" .. rest)
                     end
+                    AddSpan(section, "promptLines")
                     return
                 end
                 section.text = cond(section.text == "", text, section.text .. "\n\n" .. text)
+                AddSpan(section, "textLines")
                 return
             end
             beat.intro = cond(beat.intro == "", text, beat.intro .. "\n\n" .. text)
+            AddSpan(beat, "introLines")
             return
         end
         if beat.kind == "encounter" and reinforcement ~= nil then
@@ -2857,6 +3036,8 @@ function EncounterScript.Parse(text)
                     else
                         reinforcement.schedule = schedule
                     end
+                    --where it sits, for the script builder (the first one).
+                    reinforcement.scheduleLine = reinforcement.scheduleLine or lineIndex
                 elseif key == "enter" or key == "enters" or key == "entry" or key == "zone" then
                     local zone = EncounterScript.ParseReinforcementZone(rest)
                     if zone == nil then
@@ -2864,15 +3045,20 @@ function EncounterScript.Parse(text)
                     else
                         reinforcement.zone = zone
                     end
+                    reinforcement.zoneLine = reinforcement.zoneLine or lineIndex
                 elseif key == "shout" or key == "shouts" or key == "say" or key == "says" or key == "cry" or key == "yell" then
                     local shout = EncounterScript.ParseShout(rest)
                     if shout ~= nil then
                         reinforcement.shouts[#reinforcement.shouts + 1] = shout
+                        reinforcement.shoutLines = reinforcement.shoutLines or {}
+                        reinforcement.shoutLines[#reinforcement.shoutLines + 1] = { text = shout, line = lineIndex }
                     end
                 elseif label ~= nil then
                     Warn(lineIndex, "reinforcements '%s': '%s:' is not 'Arrive:', 'Enter:' or 'Shout:'; ignored", reinforcement.name, trim(label))
                 else
                     reinforcement.text = cond(reinforcement.text == "", trim(l), reinforcement.text .. "\n" .. trim(l))
+                    reinforcement.noteLines = reinforcement.noteLines or {}
+                    reinforcement.noteLines[#reinforcement.noteLines + 1] = lineIndex
                 end
                 lineIndex = lineIndex + 1
             end
@@ -2915,6 +3101,7 @@ function EncounterScript.Parse(text)
         if knack ~= nil then
             --prose under a knack heading is that version's description.
             knack.text = cond(knack.text == "", text, knack.text .. "\n\n" .. text)
+            AddSpan(knack, "textLines")
             return
         end
         if option ~= nil then
@@ -2927,6 +3114,7 @@ function EncounterScript.Parse(text)
                 return
             end
             option.text = cond(option.text == "", text, option.text .. "\n\n" .. text)
+            AddSpan(option, "textLines")
             return
         end
         if entry ~= nil then
@@ -2941,6 +3129,7 @@ function EncounterScript.Parse(text)
             end
             if key == "options" or key == "option" then
                 entry.approach = cond(entry.approach == "", rest, entry.approach .. "\n\n" .. rest)
+                AddSpan(entry, "approachLines")
                 return
             end
             if key == "consequence" or key == "consequences" then
@@ -2948,7 +3137,7 @@ function EncounterScript.Parse(text)
                     Warn(paragraphLine, "Consequence: on an opportunity (%s) is ignored", entry.name)
                     return
                 end
-                entry.consequence = { text = rest, effects = EncounterScript.ParseEffects(rest) }
+                entry.consequence = { text = rest, effects = EncounterScript.ParseEffects(rest), lines = { spanFirst, spanLast } }
                 return
             end
             if EncounterScript.IsScalingDirectiveLine(text) then
@@ -2956,6 +3145,7 @@ function EncounterScript.Parse(text)
                 return
             end
             entry.description = cond(entry.description == "", text, entry.description .. "\n\n" .. text)
+            AddSpan(entry, "descriptionLines")
             return
         end
         if beat.kind == "delve" then
@@ -2966,6 +3156,7 @@ function EncounterScript.Parse(text)
             if string.match(orderText, "^order:%s*in%s+sequence%.?$") or string.match(orderText, "^order:%s*in%s+order%.?$")
                 or string.match(orderText, "^obstacles:%s*in%s+order%.?$") then
                 beat.ordered = true
+                beat.orderLines = { spanFirst, spanLast }
                 return
             end
             --"Chest: every 1-2 obstacles" sets how often a chest turns up;
@@ -2982,9 +3173,11 @@ function EncounterScript.Parse(text)
                 else
                     beat.chestEvery = { lo, hi }
                 end
+                beat.chestLines = { spanFirst, spanLast }
                 return
             end
             beat.intro = cond(beat.intro == "", text, beat.intro .. "\n\n" .. text)
+            AddSpan(beat, "introLines")
             return
         end
         if round ~= nil then
@@ -3012,6 +3205,10 @@ function EncounterScript.Parse(text)
                 return
             end
             text = table.concat(leftover, "\n")
+        else
+            --prose mixed into a round's scaling lines has no clean span of its
+            --own; only the beat's own intro paragraphs are editable as such.
+            AddSpan(beat, "introLines")
         end
         beat.intro = cond(beat.intro == "", text, beat.intro .. "\n\n" .. text)
     end
@@ -3068,12 +3265,15 @@ function EncounterScript.Parse(text)
             local kind = lower(title)
             local delveName = string.match(title, "^[Dd]elve:%s*(.+)$")
             local storyKey = EncounterScript.STORY_SECTIONS[kind]
+            local partNumber, partTitle = EncounterScript.ParsePartHeading(title)
             if delveName ~= nil then
                 kind = "delve"
             elseif storyKey ~= nil then
                 kind = "story"
+            elseif partNumber ~= nil then
+                kind = "part"
             elseif kind ~= "montage" and kind ~= "encounter" and kind ~= "narrative" then
-                Warn(i, "unknown beat '%s' (expected Montage, Narrative, Encounter, Delve: <name>, Town Gate, Conclusion or Defeat); ignored", title)
+                Warn(i, "unknown beat '%s' (expected Montage, Narrative, Encounter, Delve: <name>, Part <n>: <title>, Town Gate, Conclusion or Defeat); ignored", title)
                 kind = "unknown"
             end
             beat = { kind = kind, title = title, line = i, tags = {} }
@@ -3107,6 +3307,17 @@ function EncounterScript.Parse(text)
                     Warn(i, "a second '# %s'; only the first is used", title)
                 else
                     result.story[storyKey] = beat
+                end
+            elseif kind == "part" then
+                --not a beat: it says which part of a series this script is.
+                --Prose under it is the author's own notes.
+                beat.number = partNumber
+                beat.name = partTitle
+                beat.text = ""
+                if result.part ~= nil then
+                    Warn(i, "a second '# %s'; a script is one part, so only '# Part %d' counts (give each part its own document)", title, result.part.number)
+                else
+                    result.part = { number = partNumber, title = partTitle, line = i }
                 end
             else
                 result.beats[#result.beats + 1] = beat
@@ -3299,6 +3510,7 @@ function EncounterScript.Parse(text)
                 end
                 entry.scripted = true
                 entry.sceneLines = entry.sceneLines or {}
+                entry.sceneSepLine = entry.sceneSepLine or i
                 sceneTarget = entry.sceneLines
             end
         elseif string.match(line, "^%[%[.+%]%]$") then
@@ -3342,6 +3554,7 @@ function EncounterScript.Parse(text)
                     reinforcement.islands[#reinforcement.islands + 1] = { tag = tagText, line = i }
                 elseif tagName == "encounter" and beat.encounterTag == nil then
                     beat.encounterTag = tagText
+                    beat.encounterLine = i
                 end
             end
         elseif string.match(line, "^|") and beat ~= nil and beat.kind == "narrative" then
@@ -3358,6 +3571,9 @@ function EncounterScript.Parse(text)
                     end
                     option.effects[#option.effects + 1] = effect
                 end
+                --each "|" line, for the script builder.
+                option.ruleLines = option.ruleLines or {}
+                option.ruleLines[#option.ruleLines + 1] = i
             end
         elseif string.match(line, "^|") then
             --a power roll block: "|Name: Attr" then 3-4 "|tier" lines
@@ -3392,7 +3608,8 @@ function EncounterScript.Parse(text)
                 local rulesText = trim(string.gsub(string.match(line, "^|(.*)$") or "", "|%s*$", ""))
                 if rulesText ~= "" then
                     local first = holder.free == nil
-                    holder.free = holder.free or { text = "", effects = {}, line = i }
+                    holder.free = holder.free or { text = "", effects = {}, line = i, lines = {} }
+                    holder.free.lines[#holder.free.lines + 1] = i
                     holder.free.text = cond(holder.free.text == "", rulesText, holder.free.text .. " " .. rulesText)
                     for _, effect in ipairs(EncounterScript.ParseEffects(rulesText)) do
                         if effect.unrecognized then
@@ -3408,7 +3625,7 @@ function EncounterScript.Parse(text)
             elseif name ~= nil and dice ~= nil then
                 --"|Treasure: 1d6" then one "|1-2: result" row per range: a
                 --table rolled on with plain dice (a delve's chest).
-                local tableRoll = { name = trim(name), dice = lower(dice), rows = {} }
+                local tableRoll = { name = trim(name), dice = lower(dice), rows = {}, line = i }
                 local j = i + 1
                 while j <= #lines do
                     local rowText = string.match(trim(lines[j]), "^|([^|]*)$")
@@ -3434,6 +3651,7 @@ function EncounterScript.Parse(text)
                     end
                     j = j + 1
                 end
+                tableRoll.lastLine = j - 1
                 if entry ~= nil and entry.section == "chest" then
                     if entry.table ~= nil then
                         Warn(i, "the chest already has a table; '%s' ignored", trim(name))
@@ -3459,6 +3677,7 @@ function EncounterScript.Parse(text)
                 Warn(i, "'|' line is not a power roll header (|Name: Attr); ignored")
             else
                 local tiers = {}
+                local tierLines = {}
                 local riders = {}
                 local j = i + 1
                 while j <= #lines do
@@ -3487,6 +3706,7 @@ function EncounterScript.Parse(text)
                         break
                     else
                         tiers[#tiers + 1] = trim(tierText)
+                        tierLines[#tiers] = j
                     end
                     j = j + 1
                 end
@@ -3499,7 +3719,17 @@ function EncounterScript.Parse(text)
                 elseif holder.free ~= nil then
                     Warn(i, "option '%s' already has rules with no roll ('%s'); the power roll '%s' is ignored", (option or {}).name or "?", holder.free.text, trim(name))
                 else
-                    local roll = { name = trim(name), attr = trim(attr), tiers = tiers, teasers = {}, effects = {}, riders = riders }
+                    --every montage test has a critical (natural 19-20). One
+                    --the author did not write is tier 3 plus a hero token.
+                    local critAuto = false
+                    if #tiers == 3 then
+                        tiers[4] = EncounterScript.AutoCriticalText(select(2, EncounterScript.SplitTeaser(tiers[3])))
+                        critAuto = true
+                    end
+                    --line / tierLines / lastLine: where the block sits (tierLines
+                    --has no entry for an automatic critical), for EncounterScriptEdit.
+                    local roll = { name = trim(name), attr = trim(attr), tiers = tiers, teasers = {}, effects = {}, riders = riders, critAuto = critAuto,
+                        line = i, tierLines = tierLines, lastLine = j - 1 }
                     for t, tierText in ipairs(tiers) do
                         local teaser, fullText = EncounterScript.SplitTeaser(tierText)
                         if teaser == "" then
@@ -3510,7 +3740,8 @@ function EncounterScript.Parse(text)
                         roll.teasers[t] = teaser
                         roll.effects[t] = EncounterScript.ParseEffects(fullText)
                         for _, effect in ipairs(roll.effects[t]) do
-                            if effect.unrecognized then
+                            --an automatic critical repeats tier 3, which has warned already.
+                            if effect.unrecognized and not (critAuto and t == 4) then
                                 Warn(i + t, "unrecognized effect '%s' (shown as text only)", effect.text)
                             end
                         end
@@ -3924,6 +4155,7 @@ local OUTCOME_OF_EFFECT = {
     temphp = "temphp",
     malice = "malice",
     stamina = "harm",
+    damage = "harm",
     loserecovery = "harm",
     maxstamina = "harm",
     loseconsumable = "harm",
@@ -3955,7 +4187,7 @@ end
 --obstacle test and chest row of the delve it enters.
 local function AddOptionOutcomes(found, option, parse, seenDelves)
     --this version's own tiers or free rules (a knack's are its own version).
-    for _, effects in ipairs(EncounterScript.OptionEffectLists(option, false)) do
+    for _, effects in ipairs(EncounterScript.OptionEffectLists(option, false, false)) do
         AddEffectOutcomes(found, effects, "option")
     end
     if option.delve ~= nil then
@@ -4285,6 +4517,9 @@ function EncounterScript.DescribeEffect(effect)
     elseif effect.kind == "recovery" then
         return string.format("%s recovery value is increased by %d until the next respite", cond(effect.target == "party", "every hero's", "the hero's"), effect.qty)
     elseif effect.kind == "loserecovery" then
+        if effect.dice ~= nil then
+            return string.format("%s loses %s recoveries (rolled for each hero)", cond(effect.target == "party", "every hero", "the hero"), effect.dice)
+        end
         return string.format("%s loses %s", cond(effect.target == "party", "every hero", "the hero"), EncounterScript.Plural(effect.qty, "recovery", "recoveries"))
     elseif effect.kind == "herotoken" then
         return string.format("the party gains %s", EncounterScript.Plural(effect.qty, "hero token"))
@@ -4314,6 +4549,8 @@ function EncounterScript.DescribeEffect(effect)
         return string.format("roll %s on '%s'", cond(effect.qty == 1, "once", tostring(effect.qty) .. " times"), effect.name)
     elseif effect.kind == "damageboon" then
         return string.format("%s rolled damage +%d until the next respite", cond(effect.target == "party", "every hero's", "the hero's"), effect.qty)
+    elseif effect.kind == "immunityboon" then
+        return string.format("%s %s immunity %d until the next respite", cond(effect.target == "party", "every hero gains", "the hero gains"), effect.damageType, effect.qty)
     elseif effect.kind == "maxstamina" then
         return string.format("%s maximum stamina -%d until the next respite", cond(effect.target == "party", "every hero's", "the hero's"), effect.qty)
     elseif effect.kind == "loseconsumable" then
@@ -4363,4 +4600,154 @@ end
 --The player-facing line for the surprise-immunity boon.
 function EncounterScript.DescribeSurpriseImmunity()
     return "The heroes cannot be surprised"
+end
+
+--- the clause catalogue ------------------------------------------------------
+--
+--Every mechanical clause kind ParseClause knows, for the montage builder's
+--outcome picker: a label, a group, the parameters it takes (in the order
+--the picker shows them) and defaults for a new one. ClauseText writes the
+--canonical clause for an effect table, and the tests check that every
+--kind's clause parses back to the same kind and values -- so the picker
+--cannot drift from the grammar.
+--
+--Parameters name the effect field they set:
+--  target (self/party), qty, recoveries (qty, or dice "1d3"), item, monster,
+--  entry (a locked entry to unlock), option (a test of this montage),
+--  table (a dice table of the entry), testeffect (edge/bane/...), outcome
+--  (initiative), keyword (monster keyword), zone (zone keyword), object
+--  (map object), damageType.
+EncounterScript.CLAUSES = {
+    { kind = "item", group = "Reward", label = "Gain an item", params = { "target", "qty", "item" },
+        defaults = { target = "self", qty = 1, name = "Healing Potion" } },
+    { kind = "herotoken", group = "Reward", label = "Hero tokens", params = { "qty" }, defaults = { qty = 1 } },
+    { kind = "intelligence", group = "Reward", label = "Intelligence", params = { "qty" }, defaults = { qty = 1 } },
+    { kind = "heal", group = "Reward", label = "Heal Stamina", params = { "target", "qty" }, defaults = { target = "self", qty = 5 } },
+    { kind = "temphp", group = "Reward", label = "Temporary Stamina", params = { "target", "qty" }, defaults = { target = "self", qty = 5 } },
+    { kind = "surges", group = "Reward", label = "Surges (next combat)", params = { "target", "qty" }, defaults = { target = "self", qty = 1 } },
+    { kind = "recovery", group = "Reward", label = "Recovery value bonus", params = { "target", "qty" }, defaults = { target = "self", qty = 2 } },
+    { kind = "damageboon", group = "Reward", label = "Rolled damage bonus", params = { "target", "qty" }, defaults = { target = "self", qty = 1 } },
+    { kind = "immunityboon", group = "Reward", label = "Damage immunity", params = { "target", "damageType", "qty" },
+        defaults = { target = "self", damageType = "poison", qty = 2 } },
+    { kind = "ally", group = "Reward", label = "An ally joins", params = { "monster" }, defaults = { name = "Wolf" } },
+    { kind = "stamina", group = "Cost", label = "Lose Stamina", params = { "target", "qty" }, defaults = { target = "self", qty = 3 } },
+    { kind = "loserecovery", group = "Cost", label = "Lose Recoveries", params = { "target", "recoveries" }, defaults = { target = "self", qty = 1 } },
+    { kind = "loseconsumable", group = "Cost", label = "Lose a consumable", params = { "target", "qty" }, defaults = { target = "self", qty = 1 } },
+    { kind = "maxstamina", group = "Cost", label = "Maximum Stamina reduced", params = { "target", "qty" }, defaults = { target = "self", qty = 5 } },
+    { kind = "malice", group = "Cost", label = "Malice for the Director", params = { "qty" }, defaults = { qty = 1 } },
+    { kind = "initiative", group = "Next encounter", label = "Initiative", params = { "outcome" }, defaults = { outcome = "win" } },
+    { kind = "nosurprise", group = "Next encounter", label = "Cannot be surprised", params = {}, defaults = {} },
+    { kind = "fairinitiative", group = "Next encounter", label = "Fair roll for initiative", params = {}, defaults = {} },
+    { kind = "knowstamina", group = "Next encounter", label = "Know monsters' Stamina", params = { "keyword" }, defaults = { keyword = "goblin" } },
+    { kind = "revealzones", group = "Next encounter", label = "Reveal zones", params = { "zone" }, defaults = { zone = "trap" } },
+    { kind = "startzone", group = "Next encounter", label = "Extra starting zone", params = { "zone" }, defaults = { zone = "start2" } },
+    { kind = "revealobject", group = "Next encounter", label = "Reveal a map object", params = { "object" }, defaults = { object = "Treasure Chest" } },
+    { kind = "vanquish", group = "Montage", label = "Vanquish the threat", params = {}, defaults = {} },
+    { kind = "unlock", group = "Montage", label = "Unlock an entry", params = { "entry" }, defaults = { name = "", hidden = true } },
+    { kind = "testmod", group = "Montage", label = "Edge or bane on a test", params = { "testeffect", "option" }, defaults = { effect = "edge", name = "" } },
+    { kind = "rolltable", group = "Montage", label = "Roll on a dice table", params = { "qty", "table" }, defaults = { qty = 1, name = "" } },
+}
+
+--kind -> catalogue row.
+function EncounterScript.ClauseInfo(kind)
+    for _, c in ipairs(EncounterScript.CLAUSES) do
+        if c.kind == kind then
+            return c
+        end
+    end
+    return nil
+end
+
+local INITIATIVE_CLAUSES = {
+    win = "You win the initiative",
+    lose = "You lose the initiative",
+    surprise = "You surprise the enemy",
+    surprised = "You begin the encounter surprised",
+}
+
+local TEST_EFFECT_WORDS = { edge = "an edge", doubleedge = "a double edge", bane = "a bane", doublebane = "a double bane" }
+
+--"Goblin" -> "Goblin", "goblin" -> "Goblin".
+local function Capitalized(s)
+    s = tostring(s or "")
+    return string.upper(string.sub(s, 1, 1)) .. string.sub(s, 2)
+end
+
+--The canonical clause for an effect (the fields ParseClause returns), as
+--written prose a player can read. Returns nil for a kind with no clause
+--(narrative).
+function EncounterScript.ClauseText(e)
+    local kind = e.kind
+    local party = e.target == "party"
+    local qty = tonumber(e.qty) or 1
+    --"You gain" / "Each party member gains"
+    local function Who(selfVerb, partyVerb)
+        return cond(party, "Each party member " .. partyVerb, "You " .. selfVerb)
+    end
+    if kind == "item" then
+        local name = trim(e.name or "")
+        if qty > 1 and not string.match(name, "[sS]$") then
+            name = name .. "s"
+        end
+        return string.format("%s %d %s", Who("gain", "gains"), qty, name)
+    elseif kind == "herotoken" then
+        return string.format("+%s", EncounterScript.Plural(qty, "hero token"))
+    elseif kind == "intelligence" then
+        return string.format("+%d Intelligence", qty)
+    elseif kind == "malice" then
+        return string.format("+%d Malice", qty)
+    elseif kind == "heal" then
+        return string.format("%s %d Stamina", Who("heal", "heals"), qty)
+    elseif kind == "temphp" then
+        return string.format("%s %d temporary Stamina", Who("gain", "gains"), qty)
+    elseif kind == "surges" then
+        return string.format("%s %s", Who("gain", "gains"), EncounterScript.Plural(qty, "surge"))
+    elseif kind == "recovery" then
+        return string.format("%s recovery value is increased by %d", cond(party, "Each party member's", "Your"), qty)
+    elseif kind == "damageboon" then
+        return string.format("%s rolled damage is increased by %d", cond(party, "Each party member's", "Your"), qty)
+    elseif kind == "immunityboon" then
+        return string.format("%s %s immunity %d", Who("gain", "gains"), lower(e.damageType or "poison"), qty)
+    elseif kind == "ally" then
+        local name = trim(e.name or "")
+        return string.format("%s %s joins you", cond(string.match(lower(name), "^[aeiou]") ~= nil, "An", "A"), name)
+    elseif kind == "stamina" then
+        return string.format("%s %d Stamina", Who("lose", "loses"), qty)
+    elseif kind == "loserecovery" then
+        if e.dice ~= nil and e.dice ~= "" then
+            return string.format("%s %s recoveries", Who("lose", "loses"), e.dice)
+        end
+        return string.format("%s %s", Who("lose", "loses"), EncounterScript.Plural(qty, "recovery", "recoveries"))
+    elseif kind == "loseconsumable" then
+        if qty == 1 then
+            return Who("lose", "loses") .. " a consumable"
+        end
+        return string.format("%s %d consumables", Who("lose", "loses"), qty)
+    elseif kind == "maxstamina" then
+        return string.format("%s maximum Stamina is reduced by %d", cond(party, "Each party member's", "Your"), qty)
+    elseif kind == "initiative" then
+        return INITIATIVE_CLAUSES[e.outcome or "win"] or INITIATIVE_CLAUSES.win
+    elseif kind == "nosurprise" then
+        return "You cannot be surprised"
+    elseif kind == "fairinitiative" then
+        return "The encounter begins with a fair roll"
+    elseif kind == "knowstamina" then
+        return "You know the Stamina of every " .. Capitalized(e.keyword)
+    elseif kind == "revealzones" then
+        return string.format("Reveal the %s zones during the next combat", Capitalized(e.zone))
+    elseif kind == "startzone" then
+        return string.format("The %s zone becomes a starting area", Capitalized(e.zone))
+    elseif kind == "revealobject" then
+        return string.format("Reveal the %s object", trim(e.object or ""))
+    elseif kind == "vanquish" then
+        return "The threat is vanquished"
+    elseif kind == "unlock" then
+        return "Unlock " .. trim(e.name or "")
+    elseif kind == "testmod" then
+        return string.format("The party has %s on %s", TEST_EFFECT_WORDS[e.effect or "edge"] or TEST_EFFECT_WORDS.edge, trim(e.name or ""))
+    elseif kind == "rolltable" then
+        local times = qty == 1 and "" or (qty == 2 and "twice " or string.format("%d times ", qty))
+        return string.format("Roll %son %s", times, trim(e.name or ""))
+    end
+    return nil
 end

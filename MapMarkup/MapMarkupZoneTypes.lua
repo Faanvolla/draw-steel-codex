@@ -640,10 +640,13 @@ end
 
 K.ENVIRONMENTAL_KEYWORDS_TABLE = "environmentalKeywords"
 
+---@return table<string, EnvironmentalKeyword>
 local function GetKeywordTable()
     return dmhub.GetTable(K.ENVIRONMENTAL_KEYWORDS_TABLE) or {}
 end
 
+---@param keywordid string|nil
+---@return EnvironmentalKeyword|nil
 local function GetKeyword(keywordid)
     if keywordid == nil then
         return nil
@@ -1084,8 +1087,14 @@ local function KeywordSummary(kw)
         end
     end)
     pcall(function()
-        if (kw:try_get("powerRollEnabled", false) and kw:try_get("powerRollTiers") ~= nil)
-            or trim(kw:try_get("entryEffectRule", "") or "") ~= "" then
+        local tiers = kw:try_get("powerRollTiers")
+        local damaging = Aura.RuleDealsDamage(kw:try_get("entryEffectRule"))
+        if kw:try_get("powerRollEnabled", false) and tiers ~= nil then
+            for i = 1, 3 do
+                damaging = damaging or Aura.RuleDealsDamage(tiers[i])
+            end
+        end
+        if damaging then
             parts[#parts+1] = "Damaging"
         end
     end)

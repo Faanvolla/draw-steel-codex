@@ -214,9 +214,7 @@ local function DefaultTargetScore(targetInfo)
     if targetInfo.token.isObject then
         return 0.1
     end
-    local stamina = targetInfo.token.properties:CurrentHitpoints()
-        / math.max(1, targetInfo.token.properties.max_hitpoints)
-    return 1 + (targetInfo.edges or 0)*0.1 + (1 - stamina)*0.08
+    return 1 + (targetInfo.edges or 0)*0.1 + MonsterAI.TargetStaminaBias(targetInfo.token)
 end
 
 -- Build a full movement-and-target plan so scoring and execution use the same
@@ -1630,18 +1628,6 @@ MonsterAI:RegisterTrigger{
         ai._tmp_hobgoblinArmySubject = subject.charid
         ai._tmp_hobgoblinArmyReserved = {}
         return {activate = true}
-    end,
-}
-
-MonsterAI:RegisterTrigger{
-    id = "Hobgoblin Bloodlord: End Effect",
-    monsters = {"Hobgoblin Bloodlord"},
-    abilityGuids = {"f8cbfa6d-efa6-4668-b41b-a3d2b4621202"},
-    abilities = {"End Effect"},
-    description = "Take 10 damage to end a save-ends effect unless doing so would reduce the bloodlord to 0 Stamina.",
-    handler = function(ai, token, triggerInfo)
-        return cond(token.properties:CurrentHitpoints() > 10,
-            {activate = true}, {dismiss = true})
     end,
 }
 

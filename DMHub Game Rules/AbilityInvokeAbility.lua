@@ -16,6 +16,7 @@ ActivatedAbilityInvokeAbilityBehavior = RegisterGameType("ActivatedAbilityInvoke
 --- @field standardAbilityParams table?
 --- @field abilityAttr table?
 --- @field targetingOverride string?
+--- @field timestamp number|string Server time once the server resolves it; the ServerTimestamp() placeholder string until then.
 AbilityInvocation = RegisterGameType("AbilityInvocation")
 
 AbilityUtils = {
@@ -103,8 +104,11 @@ AbilityUtils = {
 
 	--utility to scan for an <<expression>> in a string and evaluate it as goblin script.
 	--Useful to evaluate in the context of the caster.
+	---@param str string
+	---@param symbols any Symbol lookup for the GoblinScript.
+	---@return string
 	SubstituteAbilityParameters = function(str, symbols)
-        str = StringInterpolateGoblinScript(str, symbols)
+        str = StringInterpolateGoblinScript(str, symbols) --[[@as string]]
 		local result = ""
 		for i=1,8 do
 			local match = regex.MatchGroups(str, "^(?<head>.*)?<<(?<expression>.*?)>>(?<tail>.*)$")
@@ -720,11 +724,14 @@ function ActivatedAbilityInvokeAbilityBehavior:Cast(ability, casterToken, target
     local rangeOrigin = self:try_get("rangeOrigin", "")
 
     local targetChoices = {}
+    --What was already happening before this started, so we can tell which triggers it set off.
+    local castsBeforeInvoke = nil
     if promptWhenResolving then
         for _,target in ipairs(targets or {}) do
             local targetToken = target.token
             targetChoices[#targetChoices+1] = targetToken
         end
+        castsBeforeInvoke = ActivatedAbility.GetActiveCastSnapshot()
     end
 
     repeat
@@ -743,6 +750,20 @@ function ActivatedAbilityInvokeAbilityBehavior:Cast(ability, casterToken, target
         end
 
         if promptWhenResolving and #targetChoices > 0 then
+
+            --Finish any triggers the last target set off before asking for the next one.
+            --Pulling a creature into a hazard used to cancel both the hazard's teleport
+            --and the pull on the next target (7A3ZZEPE).
+            coroutine.yield()
+            coroutine.yield()
+            while (gamehud.rollDialog.valid and gamehud.rollDialog.data.IsShown())
+                or (gamehud.actionBarPanel.valid and gamehud.actionBarPanel.data.IsCastingSpell())
+                or ActivatedAbility.HasCoroutinesNotInSnapshot(castsBeforeInvoke) do
+                coroutine.yield(0.1)
+                if casterToken == nil or not casterToken.valid or casterToken.properties == nil then
+                    break
+                end
+            end
 
             print("INVOKE:: ChooseTarget:: prompting...")
             targets = nil
@@ -989,6 +1010,19 @@ function ActivatedAbilityInvokeAbilityBehavior:Cast(ability, casterToken, target
                         invocation.abilityAttr.targeting = "straightpath"
                     end
 
+                    --A cast held open for the Monster AI (e.g. In All This Confusion's
+                    --trigger) completes its own AI marker when it finishes -- before the
+                    --player has even seen this prompt. Give the prompt a marker of its
+                    --own, made now so the AI never sees a gap; AbilityInvocation:Invoke
+                    --completes it on the player's machine.
+                    if symbols.aiActivityId ~= nil and target.token.playerControlled then
+                        local aiReactionId = dmhub.GenerateGuid()
+                        invocation.aiActivityId = symbols.aiActivityId
+                        invocation.aiReactionId = aiReactionId
+                        target.token.properties:BeginPendingAIActivityReaction(symbols.aiActivityId, aiReactionId,
+                            ability.name, "resolving")
+                    end
+
                     --Held back until the casts currently resolving on this
                     --client complete. This invoke may come from a triggered
                     --reaction activated during the triggering ability's roll
@@ -1143,6 +1177,12 @@ function ActivatedAbilityInvokeAbilityBehavior:Cast(ability, casterToken, target
                             if abilityClone ~= nil and invokerCreature.PostProcessInvokedAbility ~= nil then
                                 abilityClone = invokerCreature:PostProcessInvokedAbility(abilityClone) or abilityClone
                             end
+                        end
+
+                        --A modifier on the invoker (e.g. Suppress Abilities) removed the
+                        --invoked ability, so there is nothing to cast for this target.
+                        if abilityClone == nil then
+                            goto skip_invoked_ability
                         end
 
                         --When inheritRoll is set, force the invoked ability's power roll(s)
@@ -1307,6 +1347,7 @@ function ActivatedAbilityInvokeAbilityBehavior:Cast(ability, casterToken, target
                             invokerToken.properties._tmp_squadParticipants = nil
                             invokerToken.properties._tmp_squadParticipantsTurn = nil
                         end
+                        ::skip_invoked_ability::
                     end
                 end
 
@@ -1539,14 +1580,26 @@ function ActivatedAbilityInvokeAbilityBehavior.ExecuteInvoke(invokerToken, abili
             end
         end
 
-        print("AI:: PUSH:: IN INVOKE token", creature.GetTokenDescription(invokerToken), "targeting =", targeting, "ai", invokerToken.properties._tmp_aicontrol, "promptCallback =", invokerToken.properties._tmp_aipromptCallback, "for", abilityClone.name, coroutine.running())
+        --false unless the Monster AI controls the invoker.
+        local aiPromptCallback = creature.GetTokenAIPromptCallback(invokerToken.charid)
+        --A Director-run creature the AI is not driving right now (a dying minion's
+        --death strike on a hero's turn) still has its prompts answered while the AI
+        --runs, as its rolls already are. rawget: Monster AI may not be loaded.
+        if not aiPromptCallback and (targeting == "prompt" or targeting == "prompt_inherit") then
+            local monsterAI = rawget(_G, "MonsterAI")
+            local fallback = monsterAI ~= nil and rawget(monsterAI, "PromptCallbackForCreature") or nil
+            if fallback ~= nil then
+                aiPromptCallback = fallback(invokerToken) or false
+            end
+        end
+        print("AI:: PUSH:: IN INVOKE token", creature.GetTokenDescription(invokerToken), "targeting =", targeting, "ai", creature.IsTokenAIControlled(invokerToken.charid), "promptCallback =", aiPromptCallback, "for", abilityClone.name, coroutine.running())
         --Set when an AI prompt callback answered the prompt: the targets are already
         --resolved, so the cast below must NOT be routed through the action bar UI
         --(which would wait for player clicks that will never come).
         local aiResolvedTargeting = false
-        if (targeting == "prompt" or targeting == "prompt_inherit") and invokerToken.properties._tmp_aicontrol > 0 and invokerToken.properties._tmp_aipromptCallback then
+        if (targeting == "prompt" or targeting == "prompt_inherit") and aiPromptCallback then
             print("PUSH:: INVOKING!!!!!")
-            targeting = invokerToken.properties._tmp_aipromptCallback(invokerToken, casterToken, abilityClone, symbols, options)
+            targeting = aiPromptCallback(invokerToken, casterToken, abilityClone, symbols, options)
             aiResolvedTargeting = (targeting ~= "prompt" and targeting ~= "prompt_inherit")
         end
 
@@ -1993,6 +2046,30 @@ function ActivatedAbilityInvokeAbilityBehavior:EditorItems(parentPanel)
 		end,
 	}
 
+	--Lets an invoked ability reach from another creature, as in "an enemy adjacent to the target".
+	--The caster doesn't change, so "enemy" and the cost still mean the caster's.
+	result[#result+1] = gui.Panel{
+		classes = {"formPanel"},
+		gui.Label{
+			classes = {"formLabel"},
+			text = "Range Origin:",
+		},
+		gui.Dropdown{
+			classes = {"formDropdown"},
+			hover = gui.Tooltip("Measure the invoked ability's range from this creature instead of its caster."),
+			options = {
+				{ text = "Caster", id = "" },
+				{ text = "Parent's Primary Target", id = "parent_primary_target" },
+				{ text = "Parent's Current Target", id = "parent_current_target" },
+			},
+			idChosen = self:try_get("rangeOrigin", ""),
+			change = function(element)
+				---@cast element Dropdown
+				self.rangeOrigin = element.idChosen
+			end,
+		},
+	}
+
 	result[#result+1] = gui.Check{
 		classes = {cond(self.abilityType == "custom", "collapsed-anim")},
 		text = "Target Player Casts",
@@ -2405,7 +2482,19 @@ function AbilityInvocation:Invoke()
 	local invokerToken = dmhub.GetTokenById(self.invokerid)
 	local casterToken = dmhub.GetTokenById(self.casterid)
 
+	--The Monster AI may be held on this invoke (see the runOnController path in
+	--Cast). Release it however the invoke ends: cast, cancelled, or never started.
+	local function CompleteAIReaction()
+		local activityId = self:try_get("aiActivityId")
+		local reactionId = self:try_get("aiReactionId")
+		if type(activityId) == "string" and type(reactionId) == "string"
+				and casterToken ~= nil and casterToken.valid and casterToken.properties ~= nil then
+			casterToken.properties:CompletePendingAIActivityReaction(activityId, reactionId)
+		end
+	end
+
 	if invokerToken == nil or casterToken == nil then
+		CompleteAIReaction()
 		return false
 	end
 
@@ -2439,6 +2528,7 @@ function AbilityInvocation:Invoke()
 	end
 
 	if abilityTemplate == nil then
+		CompleteAIReaction()
 		return false
 	end
 
@@ -2469,10 +2559,10 @@ function AbilityInvocation:Invoke()
 		local allParameters = {}
 		AbilityUtils.ExtractAbilityParameters(abilityClone, allParameters)
 
-        lookupSymbols = invokerToken.properties:LookupSymbol(lookupSymbols)
+        local symbolLookup = invokerToken.properties:LookupSymbol(lookupSymbols)
 		for k,v in pairs(self:try_get("standardAbilityParams", {})) do
             allParameters[k] = nil
-			local str = AbilityUtils.SubstituteAbilityParameters(v, lookupSymbols)
+			local str = AbilityUtils.SubstituteAbilityParameters(v, symbolLookup)
 			AbilityUtils.DeepReplaceAbility(abilityClone, "<<"..k..">>", str)
 		end
 
@@ -2545,6 +2635,9 @@ function AbilityInvocation:Invoke()
         targetingFormula = self.targetingFormula,
     }
 	ActivatedAbilityInvokeAbilityBehavior.ExecuteInvoke(invokerToken, abilityClone, casterToken, self.targeting, self.symbols, options)
+	--ExecuteInvoke returns once the cast finishes or the player cancels it; a
+	--cancel never reaches the OnFinishCast above.
+	CompleteAIReaction()
 	return true
 end
 
@@ -2740,6 +2833,8 @@ function AbilityInvocation.ActivateInvocationPrompt(casterToken, triggerid)
     --Resolve "charid:"/"tokenid:" refs in the stored record back to live
     --objects, the same way PumpRemoteInvokes does for remote invocations.
     local invoke = DeserializeEventValue(DeepCopy(invocation))
+    --invocation is a non-nil table (checked above), so this is its deserialized copy.
+    ---@cast invoke -nil
 
     dmhub.Coroutine(function()
         local invoked = invoke:Invoke()

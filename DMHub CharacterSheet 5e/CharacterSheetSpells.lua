@@ -26,8 +26,6 @@ SpellRenderStyles = {
 		textAlignment = "left",
 		height = 'auto',
 		halign = 'left',
-
-		textAlignment = 'left',
 	},
 
 	gui.Style{
@@ -68,7 +66,6 @@ SpellRenderStyles = {
 
 		bgimage = 'panels/square.png',
 		bgcolor = '#666666',
-		halign = "left",
 		width = '100%',
 		height = 1,
 		halign = 'center',
@@ -366,7 +363,6 @@ local SpellsDialogStyles = {
 		height = 680,
 		halign = 'center',
 		valign = 'center',
-		bgcolor = 'white',
 		flow = 'vertical',
 	},
 	gui.Style{
@@ -835,9 +831,11 @@ function GameHud.ShowAddSpellDialog(self, options)
 		vscroll = true,
 	}
 
+	--set by data.show before the dialog is visible, so the buttons never see nil.
+	---@type Spell
 	local newItem = nil
 
-	local confirmCancelPanel = 
+	local confirmCancelPanel =
 		gui.Panel{
 			style = {
 				valign = 'bottom',
@@ -943,8 +941,6 @@ function GameHud.ShowAddSpellDialog(self, options)
 
 		data = {
 			show = function(editItem)
-				newItem = nil
-
 				if editItem then
 					newItem = editItem
 					confirmCancelPanel:SetClass('collapsed', true)

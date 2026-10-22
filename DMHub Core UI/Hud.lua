@@ -33,20 +33,6 @@ function Hud.SetFocus(self, newFocus)
 	gui.SetFocus(newFocus)
 end
 
-function Hud.CreateShapesLayer(self)
-	if dmhub.isDM then
-		return gui.Panel{
-			interactable = false,
-			bgcolor = "white",
-			bgimage = "#Shapes",
-			width = "100%",
-			height = "100%",
-		}
-	else
-		return nil
-	end
-end
-
 local g_screenArea = core.Vector4(0,0,0,0)
 
 --function called by dmhub to see what area of the screen is occupied by the hud.
@@ -794,6 +780,7 @@ end
 --- @field tokenInfo SheetHud The engine's token/selection interface, passed to dmhub.CreateGameHud.
 --- @field parentPanel Panel Root panel of the hud (dialog.sheet); set by dmhub.CreateGameHud.
 --- @field actionBarPanel Panel Set by the action bar when it is created.
+--- @field bannerLayer? Panel Layer over the floating windows for mode banners; set by GameHud:CreateBannerLayer (nil on the lobby hud).
 --- @field rollDialog Panel Set by dmhub.CreateGameHud (GameHud:CreateRollDialog).
 --- @field inventoryDialog Panel
 --- @field basicInventoryDialog Panel
@@ -803,12 +790,12 @@ end
 --- @field initiativeCarousel Panel
 --- @field choiceInitiativeBar Panel
 --- @field respiteBar Panel
---- @field combatSettingsButton Panel
 --- @field castingSpell boolean
 --- @field currentInitiativeId? string
 --- @field interactionQueue fun()[] Pending popup interactions, run one per Think when the player is free; set by the hud constructors.
 --- @field openInventoryDialogs Panel[] Inventory dialogs currently open; set by the hud constructors.
 --- @field CreateRollResultPanel fun(self: GameHud): Panel Defined in the engine TextAsset roll-display.txt.
+--- @field shopPanel Panel|false Fullscreen shop host; false on the lobby hud (see the default below).
 GameHud = RegisterGameType("GameHud", "Hud")
 
 -- Fullscreen host panel for the shop/inventory screen. Set by
@@ -898,6 +885,31 @@ end
 --      characterPanelAccess = function(token) end,
 --                                       --override CharacterPanel access:
 --                                       --"edit"|"view"|"none"|nil=normal
+--      openSheet = function(token, tabid) end,
+--                                       --a character sheet is opening for
+--                                       --token: return true to show your
+--                                       --own view instead (the full sheet
+--                                       --then closes itself); nil/false
+--                                       --opens the normal sheet
+--      ownsSheet = function(token) end, --true when openSheet will show your
+--                                       --own view for token, so the full
+--                                       --sheet skips refreshing itself
+--                                       --first. No side effects: asked
+--                                       --before openSheet on every open
+--      playersPopout = function() end,  --content for the popout under the
+--                                       --title bar's players row (replaces
+--                                       --the Heroes panel there); nil=normal
+--      confirmExit = function(kind, proceed) end,
+--                                       --the user is leaving the game
+--                                       --(kind "leave") or quitting the app
+--                                       --("quit"): return true to put up
+--                                       --your own confirmation, which calls
+--                                       --proceed() to really go; false or
+--                                       --nil lets the exit happen as normal
+--      forcedMap = function() end,      --a mapid to hold maximized on the
+--                                       --table (no restore, minimize or
+--                                       --close), like a Director-forced
+--                                       --map; nil for none (Tabletop.lua)
 --  }
 --
 --Everything but id/active is optional. The FIRST registered provider whose
@@ -1031,6 +1043,80 @@ GameHud.CustomInterfaceCharacterPanelAccess = function(token)
 	local ok, access = pcall(provider.characterPanelAccess, token)
 	if ok and (access == "edit" or access == "view" or access == "none") then
 		return access
+	end
+	return nil
+end
+
+--Offer the active interface the character sheet a token is about to open.
+--True when it showed its own view instead (the caller must then not open
+--the full sheet); false for the normal sheet (no interface, no hook, or the
+--hook declined or failed).
+GameHud.CustomInterfaceOpenSheet = function(token, tabid)
+	local provider = GameHud.CustomInterface()
+	if provider == nil or type(provider.openSheet) ~= "function" then
+		return false
+	end
+	local ok, handled = pcall(provider.openSheet, token, tabid)
+	if not ok then
+		dmhub.Error(string.format("custom interface openSheet failed: %s", tostring(handled)))
+		return false
+	end
+	return handled == true
+end
+
+--Whether the active interface will show its own view of this token's sheet
+--(see openSheet). Asked before the full sheet refreshes, so that work can be
+--skipped; false when there is no interface, no hook, or the hook fails.
+GameHud.CustomInterfaceOwnsSheet = function(token)
+	local provider = GameHud.CustomInterface()
+	if provider == nil or type(provider.ownsSheet) ~= "function" then
+		return false
+	end
+	local ok, owns = pcall(provider.ownsSheet, token)
+	if not ok then
+		dmhub.Error(string.format("custom interface ownsSheet failed: %s", tostring(owns)))
+		return false
+	end
+	return owns == true
+end
+
+--Offer the active interface a say in the user leaving the game ("leave")
+--or quitting the app ("quit"). True when it has put up its own
+--confirmation, which will call proceed() if the user goes ahead; the
+--caller must then do nothing more. False when the exit should go ahead as
+--normal (no interface, no hook, or the hook declined or failed).
+GameHud.CustomInterfaceConfirmExit = function(kind, proceed)
+	local provider = GameHud.CustomInterface()
+	if provider == nil or type(provider.confirmExit) ~= "function" then
+		return false
+	end
+	local ok, handled = pcall(provider.confirmExit, kind, proceed)
+	if not ok then
+		dmhub.Error(string.format("custom interface exit confirmation failed: %s", tostring(handled)))
+		return false
+	end
+	return handled == true
+end
+
+--The panel the interface wants in the players-row popout, or nil for the
+--normal Heroes panel.
+GameHud.CustomInterfacePlayersPopout = function()
+	local provider = GameHud.CustomInterface()
+	if provider == nil or type(provider.playersPopout) ~= "function" then
+		return nil
+	end
+	local ok, panel = pcall(provider.playersPopout)
+	if ok and panel ~= nil then
+		return panel
+	end
+	return nil
+end
+
+--The map the active interface holds maximized on the table, or nil.
+GameHud.CustomInterfaceForcedMap = function()
+	local mapid = CustomInterfaceField("forcedMap")
+	if type(mapid) == "string" and mapid ~= "" then
+		return mapid
 	end
 	return nil
 end

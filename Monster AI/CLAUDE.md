@@ -49,13 +49,14 @@ shadow-elves.lua
 ### The Turn Loop
 
 1. `MonsterAIPanel.lua` runs a coroutine (`MonsterAIThread`) that polls the initiative queue.
-2. When it is a non-player turn, it creates a `MonsterAI` instance and calls `PlayTurnSafely(initiativeid)`.
+2. When it is the monsters' side to choose, it picks which waiting initiative group goes next. This runs before every monster turn over every group still waiting, so it is deliberately cheap and plans no moves (see "Initiative choice" in `MonsterAI.lua`). Each member bids `MonsterAI.TurnPriority` times a random factor of 1 to 1.5: minions bid `initiativeMinionPriority` (4), other creatures 1 plus up to `initiativeNearDeathPriority` (3) as they near death. A member that cannot strike anyone this turn (`CanStrikeThisTurn`, a reach check using straight-line distance and, only when needed, its movement area) keeps a tenth of its bid, so every group that can strike goes first. The group's score is its best member's. When only one group is waiting it is chosen without any checks. Run `../dependencies/lua/bin/lua.exe tests/ai_initiative_choice_test.lua` from the codex root.
+   Once a group is chosen and it is a non-player turn, the thread creates a `MonsterAI` instance and calls `PlayTurnSafely(initiativeid)`.
 3. Score all registered start-of-turn Malice abilities, use the highest-scoring affordable option that meets its threshold, and wait for it to resolve.
 4. For each token in that initiative entry:
    - If the actual actor is outside the usable map view, pan and sync the camera before it begins. Shared initiative entries can therefore pan again as each distinct monster acts without recentering monsters that are already visible.
-   - Minions: find their Signature Ability and execute it as a coordinated squad strike (`ExecuteSquadStrike`). Reassess members who advanced before firing so they can join the same volley, including sharing targets within the normal limit. The rules layer spends the action for every active squad member, including nonparticipants. Reconsider up to 6 action cycles so critical-hit extra actions are used. Each cycle selects a surviving member with an affordable signature; only affordable members join its target pairs, and movement uses the remaining turn budget.
+   - Minions: find their Signature Ability and execute it as a coordinated squad strike (`ExecuteSquadStrike`). The squad moves as one: every member is planned before any moves, with the squares and charge lanes already claimed by squad-mates held in a reservation table (`ReserveSquadOption` / `SquadOptionIsFree`) so no two members end on one square or charge through each other. The captain (or a member) calls the attack and two or three members shout back (`AnnounceSquadStrike`, which writes bubbles directly through `SpeakNow`), then all members move side by side, each starting `squadMoveStagger` (0.2s) after the last (`RunConcurrently`). Chargers move to their charge start, then all shout "Charge!" and charge together. Each member's plan is checked after movement; a second round re-plans members that advanced, failed, or gained a target slot from a fallen squad-mate. Run `../dependencies/lua/bin/lua.exe tests/ai_squad_volley_test.lua`. Reassess members who advanced before firing so they can join the same volley, including sharing targets within the normal limit. The rules layer spends the action for every active squad member, including nonparticipants. Reconsider up to 6 action cycles so critical-hit extra actions are used. Each cycle selects a surviving member with an affordable signature; only affordable members join its target pairs, and movement uses the remaining turn budget.
    - Non-minions: iterate up to 6 times calling `FindAndExecuteMove()`, which scores every registered move and executes the best one. A scoring or execution error quarantines that move for the actor; `"failed"` continues to another cycle, while `"none"` or `"unsafe"` stops the actor.
-5. After all tokens act, initiative advances automatically.
+5. After all tokens act, initiative advances automatically. Before each actor and after each move cycle, the turn checks that its entry is still the current one. If something else took the turn (a hero's turn-grab ability, a host clicking the initiative bar), it stops with `TURN PAUSED` and does **not** advance, because `NextInitiative` would end the new entry's turn.
 
 When no registered or synthesized move scores above zero, the actor advances
 toward the enemy with the cheapest complete traversable route to an unoccupied
@@ -81,6 +82,19 @@ accepting client. Dismissal completes the marker. This wait has no timer and
 does not stop monster trigger polling or cooperative AI shutdown. Run
 `../dependencies/lua/bin/lua.exe tests/ai_end_turn_save_test.lua` from the codex
 root for prompt lifecycle and process wait/resume/stop coverage.
+
+Before the monster side picks its next group, the process also waits while any
+live player combatant has a trigger prompt the player has not answered
+(`FindPendingPlayerTrigger` in `MonsterAIPanel.lua`): the Gunslinger's Begin
+Round "Showdown", Hesitation Is Weakness, any custom class's trigger. It is
+data-driven, with no ability-name list. Hostile prompts, power-roll modifiers
+and the hidden members of a merged prompt do not count. It also waits up to
+10s while a trigger event relayed to that hero's client is still being
+evaluated there, because the prompt does not exist until it has been (in the
+2026-10-19 playtest Showdown arrived while the AI was already choosing). The
+check runs again just before `SelectTurn`. The "Waiting for Fox's Showdown"
+banner offers the hero's player Select and Dismiss; dismissing the prompt, or
+its 10-minute expiry, releases the wait.
 
 The turn handoff itself also waits. A hero's mandatory end-of-turn trigger
 whose invoked ability prompts them (Revitalizing Limerick's "choose allies to
@@ -137,6 +151,92 @@ Run `dependencies/lua/bin/lua.exe draw-steel-codex/tests/ai_reaction_delivery_te
 from the parent repository for deterministic loss, retry, duplicate, malformed
 message, player choice, cast completion, and failure-pause regression coverage.
 
+### Rolls an AI cast requests of heroes
+
+When an AI cast makes heroes roll (Swamp Stink's Might resistance roll,
+saving throws, tests, opposed and contested rolls), the host does not open the
+Director's "Requested a ..." summary dialog. Every such cast goes through
+`AwaitCastRollRequest` in `Draw Steel UI/DSRequestRollsDialog.lua`, and
+`RollRequestIsForAICaster` routes an AI caster to
+`AwaitAIRequestedActionCoroutine`. That function accepts the rolls once every
+target has rolled, with no timer, and shows the waiting notice (key `rolls`):
+"Waiting for resistance rolls to be processed before proceeding (Shadow,
+Rook)". Only player heroes are named. Silent abilities the AI casts use the
+same wait.
+
+- A declined roll is reset to unprompted, at most every 2 seconds, so the hero's
+  own roll prompt comes back. The roll is not optional.
+- A target that has left the map is dropped from the request, as the dialog's
+  Remove button would, so the cast skips it.
+- Stopping the AI mid-wait (or an error in the wait) hands the request to the
+  summary dialog, with its current statuses, for a person to finish.
+
+The caster counts as AI-driven when the AI controls it
+(`creature.IsTokenAIControlled`, see "Token control" below), or when an AI
+activity is in progress (`creature.GetAIActivityInProgress()`, held by
+`ExecuteAbility` for the whole cast) and the caster is not player-controlled.
+The activity check was added while the control could be wiped mid-cast, and is
+kept as a safety net for a cast the AI drives without holding the caster.
+
+### Rolls of the monsters the AI plays
+
+While the AI runs, it makes every roll of a Director-run creature, not just
+the rolls of the token it is acting with: a War Dog's Loyalty Collar exploding
+on a hero's turn rolls and resolves with no Director click.
+`MonsterAI.RollsForCreature(creature)` (`MonsterAIPanel.lua`) is true when the
+AI runs on this client, this client hosts, and no player controls the
+creature's token. A creature whose token has already left the map (a dead
+minion) is matched through the current cast's caster. Both roll dialogs
+(`Timeline/EmbeddedRollDialog.lua`, `Draw Steel UI/DSRollDialog.lua`) set
+`options.aiRoll` from it in `ShowDialog`. `aiRoll` rolls the dice, hides the
+manual controls, waits out hero triggers, and accepts, exactly as for a token
+the AI controls.
+
+The same rule covers their invoke prompts. Mandatory triggers fire with no AI
+control installed, so a dying Abyssal Hyena's Death Snap free strike on a
+hero's turn used to go to the Director. When the invoker has no AI prompt
+callback, `ExecuteInvoke` (`DMHub Game Rules/AbilityInvokeAbility.lua`) asks
+`MonsterAI.PromptCallbackForCreature(token)`, which returns a handler running
+`HandlePrompt` whenever `RollsForCreature` holds. A prompt with no registered
+handler still falls through to the Director.
+
+### "AI is running" status for every client
+
+The AI runs only on the hosting machine. So other clients can tell, `MonsterAI.lua`
+publishes `{running, busy, userid}` to the `monsterAIStatus` document whenever it
+changes (polled every 0.2 s): `running` while the AI process runs, `busy` while it
+plays a monster's turn or has an AI activity in progress. Ask
+`MonsterAI.IsAIRunningAnywhere()` / `MonsterAI.IsAIBusyAnywhere()` (or
+`MonsterAI.BusyHere()` for this client only). A status published by a user who has gone
+offline is ignored, and a client clears its own stale status once its AI stops. Turn
+Rewind uses it to lock rewinding while the AI plays (`TURN_REWIND_REFERENCE.md`).
+
+### Token control
+
+`MonsterAI:BeginTokenControl` / `EndTokenControl` (wrapped by
+`RunWithTokenControl`) mark a token as AI-driven for the length of an action.
+The control state lives in `DMHub Game Rules/Creature.lua`, keyed by charid, never
+on the token's properties:
+
+- `creature.BeginAIControl` / `EndAIControl` nest a control count and the prompt
+  handler that answers the token's invoke prompts.
+- `creature.IsTokenAIControlled(charid)`, `creature:IsAIControlled()` and
+  `creature.GetTokenAIPromptCallback(charid)` are what readers ask: the invoke
+  prompt routing, roll dialog auto-roll, the action bar's target auto-pick, and
+  the ability card.
+- `creature.Get/SetTokenAIActivity(charid)` hold the activity a token's own
+  movement and casts belong to, which `creature:OnMove` stamps on its events.
+- `creature.ClearAIControl()` runs when the AI thread starts and stops, so a turn
+  abandoned mid-action cannot leave a token looking AI-driven.
+
+Do not move this state back into `_tmp_` fields. The engine nils every `_tmp_`
+field on every token whenever it rebuilds the aura index
+(`GameController.ClearCreatureTemporaryFields`): a markup zone edit,
+`dmhub.RefreshMapAuras()`, or an object finishing loading. That can land in the
+middle of an action. Swamp Stink once lost `_tmp_aicontrol` between its Speech
+and the cast, after which its prompts and rolls fell back to the Director. A
+wipe logs `CLEARSTATE:: CLEARING STATE` and fires the `ClearTemporaryState` event.
+
 ### Error containment
 
 AI actions yield while movement, speech, prompts, and casts resolve, so action
@@ -172,6 +272,7 @@ A **move** is a scoreable, executable action the AI can take on its turn. Each m
 - Optionally lists `monsters` -- an array of `monster_type` strings. If present, the move only applies to those monsters. If omitted, the move is **generic** (applies to all monsters)
 - Has a `score(self, ai, token, ability1, ability2, ...)` function that returns `{score = N, loc = destLoc, ...}` or `nil`
 - Has an `execute(self, ai, token, scoringInfo, ability1, ability2, ...)` function that performs the move
+- Optionally declares `maxScore`, the highest score `score()` can return. Moves with a `maxScore` are scored after the others, and are not scored at all once the best move found already scores at least that much (a tie never replaces the best). The generic fallbacks `Charge and Free Strike` and `Ranged Free Strike` use it: they always score exactly 0.2
 
 #### 2. Malice abilities (`MonsterAI:RegisterMaliceAbility{}`)
 
@@ -217,6 +318,16 @@ A **prompt** handles abilities that require a secondary targeting choice during 
 - `prompts` -- array of ability name strings this handler responds to. Can be plain names (`"Shift"`) or monster-qualified (`"Decrepit Skeleton:Invoked Ability"`)
 - `handler(ai, invokerToken, casterToken, abilityClone, symbols, options)` -- returns a table with `targets` array, or `nil` to fall through to manual prompting
 - `abilityOverride` -- optional ability in the returned table. Use this when the prompt chooses a concrete synthesized ability as well as its targets; the invoke framework casts the override and preserves its begin/finish callbacks
+- `resolvesInvokedAbility` -- optional registration flag. Set it when the handler carries out the whole invoked ability itself (and returns `{targets = {}}`), so the synthesizer does not reject an ability for prompts inside the invoked ability that never come up
+
+The generic `Adjacent Enemy Free Strike Me` handler uses `resolvesInvokedAbility`.
+That standard ability is the "one ally adjacent to the target can make a free
+strike against them" rider (Goblin Underboss Swordplay, Human Bandit Chief). The
+struck hero casts it, so the ally's nested Melee Free Strike prompt would belong
+to the hero and go to the host's action bar. The handler instead picks the best
+AI-run ally adjacent to the target (a full monster over a minion) and casts that
+ally's melee free strike against the target with `ExecuteAbility`, or skips
+when there is none. Swordplay then synthesizes like any other signature.
 
 The generic `Free Strike` handler uses `abilityOverride` to choose the best legal
 immediate melee or ranged free strike. It deliberately removes charge movement,
@@ -260,6 +371,20 @@ MonsterAI:RegisterTrigger{
     end,
 }
 ```
+
+#### End Effect (shared, do not re-register per band)
+
+`MonsterAIPrompts.lua` registers one generic `End Effect` trigger handler for
+every monster. `MonsterAI.EndEffectDecision` reads the purge behind the trigger
+and its Stamina cost from the data, takes it only to end something at least
+`endEffectMinimumSeverity` bad (`MonsterAI.conditionSeverity` rates conditions
+0-5), and only when the monster keeps the cost again and
+`endEffectStaminaReserve` of its Stamina after paying. The choice of effect is
+made by `ActivatedAbilityPurgeEffectsBehavior.aiChooser`, a hook the purge
+behavior consults before opening its selection dialog for an AI-driven caster:
+the worst harm on friends, the best buff on enemies, within the purge's limits.
+A band-specific `End Effect` registration would override all of this. Run
+`../dependencies/lua/bin/lua.exe tests/ai_end_effect_test.lua` from the codex root.
 
 #### 6. Villain actions (`MonsterAI:RegisterVillainAction{}`)
 
@@ -330,6 +455,39 @@ return nil, "requires at least two enemies in the burst"
 Avoid per-path-tile prints. Summarize the winning target plan instead so the
 actual action names and decision sequence remain readable.
 
+### The planning memo
+
+`ai:PlanningMemo()` holds answers that cannot change until the AI yields or
+acts: which enemies an ability may target from where the token stands, line of
+sight from a square to an enemy, charge probes, and the engine's charge route
+cache. The engine resumes the AI at most once a frame and nothing else runs
+while it plans, so the memo starts empty each frame; `MoveToken` and
+`ExecuteAbility` also clear it, because the AI's own actions change the board
+without yielding. Reuse it for any new per-square planning query whose answer
+depends only on the board, and key by the objects asked about.
+
+### Profiling
+
+`/aiprofile on` (the `dev:aiprofile` preference; `off`, `report`, `reset` also
+work) makes every monster turn print an `AIPERF::` report to `Player.log`. One
+report covers the initiative choice that picked the group and the turn itself.
+It is built from three measurements, all at the top of `MonsterAI.lua`:
+
+- **Sections** (`ProfBegin`/`ProfEnd`, or `ProfWrapMethod` at the bottom of the
+  file): named blocks that never yield. Reported as a call tree and a flat list
+  ranked by self time. Do not wrap or section anything that can yield.
+- **Slices**: each run of AI code between yields, timed at the outermost
+  `RunYieldingFunction` resume. Nothing else runs on the main thread during a
+  slice, so the longest slice is the freeze a player sees.
+- **Phases** (`ProfPhaseBegin`/`ProfPhaseEnd`): wall-clock spans that may yield
+  (the turn, each actor, each cycle, each move's execution), with the AI compute
+  spent inside each.
+
+`os.clock` has 1ms resolution on Windows, so single calls read as 0 or 1ms, but
+totals over many calls are accurate. Profiling adds roughly 10% to measured
+time. The profiler's file-local functions are stubbed as globals in the AI tests
+that load sections of `MonsterAI.lua`; add them to any new test that does so.
+
 ### Key Helper Methods
 
 | Method | What it does |
@@ -340,6 +498,8 @@ actual action names and decision sequence remain readable.
 | `ai:FindValidTargetsOfStrike(token, ability, loc, range?)` | Returns sorted array of `{token, loc, charge, edges}` for valid targets from a position |
 | `ai:ExecuteAbility(casterToken, ability, targets?, options?)` | Displays a three-pulse labeled telegraph for placed target areas, preserves the full area target list, invokes the original target type, and waits for resolution |
 | `ai:Speech(token, text, options?)` | Makes a token say something (text can be a string or array for random selection) |
+| `ai:SpeakNow(token, text, options?)` | Shows the speech bubble at once without casting, so several tokens can talk together. `options.language` (an id or a name such as `"Caelian"`) speaks in that language instead of the creature's own, so players who know it are not shown scrambled text |
+| `ai:RunConcurrently(fns, stagger?)` | Runs yielding actions side by side, each starting `stagger` seconds after the last; raises the first error once all finish |
 | `ai:FindMostSeniorInitiativeGroupMember(tokens)` | Chooses a live initiative-group leader by non-minion status, squad captain status, then highest EV; exact ties retain token order |
 | `ai:FindReachableConcealment()` | Finds the nearest reachable concealed tile |
 | `ai:FindClosestEnemy()` | Returns the nearest enemy token |
@@ -411,14 +571,22 @@ score = GenerateStandardStrikeScoreFunction(1),
 ```lua
 score = function(self, ai, token, ability)
     local loc, score = ai:FindBestMoveToUseStrike(token, ability, function(targetToken, edges)
-        -- prefer low-stamina targets
-        return 1 + (1 - targetToken.properties:CurrentHitpoints() / targetToken.properties.max_hitpoints)
+        -- the house default: a slight lean toward the enemy with the most Stamina
+        return 1 + (edges or 0)*0.1 + MonsterAI.TargetStaminaBias(targetToken)
     end)
     if loc ~= nil then
         return {score = score, loc = loc}
     end
 end,
 ```
+
+Target scorers lean slightly toward healthy enemies, not wounded ones, so
+monsters do not focus down the hero closest to dying (that is not fun to play
+against). Use `MonsterAI.TargetStaminaBias` rather than writing your own
+Stamina term, unless the monster's printed tactics call for picking on the
+wounded. If you do need a hero's Stamina fraction, divide by
+`properties:MaxHitpoints()`: the `max_hitpoints` field on a hero is a stale
+default of 10, not the real maximum.
 
 **Burst/area ability** -- use `FindBestMoveToUseBurst`:
 ```lua
@@ -567,8 +735,12 @@ Currently implemented in `MonsterAIMonsters.lua`:
 
 ### Charge routes and failed movement
 
-Ground charges use `PlanCharge` on candidate landing squares within melee range,
-not on the occupied target square. Generic straight-line previews interpret the
+Ground charges are planned on candidate landing squares within melee range, not
+on the occupied target square. `ChargeProbe` asks the engine for every working
+no-jump route to those squares in one call (`CharacterToken:FindChargeRoutes`,
+cheapest first, exactly what `PlanCharge` would find square by square) and then
+applies the AI's own checks: height-aware reach and routes that already failed
+this turn. Generic straight-line previews interpret the
 input altitude as an offset above ground and must not receive a target token's
 absolute altitude for charge planning. Execution revalidates the landing and uses
 its charge segment's zero-altitude `loc` with straight-line walking; the absolute

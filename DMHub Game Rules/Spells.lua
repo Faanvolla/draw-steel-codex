@@ -773,6 +773,7 @@ end
 --an item in the list is the form { cost = string resourceid, quantity = (optional) number, upcast = (optional) number, level = (optional) number, canAfford = bool, paymentOptions = {{resourceid = string, quantity = number, upcast = (optional)number, level = (optional)number}}, expendedOptions = {{resourceid = string, quantity = number, upcast = (optional)number, level = (optional)number}} }
 --the cost+quantity gives the listed resource id cost and quantity, but paymentOptions is a list of resources/quantities the token has which it could use, in preferred order.
 --expendedOptions is a list of resources the token has expended which could normally be used to pay.
+--- @return table
 function Spell.GetCost(self, casterToken, options)
 
 	if not self.usesSpellSlots then

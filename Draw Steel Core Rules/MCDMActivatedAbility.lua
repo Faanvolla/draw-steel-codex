@@ -77,6 +77,7 @@ function ActivatedAbility:TargetModeOptions()
     local canTargetObjects = (self.objectTarget and true) or false
     local canTargetFriends = self.targetAllegiance ~= "enemy"
 
+    ---@type (string|boolean)[]
     local ids
     if self:IsNonAreaStrike() then
         --"Creatures" (friend or foe) is only a distinct choice if the ability
@@ -185,6 +186,8 @@ function ActivatedAbility:GetTargetingMode()
     if mode == "enemies" then
         return false, true
     end
+    --"enemies" returned above.
+    ---@cast mode false|true|'all'
 
     return mode, false
 end
@@ -446,12 +449,16 @@ function ActivatedAbility.ActionColorKeyAsText(color)
         --Light scheme: the key colors are dark, which is what reads there.
         if brightness >= 128 then return color end
     end
-    r, g, b = tonumber(r, 16), tonumber(g, 16), tonumber(b, 16)
-    local mx = math.max(r, g, b)
+    --the pattern only captures hex digits, so these always parse.
+    local rn, gn, bn = tonumber(r, 16), tonumber(g, 16), tonumber(b, 16)
+    ---@cast rn -nil
+    ---@cast gn -nil
+    ---@cast bn -nil
+    local mx = math.max(rn, gn, bn)
     if mx <= 0 or mx >= 200 then return color end
     local k = 200 / mx
     local function scale(c) return math.max(0, math.min(255, math.floor(c * k + 0.5))) end
-    return string.format("#%02X%02X%02X", scale(r), scale(g), scale(b))
+    return string.format("#%02X%02X%02X", scale(rn), scale(gn), scale(bn))
 end
 
 --- One NAME-color rule per color-key class: on a quiet header the key that
@@ -1243,6 +1250,68 @@ function ActivatedAbility.AdjacentAbilityBlockedReason(ability, creatureToken, o
     return nil
 end
 
+--Under Strictly Enforce Action Economy, a player cannot fire a triggered
+--action by hand from the action bar when the game will prompt them for it.
+--Pressed at the wrong moment, the manual copy skips the trigger entirely:
+--Hesitation is Weakness grabbed the turn mid-monster-turn (6TTFJWFP).
+--Only real triggered actions are refused -- ones spending a Trigger or Free
+--Triggered Action that also have an automatic trigger on the creature. Manual
+--triggers with no prompt (Conduit domain effects) and manual helper buttons
+--that spend no triggered action (Tactician Mark) keep working. Failing the
+--ability filter greys the chip, shows the reason in its tooltip, and refuses
+--the press for players (the action bar's strict:resources gate).
+local function SpendsTriggeredAction(ability)
+    local rid = ability:try_get("actionResourceId", "none")
+    return rid == CharacterResource.triggerResourceId or rid == CharacterResource.freeTriggeredActionResourceId
+end
+
+--Does the creature have an automatic trigger by this name (case-insensitive)?
+local function HasAutomaticTrigger(creatureProps, name)
+    local key = string.lower(name or "")
+    for _,entry in ipairs(creatureProps:GetTriggeredAbilities()) do
+        if entry.ability.typeName == "TriggeredAbility" and string.lower(entry.ability.name or "") == key then
+            return true
+        end
+    end
+    return false
+end
+
+local g_baseAbilityFilterFailureMessage = ActivatedAbility.AbilityFilterFailureMessage
+function ActivatedAbility:AbilityFilterFailureMessage(casterCreature)
+    local message, filter = g_baseAbilityFilterFailureMessage(self, casterCreature)
+    if message ~= nil then
+        return message, filter
+    end
+
+    --the prompt's own cast is the TriggeredAbility itself; never refuse that.
+    if self.typeName == "TriggeredAbility" or casterCreature == nil then
+        return nil
+    end
+    local manualCopy = self:try_get("manualVersionOfTrigger", false)
+    if not (manualCopy or self.categorization == "Trigger") then
+        return nil
+    end
+    if not SpendsTriggeredAction(self) then
+        return nil
+    end
+    if not StrictActionEconomyEnforced() then
+        return nil
+    end
+
+    --monsters the AI or the Director runs are not bound by this.
+    local token = dmhub.LookupToken(casterCreature)
+    if token == nil or not token.playerControlled then
+        return nil
+    end
+
+    --a generated manual copy always has its trigger; an authored one may not.
+    if not manualCopy and not HasAutomaticTrigger(casterCreature, self.name) then
+        return nil
+    end
+
+    return "Use this from its prompt when it triggers."
+end
+
 --Tokens on the map with granted abilities, worked out once per frame:
 --GetActivatedAbilities runs many times a frame and would otherwise scan
 --every token on each call.
@@ -1762,6 +1831,8 @@ function ActivatedAbility:Render(options, params)
     local displayTiers = powerTableBehavior ~= nil and applyModsToTiers(powerTableBehavior, rulesNotes) or nil
 
     if powerTableBehavior ~= nil then
+        --built from powerTableBehavior just above.
+        ---@cast displayTiers -nil
         local c = nil
         if params.token ~= nil then
             c = params.token.properties
@@ -1921,7 +1992,9 @@ function ActivatedAbility:Render(options, params)
                     id = "auraInfo",
                     create = function(element)
                         local concentrationText = ""
-                        if params.token.properties:HasConcentration() and params.token.properties.concentration:try_get("auraid") == self.auraid then
+                        --creatures keep a concentrationList; there is no creature.concentration field to read.
+                        local mostRecentConcentration = params.token.properties:MostRecentConcentration()
+                        if mostRecentConcentration ~= nil and mostRecentConcentration:try_get("auraid") == self.auraid then
                             concentrationText = "\nConcentrating on this spell"
                         end
 
@@ -1934,6 +2007,7 @@ function ActivatedAbility:Render(options, params)
                         end
                         if aura:try_get("duration") ~= "none" then
                             local duration = aura.duration
+                            local expiresText = nil
                             if type(duration) == "string" then
                                 if duration == "eoe" then
                                     expiresText = "End of Encounter"
@@ -1942,18 +2016,20 @@ function ActivatedAbility:Render(options, params)
                                 end
                             else
                                 local remainingRounds = aura.duration - roundsSince
-                                local expiresText = "this round"
+                                expiresText = "this round"
                                 if remainingRounds == 1 then
                                     expiresText = "next round"
                                 elseif remainingRounds > 1 then
                                     expiresText = string.format("in %d rounds", remainingRounds)
                                 end
+                            end
 
+                            if expiresText ~= nil then
                                 element.text = string.format("Effect cast %s, expires %s%s", castTimeText, expiresText,
                                     concentrationText)
                             end
                         else
-                            element.text = string.format("Effect cast %s, lasts indefinitely", castTimeText,
+                            element.text = string.format("Effect cast %s, lasts indefinitely%s", castTimeText,
                                 concentrationText)
                         end
                     end,
@@ -2030,9 +2106,11 @@ function ActivatedAbility:Render(options, params)
 
             local symbols = table.shallow_copy(params.symbols)
             local resourceNumberValue = rawget(self, "resourceNumber") or "1"
+            ---@type number
             local resourceNumber = 0
-            if tonumber(resourceNumberValue) ~= nil then
-                resourceNumber = tonumber(resourceNumberValue)
+            local literalResourceNumber = tonumber(resourceNumberValue)
+            if literalResourceNumber ~= nil then
+                resourceNumber = literalResourceNumber
             elseif creatureProperties ~= nil then
                 resourceNumber = ExecuteGoblinScript(resourceNumberValue, creatureProperties:LookupSymbol(symbols), 0,
                     "Determine resource number for " .. self.name)
@@ -3135,8 +3213,8 @@ function ActivatedAbility:Render(options, params)
                         for i, mode in ipairs(self.modeList) do
                             local available = true
                             if mode.condition ~= nil and mode.condition ~= "" then
-                                available = ExecuteGoblinScript(mode.condition, options.caster.properties:LookupSymbol(), 1, "Mode condition")
-                                available = type(available) == "number" and available > 0
+                                local conditionValue = ExecuteGoblinScript(mode.condition, options.caster.properties:LookupSymbol(), 1, "Mode condition")
+                                available = type(conditionValue) == "number" and conditionValue > 0
                             end
 
                             if available then
@@ -3399,7 +3477,9 @@ function ActivatedAbility:Render(options, params)
     return result
 end
 
-function ActivatedAbility:DescribeRange(castingCreature)
+--- @param castingCreature nil|creature
+--- @param sys nil|MeasurementSystem Units to show distances in. Defaults to the viewer's chosen units.
+function ActivatedAbility:DescribeRange(castingCreature, sys)
     if self:try_get("rangeTextOverride", "") ~= "" then
         if castingCreature == nil then
             return self.rangeTextOverride
@@ -3415,18 +3495,18 @@ function ActivatedAbility:DescribeRange(castingCreature)
     local radius = self:GetRadius(castingCreature)
 
     if self.targetType == "cube" then
-        return string.format("%s cube within %s", MeasurementSystem.NativeToDisplayString(radius),
-            MeasurementSystem.NativeToDisplayStringWithUnits(range))
+        return string.format("%s cube within %s", MeasurementSystem.NativeToDisplayString(radius, sys),
+            MeasurementSystem.NativeToDisplayStringWithUnits(range, sys))
     elseif self.targetType == "line" then
         local distance = self:GetLineDistance(castingCreature)
-        return string.format("%s x %s line within %d square%s", MeasurementSystem.NativeToDisplayString(range),
-            MeasurementSystem.NativeToDisplayString(radius), MeasurementSystem.NativeToDisplayString(distance),
+        return string.format("%s x %s line within %d square%s", MeasurementSystem.NativeToDisplayString(range, sys),
+            MeasurementSystem.NativeToDisplayString(radius, sys), MeasurementSystem.NativeToDisplayString(distance, sys),
             cond(distance ~= 1, "s", ""))
     elseif self.targetType == "all" then
-        return string.format("%s burst", MeasurementSystem.NativeToDisplayString(range))
+        return string.format("%s burst", MeasurementSystem.NativeToDisplayString(range, sys))
     end
 
-    local result = MeasurementSystem.NativeToDisplayString(range)
+    local result = MeasurementSystem.NativeToDisplayString(range, sys)
 
     if self:HasKeyword("Melee") and self:HasKeyword("Ranged") then
         local melee = self:try_get("meleeRange", 1)
@@ -3464,9 +3544,10 @@ function ActivatedAbility:DescribeTarget(casterToken)
             result = "Each creature"
         end
     elseif self.targetType == "target" then
+        ---@type number?
         local count = self:GetNumTargets(casterToken, {})
         if count == nil and type(self.numTargets) ~= "table" then
-            local m = regex.MatchGroups(self.numTargets, "^\\s*(?<targets>[0-9]+)")
+            local m = regex.MatchGroups(tostring(self.numTargets), "^\\s*(?<targets>[0-9]+)")
             if m ~= nil then
                 count = tonumber(m.targets)
             end
@@ -3484,6 +3565,10 @@ function ActivatedAbility:DescribeTarget(casterToken)
             else
                 result = string.format("%s or %s", result, cond(count <= 1, "object", "objects"))
             end
+        end
+
+        if self.forceCasterTarget then
+            result = "Self and " .. result
         end
     elseif self.targetType == "self" then
         result = "None/self"
@@ -3978,7 +4063,7 @@ local g_baseNumTargetsFunction = ActivatedAbility.GetNumTargets
 ---@param range number The range of the ability.
 ---@param symbols table<string, any> The symbols for the ability.
 ---@param targets table<{target: CharacterToken}>[] The targets of the ability.
----@return table<{a: CharacterToken, b: CharacterToken}>[]|nil The possible targeting combinations of minions to targets.
+---@return {a: CharacterToken, b: CharacterToken, locked: boolean|nil}[]|nil The possible targeting combinations of minions to targets.
 function ActivatedAbility:GetTargetingRays(casterToken, range, symbols, targets)
     if self:UsesSquadCoordination(casterToken) then
         -- Per-minion target count from the un-wrapped GetNumTargets, so we get
@@ -3998,7 +4083,7 @@ function ActivatedAbility:GetTargetingRays(casterToken, range, symbols, targets)
 
         --put the caster token at the front so they'll get priority.
         for i, tok in ipairs(squadTokens) do
-            if tok.id == casterToken.id then
+            if tok.charid == casterToken.charid then
                 table.remove(squadTokens, i)
                 table.insert(squadTokens, 1, tok)
                 break
@@ -4687,6 +4772,59 @@ GameSystem.RegisterGoblinScriptField {
     end,
 }
 
+--Burst size and line length are stored in range; cube size and line width in radius.
+local g_areaTypeNames = { cube = "Cube", line = "Line", all = "Burst" }
+
+GameSystem.RegisterGoblinScriptField {
+    target = ActivatedAbility,
+    name = "Area Type",
+    type = "text",
+    desc = "The shape of this ability's area: Cube, Line or Burst. Other for an area ability with a different shape. Empty if it is not an area ability.",
+    seealso = {"Area Size", "Distance"},
+    examples = {'Ability.Area Type is "Cube"'},
+    calculate = function(c)
+        local name = g_areaTypeNames[c.targetType]
+        if name ~= nil then
+            return name
+        end
+        if c.targetType == "map" or c:HasKeyword("Area") then
+            return "Other"
+        end
+        return ""
+    end,
+}
+
+GameSystem.RegisterGoblinScriptField {
+    target = ActivatedAbility,
+    name = "Area Size",
+    type = "number",
+    desc = "The size of this ability's area in squares: the cube size, the burst size or the line length. 0 for other shapes and for abilities that are not area abilities. Bonuses chosen while casting are not included.",
+    seealso = {"Area Type", "Range"},
+    examples = {"Ability.Area Size >= 3"},
+    calculate = function(c)
+        local caster = c:try_get("_tmp_boundCaster")
+        if c.targetType == "cube" then
+            return c:GetRadius(caster)
+        elseif c.targetType == "line" or c.targetType == "all" then
+            return c:GetRange(caster)
+        end
+        return 0
+    end,
+}
+
+GameSystem.RegisterGoblinScriptField {
+    target = ActivatedAbility,
+    name = "Distance",
+    type = "text",
+    desc = "The ability's distance as shown on its card, such as \"Melee 1\", \"Ranged 10\" or \"3 cube within 10 squares\". Always in squares, whatever units the viewer has chosen.",
+    seealso = {"Range", "Area Size"},
+    examples = {'Ability.Distance is "Melee 1"'},
+    calculate = function(c)
+        --Use the game's own units so every player gets the same text.
+        return c:DescribeRange(c:try_get("_tmp_boundCaster"), MeasurementSystem.NativeSystem())
+    end,
+}
+
 GameSystem.RegisterGoblinScriptField {
     target = ActivatedAbility,
     name = "Heroic",
@@ -5005,7 +5143,7 @@ local g_registeredPropertyToIndex = {}
 
 --activated abilities can have boolean 'properties' that can be registered and
 --control how they behave.
---- @param args {id: string, name: string, description: string}
+--- @param args {id: string, name: string, description: string, text?: string} text is filled in from name.
 function ActivatedAbility.RegisterProperty(args)
     local index = g_registeredPropertyToIndex[args.id] or #ActivatedAbility.registeredProperties + 1
     g_registeredPropertyToIndex[args.id] = index

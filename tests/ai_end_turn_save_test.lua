@@ -77,7 +77,7 @@ assert(load(section(invokePath, "function AbilityInvocation.PromptStandardAbilit
 --Typed invocation instances dispatch the production Invoke method.
 AbilityInvocation.new = function(t) t = typed(t); t.Invoke = AbilityInvocation.Invoke; return t end
 local findPending = assert(load(section("Monster AI/MonsterAIPanel.lua",
-    "local function FindPendingPlayerSave(queue)", "local g_playerTurnClaimAbilities") .. "\nreturn FindPendingPlayerSave"))()
+    "local function FindPendingPlayerSave(queue)", "local g_relayedTriggerWaitSeconds") .. "\nreturn FindPendingPlayerSave"))()
 local queue = {entries = {hero = {}}}
 local function prompt()
     return AbilityInvocation.PromptStandardAbility{
@@ -129,9 +129,11 @@ check(findPending(queue) == nil, "dismissed legacy card must not block")
 
 --Drive the real background loop: a remote save holds an already selected
 --monster turn, resumes after completion, and remains stoppable while waiting.
+--The loop under test reads the module handle as a global here.
+---@diagnostic disable-next-line: lowercase-global
 mod = {}
 ElevateToHostPermissions = noop
-creature = {SetAIActivityInProgress = noop}
+creature = {SetAIActivityInProgress = noop, ClearAIControl = noop}
 FindPendingPlayerSave = findPending
 GameHud = {BetweenTurnTransitionInProgress = function(...) return false end,
     instance = {initiativeInterface = {}}, GetTokensForInitiativeId = function(...) return {} end}
@@ -139,6 +141,8 @@ local turns = 0
 local process = {}
 MonsterAI.ClearWaiting = noop
 MonsterAI.SetWaiting = noop
+--The AI profiler is a no-op here.
+MonsterAI.ProfBegin, MonsterAI.ProfEnd, MonsterAI.ProfPhaseBegin, MonsterAI.ProfPhaseEnd = noop, noop, noop, noop
 MonsterAI.new = function(...)
     return {LogDecision = noop, RunYieldingFunction = function(_, fn) return pcall(fn) end,
         PlayTurnSafely = function() turns = turns + 1; process.stopRequested = true end}

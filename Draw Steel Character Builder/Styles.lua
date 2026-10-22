@@ -876,7 +876,7 @@ local function _labelStyles()
             selectors = {"info", "overview", "codex-note-text"},
             color = CBStyles.COLORS.NOTE_SILVER,
         },
-        -- "<name> EV: N (+N EV)" line under the Choices art.
+        -- EV line under the Choices art.
         {
             selectors = {"choices-art-ev"},
             width = "100%",
@@ -887,7 +887,7 @@ local function _labelStyles()
             bold = true,
             textAlignment = "center",
         },
-        -- Points count drawn inside a choice button's pip.
+        -- Points count inside a choice button's pip.
         {
             selectors = {"progress-pip-count"},
             width = "100%",

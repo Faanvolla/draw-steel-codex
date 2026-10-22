@@ -55,6 +55,8 @@ local JournalStyles = {
 }
 
 function GameHud:JournalPanel()
+	---@type Panel
+	local resultPanel
 	local result = nil
 	local createItemButton = gui.Button{
 		classes = {"addButton"},
@@ -261,7 +263,10 @@ function GameHud:EditJournalDialog(journalid)
 	
 end
 
+--doc.owner (optional) is the panel the picture was opened from: the viewer
+--opens in that panel's window, which matters when it is popped out.
 function GameHud:ViewJournalEntry(doc)
+	local layer
 
 	local panel = gui.Panel{
 		bgimage = doc.image,
@@ -288,10 +293,10 @@ function GameHud:ViewJournalEntry(doc)
 		},
 
 		press = function(element)
-			self:CloseModal()
+			self:CloseModalInLayer(layer)
 		end,
 		click = function(element)
-			self:CloseModal()
+			self:CloseModalInLayer(layer)
 		end,
 
 		escapeActivates = true,
@@ -300,7 +305,7 @@ function GameHud:ViewJournalEntry(doc)
 	}
 
 	dmhub.Debug(string.format("VIEW JOURNAL: %s", doc.image))
-	self:ShowModal(parentPanel)
+	layer = self:ShowModal(parentPanel, { owner = rawget(doc, "owner") })
 end
 
 function GameHud:ViewSign(imageid)

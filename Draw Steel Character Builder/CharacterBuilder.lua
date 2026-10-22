@@ -639,6 +639,8 @@ function CharacterBuilder._confirmDialog(opts)
         end
     end
 
+    --assigned just below, before any of its handlers can run.
+    ---@type Panel
     local resultPanel = nil
     resultPanel = gui.Panel {
         styles = ThemeEngine.MergeStyles(CBStyles.GetStyles()),
@@ -726,10 +728,17 @@ function CharacterBuilder._confirmDialog(opts)
     return resultPanel
 end
 
+--- Options for the builder's category and detail-nav buttons, passed on to gui.SelectorButton.
+--- @class CBCategoryButtonOptions: ButtonArgs
+--- @field text string
+--- @field fontSize? integer
+--- @field press? fun(element: Panel)
+--- @field refreshBuilderState? fun(element: Panel, state: CharacterBuilderState)
+
 --- Build a Category button, forcing consistent styling.
 --- Be sure to add behaviors for click and refreshBuilderState
---- @param options ButtonOptions
---- @return SelectorButton|Panel
+--- @param options CBCategoryButtonOptions
+--- @return Panel
 function CharacterBuilder._makeCategoryButton(options)
     local fontSize = options.fontSize or 22
     options.fontSize = CharacterBuilder._fitFontSize(fontSize, 21, #options.text)
@@ -742,8 +751,8 @@ end
 
 --- Build a nav button for the detail pane
 --- @param selector string The selector name the detail panel resides under
---- @param options table 
---- @return SelectorButton|Panel
+--- @param options CBCategoryButtonOptions
+--- @return Panel
 function CharacterBuilder._makeDetailNavButton(selector, options)
     if options.press == nil then
         options.press = function(element)
@@ -790,7 +799,6 @@ end
 --- This is the mechanism by which the various detail panels add buttons
 --- and feature selectors into columns 2 & 3.
 --- @param options CBFeatureRegistryOptions
---- @param feature CBFeatureWrapper
 --- @return table|nil
 function CharacterBuilder._makeFeatureRegistry(options)
     local feature = options.feature
@@ -864,7 +872,7 @@ function CharacterBuilder._makeFeatureRegistry(options)
                     refreshBuilderState = function(element, state)
                         local tokenSelected = getSelected(CharacterBuilder._getHero()) or "nil"
                         local featureCache = state:Get(selector .. ".featureCache")
-                        feature = featureCache and featureCache:GetFeature(element.parent.data.featureId)
+                        local feature = featureCache and featureCache:GetFeature(element.parent.data.featureId)
                         local featureAvailable = feature ~= nil
                         local visible = (tokenSelected == element.parent.data.selectedId) and featureAvailable
                         element:FireEvent("setAvailable", visible)
@@ -893,7 +901,6 @@ function CharacterBuilder._makeFeatureRegistry(options)
                             -- Open-ended choices always count as complete; fill once something is bought.
                             if feature and feature:IsUnbounded() then
                                 filled = #feature:GetSelectedNames() > 0
-                                -- Points choices show the points spent in this choice inside the pip.
                                 local creature = CharacterBuilder._getCreature()
                                 if feature:CostsPoints() and creature ~= nil then
                                     local spent = 0
@@ -913,7 +920,7 @@ function CharacterBuilder._makeFeatureRegistry(options)
                         element:SetClass("collapsed", not visible)
                         element:FireEventTree("setPipPoints", pointsLabel)
                     end,
-                    -- Point count for points choices; the pip grows to fit it.
+                    -- Points spent in this choice; the pip grows to fit it.
                     gui.Label{
                         classes = {"builder-base", "label", "progress-pip-count", "collapsed"},
                         interactable = false,
@@ -959,8 +966,8 @@ function CharacterBuilder._makeFeatureRegistry(options)
 end
 
 --- Build a Select button, forcing consistent styling
---- @param options ButtonOptions 
---- @return PrettyButton|Panel
+--- @param options ButtonArgs
+--- @return Label|Panel
 function CharacterBuilder._makeSelectButton(options)
     local opts = {
         classes = {"builder-base", "button", "select"},
@@ -980,7 +987,14 @@ function CharacterBuilder._makeSelectButton(options)
     }
     for k, v in pairs(options) do
         if k == "classes" or k == "styles" then
-            table.move(v, 1, #v, #opts[k] + 1, opts[k])
+            --opts has no default styles list, so start one rather than index nil.
+            local dest = opts[k]
+            if dest == nil then
+                dest = {}
+                opts[k] = dest
+            end
+            ---@cast dest table
+            table.move(v, 1, #v, #dest + 1, dest)
         else
             opts[k] = v
         end

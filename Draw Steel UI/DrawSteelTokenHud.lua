@@ -16,6 +16,189 @@ local function MinionDeathPending(creatureProps)
     return confirmedAt ~= nil and dmhub.Time() - confirmedAt < g_minionDeathPendingTimeout
 end
 
+--The creature that last damaged this minion, or nil. Mirrors the Monster AI's
+--reader: some writers store a GoblinScript-style accessor instead of the creature.
+local function MinionLastAttacker(creatureProps)
+    local attacker = creatureProps:try_get("_tmp_lastattacker")
+    if type(attacker) == "function" then
+        attacker = attacker("self")
+    end
+    return attacker
+end
+
+--Kill a minion whose death skull is showing: what clicking the skull does.
+--Pass attacker to credit a specific creature (stamped onto the minion so kill
+--triggers and the corpse match it); nil uses whoever last damaged the minion.
+local function ConfirmMinionDeath(token, attacker)
+    local props = token.properties
+    if MinionDeathPending(props) then
+        return false
+    end
+
+    props._tmp_minionDeathPending = dmhub.Time()
+
+    if attacker ~= nil then
+        props._tmp_lastattacker = attacker
+    else
+        attacker = props:try_get("_tmp_lastattacker")
+    end
+    if attacker ~= nil then
+        attacker:TriggerEvent("kill", {
+            victim = props,
+            hasattacker = true,
+            attacker = attacker,
+        })
+    end
+
+    props:TriggerEvent("creaturedeath", {hasattacker = attacker ~= nil,
+            attacker = attacker,})
+    props:MinionDeath()
+    return true
+end
+
+--Minions showing a clickable (not yet confirmed) death skull on this client:
+--charid -> {token, panel}. The token HUD's think keeps it current; the notice
+--below reads it.
+local g_clickableSkulls = {}
+
+--Group the clickable skulls by squad. Each entry: {squad, tokens, attacker},
+--where attacker is the creature that damaged the squad (nil if unknown).
+local function ClickableSkullSquads()
+    local result = {}
+    for charid, entry in pairs(g_clickableSkulls) do
+        local token = entry.token
+        if not token.valid or not entry.panel.valid or entry.panel:HasClass("pending")
+            or not token.properties:has_key("_tmp_minionSquad") then
+            g_clickableSkulls[charid] = nil
+        else
+            local squad = token.properties._tmp_minionSquad
+            local group = result[squad]
+            if group == nil then
+                group = {squad = squad, tokens = {}, attacker = nil}
+                result[squad] = group
+            end
+            group.tokens[#group.tokens+1] = token
+            local isDirect = token.properties.minionDamageTime == squad.damage_time
+            if group.attacker == nil or isDirect then
+                group.attacker = MinionLastAttacker(token.properties) or group.attacker
+            end
+        end
+    end
+    return result
+end
+
+--True if this client is the one that should choose the squad's deaths: the
+--attacker's controller, or everyone when the attacker is unknown. AI attackers
+--are skipped: the Monster AI picks their kills itself.
+local function ShouldChooseSquadDeaths(attacker)
+    if attacker == nil then
+        return true
+    end
+    if attacker:IsAIControlled() then
+        return false
+    end
+    local attackerToken = dmhub.LookupToken(attacker)
+    if attackerToken == nil or not attackerToken.valid then
+        return true
+    end
+    return attackerToken.activeControllerId == nil
+end
+
+--"Choose for me": kill as many of the squad's skull minions as its damage owes,
+--direct targets first, then nearest to the attacker (the Monster AI's order).
+local function ChooseSquadDeaths(group)
+    local squad = group.squad
+    local healthSingle = squad.health_single or 0
+    if healthSingle <= 0 or squad.damage_time_pending then
+        return
+    end
+
+    local liveTokens = 0
+    local pending = 0
+    for _, tok in ipairs(squad.tokens or {}) do
+        if tok.valid and not tok.properties.minionDead then
+            liveTokens = liveTokens + 1
+            if MinionDeathPending(tok.properties) then
+                pending = pending + 1
+            end
+        end
+    end
+    local owed = math.min(liveTokens, math.floor((squad.damage_taken or 0) / healthSingle)) - pending
+    if owed <= 0 then
+        return
+    end
+
+    local attackerToken = group.attacker ~= nil and dmhub.LookupToken(group.attacker) or nil
+    local candidates = {}
+    for _, tok in ipairs(group.tokens) do
+        local distance = 999999
+        if attackerToken ~= nil and attackerToken.valid then
+            distance = attackerToken:Distance(tok)
+        end
+        candidates[#candidates+1] = {
+            token = tok,
+            direct = tok.properties.minionDamageTime == squad.damage_time,
+            distance = distance,
+        }
+    end
+    table.sort(candidates, function(a, b)
+        if a.direct ~= b.direct then
+            return a.direct
+        end
+        if a.distance ~= b.distance then
+            return a.distance < b.distance
+        end
+        return a.token.charid < b.token.charid
+    end)
+
+    for i = 1, math.min(owed, #candidates) do
+        local tok = candidates[i].token
+        local entry = g_clickableSkulls[tok.charid]
+        if entry ~= nil and entry.panel.valid then
+            entry.panel:SetClass("pending", true)
+            entry.panel.interactable = false
+        end
+        ConfirmMinionDeath(tok, group.attacker)
+    end
+end
+
+--Tip banner notice while this client has minion deaths to choose. Outranks
+--the Monster AI's "Waiting for..." notice (1000), which may be waiting on these.
+Tip = rawget(_G, "Tip") or {}
+Tip.notices = Tip.notices or {}
+Tip.notices["choose-minion-deaths"] = {
+    id = "choose-minion-deaths",
+    priority = 1100,
+    text = function()
+        if next(g_clickableSkulls) == nil then
+            return nil
+        end
+        local function MySquads()
+            local mine = {}
+            for _, group in pairs(ClickableSkullSquads()) do
+                if ShouldChooseSquadDeaths(group.attacker) then
+                    mine[#mine+1] = group
+                end
+            end
+            return mine
+        end
+        if #MySquads() == 0 then
+            return nil
+        end
+        return "Choose which minions should die by clicking the skulls", {
+            action = {
+                text = "Choose for me",
+                press = function()
+                    --Re-read: skulls may have been clicked since this tick.
+                    for _, group in ipairs(MySquads()) do
+                        ChooseSquadDeaths(group)
+                    end
+                end,
+            },
+        }
+    end,
+}
+
 --True while some targeting prompt is offering this token as a pick: the action
 --bar (chooseTarget, ability targeting) stamps token.sheet.data.targetInfo on
 --every candidate and TokenUI's tokenClick executes it. While that is set, a
@@ -240,7 +423,7 @@ TokenHud.RegisterPanel{
                 end
 
                 if m_haveTrigger == false and notrigger == false and token.canControl and token.activeControllerId == nil then
-                    audio.FireSoundEvent("Notify.Trigger")
+                    audio.FireSoundEvent("Notify.Trigger", { tokenid = token.charid })
                 end
                 
                 m_haveTrigger = not notrigger
@@ -385,26 +568,20 @@ TokenHud.RegisterPanel{
                                         return
                                     end
 
-                                    token.properties._tmp_minionDeathPending = dmhub.Time()
-
                                     --Apply the pending look here rather than waiting on the
                                     --parent's 0.2s think tick, so the click feels acknowledged
                                     --immediately. The parent re-asserts both every tick.
                                     element:SetClass("pending", true)
                                     element.interactable = false
 
-                                    local attacker = token.properties:try_get("_tmp_lastattacker")
-                                    if attacker ~= nil then
-                                        attacker:TriggerEvent("kill", {
-                                            victim = token.properties,
-                                            hasattacker = true,
-                                            attacker = attacker,
-                                        })
-                                    end
+                                    ConfirmMinionDeath(token)
+                                end,
 
-                                    token.properties:TriggerEvent("creaturedeath", {hasattacker = attacker ~= nil,
-                                            attacker = attacker,})
-                                    token.properties:MinionDeath()
+                                destroy = function(element)
+                                    local entry = g_clickableSkulls[token.charid]
+                                    if entry ~= nil and entry.panel == element then
+                                        g_clickableSkulls[token.charid] = nil
+                                    end
                                 end,
 
                                 thinkTime = g_deadMinionPulseSpeed,
@@ -429,6 +606,14 @@ TokenHud.RegisterPanel{
                         m_minionDeathPanel:SetClass("nondirect", has_direct_targets and not is_direct_target)
                         m_minionDeathPanel:SetClass("pending", pending)
                         m_minionDeathPanel.interactable = not pending
+                        if pending then
+                            g_clickableSkulls[token.charid] = nil
+                        else
+                            local entry = g_clickableSkulls[token.charid]
+                            if entry == nil or entry.panel ~= m_minionDeathPanel then
+                                g_clickableSkulls[token.charid] = {token = token, panel = m_minionDeathPanel}
+                            end
+                        end
                     else
                         if m_minionDeathPanel ~= nil then
                             m_minionDeathPanel:DestroySelf()
@@ -928,7 +1113,7 @@ TokenHud.RegisterPanel{
                 local m_local = islocal
 
                 if element.data.currentlyDisplayed == nil then
-                    audio.FireSoundEvent("Notify.OpportunityAttackWarn")
+                    audio.FireSoundEvent("Notify.OpportunityAttackWarn", { tokenid = token.charid })
                 end
 
                 element.data.currentlyDisplayed = DeepCopy(info)

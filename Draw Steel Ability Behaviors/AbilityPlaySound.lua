@@ -57,6 +57,7 @@ function ActivatedAbilityPlaySoundBehavior:Cast(ability, casterToken, targets, o
     audio.DispatchSoundEvent(self.soundEvent, {
         volume = self.volume,
         delay = self.delay,
+        tokenid = casterToken ~= nil and casterToken.charid or nil,
     })
 end
 

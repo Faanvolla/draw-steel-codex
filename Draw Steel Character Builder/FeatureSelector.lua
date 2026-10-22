@@ -52,12 +52,11 @@ local _getState = CharacterBuilder._getState
 local _mergeKeyedTables = CharacterBuilder._mergeKeyedTables
 local _safeGet = CharacterBuilder._safeGet
 
---- Purchases from a points pool, each tagged with its group ("Defensive")
---- and the EV it adds past the granting template's free points
---- (builderFreePoints / builderEVPerPoint; Animal Traits uses 4 and 2).
+--- Points-pool purchases, each tagged with its group and the EV it adds past
+--- the template's builderFreePoints (builderEVPerPoint per extra point).
 --- @param creature creature|nil
 --- @param pointsName string
---- @param featureGuid string A choice spending from the pool; finds the template when nothing is bought yet.
+--- @param featureGuid string Choice in the pool; locates the template when nothing is bought.
 --- @return table ledger { items, spent, totalEV, freePoints, evPerPoint }
 local function _pointsLedger(creature, pointsName, featureGuid)
     local items = creature and creature.PointsSpentBreakdown(creature, pointsName) or {}
@@ -290,8 +289,7 @@ function CBFeatureSelector.SelectionPanel(selector, feature)
                 local name = option and option:GetName() or EMPTY_SLOT_TEXT
                 if cachedFeature and option then
                     name = cachedFeature:GetOptionDisplayName(option)
-                    -- Bought from a points pool: "Fearsome (Defensive) 2 Points", plus the
-                    -- EV it adds once past the free points.
+                    -- Points-pool slot: "Fearsome (Defensive) 2 Points" (+EV past the free points).
                     if cachedFeature:IsUnbounded() and cachedFeature:CostsPoints() then
                         local ledger = _pointsLedger(_getCreature(), cachedFeature:GetPointsName(), element.data.featureId)
                         for _,item in ipairs(ledger.items) do
@@ -437,8 +435,7 @@ function CBFeatureSelector.SelectionPanel(selector, feature)
         }
     end
 
-    -- When a feature offers an unbounded number of point-costed choices, show
-    -- what the creature's points of that type were spent on (or the total).
+    -- Points total and budget for open-ended point-costed choices.
     local pointsHeader = gui.Label{
         classes = {"builder-base", "label", "collapsed"},
         width = "100%",
@@ -459,8 +456,7 @@ function CBFeatureSelector.SelectionPanel(selector, feature)
                 local pointsName = cachedFeature:GetPointsName()
                 local creature = _getCreature()
                 local spent = creature and creature:GetPointsSpentByName(pointsName) or 0
-                -- The selected traits already show their own points, so this is
-                -- just the running total, its EV cost, and the budget rule.
+                -- Slots show per-trait points; this is the total, EV and budget rule.
                 local ledger = _pointsLedger(creature, pointsName, feature:GetGuid())
                 local text = string.format("<b>%d Total Points Spent</b>", spent)
                 if ledger.spent == spent and ledger.totalEV > 0 then

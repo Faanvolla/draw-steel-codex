@@ -1710,6 +1710,7 @@ function CreateTokenHud(token)
                                     audio.FireSoundEvent(resourceInfo:SoundEventName() .. cond(anim.animType == "refreshResource", "_Gain", "_Spend"), {
                                         sequence = i,
                                         total = quantity,
+                                        tokenid = token.charid,
                                     })
 								end,
 								disappear = function(element)
@@ -2168,7 +2169,8 @@ function CreateTokenHud(token)
                         eventName = string.format("%s_%s", eventName, entry.damage_type)
                     end
 
-					audio.FireSoundEvent(eventName, { tokenid = token.charid, volume = volume })
+					--attackerid lets the sound play its "controlled" variant for the hitter too.
+					audio.FireSoundEvent(eventName, { tokenid = token.charid, attackerid = entry.attackerid, volume = volume })
 
                     --every client gets here once per entry, so this is how the blood networks.
                     BloodSpatter.Emit(token, entry)
@@ -2190,7 +2192,7 @@ function CreateTokenHud(token)
                 local fontFace = nil
                 print("Language: Speaking in", entry.langid, "known locally =", creature.g_languagesKnownLocally)
                 if (not dmhub.isDM) and (not token.canControl) and entry.langid ~= nil and (not creature.g_languagesKnownLocally[entry.langid]) then
-                    fontFace = "Tengwar"
+                    fontFace = Language.UnreadableFontForId(entry.langid)
                 end
 
                 local text = entry.text
@@ -3297,7 +3299,10 @@ Commands.RegisterMacro{
         end
 
         for _,tok in ipairs(selectedTokens) do
-            tok.sheet.data.PlayEffect(str, false)
+            --(a creature selected off the board has no token to play it on.)
+            if tok.onBoard then
+                tok.sheet.data.PlayEffect(str, false)
+            end
         end
     end,
 }
