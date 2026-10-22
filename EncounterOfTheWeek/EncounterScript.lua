@@ -4155,6 +4155,7 @@ local OUTCOME_OF_EFFECT = {
     temphp = "temphp",
     malice = "malice",
     stamina = "harm",
+    damage = "harm",
     loserecovery = "harm",
     maxstamina = "harm",
     loseconsumable = "harm",

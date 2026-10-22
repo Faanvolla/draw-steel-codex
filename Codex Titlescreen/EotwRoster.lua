@@ -23,19 +23,43 @@ local mod = dmhub.GetModLoading()
 
 EotwRoster = {}
 
---The town's city id, on the staging server while EotW is dev-gated. The
---game-side EotW mod (EncounterOfTheWeek/EncounterOfTheWeek.lua) must
---connect to the same city to signal ready / leave.
+--The town's city id. The game-side EotW mod
+--(EncounterOfTheWeek/EncounterOfTheWeek.lua) must connect to the same city,
+--on the same server, to signal ready / leave and record outcomes.
 EotwRoster.CITY_ID = "blackbottom"
-EotwRoster.CITY_OPTIONS = { staging = true, route = "city" }
+
+--Which game server the town and its games live on: "release" or "staging".
+--Only admins may choose (the titlescreen card's dropdown); everyone else is
+--always on release. Declared by the game-side EotW mod too, which reads it
+--the same way (EotwUseStaging there), so a game and the town agree.
+setting{
+    id = "eotw:server",
+    default = "release",
+    storage = "preference",
+}
+
+function EotwRoster.UseStaging()
+    return dmhub.isAdminAccount == true and dmhub.GetSettingValue("eotw:server") == "staging"
+end
+
+--Options for lobbies:Connect to the town. Read at each connect, so a change
+--of server takes effect the next time the town opens.
+function EotwRoster.CityOptions()
+    return { staging = EotwRoster.UseStaging(), route = "city" }
+end
+
+--The storage backend new EotW games are created on, matching the town's server.
+function EotwRoster.GameBackend()
+    return cond(EotwRoster.UseStaging(), "durableobjects-staging", "durableobjects")
+end
 
 --Ask the city how many users are connected, without connecting: callback(count),
 --or callback(nil) on failure. Only open city sockets count as presence, so the
 --titlescreen can show the town's headcount without being counted in it.
 function EotwRoster.FetchHeadcount(callback)
-    local host = cond(EotwRoster.CITY_OPTIONS.staging, "https://game-server-staging.codexback.com", "https://game-server.codexback.com")
+    local host = cond(EotwRoster.UseStaging(), "https://game-server-staging.codexback.com", "https://game-server.codexback.com")
     net.Get{
-        url = string.format("%s/api/%s/%s/presence", host, EotwRoster.CITY_OPTIONS.route, EotwRoster.CITY_ID),
+        url = string.format("%s/api/city/%s/presence", host, EotwRoster.CITY_ID),
         success = function(result)
             local count = type(result) == "table" and result.count or nil
             callback(cond(type(count) == "number", count, nil))
@@ -405,6 +429,19 @@ function EotwRoster.MarketUnlocked()
     end
     --the project's completion is known before the next list-heroes.
     local state = EotwDowntime.GetProject("find-arcane-market")
+    return state ~= nil and (tonumber(state.completions) or 0) >= 1
+end
+
+--Has the town finished building the Hall of Heroes (the community project
+--Build the Hall of Heroes)? Until then its place on the map is the
+--Construction.
+function EotwRoster.HallBuilt()
+    if m_unlocks ~= nil and m_unlocks.hallOfHeroes == true then
+        return true
+    end
+    --the community project is re-listed whenever anyone in town works on
+    --it, which is sooner than the next list-heroes.
+    local state = EotwDowntime.GetProject("build-hall-of-heroes")
     return state ~= nil and (tonumber(state.completions) or 0) >= 1
 end
 
@@ -835,6 +872,11 @@ local function ApplyOutcome(key, entry, tok)
                 if type(wounds) == "table" then
                     EotwRoster.SetWounds(props, wounds.damage, wounds.recoveriesUsed)
                 end
+                --Secret Twin: the assassin came for them (EncounterMontage),
+                --so their past has caught up; the next respite rolls again.
+                if type(entry.outcome) == "table" and entry.outcome.assassinMet then
+                    props[EotwDowntime.ASSASSIN_FIELD] = nil
+                end
                 local applied = {}
                 local old = rawget(props, "eotwOutcomes")
                 if type(old) == "table" then
@@ -1226,6 +1268,8 @@ local function JoinRoster(tok, onDone, how)
             tok.properties.creatorid = dmhub.userid
             tok.properties.originalid = charid
             tok.properties.mtime = ServerTimestamp()
+            --a complication's picked trinket (Secret Twin) is in hand
+            EotwBuild.SyncTreasureGrants(tok)
         end,
     }
     --a recruited pregen arrives on the slow start.
@@ -1472,6 +1516,14 @@ function EotwRoster.RecruitTitlescreenHero(source, name, onDone)
                 props.inventory = {}
                 props.equipment = {}
                 props.equipmentMeta = {}
+                --a complication's trinket is part of the build, not earned
+                --treasure: unclaim it so JoinRoster hands it over again.
+                for _,state in pairs(props:try_get("treasureGrants", {})) do
+                    if type(state) == "table" then
+                        state.claimed = false
+                        state.eotwGiven = nil
+                    end
+                end
             end,
         }
         JoinRoster(tok, onDone, "titlescreen")
@@ -3041,9 +3093,9 @@ local function OpenHallEntry(host, entry)
     end)
 end
 
---The Hall of Heroes dialog over `host`.
-function EotwRoster.ShowHall(host)
-    local dlg
+--The Hall of Heroes location's card: tabs, sort and the list of entries (the
+--scene above it carries the title). host mounts the victory-screen replays.
+function EotwRoster.HallPanel(host)
     local listPanel = nil
     local tabsPanel = nil
     local sortPanel = nil
@@ -3223,29 +3275,27 @@ function EotwRoster.ShowHall(host)
         listPanel.children = rows
     end
 
-    local titleParts = Title("The Hall of Heroes", "Every party that has conquered an Encounter of the Week. Choose one to relive their victory.")
-    dlg = ModalFrame{
-        width = 1000,
-        height = 860,
+    return gui.Panel{
+        width = "100%",
+        height = "100%",
+        flow = "vertical",
+        create = function(element)
+            LoadMore()
+        end,
         children = {
-            titleParts[1],
-            titleParts[2],
             gui.Panel{
-                width = "94%",
+                width = "100%",
                 height = "auto",
-                halign = "center",
                 flow = "horizontal",
                 wrap = true,
-                tmargin = 4,
                 create = function(element)
                     tabsPanel = element
                     Rebuild()
                 end,
             },
             gui.Panel{
-                width = "94%",
+                width = "100%",
                 height = "auto",
-                halign = "center",
                 flow = "horizontal",
                 vmargin = 4,
                 create = function(element)
@@ -3253,31 +3303,21 @@ function EotwRoster.ShowHall(host)
                     Rebuild()
                 end,
             },
+            --the tab and sort strips above take about 100 (more if the
+            --tabs wrap onto a second row).
             gui.Panel{
-                width = "94%",
-                height = "100%-300",
-                halign = "center",
+                width = "100%",
+                height = "100%-110",
                 flow = "vertical",
                 vscroll = true,
                 rpad = 12,
                 borderBox = true,
-                vmargin = 8,
+                tmargin = 8,
                 create = function(element)
                     listPanel = element
                     Rebuild()
                 end,
             },
-            gui.Panel{
-                width = "auto",
-                height = "auto",
-                halign = "center",
-                valign = "bottom",
-                bmargin = 14,
-                Button("Leave", function() dlg:DestroySelf() end, 180),
-            },
         },
     }
-    host:AddChild(dlg)
-    LoadMore()
-    return dlg
 end

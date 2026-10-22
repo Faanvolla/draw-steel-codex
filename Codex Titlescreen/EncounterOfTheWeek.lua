@@ -162,9 +162,9 @@ setting{
     storage = "preference",
 }
 
---The town's city (see EotwRoster.lua), on staging until EotW nears release.
+--The town's city (see EotwRoster.lua). Its server is EotwRoster.CityOptions(),
+--read at each connect.
 local LOBBY_ID = EotwRoster.CITY_ID
-local LOBBY_OPTIONS = EotwRoster.CITY_OPTIONS
 
 --The town map: Miska Fredman's Blackbottom map with its grid and labels
 --removed, as a core image asset. PLACEHOLDER: a psd-tools render, slightly
@@ -203,6 +203,36 @@ local MARKET_VIDEO = "2d82c3b6-de21-47f0-bfd2-f17708bf4c85"
 local MARKET_ART = "a2a30693-a725-48fc-90cd-dfd028e58dc8"
 CreatorCredit.RegisterArt(MARKET_VIDEO, "czepeku")
 CreatorCredit.RegisterArt(MARKET_ART, "czepeku")
+
+--The Hall of Heroes, which the whole town builds together (the community
+--project Build the Hall of Heroes, EotwDowntime.lua). While it is being
+--built the location is the Construction, over Czepeku Scenes' "Train Station
+--Approach" (the Town Square still); once built, the Hall plays the same
+--scene's "Original Day" 30s 1080p loop over its first frame. Core image
+--assets uploaded 2026-10-22; sources in C:/dev/eotw/art/ (hall-*).
+local CONSTRUCTION_ART = "c9e0c66f-4f10-441d-8acf-3f4bdb17b373" --Town Square still, 3840x2160
+local HALL_VIDEO = "7d454b91-a9f0-495a-94e2-8754b33fa619"
+local HALL_ART = "e35b71f8-8fb4-4e4d-ae59-0e9fb3814e72" --the video's first frame, 1920x1080
+CreatorCredit.RegisterArt(CONSTRUCTION_ART, "czepeku")
+CreatorCredit.RegisterArt(HALL_VIDEO, "czepeku")
+CreatorCredit.RegisterArt(HALL_ART, "czepeku")
+
+--The two faces of the Hall's location; OpenLocation picks one as its scene.
+local CONSTRUCTION_SCENE = {
+    art = CONSTRUCTION_ART,
+    aspect = 16 / 9,
+    focusX = 0.5,
+    title = "The Construction",
+    tagline = "Join in the construction of the great Hall of Heroes where the works and deeds of heroes shall be recorded!",
+}
+local HALL_SCENE = {
+    art = HALL_ART,
+    video = HALL_VIDEO,
+    aspect = 16 / 9,
+    focusX = 0.5,
+    title = "The Hall of Heroes",
+    tagline = "Every party that has conquered an Encounter of the Week is remembered here. Choose one to relive their victory.",
+}
 
 --The town's locations, as fractions of the map image (so they survive a
 --re-export at another size). open(ctx) runs on click; locked(ctx) returns
@@ -355,14 +385,18 @@ local CITY_LOCATIONS = {
         y = 0.86,
         open = function(ctx) ctx.OpenGraveyard() end,
     },
-    --Every party that won an Encounter of the Week, and the victory screen
-    --each saw (EotwRoster.ShowHall). Open to all, even with no hero yet.
+    --The Construction, until the whole town has built the Hall of Heroes
+    --(EotwRoster.HallBuilt); then the Hall: every party that won an
+    --Encounter of the Week, and the victory screen each saw. Open to all,
+    --even with no hero yet. label and icon follow which it is (LocationNode).
     {
         id = "hall",
-        label = "Hall of Heroes",
-        icon = "phosphor/trophy-fill.png",
+        label = function(ctx) return cond(EotwRoster.HallBuilt(), "Hall of Heroes", "Construction") end,
+        icon = function(ctx) return cond(EotwRoster.HallBuilt(), "phosphor/trophy-fill.png", "phosphor/hammer-fill.png") end,
         x = 0.33,
         y = 0.2,
+        --replaced by OpenLocation each time it opens.
+        scene = CONSTRUCTION_SCENE,
         open = function(ctx) ctx.OpenHall() end,
     },
 }
@@ -430,9 +464,8 @@ local g_CheckboxStyles = {
 --What EotW games are created with. The real starting module is
 --codex-encounteroftheweek (Phase 5 -- not yet authored/published), so until
 --it exists we stand in the Custom Campaign starter so created games are
---playable. Games live on the staging DO backend alongside the lobby.
+--playable. Games live on the same server as the town (EotwRoster.GameBackend()).
 local STARTING_MODULE = "mcdm-encounteroftheweek"
-local GAME_BACKEND = "durableobjects-staging"
 
 --Art for the standard game loading screen shown while entering an EotW game
 --(and recorded as the game's cover art at create time). Same image the
@@ -1150,7 +1183,7 @@ local function CityRequest(action, args, callback)
         callback(false, "this build has no lobbies API")
         return
     end
-    local own = lobbiesApi:Connect(LOBBY_ID, LOBBY_OPTIONS)
+    local own = lobbiesApi:Connect(LOBBY_ID, EotwRoster.CityOptions())
     dmhub.Coroutine(function()
         --requests fail while the connection is still opening; give it ~30s.
         for _ = 1, 300 do
@@ -2620,7 +2653,7 @@ CreateScreen = function(args)
     local lobbiesApi = rawget(_G, "lobbies")
     local m_conn = nil
     if lobbiesApi ~= nil then
-        m_conn = lobbiesApi:Connect(LOBBY_ID, LOBBY_OPTIONS)
+        m_conn = lobbiesApi:Connect(LOBBY_ID, EotwRoster.CityOptions())
         EotwRoster.Attach(m_conn)
     end
 
@@ -5326,7 +5359,7 @@ CreateScreen = function(args)
                         description = name,
                         coverart = LOADING_SCREEN_ART,
                         startingModule = STARTING_MODULE,
-                        backend = GAME_BACKEND,
+                        backend = EotwRoster.GameBackend(),
                         accountSlot = "eotw",
                         --Every EotW game is directorless: the host's machine
                         --hosts, but the host plays as a player. Recorded on the
@@ -6838,6 +6871,8 @@ CreateScreen = function(args)
     local m_guildScene = nil
     local m_innScene = nil
     local m_marketScene = nil
+    --the Construction or the Hall of Heroes, whichever was opened.
+    local m_hallScene = nil
     local gateScene = nil
     local dangerScene = nil
     local locationHost = nil
@@ -6883,7 +6918,7 @@ CreateScreen = function(args)
             EotwRoster.ShowGraveyard(resultPanel)
         end,
         OpenHall = function()
-            EotwRoster.ShowHall(resultPanel)
+            OpenLocation("hall")
         end,
     }
 
@@ -6891,6 +6926,14 @@ CreateScreen = function(args)
     --location dims and says why instead of opening.
     local LocationNode = function(loc)
         local NODE_WIDTH = 200
+        --a location's label and icon may be functions of the town (the Hall
+        --of Heroes reads "Construction" until it is built).
+        local function LocValue(v)
+            if type(v) == "function" then
+                return v(townContext)
+            end
+            return v
+        end
         return gui.Panel{
             classes = { "eotwTownNode" },
             floating = true,
@@ -6917,6 +6960,23 @@ CreateScreen = function(args)
                 end
                 element.data.lockedReason = reason
                 element:SetClass("locked", reason ~= nil)
+                if type(loc.label) == "function" or type(loc.icon) == "function" then
+                    --compared with what was last set, not read back from the panels.
+                    local text = LocValue(loc.label)
+                    local icon = LocValue(loc.icon)
+                    if element.data.shownLabel ~= text or element.data.shownIcon ~= icon then
+                        element.data.shownLabel = text
+                        element.data.shownIcon = icon
+                        local label = element:Get("eotwTownLabel-" .. loc.id)
+                        if label ~= nil then
+                            label.text = text
+                        end
+                        local glyph = element:Get("eotwTownGlyph-" .. loc.id)
+                        if glyph ~= nil then
+                            glyph.bgimage = icon
+                        end
+                    end
+                end
 
                 --while the hero strip says no hero is active, the guild
                 --icon pulses to point the player at it.
@@ -6972,15 +7032,17 @@ CreateScreen = function(args)
                     interactable = false,
                 },
                 gui.Panel{
+                    id = "eotwTownGlyph-" .. loc.id,
                     classes = { "eotwTownNodeGlyph" },
                     interactable = false,
-                    bgimage = loc.icon,
+                    bgimage = LocValue(loc.icon),
                 },
             },
             gui.Label{
+                id = "eotwTownLabel-" .. loc.id,
                 classes = { "eotwTownNodeLabel" },
                 interactable = false,
-                text = loc.label,
+                text = LocValue(loc.label),
             },
         }
     end
@@ -7824,6 +7886,63 @@ CreateScreen = function(args)
         m_marketFound = found
     end
 
+    --Re-list the projects whenever the City says a community one changed
+    --(/city/projectsRev): someone in town worked on the Hall of Heroes.
+    local m_projectsRevSeen = nil
+    local WatchCommunityProjects = function()
+        local conn = EotwRoster.Connection()
+        if m_conn == nil or conn == nil or not conn.connected then
+            return
+        end
+        local rev = m_conn:GetPath("/city/projectsRev")
+        if rev ~= m_projectsRevSeen then
+            m_projectsRevSeen = rev
+            EotwDowntime.RefreshProjects()
+        end
+    end
+
+    --The moment the town finishes the Hall of Heroes: an open Construction
+    --becomes the Hall (after the builders' banner has had its moment), and
+    --the node beckons once the player is back on the map. Already built when
+    --the town opened, nothing plays.
+    local m_hallBuilt = nil
+    local m_hallSwapScheduled = false
+    local RevealHall = function()
+        if EotwRoster.GetHeroes() == nil then
+            return
+        end
+        local built = EotwRoster.HallBuilt()
+        if built and m_hallBuilt == false then
+            if m_locationId == "hall" and not m_hallSwapScheduled then
+                m_hallSwapScheduled = true
+                dmhub.Schedule(4, function()
+                    m_hallSwapScheduled = false
+                    if mod.unloaded or m_locationId ~= "hall" or CityLocation("hall").scene == HALL_SCENE then
+                        return
+                    end
+                    CloseLocation()
+                    OpenLocation("hall")
+                end)
+            end
+            if m_locationId ~= nil then
+                return
+            end
+            local node = m_nodePanels["hall"]
+            for i = 0, 2 do
+                dmhub.Schedule(0.5 + i * 1.5, function()
+                    if mod.unloaded or node == nil or not node.valid then
+                        return
+                    end
+                    local halo = node:Get("eotwTownHalo-hall")
+                    if halo ~= nil then
+                        halo:PulseClass("beckon")
+                    end
+                end)
+            end
+        end
+        m_hallBuilt = built
+    end
+
     ---- locations: full-screen scenes over the map ----
 
     --The card holding a location's controls sits on the right, clear of the
@@ -8338,6 +8457,10 @@ CreateScreen = function(args)
             m_marketScene:DestroySelf()
         end
         m_marketScene = nil
+        if m_hallScene ~= nil and m_hallScene.valid then
+            m_hallScene:DestroySelf()
+        end
+        m_hallScene = nil
         m_locationId = nil
         ApplyLocationMode()
     end
@@ -8391,6 +8514,18 @@ CreateScreen = function(args)
         elseif id == "market" then
             m_marketScene = LocationScene(CityLocation("market"), 820, EotwMarket.MarketPanel(resultPanel))
             locationHost:AddChild(m_marketScene)
+            EotwRoster.Refresh()
+        elseif id == "hall" then
+            --the Construction until the town has built the Hall, then the Hall.
+            local loc = CityLocation("hall")
+            if EotwRoster.HallBuilt() then
+                loc.scene = HALL_SCENE
+                m_hallScene = LocationScene(loc, 980, EotwRoster.HallPanel(resultPanel))
+            else
+                loc.scene = CONSTRUCTION_SCENE
+                m_hallScene = LocationScene(loc, 820, EotwDowntime.ConstructionPanel(resultPanel))
+            end
+            locationHost:AddChild(m_hallScene)
             EotwRoster.Refresh()
         end
         ApplyLocationMode()
@@ -8600,7 +8735,7 @@ CreateScreen = function(args)
             --rebind our watchers to it. (Transient drops reconnect on
             --their own and never reach the "closed" status.)
             if m_conn ~= nil and lobbiesApi ~= nil and m_conn.status == "closed" then
-                m_conn = lobbiesApi:Connect(LOBBY_ID, LOBBY_OPTIONS)
+                m_conn = lobbiesApi:Connect(LOBBY_ID, EotwRoster.CityOptions())
                 EotwRoster.Attach(m_conn)
                 m_initialGameStatus = nil
                 if AttachMonitors ~= nil then
@@ -8845,6 +8980,8 @@ CreateScreen = function(args)
                 MaybeShowWelcome()
                 MaybePlayInnReveal()
                 RevealFoundLocations()
+                WatchCommunityProjects()
+                RevealHall()
                 --the beta survey waits for the inn's reveal to finish.
                 if not m_innRevealActive then
                     MaybeShowSurvey()

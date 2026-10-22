@@ -82,10 +82,10 @@ NOT run, uncommitted. See "The EotW interface".
   to 0.0.843 on 2026-09-28, after every EotW engine commit, so builds from
   0.0.843 on should carry all of it. That is inferred from commit dates and
   has not been checked against a build.
-- **Lobby server.** It runs on the **staging** worker only
-  (`game-server-staging`). The titlescreen connects with `staging = true` and
-  creates games on `durableobjects-staging`. Deploying it to release is a
-  launch task.
+- **Lobby server.** Live players are on the **staging** worker
+  (`game-server-staging`) until the cutover below. The code written
+  2026-10-21 (uncommitted) moves everyone to **release**: see "Moving to the
+  release server".
 - **Community modules.** Since 2026-10-03, an "Encounter of the Week"
   module type published from the in-app dialog adds encounters to a pool
   beside the official module's (built, untested; see "Community encounter
@@ -99,6 +99,7 @@ NOT run, uncommitted. See "The EotW interface".
 
 | Change | Files | State |
 |---|---|---|
+| **Complication trinkets in the builder** (2026-10-21; see "Treasure-granting complications"): Secret Twin / Amnesia's trinket pick now actually gives the trinket (worn while a slot is free), swaps it on a re-pick, and takes it back when the pick or complication changes; also on joining the roster, including titlescreen recruits | `Codex Titlescreen/EotwBuild.lua` (`SyncTreasureGrants`, `Modify`, `Unchoose`, `RowOptions`), `Codex Titlescreen/EotwRoster.lua` (`JoinRoster`, `RecruitTitlescreenHero`), `Draw Steel Modifiers/ModifierGrantTreasure.lua` (`prompt` field) | luac + typing clean; in the git folder; app restarted. VERIFIED over MCP on in-memory heroes: pick / swap / same pick / unpick / switch to Amnesia / Fill / No Complication, and a trinket worn in `trinket1` that the swap replaced. NOT clicked through on the builder screen; the roster join and titlescreen recruit paths NOT run. The later Gold-only trinket filter (`RegisterOptionFilter`, `EnsureGoldTreasureFilter`) is luac + typing clean but NOT run (needs an app RESTART): expect 5 options on Secret Twin (Color Cloak Blue/Yellow/Red, Hellcharger Helm, Gecko Gloves; not Precious Collar). The Secret Twin assassin (respite d10 -> banner -> montage threat -> outcome clears the mark; `EotwDowntime.lua`, `FullscreenDisplay.lua`, `EncounterMontage.lua`, `EncounterScript.lua`, `EncounterOfTheWeek.lua`, `EotwRoster.lua`) is luac + typing clean and the snippet parse was checked with the bundled interpreter (951 parser checks still pass), but NOTHING of it has run in the app. To test: force `math.random` or set `eotwAssassinPending` on a Secret Twin hero; take a respite (banner and portrait); enter a game with a montage (threat card mid-arrival, 4d6 dice for the hero's player, damage lands); come home (mark cleared). UNCOMMITTED |
 | **Auto-equip treasure** (2026-10-19, user direction; see "Treasure goes home"): an equippable treasure a hero gains in a game (montage/narrative reward, delve or map chest, hand-over) is worn at once when there is a free slot, by the EotW hero sheet's rules; treasure arriving home in town is equipped the same way; the haul hand-over can give a worn find | `EncounterOfTheWeek/EncounterOfTheWeek.lua` (`AutoEquipTreasure`, host, from `MapScriptHostThink`; state doc `autoEquip`, cleared by `ClearTestArrival`), `EncounterOfTheWeek/EncounterMontage.lua` (`GrantItem` with a negative quantity goes through `GiveItem`, which unequips; `HeldQuantity` for the hand-over check), `Codex Titlescreen/EotwHeroSheetData.lua` (`EotwHeroSheet.EquipInPlace`), `Codex Titlescreen/EotwRoster.lua` (`ApplyOutcome` equips each treasure) | luac + typing clean; deployed; needs an app RESTART; NOT run. To test: win a trinket in a montage (it shows in a trinket slot on the hero sheet), loot a map chest (equipped within ~0.5s), take one off (it stays off), a hero at the leveled cap of 3 (stays in the bag), hand an equipped find to another hero (it moves and is worn there), and the town roster hero wearing it after the outcome lands |
 | **The town's welcome dialog** (2026-10-19, user direction; see "The welcome dialog"): the first time an account reaches the town map it gets "Welcome to Encounter of the Week" (what EotW is, beta + Feedback, the DMHub Discord, be kind) | `Codex Titlescreen/EncounterOfTheWeek.lua` (preference `eotw:welcomed`, `ShowWelcomeDialog` / `EncounterOfTheWeek.ShowWelcomeDialog`, `MaybeShowWelcome` in the town's watcher think) | luac + typing clean. VERIFIED 2026-10-19 single client after a restart: it opened by itself on first entering the town, was marked seen (`eotw:welcomed`), and Let's Go! closed it; the "DMHub Discord" link was clicked with no error (the browser side not seen). Join the Discord not clicked. Reshow with `dmhub.SetSettingValue("eotw:welcomed", "")`. UNCOMMITTED |
 | **Per-hero Intelligence** (2026-10-09, user direction; see "Optional features and Tactical Preparation"): each hero keeps the Intelligence they earned, shown as a brain chip on their card; each player spends their own heroes' Intelligence on Tactical Preparation, with "yours to spend" and the party total both on screen | `EncounterMontage.lua` (`GetHeroIntelligence`, `SharedIntelligence`, `SpendableIntelligence`, `CreditIntelligence`, `SplitIntelligence`, `SpendIntelligence`; the `intelligence` effect branch; reset clears `intelligenceByHero`), `EncounterNarrative.lua` (agreed choices pass `splitIntelligence`), `EncounterPrep.lua` (`VoterHeroids`, `LocalSpendable`, per-player `CanSpend`/`CanProceed`, spend + ready handling, `/eotwprep intelligence <n>` splits evenly), `EncounterMontageStage.lua` (prep header), `EncounterOfTheWeekHud.lua` (pool tooltip text), core `Codex Titlescreen/EotwHeroCard.lua` (`CreateIntelligenceBadge`) | luac + typing clean. The helpers were checked live against a scratch doc (credit, even split with remainder to the least, per-player spend from the richest hero, losses clamp at 0, legacy shared part). The card chip was seen live in the authoring game (shows "3", hidden at 0). NOT seen live: the prep header ("N yours to spend / M in the party") and the spend round trip with two players -- try it in an authoring test or a real game. Needs an app RESTART. UNCOMMITTED |
@@ -371,6 +372,67 @@ Codemod gotchas that apply to all of it:
 ---
 
 # Titlescreen and lobby
+
+## Moving to the release server (WRITTEN 2026-10-21; nothing deployed or run in the app)
+
+Decided with the user 2026-10-21: EotW players move from the staging worker to
+release with the next update, their progress copied over; admins keep a
+choice of server; staging keeps its data afterwards as a test bed; old
+clients still pointed at staging are refused with "restart Codex".
+
+**Client.** One preference, `eotw:server` (`"release"` default, or
+`"staging"`), honoured only for `dmhub.isAdminAccount`; everyone else is
+always on release. `EotwRoster.UseStaging()` / `CityOptions()` /
+`GameBackend()` (titlescreen) and `EotwLobbyOptions()` (game side, same rule,
+declares the setting too) read it at each connect, so the town, new games and
+the in-game city requests (ready, leave, outcomes, Hall of Heroes) all follow
+it. Admins pick it from a dropdown at the top right of the titlescreen's EotW
+card; the card's headcount follows it. Chosen over stamping the server on each
+game: non-admins can only reach parties through their own city, so everyone
+in a game is already on one server, and games started on staging before the
+switch report to release once their players restart. Admin-only edge: an
+admin who changes the dropdown and then resumes a game made on the other
+server sends that game's city requests to the wrong town.
+
+**Server** (`cloudflare-game-server/src/city.ts`, "Moving a city to another
+server"): admin routes `freeze` (every request but ping refused with a
+message; flag kept in `freeze_state`, outside `city_*`, so it is never copied),
+`dump` (every `city_*` table + the town chat rows of `lobby_doc`, paged, BLOBs
+as base64), `restore` (per table, `clear=1` on the first page,
+`X-Confirm-Restore: {cityid}`) and `restore-finish` (closes sockets and
+restarts the object so memory reloads). Parties, invite codes and party chat
+are not copied. `tools/eotw_city.py` drives it: `status`, `freeze`,
+`unfreeze`, `clone --from staging --to release` (refuses an unfrozen source,
+backs up BOTH cities to `~/eotw-city-backups` first, checks every table's row
+count after). Tested locally 2026-10-21: `test/city-move-smoke.ts` against
+`wrangler dev` (17 checks: heroes byte-identical, outcomes, graves,
+graveyardRev, chat, freeze refuses / ping answers, unfreeze), plus the 356
+unit tests.
+
+**Cutover, in order:**
+1. Lisa's Discord-bridge work (migration v5, `DiscordGatewayObject`) is in
+   master; both workers deploy the same code from it. Release has never had
+   the City's recent code: test it on staging first.
+2. Release secrets: `ADMIN_SECRET` (have it locally as `tools/admin-secret.txt`
+   or `$DMHUB_ADMIN_SECRET`) and `SURVEY_READ_SECRET`. `CITY_ADMINS` is already
+   in `wrangler.toml` for both.
+3. `npm run deploy` (staging) and `npm run deploy:release` from the same
+   commit. `python tools/eotw_city.py status --env release` must list the
+   same tables as staging.
+4. Quiet hour: `python tools/eotw_city.py freeze --env staging`, then
+   `python tools/eotw_city.py clone --from staging --to release`.
+5. Deploy the EotW Lua (titlescreen + game side) the usual way. Players
+   pick it up on their next launch; until then staging refuses them with the
+   restart message. Outcomes of games that end on old Lua after the freeze
+   are lost (accepted).
+6. Re-point the tools at release: `tools/eotw_week.py` defaults to
+   `--env staging` (and so does the `/eotw-rotate` skill that runs it), the
+   survey dashboard reads `/admin/city/blackbottom/survey` on staging (move
+   its `SURVEY_READ_SECRET` and URL to release). The bug-fix skill's scripts
+   take the server per game and need nothing.
+7. When old clients have had time to update: `python tools/eotw_city.py
+   unfreeze --env staging` to use staging as the test town (its data stays
+   as it was at the freeze).
 
 ## The Lobby: a Durable Object that is not a game
 
@@ -646,8 +708,38 @@ graveyard.
     `SavedSnapshot` (still portraits, no tokens) is what the Hall stores, and
     `ShowReplay(parent, snapshot, {caption})` draws it again anywhere (Close
     button, Escape, the award drop replayed).
-  - Town: the Hall of Heroes location (trophy, ~0.33, 0.2 -- placeholder
-    spot, check it against the art) opens `EotwRoster.ShowHall`.
+  - Town: the location at ~0.33, 0.2 (placeholder spot, check it against
+    the art).
+  - **Built by the town first** (2026-10-22, user direction; written
+    code-only, NOT run). The location starts as **the Construction**
+    (hammer icon; scene: Czepeku "Train Station Approach", Town Square
+    still, Czepeku credit; the message "Join in the construction of the
+    great Hall of Heroes where the works and deeds of heroes shall be
+    recorded!"). Its card is the community project **Build the Hall of
+    Heroes** (`build-hall-of-heroes`, scope `community`, 1000 points, one
+    completion, `autoStart`: under way without anyone starting it). Any
+    hero spends Downtime Activities on it with the usual project roll
+    (Might or Reason; Architecture, Blacksmithing, Carpentry, Mechanics),
+    and every roll adds to one town-wide total. Completing it sets
+    `unlocks.hallOfHeroes` for every account; the node turns into the
+    **Hall of Heroes** (trophy) and becomes a full-screen location (scene:
+    the same scene's "Original Day" video loop over its first frame,
+    Czepeku credit) with the Hall list as its card (`EotwRoster.HallPanel`).
+    An open Construction swaps to the Hall 4s after completion; on the map
+    the node beckons. The town re-lists community projects whenever
+    `/city/projectsRev` changes. Wins are recorded into the Hall while it is
+    still being built, so it opens with history.
+  - **Art UPLOADED 2026-10-22** as core image assets (confirmed under
+    `/CoreAssetsCurrent/images`), tagged `czepeku` with
+    `CreatorCredit.RegisterArt`: Construction still
+    `c9e0c66f-4f10-441d-8acf-3f4bdb17b373` (3840x2160), Hall video
+    `7d454b91-a9f0-495a-94e2-8754b33fa619`, its first frame
+    `e35b71f8-8fb4-4e4d-ae59-0e9fb3814e72` (1920x1080). Sources:
+    `C:/dev/eotw/art/hall-construction-train-station-approach-town-square.jpeg`
+    and `hall-of-heroes-train-station-approach-day.webm` (from
+    `~/Downloads/Train Station Approach Scenes/` and `~/Downloads/Train
+    Station Approach Original Day HD.webm`); the Hall's still is the
+    video's first frame (`assets:ExtractVideoFrame`), as for the Market.
   - City: `hall-record` / `list-hall` / `get-hall-entry`, table `city_hall`,
     `/city/hallRev` (see `cloudflare-game-server/CLAUDE.md`). Needs a worker
     deploy before it does anything.
@@ -2717,6 +2809,142 @@ Live counts (2026-10-03, 110 complications):
 the data team raises tiers. Apply each complication's prerequisite
 GoblinScript as well, as the old adapter does. A complication that has its
 own choices goes through the same choice rows as everything else.
+
+**Treasure-granting complications (BUILT 2026-10-21; verified over MCP,
+not yet clicked through on screen).** Secret Twin and Amnesia (the two gold
+ones; Betrothed, Strange Inheritance, Cursed Weapon and Artifact Bonded are
+not gold) carry a Grant Treasure modifier
+(`Draw Steel Modifiers/ModifierGrantTreasure.lua`, "a 1st-echelon trinket
+of your choice"). The shared feature cache already turns it into a
+`CharacterTreasureGrantChoice` row with the matching trinkets as options,
+and the pick is stored in `hero.treasureGrants[modifier guid].itemid`. But
+the old builder only hands the item over through a separate **Claim
+Treasure** button, which the EotW screen never had. So the row said "Done"
+and the hero never got the trinket.
+
+How EotW does it: `EotwBuild.hero.SyncTreasureGrants(hero, token)` keeps
+the hero holding exactly the treasure they picked:
+- it runs after **every builder write** (the token `Modify` helper);
+- it gives the item on a pick (`GiveItem`, then
+  `EotwHeroSheet.EquipInPlace` to wear it while a slot is free, as all
+  EotW treasure is);
+- it takes the item back (`GiveItem(-1)`, which also unequips) when the
+  pick changes, the row is unpicked, or the complication changes or is
+  removed. That works on a rebuild too.
+
+`state.eotwGiven` records what the sync handed over. A claim made elsewhere
+(the full sheet, a pregen) is adopted the first time the sync sees it.
+`EotwBuild.hero.Unchoose` special-cases the grant row, because the grant's
+own `RemoveSelection` keeps a claimed pick locked. Manifest-mode grants only
+record the pick. `RowOptions` replaces the old "then claim it" text with the
+choice's new `prompt` field ("Choose a 1st-echelon trinket. It goes straight
+into your hero's gear."). Fill picks a random trinket, as for any row.
+
+**Gold trinkets only (user direction 2026-10-21; built, NOT run).** An EotW
+hero (`eotwDraft` or `eotwHero`) is offered only treasure whose own
+`implementation` is Gold, the same test as the market (`EotwMarket`
+`Stocked`). It applies to Amnesia too. Two lists by gear id adjust it
+(user direction 2026-10-21):
+- `EotwBuild.EXTRA_GRANT_TREASURE` adds below-Gold treasure that plays
+  well: **Color Cloak - Red** (the same item as Blue/Yellow; only fire that
+  does not come from a power roll cannot be zeroed) and **Gecko Gloves**
+  (only the Escape Grab bane is automated, but nothing can be abused);
+- `EotwBuild.EXCLUDED_GRANT_TREASURE` removes **Precious Collar**, which is
+  for a beastheart's companion only.
+
+So the 1st-echelon trinkets offered are Color Cloak Blue, Yellow and Red,
+Hellcharger Helm and Gecko Gloves (5 of 16).
+
+The Silver review also turned away three items:
+- **Divine Vine**: its Pull maneuver is not gated on a grab, so it is a
+  free pull 6 on anyone within 5 squares;
+- **Deadweight**: its Falling Free Strike refunds the maneuver and is not
+  gated on falling, so it reads as a free free strike on any turn;
+- **Speaking Scarab**: for companions and animals only.
+
+The Divine Vine and Deadweight problems are in the compendium data and
+affect every game, not just EotW. They were found by reading the data, not
+in play.
+Mechanism: `CharacterTreasureGrantChoice.RegisterOptionFilter(id, fn)` in
+`ModifierGrantTreasure.lua`, a generic hook that `CreateNew` applies to its
+options. EotwBuild registers `"eotw-gold"` the first time `Wrappers` runs,
+because Draw Steel Modifiers loads after Codex Titlescreen. Other heroes
+and the full sheet's dropdown are unaffected. A non-Gold trinket picked
+earlier now shows as a stale pick; Fill or a new pick replaces it, and the
+sync takes the old item back.
+
+**Secret Twin's drawback: the assassin (user direction 2026-10-21; built,
+NOT run).** The rules: after a respite roll a d10, and on a 1 or 2 the
+Director may have your past catch up with you. EotW has no Director, so it
+plays this out as follows.
+
+1. **The roll.** Every Blue Fish Inn respite rolls a d10 for each resting
+   Secret Twin hero (`RollSecretTwin`, inside `RestHero`'s write in
+   `Codex Titlescreen/EotwDowntime.lua`). The roll is silent and logged
+   ("rolls N for Secret Twin"). It is skipped while the hero is already
+   marked (user choice: no stacking).
+2. **The mark and the banner.** On a 1 or 2 the hero is marked
+   `eotwAssassinPending` (`EotwDowntime.ASSASSIN_FIELD`). When the respite
+   finishes, `ShowPastCatchesUp` shows a malice-type DramaticBanner with
+   the hero's portrait, heading "Secret Twin" and the line "You sense your
+   past will soon catch up with you...". With several heroes, the banners
+   play 4.5 s apart.
+   - `ShowBanner` gained `tokenid` / `bannerType` parameters.
+   - `DramaticBanner` (`DMHub Game Hud/FullscreenDisplay.lua`) now falls
+     back to `dmhub.GetCharacterById` when `GetTokenById` (map tokens only)
+     misses. That is what gives an off-map town hero a portrait.
+3. **The threat.** The mark rides into the next game inside the pasted
+   hero's properties. When the party arrives at a montage, the host's
+   `AddAssassins` (`EncounterMontage.lua`, in `HostTick`'s arriving -> rounds
+   write) does three things for each marked hero not yet hunted in this
+   game:
+   - records `{charid, name}` in `m.assassins`;
+   - sets `doc.data.assassinsSent[charid]`;
+   - unlocks the entry's key (`m.unlocked`), so the stage adds its card
+     mid-montage.
+   
+   Every client then adds the entry to round 1 of that beat inside
+   `FindMapScript` (`InjectAssassins`, which first removes earlier injected
+   entries). The entry is built by running `EncounterScript.Parse` on a
+   snippet (`AssassinEntry`):
+   - name: **"An Assassin Hunts <hero name>"**, written `(Locked)`;
+   - one option, **Ambush the Assassin**, an Agility or Intuition test
+     (Alertness, Sneak):
+     - tier 1: the assassin slips away;
+     - tier 2: "You lose 3 stamina, the threat is vanquished";
+     - tier 3: vanquished;
+     - critical (auto): vanquished plus a hero token;
+   - **Consequence:** "<hero> takes 4d6 damage". This is a new effect kind,
+     `{kind = "damage", heroid, dice, label}`. `ApplyEffects` applies it
+     with `LoseStamina` to that one hero. `PendingDice` puts the 4d6 out for
+     that hero's player (key `"d:<clause>:<charid>"`). `OUTCOME_OF_EFFECT`
+     gives it the harm icon. The entry is not Temporary: a temporary
+     threat's consequence skips the player dice.
+   
+   The test and its tiers were Claude's choice (the user asked for "one test
+   to stop it"). Change them in `AssassinEntry`.
+4. **Clearing the mark.** `OutcomesFor` (`EncounterOfTheWeek.lua`) sets
+   `outcome.assassinMet` for a hero in `assassinsSent`. The town's
+   `ApplyOutcome` (`EotwRoster.lua`) then clears the mark, so the next
+   respite rolls again. A death needs no clearing. An abandoned or Proving
+   Pits game sends no outcome, so the mark stays and the assassin comes in
+   the next montage.
+
+The heading and consequence use the hero's name (user choice). A game with
+no montage leaves the mark for a later game.
+
+**Worn automatically (user direction 2026-10-21).** The picked trinket is
+put on in the builder and on joining the roster. It stays in the pack only
+when every trinket slot is already full, which happens only on a rebuild of
+a hero already wearing trinkets. The player's own choices are not taken off.
+
+Roster: `JoinRoster` runs `EotwBuild.SyncTreasureGrants(tok)` so every
+recruit path is covered. `RecruitTitlescreenHero` strips all items, so it
+also unclaims the grants, and the trinket comes back on joining (it is part
+of the build, not earned treasure). Roster heroes made **before** this fix
+hold a recorded pick but no item. They get it the next time they are opened
+in the builder (Rebuild) and any change is made. **Decided (user,
+2026-10-21): no automatic repair**; a rebuild is enough.
 
 ## Architecture
 

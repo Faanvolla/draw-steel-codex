@@ -1035,10 +1035,22 @@ end
 --- lobby requests -----------------------------------------------------
 
 --Must match the titlescreen's connection (Codex Titlescreen/EotwRoster.lua):
---the Blackbottom city, which holds the parties roster, on the staging server
---while EotW is dev-gated.
+--the Blackbottom city, which holds the parties roster, on the server the
+--titlescreen chose. Admins may pick staging there; everyone else is always on
+--release. Declared there too.
 local LOBBY_ID = "blackbottom"
-local LOBBY_OPTIONS = { staging = true, route = "city" }
+
+setting{
+    id = "eotw:server",
+    default = "release",
+    storage = "preference",
+}
+
+--Same rule as EotwRoster.UseStaging, which this mod cannot rely on being loaded.
+local function EotwLobbyOptions()
+    local staging = dmhub.isAdminAccount == true and dmhub.GetSettingValue("eotw:server") == "staging"
+    return { staging = staging, route = "city" }
+end
 
 --Send one request to the EotW lobby over a transient connection of our own
 --(the titlescreen's connection closed when its screen was destroyed during
@@ -1054,7 +1066,7 @@ local function PrewarmLobbyConnection()
     if lobbies == nil or m_prewarmedLobbyConn ~= nil then
         return
     end
-    m_prewarmedLobbyConn = lobbies:Connect(LOBBY_ID, LOBBY_OPTIONS)
+    m_prewarmedLobbyConn = lobbies:Connect(LOBBY_ID, EotwLobbyOptions())
 end
 
 local function SendLobbyRequest(action, args, onDone)
@@ -1067,7 +1079,7 @@ local function SendLobbyRequest(action, args, onDone)
     local conn = m_prewarmedLobbyConn
     m_prewarmedLobbyConn = nil
     if conn == nil then
-        conn = lobbies:Connect(LOBBY_ID, LOBBY_OPTIONS)
+        conn = lobbies:Connect(LOBBY_ID, EotwLobbyOptions())
     end
     if conn == nil then
         return
@@ -1599,6 +1611,7 @@ local function OutcomesFor(userid, encounter, result)
         --a dead hero is usually despawned into a corpse by the Hero Death
         --rule; GetCharacterById still finds the despawned token.
         local tok = heroid ~= nil and dmhub.GetCharacterById(charid) or nil
+        local before = #entries
         local alive, dead = false, false
         pcall(function()
             if tok ~= nil and tok.properties ~= nil then
@@ -1634,6 +1647,12 @@ local function OutcomesFor(userid, encounter, result)
                 heroid = heroid,
                 outcome = { encounter = encounter, result = result, wounds = HeroWounds(tok) },
             }
+        end
+        --Secret Twin: the assassin came for this hero here, so the town
+        --clears their mark (EotwRoster ApplyOutcome).
+        local montage = rawget(_G, "EncounterMontage")
+        if #entries > before and montage ~= nil and montage.AssassinSent(charid) then
+            entries[#entries].outcome.assassinMet = true
         end
     end
     return entries

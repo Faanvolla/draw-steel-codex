@@ -794,6 +794,128 @@ function EncounterMontage.ScriptForMap(mapid)
     return { script = best, documents = documents, parts = parts }
 end
 
+--- Secret Twin's assassin --------------------------------------------------
+--
+--A town respite can mark a Secret Twin hero eotwAssassinPending
+--(EotwDowntime). The first montage that hero plays then gets an extra
+--threat, "An Assassin Hunts <hero>": one test can stop it, else the hero
+--takes 4d6 damage. The host records it in m.assassins (AddAssassins); every
+--client puts the entry into the beat when it reads the script
+--(InjectAssassins), since it is not in the script document.
+
+local ASSASSIN_FIELD = "eotwAssassinPending"
+
+--"An Assassin Hunts Kira". A heading's "(...)" are tags and ":" ends its
+--kind, so the hero's name loses those characters.
+local function AssassinThreatName(heroName)
+    local name = trim((string.gsub(tostring(heroName or ""), "[%(%):]", "")))
+    return "An Assassin Hunts " .. name
+end
+
+--Parsed threat entries by "<charid>|<name>": built once per client.
+local m_assassinEntries = {}
+
+--The threat entry for one m.assassins record, built by the script parser
+--from a snippet so it has every field a written threat has. It is
+--"(Locked)" and unlocked by AddAssassins: an entry that appears through an
+--unlock gets its card on the stage even after the round began.
+local function AssassinEntry(record)
+    local name = AssassinThreatName(record.name)
+    local key = string.format("%s|%s", tostring(record.charid), name)
+    if m_assassinEntries[key] ~= nil then
+        return m_assassinEntries[key]
+    end
+    local heroName = string.sub(name, #"An Assassin Hunts " + 1)
+    local text = table.concat({
+        "# Montage",
+        "",
+        string.format("## Threat: %s (Locked)", name),
+        string.format("Someone from %s's past has caught up with them: a killer is closing in.", heroName),
+        "",
+        string.format("Consequence: %s takes 4d6 damage.", heroName),
+        "",
+        "### Ambush the Assassin",
+        "|Ambush Test: Agility or Intuition (Alertness, Sneak)",
+        "|The assassin slips away into the shadows.",
+        "|You lose 3 stamina, the threat is vanquished.",
+        "|The threat is vanquished.",
+    }, "\n")
+    local entry = nil
+    local ok, err = pcall(function()
+        entry = EncounterScript.MontageEntries(EncounterScript.Parse(text).beats[1])[1]
+    end)
+    if not ok or entry == nil then
+        printf("EotW montage: could not build the assassin threat: %s", tostring(err))
+        return nil
+    end
+    --the grammar has no clause for dice damage to a named hero.
+    local consequence = string.format("%s takes 4d6 damage", heroName)
+    entry.consequence = entry.consequence or { text = consequence .. "." }
+    entry.consequence.effects = {
+        { kind = "damage", heroid = record.charid, dice = "4d6", label = "Assassin's blade", text = consequence },
+    }
+    entry.injected = true
+    m_assassinEntries[key] = entry
+    return entry
+end
+
+--Put the montage's assassin threats into its beat's first round, replacing
+--any put there before (the cached parse is reused between reads).
+local function InjectAssassins(script)
+    local beats = script.parse ~= nil and script.parse.beats or {}
+    for _, beat in ipairs(beats) do
+        for _, round in ipairs(beat.rounds or {}) do
+            for i = #round.entries, 1, -1 do
+                if round.entries[i].injected then
+                    table.remove(round.entries, i)
+                end
+            end
+        end
+    end
+    local m = EncounterMontage.GetDoc().data.montage
+    if type(m) ~= "table" or type(m.assassins) ~= "table" then
+        return
+    end
+    local beat = beats[m.beatIndex]
+    local round = beat ~= nil and beat.kind == "montage" and (beat.rounds or {})[1] or nil
+    if round == nil then
+        return
+    end
+    for _, record in ipairs(m.assassins) do
+        local entry = AssassinEntry(record)
+        if entry ~= nil then
+            round.entries[#round.entries + 1] = entry
+        end
+    end
+end
+
+--Host, as the party arrives at a montage: hunt each hero marked by the
+--town, once per game (doc.data.assassinsSent, which also tells the town to
+--clear the mark: OutcomesFor). Call inside an open change of `doc`.
+local function AddAssassins(doc, m)
+    for _, hero in ipairs(EncounterMontage.Heroes()) do
+        local pending = false
+        pcall(function() pending = hero.token.properties:try_get(ASSASSIN_FIELD, false) == true end)
+        doc.data.assassinsSent = doc.data.assassinsSent or {}
+        if pending and not doc.data.assassinsSent[hero.charid] then
+            doc.data.assassinsSent[hero.charid] = true
+            m.assassins = m.assassins or {}
+            m.assassins[#m.assassins + 1] = { charid = hero.charid, name = hero.name }
+            m.unlocked = m.unlocked or {}
+            m.unlocked[EncounterScript.MatchKey(AssassinThreatName(hero.name))] = m.round or 1
+            printf("EotW montage: an assassin hunts %s", tostring(hero.name))
+        end
+    end
+end
+
+--Has a montage in this game sent the assassin after this hero (game charid)?
+---@param charid string
+---@return boolean
+function EncounterMontage.AssassinSent(charid)
+    local sent = EncounterMontage.GetDoc().data.assassinsSent
+    return type(sent) == "table" and sent[charid] == true
+end
+
 function EncounterMontage.FindMapScript(force)
     local mapid = game.currentMapId
     local docsTable = dmhub.GetTable("documents") or {}
@@ -806,6 +928,7 @@ function EncounterMontage.FindMapScript(force)
         if m_scriptCache.docid ~= nil then
             m_scriptCache.doc = docsTable[m_scriptCache.docid] or m_scriptCache.doc
         end
+        InjectAssassins(m_scriptCache)
         return m_scriptCache
     end
 
@@ -836,6 +959,7 @@ function EncounterMontage.FindMapScript(force)
     best.allIncluded = allIncluded
     best.signature = ScriptSignature(candidates, allIncluded)
     m_scriptCache = best
+    InjectAssassins(best)
     return best
 end
 
@@ -2231,6 +2355,23 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                 elseif #names > 0 then
                     applied[#applied + 1] = string.format("%s %d Stamina", Subject(names, "loses", "lose"), effect.qty)
                 end
+            elseif effect.kind == "damage" then
+                --dice damage to one hero named by charid (no script clause
+                --writes it: the Secret Twin assassin's consequence does).
+                --Their player rolls it (PendingDice).
+                local target = nil
+                for _, hero in ipairs(heroes) do
+                    if hero.charid == effect.heroid then
+                        target = hero
+                    end
+                end
+                if target ~= nil then
+                    local amount = tonumber(diceTotals[string.format("d:%d:%s", effectIndex, target.charid)])
+                        or RollDiceExpression(effect.dice)
+                    if pcall(LoseStamina, target.token, amount, SourceLabel(ctx)) then
+                        applied[#applied + 1] = string.format("%s takes %d damage", target.name, amount)
+                    end
+                end
             elseif effect.kind == "heal" then
                 local names = {}
                 for _, target in ipairs(Targets(effect)) do
@@ -3238,7 +3379,8 @@ end
 
 --The dice `effects` need, in the order ApplyEffects uses them: key
 --"t:<clause>:<n>" for the nth roll on a table, "r:<clause>:<charid>" for a
---hero's share of a dice recovery loss. ctx is ApplyEffects' context. Hidden
+--hero's share of a dice recovery loss, "d:<clause>:<charid>" for dice
+--damage to one hero. ctx is ApplyEffects' context. Hidden
 --"{...}" clauses still roll quietly on the host: dice on the screen would
 --give them away.
 function EncounterMontage.PendingDice(effects, ctx)
@@ -3259,6 +3401,20 @@ function EncounterMontage.PendingDice(effects, ctx)
                             heroid = hero.charid,
                             heroName = hero.name,
                             userid = ctx.userid or RollerFor(hero, dmhub.loginUserid),
+                        }
+                    end
+                end
+            elseif effect.kind == "damage" then
+                for _, hero in ipairs(EncounterMontage.Heroes()) do
+                    if hero.charid == effect.heroid then
+                        rolls[#rolls + 1] = {
+                            key = string.format("d:%d:%s", effectIndex, hero.charid),
+                            kind = "damage",
+                            dice = effect.dice,
+                            label = effect.label or "Damage",
+                            heroid = hero.charid,
+                            heroName = hero.name,
+                            userid = RollerFor(hero, ctx.userid or dmhub.loginUserid),
                         }
                     end
                 end
@@ -5580,6 +5736,7 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
         doc:BeginChange()
         doc.data.montage.phase = "rounds"
         RollRemovals(doc.data.montage, beat)
+        AddAssassins(doc, doc.data.montage)
         doc:CompleteChange("Montage: the party has arrived", { undoable = false })
         m = doc.data.montage
         printf("EotW montage: beat %d -- the party has arrived; round 1 begins", beatIndex)

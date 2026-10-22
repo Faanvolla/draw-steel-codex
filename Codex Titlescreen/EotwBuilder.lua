@@ -1587,7 +1587,9 @@ function EotwBuilder.Open(args)
                                     end,
                                 },
                                 gui.IconEditor{
-                                    library = cond(dmhub.GetSettingValue("popoutavatars"), "popoutavatars", "Avatar"),
+                                    --Always open on plain Avatars: players kept uploading ordinary
+                                    --portraits into Popout Avatars by accident. It stays pickable.
+                                    library = "Avatar",
                                     restrictImageType = "Avatar",
                                     allowPaste = true,
                                     borderColor = C.TAN,
