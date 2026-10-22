@@ -535,10 +535,9 @@ function EncounterOfTheWeek.IsEncounterMapName(name)
     return name == ENCOUNTER_MAP_NAME or name:sub(1, #ENCOUNTER_MAP_NAME + 2) == ENCOUNTER_MAP_NAME .. ": "
 end
 
---A series can put a later part on its own map, named after the series map
---with " (Part <n>)" on the end: "Encounter: The Crypt (Part 2)". It is part
---of its series, never an encounter of its own. Mirrored by the game side's
---PartMapName (EncounterOfTheWeek/EncounterOfTheWeek.lua) and the publishers.
+--A series part can have its own map: "Encounter: The Crypt (Part 2)". The
+--town lists it as "Encounter: The Crypt", never as an encounter of its own.
+--The game side and both publishers have copies of these two; keep them the same.
 function EncounterOfTheWeek.PartMapName(seriesMapName, part)
     return string.format("%s (Part %d)", seriesMapName, part)
 end
@@ -755,12 +754,22 @@ function EncounterOfTheWeek.NextPartKey(key)
     return last
 end
 
+--Author previews: moduleid -> { maps, eotwEncounters }, shown in town in
+--place of what the module has published. Nothing is uploaded, and it is
+--gone when the app restarts.
+local m_stagedModules = {}
+
 --The pool entries one module record offers, default map first, then by title.
 local function ModuleEncounters(info, moduleid)
     local official = moduleid == STARTING_MODULE
     local summary, published, name, author = nil, nil, nil, nil
     pcall(function() summary = info.contentSummary end)
     pcall(function() published = info.publishingProperties.eotwEncounters end)
+    local staged = m_stagedModules[moduleid]
+    if staged ~= nil then
+        summary = { { type = "map", items = staged.maps or {} } }
+        published = staged.eotwEncounters
+    end
     pcall(function() name = info.name end)
     pcall(function() author = info.authorid end)
     --published from this account: its creator reads the Proving Pits feedback.
@@ -772,10 +781,10 @@ local function ModuleEncounters(info, moduleid)
     for _,entry in ipairs(summary or {}) do
         local kind = string.lower(tostring(entry.type or ""))
         if kind == "map" or kind == "maps" then
-            for _,item in ipairs(entry.items or {}) do
-                --a part map is listed under its series, not on its own.
-                if EncounterOfTheWeek.IsEncounterMapName(item) and not seen[item]
-                    and EncounterOfTheWeek.SplitPartMapName(item) == nil then
+            for _,mapItem in ipairs(entry.items or {}) do
+                --A part map is listed once, under its series' name.
+                local item = EncounterOfTheWeek.SplitPartMapName(mapItem) or mapItem
+                if EncounterOfTheWeek.IsEncounterMapName(item) and not seen[item] then
                     seen[item] = true
                     local townGate = nil
                     local story = type(published) == "table" and published[item] or nil
@@ -973,6 +982,17 @@ function EncounterOfTheWeek.CacheEncounters(force)
             Finish()
         end,
     }
+end
+
+--Developer tool: show a module in town as it would look after its next
+--publish. Pass nil to clear it. Parties still play the published version.
+function EncounterOfTheWeek.StagePoolModule(moduleid, staged)
+    if not dmhub.GetSettingValue("dev") then
+        printf("EotW: staging a module preview needs developer mode")
+        return
+    end
+    m_stagedModules[moduleid] = staged
+    EncounterOfTheWeek.RefreshPool()
 end
 
 --Re-fetch the pool now (it is otherwise fetched once per app run), then

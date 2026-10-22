@@ -1706,8 +1706,9 @@ end
 --blocks; townGate is then what shows with no story); a series map adds
 --parts = { {number, title, townGate, townGateSource?, tracks? = { {name,
 --hidden, description}, ... }, map?}, ... }, one per part; map names a part
---played on its own part map ("<series map> (Part <n>)"), which is checked
---with its series and never listed as an encounter of its own. Also ticks
+--played on its own part map ("<series> (Part <n>)", Part 1 too), which is
+--checked with its series and never listed as an encounter of its own; the
+--series is keyed by the plain name even when no map has it. Also ticks
 --every document a script is built from (ctx.include), since nothing else
 --ties a map to the documents in its journal folder.
 local CheckEncounterModule = function(ctx)
@@ -1755,13 +1756,14 @@ local CheckEncounterModule = function(ctx)
 			seriesMaps[#seriesMaps+1] = m
 		end
 	end
-	for seriesName,list in pairs(partMaps) do
+	--a series whose every part has its own map has no plain-named map: it
+	--is still listed (and keyed) by that plain name.
+	for seriesName,_ in pairs(partMaps) do
 		if not seenNames[seriesName] then
-			for _,pm in ipairs(list) do
-				errors[#errors+1] = string.format("%s: there is no map named \"%s\" for this part to belong to.", pm.name, seriesName)
-			end
+			seriesMaps[#seriesMaps+1] = { id = nil, name = seriesName }
 		end
 	end
+	table.sort(seriesMaps, function(a, b) return a.name < b.name end)
 	maps = seriesMaps
 
 	if #maps == 0 then
@@ -1778,7 +1780,12 @@ local CheckEncounterModule = function(ctx)
 		end
 
 		local found = nil
-		local ok, err = pcall(function() found = montage.ScriptForMap(m.id) end)
+		local ok, err = true, nil
+		if m.id == nil then
+			found = { script = nil, documents = {}, parts = {} }
+		else
+			ok, err = pcall(function() found = montage.ScriptForMap(m.id) end)
+		end
 		if not ok or found == nil then
 			errors[#errors+1] = string.format("%s: its script could not be read: %s", m.name, tostring(err))
 		else

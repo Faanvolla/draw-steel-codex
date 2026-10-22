@@ -494,10 +494,9 @@ local function ParseEncounterKey(key)
     return moduleid, mapName, part
 end
 
---A series can put a later part on its own map, named after the series map
---with " (Part <n>)" on the end: "Encounter: The Crypt (Part 2)". Without one,
---the part plays on the series map itself. Mirrored by the titlescreen's
---EncounterOfTheWeek.PartMapName and the publishers -- keep them in step.
+--A series part can have its own map: "Encounter: The Crypt (Part 2)".
+--A part without one plays on "Encounter: The Crypt".
+--The town and both publishers have copies of these two; keep them the same.
 local function PartMapName(seriesMapName, part)
     return string.format("%s (Part %d)", seriesMapName, part)
 end
@@ -589,7 +588,7 @@ function EncounterOfTheWeekGame.ActivePart()
         local _, n = SplitPartMapName(game.currentMap.description)
         partOfMap = n
     end)
-    if partOfMap ~= nil and partOfMap >= 2 then
+    if partOfMap ~= nil and partOfMap >= 1 then
         return math.floor(partOfMap)
     end
     return 1
@@ -605,13 +604,11 @@ local function FindMapByName(name)
 end
 
 --The map a part plays on: its own part map if the series has one, else the
---series map. `part` 1 (or nil) is always the series map.
+--plain-named map (every encounter that is not a series).
 local function FindPartMap(seriesMapName, part)
-    if (part or 1) >= 2 then
-        local map = FindMapByName(PartMapName(seriesMapName, part))
-        if map ~= nil then
-            return map
-        end
+    local map = FindMapByName(PartMapName(seriesMapName, part or 1))
+    if map ~= nil then
+        return map
     end
     return FindMapByName(seriesMapName)
 end
@@ -693,33 +690,36 @@ local function EnsureEncounterModule(moduleid, mapName, part)
 
     --the install's success can land before its maps reach game.maps, so
     --wait for the map itself, with a grace period after a success.
-    --A later part waits for its part map too, but only a few seconds past
-    --the series map: a series need not have one.
-    local partMapName = part >= 2 and PartMapName(mapName, part) or nil
+    --Prefer the part's own map. For a series, give it a few seconds to
+    --arrive before settling for the plain-named map.
+    local partMapName = PartMapName(mapName, part)
     local waited = 0
     local sinceInstalled = 0
-    local sinceSeriesMap = nil
+    local sincePlainMap = nil
     while waited < MODULE_INSTALL_TIMEOUT_SECONDS do
-        local seriesMap = nil
+        local plainMap = nil
+        local isSeries = part >= 2
         for _,map in pairs(game.maps or {}) do
             if not before[map.id] then
-                if partMapName ~= nil and map.description == partMapName then
+                if map.description == partMapName then
                     RecordEncounterModule(moduleid)
                     printf("EotW: installed %s; part %d's map is %s", moduleid, part, map.id)
                     return map
                 end
                 if map.description == mapName then
-                    seriesMap = map
+                    plainMap = map
+                elseif SplitPartMapName(map.description) == mapName then
+                    isSeries = true
                 end
             end
         end
-        if seriesMap ~= nil and (partMapName == nil or (sinceSeriesMap ~= nil and sinceSeriesMap > 3)) then
+        if plainMap ~= nil and (not isSeries or (sincePlainMap ~= nil and sincePlainMap > 3)) then
             RecordEncounterModule(moduleid)
-            printf("EotW: installed %s; its encounter map is %s", moduleid, seriesMap.id)
-            return seriesMap
+            printf("EotW: installed %s; its encounter map is %s", moduleid, plainMap.id)
+            return plainMap
         end
-        if seriesMap ~= nil then
-            sinceSeriesMap = (sinceSeriesMap or 0) + 0.2
+        if plainMap ~= nil then
+            sincePlainMap = (sincePlainMap or 0) + 0.2
         end
         if failure ~= nil then
             printf("EotW: could not install the encounter module %s: %s", moduleid, tostring(failure))
@@ -2703,10 +2703,8 @@ end)
 --for a map with no script document, hence the re-entry guard.
 local m_findingMapEncounter = false
 
---A fight with variants ("When <condition>:" above an [[encounter]] island
---in a series part): the island the story picks -- the first whose gate
---holds, or that has none -- resolved like a reinforcement island. nil when
---no island is gated (the usual search below finds the fight).
+--A fight with variants: the first [[encounter]] island whose "When" line
+--holds for the story so far. nil when no island has a "When" line.
 local function GatedIslandEntry(script)
     local beat = nil
     for _, b in ipairs(script.parse.beats or {}) do
@@ -4273,8 +4271,11 @@ local function SeedSeriesStory(carried)
             return
         end
         doc:BeginChange()
-        montage.SeedStory(doc, part, carried)
+        local seeded, seedErr = pcall(montage.SeedStory, doc, part, carried)
         doc:CompleteChange("Encounter of the Week: the story so far", { undoable = false })
+        if not seeded then
+            error(seedErr)
+        end
         printf("EotW story: part %d starts with %s", part, carried ~= nil and "the story so far" or "no story carried")
     end)
     if not ok then
@@ -4434,8 +4435,11 @@ local function RunScriptBeat(ctx)
             local doc = montage.GetDoc()
             if not (doc.data.whenApplied or {})["b" .. tostring(index)] then
                 doc:BeginChange()
-                montage.ApplyWhenLines(doc, beat, index, nil)
+                local applied, applyErr = pcall(montage.ApplyWhenLines, doc, beat, index, nil)
                 doc:CompleteChange("Encounter of the Week: When lines", { undoable = false })
+                if not applied then
+                    error(applyErr)
+                end
             end
         end)
         if not okWhen then

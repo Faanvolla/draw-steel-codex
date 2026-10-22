@@ -1585,6 +1585,13 @@ map plus " (Part <n>)" ("Encounter: The Crypt (Part 2)"). Rules:
 - Test Encounter's Part dropdown lists the parts on the current map. The
   validator's "no region" problem shows only when the map holds more than
   one part.
+- **Part 1 too (2026-10-21, user direction):** every part may have a part
+  map, `(Part 1)` included. The series is named and keyed by the name before
+  the suffix even when no map has it: `FindPartMap` tries the part map first
+  for every part; the install wait takes the part map at once, and the
+  plain-named map at once for an ordinary encounter but only after a 3 s
+  grace for a series part; the town lists the plain name once for all its
+  part maps; both publishers make a series with no plain-named map.
 - Not run yet: a real arrival on a part map, a community install of a
   series with part maps, and both publishers on one.
 

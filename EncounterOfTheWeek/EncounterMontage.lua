@@ -169,19 +169,13 @@ function EncounterMontage.DocPath()
 end
 
 --- the series' story ---------------------------------------------------------
---What a series carries from part to part (EncounterOfTheWeek.md, "Carrying
---the story forward"). In the script document, host-written:
---  data.story = { part, parts = { ["p<k>"] = { outcome, score, rounds } | "not recorded" },
---                 tracks = { [slug] = { key, value } },   -- live values
---                 shares = { [slug] = { key, value } } }  -- this part's own changes
---  data.montageTotals = { ["b<beat>"] = { successes, failures, unvanquished } }
---  data.whenApplied = { ["b<beat>"] = true }   -- "When ...:" lines already run
---  data.seriesResult = nil | { part, outcome, score, perHero, heroes, rounds,
---                              tracks = { [slug] = { key, value } } }
---                      -- stamped ONCE, when the fight's outcome is first known
---Track names become keys through a slug: a document key may hold only
---letters, digits and "-_.:", and a track name has spaces and apostrophes.
+--What a series part keeps in the script document, so later parts can read it:
+--  data.story: earlier parts' results, each track's value, and this part's own changes.
+--  data.montageTotals: each finished montage's successes, failures and missed threats.
+--  data.whenApplied: the beats whose "When" lines have already run.
+--  data.seriesResult: this part's result, saved once when the fight is won.
 
+--A track name as a document key: "Rite's Progress" becomes "rite-s-progress".
 local function TrackSlug(key)
     local slug = string.gsub(string.lower(key or ""), "[^%w]+", "-")
     return slug
@@ -356,11 +350,9 @@ function EncounterMontage.ApplyWhenLines(doc, beat, beatIndex, montage)
     end
 end
 
---Host, when the fight's outcome is first known: decide this part's result
---ONCE -- the montage score per hero, the outcome, the round -- run "#
---Results", and stamp data.seriesResult. A later host or a reloaded client
---only reads the stamp. `victory` false (a defeat) stamps nothing: a defeat
---carries nothing forward. Returns the stamp, or nil.
+--Host, once, when the fight is won: work out this part's result (montage
+--score per hero, outcome, winning round), run "# Results", and save it.
+--A defeat saves nothing. Returns the saved result, or nil.
 function EncounterMontage.DecideSeriesResult(script, victory, heroCount, rounds)
     if not victory or script == nil or script.parse == nil or script.parse.part == nil then
         return nil
@@ -393,13 +385,18 @@ function EncounterMontage.DecideSeriesResult(script, victory, heroCount, rounds)
     --"the fight lasted 5 or more rounds", "score 0.5 or more".
     doc.data.seriesResult = stamp
     if results ~= nil then
-        local story = EncounterMontage.Story(doc)
-        for _, line in ipairs(results.lines or {}) do
-            if EncounterScript.EvalStoryCondition(line.cond, story) then
-                printf("EotW story: '# Results' line '%s:' holds; applying '%s'", line.condText, line.text)
-                EncounterMontage.ApplyEffects(line.effects, { source = "Results", entryName = "Results", doc = doc })
-                story = EncounterMontage.Story(doc)
+        local ok, err = pcall(function()
+            local story = EncounterMontage.Story(doc)
+            for _, line in ipairs(results.lines or {}) do
+                if EncounterScript.EvalStoryCondition(line.cond, story) then
+                    printf("EotW story: '# Results' line '%s:' holds; applying '%s'", line.condText, line.text)
+                    EncounterMontage.ApplyEffects(line.effects, { source = "Results", entryName = "Results", doc = doc })
+                    story = EncounterMontage.Story(doc)
+                end
             end
+        end)
+        if not ok then
+            printf("EotW story: '# Results' failed: %s", tostring(err))
         end
     end
     --this part's own share of each track, Results included.

@@ -733,9 +733,17 @@ function EncounterScriptValidator.BuildReport(docid, partyid)
             local tag = doc:try_get("annotations")["encounter"]
             encounter = tag.encounter
         end)
-        --a region matters only when this map holds other parts too.
+        --A region only matters when other parts share this document's map.
         local partsOnMap = 0
-        pcall(function() partsOnMap = #EncounterOfTheWeekGame.SeriesParts() end)
+        pcall(function()
+            local doc = (dmhub.GetTable("documents") or {})[docid]
+            for _, map in pairs(game.maps or {}) do
+                if CustomDocument.IsDocInAccessibleRoot(doc, { [map.id] = true }) then
+                    partsOnMap = #(EncounterMontage.ScriptForMap(map.id).parts or {})
+                    break
+                end
+            end
+        end)
         if encounter ~= nil and encounter:GetRegion() == nil and partsOnMap > 1 then
             children[#children + 1] = RowLabel{ depth = 0, class = "problem",
                 text = "this part's encounter has no region, so heroes can walk into the other parts' areas: draw one in the encounter builder, then load it into the island" }

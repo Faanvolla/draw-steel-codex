@@ -269,20 +269,11 @@ function EncounterScript.UnlockedFeatures(parse)
     return result
 end
 
---"{...}" marks a HIDDEN run of a tier (or Consequence:) line: everything
---inside the braces is parsed and applied exactly as if it were written
---plainly, but it is never shown to a player. The braces do not have to
---wrap a whole clause list -- "You gain a Rope. {Unlock the Old Mill}" is
---the normal shape -- and an unterminated "{" hides the rest of the line.
---Returns the brace runs as { open, close } byte indices, in order.
---Story tracks a script declared "(Hidden)", by EncounterScript.MatchKey of
---the name (filled in by Parse; never emptied, so a hidden track stays
---hidden whichever script was parsed last). A clause that changes one is
---hidden as if it were braced: "You fail. Rite's Progress +2" shows as
---"You fail."
+--Story tracks marked "(Hidden)". Players never see a change to one:
+--"You fail. Rite's Progress +2" shows as "You fail."
 local g_hiddenTrackKeys = {}
 
---The clauses of a line that change a hidden track, as hidden ranges.
+--Adds the parts of a line that change a hidden track to `ranges`.
 local function HiddenTrackRanges(text, ranges)
     local braced = #ranges
     for from, clause, to in string.gmatch(text, "()([^%.,;!%?{}]+)()") do
@@ -299,6 +290,12 @@ local function HiddenTrackRanges(text, ranges)
     end
 end
 
+--"{...}" marks a HIDDEN run of a tier (or Consequence:) line: everything
+--inside the braces is parsed and applied exactly as if it were written
+--plainly, but it is never shown to a player. The braces do not have to
+--wrap a whole clause list -- "You gain a Rope. {Unlock the Old Mill}" is
+--the normal shape -- and an unterminated "{" hides the rest of the line.
+--Returns the brace runs as { open, close } byte indices, in order.
 local function HiddenRanges(text)
     local ranges = {}
     local pos = 1
@@ -4761,6 +4758,8 @@ function EncounterScript.CheckStory(result, Warn)
     for _, decl in ipairs(result.tracks) do
         if decl.hidden then
             g_hiddenTrackKeys[decl.key] = true
+        else
+            g_hiddenTrackKeys[decl.key] = nil
         end
     end
     local warned = {}

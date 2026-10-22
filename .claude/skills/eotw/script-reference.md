@@ -75,7 +75,7 @@ dialog, log). Use it for hidden mechanics.
 | `+1 hero token` / `you gain 2 hero tokens` / `the party gains 1 hero token` | party Hero Token pool |
 | `+2 intelligence` / `the party gains 1 intelligence` | Intelligence pool (needs `Unlock: Intelligence` somewhere; warns otherwise) |
 | `+2 malice` / `gain 2 malice` | Director's Malice pool (carries into combat) |
-| `Rite's Progress +1` / `Rite's Progress falls by 2` / `raise Rite's Progress by 1` | a story track of a series part (needs `Track: Rite's Progress`; see "Carrying the story forward") |
+| `Alarm +1` / `Alarm falls by 2` / `raise Alarm by 1` | a story track of a series part (needs `Track: Alarm`; see "Carrying the story forward") |
 | `a Wode Hag joins you` / `Wolf joins you` | allied monster (bestiary name), on a free Start tile, controlled by the acting player, fights on the heroes' side |
 | `the threat is vanquished` / `you vanquish the threat` | resolves the threat (no consequence) |
 | `you begin the encounter surprised` / `you are surprised` | monsters go first; Surprised on every hero (sticky) |
@@ -305,7 +305,7 @@ and starts a scripted scene; each non-blank line after it is one step:
   `PC was a X` (career), `PC carries X`, `PC worships X`, `PC chose <option>`,
   `tier1`/`tier2`/`tier3`, `crit`, combined with `not`, `and`, `or` and
   parentheses. In a series part, the story conditions work too
-  (`Rite's Progress is 2 or more`, `Part 1 was a failure`; see "Carrying the
+  (`Alarm is 2 or more`, `Part 1 was a failure`; see "Carrying the
   story forward").
 - Under an option: lines above its roll are the pre-roll scene, lines below
   are the outcome scene. **Effects apply after the outcome scene is read.**
@@ -542,17 +542,19 @@ another: a party plays Part 1; once the player's account has won it, Part 2
 opens; and so on. Every part is a separate game (the map starts fresh each
 time).
 
-- **Each part can have its own map.** Name it after the series map with
-  ` (Part <n>)` on the end: the series map `Encounter: The Bone Cathedral`
-  holds Part 1, `Encounter: The Bone Cathedral (Part 2)` holds Part 2, and so
-  on. A part map is never an encounter of its own in town; it ships and is
-  listed with its series. Its script documents go in its own Map Documents
-  folder, and every one of them says that map's part (`# Part 2`). A part with
-  no part map plays on the series map, so several parts can still share one
-  map (see the region below).
+- **Each part can have its own map.** Name it after the series with
+  ` (Part <n>)` on the end: `Encounter: The Sunken Keep (Part 1)`,
+  `Encounter: The Sunken Keep (Part 2)`, and so on. The series is named
+  (and listed in town) by what comes before the suffix,
+  `Encounter: The Sunken Keep`, whether or not a map has that plain name.
+  A part map is never an encounter of its own in town; it ships and is listed
+  with its series. Its script documents go in its own Map Documents folder,
+  and every one of them says that map's part (`# Part 2`). A part with no map
+  of its own plays on the plain-named map, so several parts can still share
+  one map (see the region below).
 - **One script document per part**, in its map's Map Documents folder, each
-  starting with a part heading: `# Part 1: The Antechamber`, `# Part 2: The
-  Ossuary`, `# Part 3` (the title is optional). It is not a beat. Number the
+  starting with a part heading: `# Part 1: The Gatehouse`, `# Part 2: The
+  Flooded Hall`, `# Part 3` (the title is optional). It is not a beat. Number the
   parts 1, 2, 3... with no gaps or repeats (publishing refuses otherwise).
   Once any document on the map has a part heading, documents without one are
   never the script.
@@ -587,7 +589,7 @@ time).
 ### Carrying the story forward
 
 A part can leave a mark that later parts read: **story tracks** (named
-numbers such as Rite's Progress) and its **result** (the montage outcome, its
+numbers such as Alarm or Renown) and its **result** (the montage outcome, its
 score and the round the fight was won in). It belongs to the host's account:
 a party plays with its host's story, and the latest win of a part replaces
 that part's result (replaying never clears later parts). Danger Room and Town
@@ -597,21 +599,28 @@ Gate stories are separate.
 `# Part N` heading (or above the first heading):
 
 ```
-# Part 1: The Road Off the Moor
-Track: Rite's Progress (Hidden) -- how close the cult is to finishing the rite
-Track: Renown
+# Part 1: The Gatehouse
+Track: Alarm (Hidden) -- how alert the keep's defenders are
+Track: Renown -- how well the town knows the party
 ```
 
-`(Hidden)` means players never see the number, and any clause that changes it
-is hidden as if it were in `{...}`. The text after ` -- ` is shown next to a
-shown track's value. A track starts at 0. A name with `and`, `or` or `not` in
-it cannot be read in a condition (the parser warns).
+A track starts at 0. A name with `and`, `or` or `not` in it cannot be read in
+a condition (the parser warns).
+
+- **Visible track** (no tag): a change shows in the result text players read
+  ("Renown +1"), and the recap after a win lists it with its description.
+- **Hidden track** (`(Hidden)`): players never see the number. Any clause that
+  changes it is stripped from what they read, as if it were in `{...}`, and the
+  recap leaves it out. Players only notice what it causes (more Malice, a
+  different paragraph, a harder fight).
+- The town shows no track values. The validator panel lists each declared
+  track (and whether it is hidden), and the app log prints every change
+  ("EotW story: Alarm +1 -> 2").
 
 **Change** a track with a clause anywhere clauses go (tiers, consequences,
-narrative options, chest rows, `# Results`): `Rite's Progress +1`,
-`Rite's Progress -2`, `Rite's Progress rises by 2` / `falls by 1`,
-`raise Rite's Progress by 1` / `lower Rite's Progress by 2`. A name that is not
-declared warns and does nothing.
+narrative options, chest rows, `# Results`): `Alarm +1`, `Alarm -2`,
+`Alarm rises by 2` / `falls by 1`, `raise Alarm by 1` / `lower Alarm by 2`. A
+name that is not declared warns and does nothing.
 
 **The outcome.** Every montage in the part adds up to one score: each
 tier-3 result (or critical) +1, each tier-1 result -1, each threat whose
@@ -624,9 +633,9 @@ outcome does:
 # Results
 Outcome: total success at 1, partial at 0
 Total success: nothing happens
-Partial success: Rite's Progress +1
-Failure: Rite's Progress +2
-The fight lasted 5 or more rounds: Rite's Progress +1
+Partial success: Alarm +1
+Failure: Alarm +2
+The fight lasted 5 or more rounds: Alarm +1
 ```
 
 Without an `Outcome:` line the bars are total success at 0.5, partial at -0.25.
@@ -639,7 +648,7 @@ A defeat carries nothing forward.
 parentheses; comparisons are `2 or more` / `or higher` / `at least 2`,
 `2 or less` / `or fewer` / `at most 2`, or `2`; scores are per hero):
 
-- `Rite's Progress is 2 or more`
+- `Alarm is 2 or more`, `Renown is 1 or less`
 - `Part 1 was a total success` / `a partial success` / `a failure`
 - `Part 1 was not recorded` (the host never won it on this board, e.g. they
   joined someone else's party for it). Every other condition about that part is
@@ -651,10 +660,10 @@ parentheses; comparisons are `2 or more` / `or higher` / `at least 2`,
 
 Where they go:
 
-- **Scenes**: `if Rite's Progress is 2 or more then` ... `end`.
+- **Scenes**: `if Alarm is 2 or more then` ... `end`.
 - **When lines**, directly under `# Montage`, `# Narrative` or `# Encounter`,
-  applied once as the beat starts: `When Rite's Progress is 2 or more: +2 malice`;
-  `When Part 1 was a failure: unlock The Bone Choir` (a harder `(Locked)`
+  applied once as the beat starts: `When Alarm is 2 or more: +2 malice`;
+  `When Part 1 was a failure: unlock The Watch Doubles` (a harder `(Locked)`
   threat). Inside an entry or section they warn and do nothing.
 - **Fight variants**: `When <condition>:` with nothing after the colon,
   directly above an `[[encounter]]` island: the first island whose gate holds
@@ -670,12 +679,12 @@ Where they go:
 ```
 # Conclusion
 
-The doors of the ossuary grind shut behind you.
+The portcullis grinds shut behind you.
 
-If Rite's Progress is 3 or more:
-Far below, the choir has begun to sing.
+If Alarm is 3 or more:
+Somewhere above, horns are sounding.
 Otherwise:
-The bones are silent. For now.
+The keep is quiet. For now.
 End
 ```
 
@@ -685,6 +694,13 @@ Encounter** on Part 2 and later has a **Story so far** box: set each earlier
 part's outcome, score and round (or Not recorded) and each track's value. The
 test applies no City rows; its result is printed in the console
 ("EotW story: Part 2 result: ...").
+
+**Not built yet: the handoff between real games.** A won part saves its result
+and track values in the game, but nothing passes them to the City yet, so in a
+real game every later part starts as if the earlier parts were "not recorded"
+and every track is 0. Until that lands, only Test Encounter's Story so far
+exercises the branches; write the `Otherwise` / "not recorded" text so a part
+still reads well from a fresh start.
 
 ## Full worked example (master + one sub-document)
 
