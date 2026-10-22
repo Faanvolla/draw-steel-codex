@@ -2520,7 +2520,8 @@ function g_card.Button(rec, ops, scale)
         bgcolor = "#1b1814ff",
         cornerRadius = 6,
         borderWidth = 1,
-        borderColor = "#ffffff30",
+        --a dark edge, no white frame (Venla, 2026-10-22).
+        borderColor = "#00000099",
         floating = true,
         halign = "left",
         valign = "top",
@@ -2558,11 +2559,11 @@ function g_card.Button(rec, ops, scale)
             g_card.Expand(rec, ops)
         end,
         hover = function(element)
-            element.selfStyle.borderColor = "#ffffff90"
+            element.selfStyle.borderColor = "#000000ff"
             expand:SetClass("hidden", false)
         end,
         dehover = function(element)
-            element.selfStyle.borderColor = "#ffffff30"
+            element.selfStyle.borderColor = "#00000099"
             expand:SetClass("hidden", true)
         end,
         rightClick = function(element)
