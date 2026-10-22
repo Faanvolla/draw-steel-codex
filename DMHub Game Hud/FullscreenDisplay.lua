@@ -1014,7 +1014,8 @@ function DramaticBanner.Create()
 
             local token = nil
             if d.data.tokenid then
-                token = dmhub.GetTokenById(d.data.tokenid)
+                --off the map too (a hero in the EotW town is never spawned)
+                token = dmhub.GetTokenById(d.data.tokenid) or dmhub.GetCharacterById(d.data.tokenid)
             end
             local hasPortrait = token ~= nil
 

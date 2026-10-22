@@ -6348,6 +6348,27 @@ function CreateSettingsScreen(dialog, args)
 
 	end
 
+	--A heading over a section, hidden when nothing is registered in it (e.g. at the
+	--title screen, before the code mods that register its settings have loaded).
+	local SettingsHeadedSection = function(title, section)
+		local empty = true
+		for _,s in ipairs(SettingsOrdered) do
+			if s.section ~= nil and string.lower(s.section) == string.lower(section) then
+				empty = false
+				break
+			end
+		end
+
+		return gui.Panel{
+			classes = {cond(empty, "collapsed")},
+			flow = "vertical",
+			width = "100%",
+			height = "auto",
+			SettingsHeading(title),
+			SettingsSection(section),
+		}
+	end
+
 	local CreateTab = function(args)
 		if args.dmonly and ((not dmhub.inGame) or (not dmhub.isDM)) then
 			return nil
@@ -7128,6 +7149,8 @@ function CreateSettingsScreen(dialog, args)
 						CreateBetaBranchEditor(),
 
 						Setting("codemod:safemode"),
+
+						SettingsHeadedSection("Encounter of the Week", "EncounterOfTheWeek"),
 						} end,
 					},
 

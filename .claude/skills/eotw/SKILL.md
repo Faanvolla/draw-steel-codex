@@ -180,6 +180,10 @@ with the author, beat by beat, in the order the players will see it:
 4. Closing `# Narrative` (optional), e.g. the ambush is sprung.
 5. `# Encounter` -- setup lines (traps) and the `[[encounter]]` island.
 6. `# Conclusion` and `# Defeat` story text.
+7. An `Encounter Rules` document (optional; its own journal document in the
+   Map Documents folder, not part of the script) when the fight has rules the
+   players should be able to look up during combat: special terrain,
+   objectives, hazards. See "Encounter Rules" in the script reference.
 
 **The Montage Builder** (Game menu > Montage Builder, or `/eotwbuilder`) edits
 a montage graphically: rounds, entries, tests, tiers, knacks, scenes, dice

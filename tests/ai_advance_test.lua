@@ -16,6 +16,8 @@ end
 MonsterAI = {TokenIsLiveCombatant = function(t) return t.valid end,
     LogDecision = noop, TokenLogName = tostring, LocLogName = tostring,
     TargetsLogName = tostring, Sleep = noop}
+--Plan previews (Continue to go on) are off in these tests.
+MonsterAI.PlanPreviewsOn = function() return false end
 function RunYieldingFunction(fn)
     local ok, err = pcall(fn)
     if not ok then return false, err end

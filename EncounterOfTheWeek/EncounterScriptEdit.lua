@@ -752,3 +752,699 @@ end
 function E.IncludeLine(docName)
     return "[" .. E.LineText(docName) .. "]"
 end
+
+--- scene steps as forms ------------------------------------------------------------
+--
+--The builder shows each scene line as a small form (who speaks, who enters,
+--a branch's condition...) instead of raw text. ReadSceneStep turns a line
+--into the form's values with the parser's own rules; SceneStepLine writes
+--the values back as a line the parser reads to the same step.
+
+--The emotes a character can show, in a fixed order for dropdowns.
+function E.SceneEmotes()
+    local list = {}
+    for name, _ in pairs(EncounterScript.SCENE_EMOTES) do
+        list[#list + 1] = name
+    end
+    table.sort(list)
+    return list
+end
+
+--One scene line -> a form:
+--  { kind = "narrate", text }
+--  { kind = "say", speaker ("PC", a character, or an off-stage name),
+--    offstage = bool, emote = nil|word, lang = nil|name, text }
+--  { kind = "enter", name, monster }   { kind = "exit", name }
+--  { kind = "emote", name, emote }
+--  { kind = "if"|"elseif", cond = condition text }  { kind = "else" }  { kind = "end" }
+--`actors` is the entry's characters (entry.actors), as the parser reads it.
+function E.ReadSceneStep(text, actors)
+    local branch, condText = EncounterScript.SceneBranchLine(text)
+    if branch ~= nil then
+        local c = nil
+        if condText ~= nil then
+            c = trim((string.gsub(trim(condText), "%s+[tT][hH][eE][nN]$", "")))
+        end
+        return { kind = branch, cond = c }
+    end
+    local steps = EncounterScript.CompileScene({ { text = text, line = 1 } }, actors or {}, "outcome", function() end)
+    local step = steps[1]
+    if step == nil then
+        return { kind = "narrate", text = trim(text) }
+    end
+    if step.kind == "say" then
+        return { kind = "say", speaker = step.speaker, offstage = step.offstage == true, emote = step.emote, lang = step.lang, text = step.text }
+    elseif step.kind == "enter" then
+        return { kind = "enter", name = step.name, monster = step.monster }
+    elseif step.kind == "exit" then
+        return { kind = "exit", name = step.name }
+    elseif step.kind == "emote" then
+        return { kind = "emote", name = step.name, emote = step.emote }
+    end
+    return { kind = "narrate", text = step.text or trim(text) }
+end
+
+--A form (as ReadSceneStep returns) -> the scene line, without indentation.
+function E.SceneStepLine(step)
+    local kind = step.kind
+    if kind == "say" then
+        local speaker = (string.gsub(E.LineText(step.speaker), ":", ""))
+        if speaker == "" then
+            speaker = "PC"
+        end
+        if step.offstage then
+            speaker = speaker .. " (offstage)"
+        elseif step.emote ~= nil and step.emote ~= "" then
+            speaker = string.format("%s (%s)", speaker, step.emote)
+        end
+        local said = E.LineText(step.text)
+        if step.lang ~= nil and E.LineText(step.lang) ~= "" then
+            said = string.format("(in %s) %s", E.LineText(step.lang), said)
+        end
+        return string.format("%s: %s", speaker, said)
+    elseif kind == "enter" then
+        local name = E.LineText(step.name)
+        local monster = E.LineText(step.monster)
+        if monster == "" or string.lower(monster) == string.lower(name) then
+            return name .. " enters"
+        end
+        return string.format("%s (%s) enters", name, monster)
+    elseif kind == "exit" then
+        return E.LineText(step.name) .. " exits"
+    elseif kind == "emote" then
+        return string.format("%s is %s", E.LineText(step.name), E.LineText(step.emote))
+    elseif kind == "if" or kind == "elseif" then
+        return string.format("%s %s then", kind, E.LineText(step.cond))
+    elseif kind == "else" or kind == "end" then
+        return kind
+    end
+    return E.LineText(step.text)
+end
+
+--Where an "if" block ends: `lines` are a scene's lines (strings) and
+--`first` the index of an "if"; returns the index of its matching "end",
+--or nil when the block is never closed.
+function E.SceneBlockEnd(lines, first)
+    local depth = 0
+    for i = first, #lines do
+        local kind = EncounterScript.SceneBranchLine(lines[i])
+        if kind == "if" then
+            depth = depth + 1
+        elseif kind == "end" then
+            depth = depth - 1
+            if depth == 0 then
+                return i
+            end
+        end
+    end
+    return nil
+end
+
+--The last line of the branch that `first` (an "if", "elseif" or "else")
+--opens: the line before the next "elseif" / "else" / "end" of the same
+--block. nil when the block is never closed.
+function E.SceneBranchEnd(lines, first)
+    local depth = 0
+    for i = first + 1, #lines do
+        local kind = EncounterScript.SceneBranchLine(lines[i])
+        if kind == "if" then
+            depth = depth + 1
+        elseif kind == "end" then
+            if depth == 0 then
+                return i - 1
+            end
+            depth = depth - 1
+        elseif (kind == "elseif" or kind == "else") and depth == 0 then
+            return i - 1
+        end
+    end
+    return nil
+end
+
+--- branch conditions as forms ----------------------------------------------------
+--
+--A condition is a flat list of rows, joined by "and" / "or" ("and" binds
+--tighter, as in the parser), each optionally negated:
+--  { { negate = bool, kind, value }, { join = "and"|"or", negate, kind, value }, ... }
+--kind: "speaks" (a language), "kindred" (ancestry, class...: "PC is a X"),
+--"career" ("PC was a X"), "skilled", "perk", "has", "can" (a capability),
+--"is" ("PC is small"), "chose" (an option), "tier" (value "1"-"3", "4" =
+--critical), or "custom" (value = the atom as written).
+
+--One atom's text -> { negate, kind, value }. Matched on the lowered text,
+--with the value cut from the original so its capitals survive.
+local function ReadAtom(text)
+    local s = trim(text)
+    local lc = string.lower(s)
+    --`pattern` has one "(.+)" capture; the same span of the original text.
+    local function Tail(pattern)
+        local pos, capture = string.match(lc, (string.gsub(pattern, "%(%.%+%)", "()(.+)")))
+        if pos == nil then
+            return nil
+        end
+        return trim(string.sub(s, pos, pos + #capture - 1))
+    end
+    local n = string.match(lc, "^tier%s*(%d)$")
+    if n ~= nil and tonumber(n) >= 1 and tonumber(n) <= 3 then
+        return { kind = "tier", value = n }
+    end
+    local words = { one = "1", two = "2", three = "3" }
+    local w = string.match(lc, "^tier%s+(%a+)$")
+    if w ~= nil and words[w] ~= nil then
+        return { kind = "tier", value = words[w] }
+    end
+    if lc == "crit" or lc == "critical" or lc == "critical success" or lc == "a critical success" then
+        return { kind = "tier", value = "4" }
+    end
+    local v = Tail("^pc does not speak (.+)$") or Tail("^pc doesn't speak (.+)$")
+    if v ~= nil then
+        return { kind = "speaks", value = v, negate = true }
+    end
+    v = Tail("^pc speaks (.+)$") or Tail("^pc knows (.+)$")
+    if v ~= nil then
+        return { kind = "speaks", value = v }
+    end
+    v = Tail("^pc is skilled in (.+)$")
+    if v ~= nil then
+        return { kind = "skilled", value = v }
+    end
+    v = Tail("^pc has the (.+) perk$")
+    if v ~= nil then
+        return { kind = "perk", value = v }
+    end
+    v = Tail("^pc has (.+)$")
+    if v ~= nil then
+        return { kind = "has", value = v }
+    end
+    v = Tail("^pc can (.+)$")
+    if v ~= nil then
+        return { kind = "can", value = v }
+    end
+    v = Tail("^pc was an? (.+)$")
+    if v ~= nil then
+        return { kind = "career", value = v }
+    end
+    v = Tail("^pc is an? (.+)$")
+    if v ~= nil then
+        return { kind = "kindred", value = v }
+    end
+    v = Tail("^pc is (.+)$")
+    if v ~= nil then
+        return { kind = "is", value = v }
+    end
+    v = Tail("^pc chose (.+)$") or Tail("^pc chooses (.+)$")
+    if v ~= nil then
+        return { kind = "chose", value = v }
+    end
+    return { kind = "custom", value = s }
+end
+
+--Condition text -> rows, or nil when the form cannot hold it (parentheses,
+--or a missing condition). The text may end in "then".
+function E.ReadCondition(text)
+    local src = trim(text or "")
+    src = string.gsub(src, "%s+[tT][hH][eE][nN]$", "")
+    if string.find(src, "[()]") ~= nil then
+        return nil
+    end
+    local rows = {}
+    local words = {}
+    local join = nil
+    local negate = false
+    local function Flush()
+        if #words == 0 then
+            return false
+        end
+        local atom = ReadAtom(table.concat(words, " "))
+        if negate then
+            atom.negate = not atom.negate
+        end
+        atom.join = join
+        rows[#rows + 1] = atom
+        words = {}
+        negate = false
+        return true
+    end
+    for word in string.gmatch(src, "%S+") do
+        local lw = string.lower(word)
+        if lw == "and" or lw == "or" then
+            if not Flush() then
+                return nil
+            end
+            join = lw
+        elseif lw == "not" and #words == 0 then
+            negate = not negate
+        else
+            words[#words + 1] = word
+        end
+    end
+    if not Flush() then
+        return nil
+    end
+    return rows
+end
+
+--"a" or "an" before a name.
+local function Article(name)
+    if string.match(string.lower(name or ""), "^[aeiou]") then
+        return "an"
+    end
+    return "a"
+end
+
+--One row -> its atom text, without the join.
+function E.ConditionAtomText(row)
+    local value = E.LineText(row.value)
+    local kind = row.kind
+    local text
+    if kind == "tier" then
+        text = value == "4" and "crit" or ("tier" .. value)
+    elseif kind == "speaks" then
+        text = "PC speaks " .. value
+    elseif kind == "skilled" then
+        text = "PC is skilled in " .. value
+    elseif kind == "perk" then
+        text = string.format("PC has the %s perk", value)
+    elseif kind == "has" then
+        text = "PC has " .. value
+    elseif kind == "can" then
+        text = "PC can " .. value
+    elseif kind == "career" then
+        text = string.format("PC was %s %s", Article(value), value)
+    elseif kind == "kindred" then
+        text = string.format("PC is %s %s", Article(value), value)
+    elseif kind == "is" then
+        text = "PC is " .. value
+    elseif kind == "chose" then
+        text = "PC chose " .. value
+    else
+        text = value
+    end
+    if row.negate then
+        text = "not " .. text
+    end
+    return text
+end
+
+--Rows -> condition text (no "if" / "then").
+function E.ConditionText(rows)
+    local parts = {}
+    for i, row in ipairs(rows) do
+        if i > 1 then
+            parts[#parts + 1] = row.join == "or" and "or" or "and"
+        end
+        parts[#parts + 1] = E.ConditionAtomText(row)
+    end
+    return table.concat(parts, " ")
+end
+
+--- outcomes as forms ------------------------------------------------------------
+--
+--A tier line (or a Consequence:, a no-roll rule, a dice-table row) is free
+--text with mechanical clauses in it. The builder shows it as the free text
+--plus one row per mechanical clause (EncounterScript.CLAUSES). The free text
+--is every clause the grammar reads as flavour, in order, with the
+--punctuation it was written with; the effects follow it when the line is
+--written back. An effect the author did not touch keeps its own wording.
+
+--One tier line -> { text = the free text, effects = { effect, ... } }. Each
+--effect is ParseClause's table (kind, target, qty, name, ...) plus:
+--  hidden  written in {braces}
+--  text    the clause as written (kept while the row is untouched)
+--  sep     the punctuation that ended it ("" at the end of the line)
+--  prefix  flavour written between the previous effect and this one ("At
+--          the start of the next combat, "), glued to it
+--  suffix  (last effect only) flavour written after it
+--The free text is the flavour before the first effect, so an untouched line
+--is written back exactly as it was.
+function E.ReadOutcome(line)
+    local lead = {}
+    local pending = {}
+    local effects = {}
+    line = line or ""
+    local spans = EncounterScript.ParseEffectSpans(line)
+    --the punctuation after span i, whole ("..." or "?!", which the
+    --splitter cut at its first character).
+    local function Sep(i)
+        local stop = spans[i + 1] ~= nil and spans[i + 1].from - 1 or #line
+        local gap = string.sub(line, spans[i].to + 1, stop)
+        return (string.gsub(gap, "[^%.,;!%?]", ""))
+    end
+    local function Piece(effect, sep)
+        local piece = effect.text
+        if effect.hidden then
+            piece = "{" .. piece .. "}"
+        end
+        return piece .. sep
+    end
+    for i, span in ipairs(spans) do
+        local effect = span.effect
+        if EncounterScript.EffectIsMechanical(effect) then
+            local copy = {}
+            for k, v in pairs(effect) do
+                copy[k] = v
+            end
+            copy.hidden = effect.hidden == true
+            copy.sep = Sep(i)
+            if #pending > 0 then
+                copy.prefix = table.concat(pending, " ") .. " "
+                pending = {}
+            end
+            effects[#effects + 1] = copy
+        elseif #effects == 0 then
+            lead[#lead + 1] = Piece(effect, Sep(i))
+        else
+            pending[#pending + 1] = Piece(effect, Sep(i))
+        end
+    end
+    if #pending > 0 then
+        effects[#effects].suffix = table.concat(pending, " ")
+    end
+    return { text = trim(table.concat(lead, " ")), effects = effects }
+end
+
+--The clause an effect row writes: its own words when untouched, else the
+--catalogue's; braced when hidden from the players (unless `bare`).
+function E.EffectClauseText(effect, bare)
+    local clause = effect.text
+    if clause == nil or clause == "" then
+        clause = EncounterScript.ClauseText(effect) or ""
+    end
+    clause = E.LineText(string.gsub(clause, "[{}]", ""))
+    if effect.hidden and not bare and clause ~= "" then
+        clause = "{" .. clause .. "}"
+    end
+    return clause
+end
+
+--{ text, effects } -> the tier text (no "|" or teaser): the free text, then
+--each effect as its own sentence (with any flavour glued to it). Hidden
+--effects next to each other share one pair of braces, as authors write
+--them ("{Unlock X. Bane on Y}").
+function E.OutcomeText(outcome)
+    local text = E.LineText(outcome.text)
+    local effects = {}
+    for _, effect in ipairs(outcome.effects or {}) do
+        if E.EffectClauseText(effect) ~= "" then
+            effects[#effects + 1] = effect
+        end
+    end
+    local parts = {}
+    if text ~= "" then
+        if #effects > 0 and not string.match(text, "[%.,;!%?]$") then
+            text = text .. "."
+        end
+        parts[#parts + 1] = text
+    end
+    local function Stop(piece)
+        if string.match(piece, "[%.,;!%?]$") then
+            return piece
+        end
+        return piece .. "."
+    end
+    local i = 1
+    while i <= #effects do
+        local first = effects[i]
+        --the run of effects written as one piece: hidden ones with nothing
+        --written between them share braces.
+        local last = i
+        if first.hidden then
+            while effects[last + 1] ~= nil and effects[last + 1].hidden
+                and E.LineText(effects[last].suffix or "") == "" and E.LineText(effects[last + 1].prefix or "") == "" do
+                last = last + 1
+            end
+        end
+        local piece = E.LineText(first.prefix or "")
+        if piece ~= "" then
+            piece = piece .. " "
+        end
+        if first.hidden then
+            local inner = {}
+            for m = i, last do
+                local clause = E.EffectClauseText(effects[m], true)
+                if m < last then
+                    clause = Stop(clause .. (effects[m].sep or ""))
+                end
+                inner[#inner + 1] = clause
+            end
+            piece = piece .. "{" .. table.concat(inner, " ") .. "}"
+        else
+            piece = piece .. E.EffectClauseText(first)
+        end
+        local lastEffect = effects[last]
+        piece = piece .. (lastEffect.sep or "")
+        local suffix = E.LineText(lastEffect.suffix or "")
+        if suffix ~= "" then
+            if not string.match(piece, "[%.,;!%?]$") then
+                piece = piece .. ","
+            end
+            piece = piece .. " " .. suffix
+        end
+        --the next sentence needs a stop in front of it.
+        if last < #effects then
+            piece = Stop(piece)
+        end
+        parts[#parts + 1] = piece
+        i = last + 1
+    end
+    return table.concat(parts, " ")
+end
+
+--- the script builder: beats, narratives and the encounter -------------------------
+
+--"trap" -> "Trap".
+local function Cap(s)
+    s = trim(tostring(s or ""))
+    return string.upper(string.sub(s, 1, 1)) .. string.sub(s, 2)
+end
+
+--"A", "A and B", "A, B and C".
+local function JoinAnd(list)
+    if #list <= 1 then
+        return list[1] or ""
+    end
+    local head = {}
+    for i = 1, #list - 1 do
+        head[i] = list[i]
+    end
+    return table.concat(head, ", ") .. " and " .. list[#list]
+end
+
+--A setup line of the "# Encounter" beat, from the parser's instruction
+--table (kind "placeobjects", "bystanders" or "victory"; `label` is the
+--word before the colon).
+function E.SetupLine(ins)
+    if ins.kind == "victory" then
+        local who = "enemy"
+        if ins.who ~= nil and ins.who ~= "" then
+            who = E.LineText(ins.whoText or ins.who)
+        end
+        return string.format("Victory: every %s on the map is defeated", who)
+    elseif ins.kind == "bystanders" then
+        local names = {}
+        for _, n in ipairs(ins.names or {}) do
+            n = E.LineText(n)
+            if n ~= "" then
+                names[#names + 1] = n
+            end
+        end
+        return string.format("%s: %s tokens stay out of initiative", E.LineText(ins.label or "Bystanders"), JoinAnd(names))
+    end
+    local qty = tonumber(ins.qty) or 1
+    local zone = Cap(ins.zone)
+    local line = string.format("%s: Place %d %s %s in %s zones", E.LineText(ins.label or "Setup"), qty, E.LineText(ins.object),
+        qty == 1 and "object" or "objects", zone)
+    if ins.deleteOthers then
+        line = line .. string.format(" and delete the other %s zones", zone)
+    end
+    return line
+end
+
+--The lines of a "## Reinforcements: <Name>" section.
+function E.ArriveLine(schedule)
+    return "Arrive: " .. EncounterScript.DescribeSchedule(schedule)
+end
+
+function E.EnterLine(zone)
+    return string.format("Enter: the %s zone", Cap(zone))
+end
+
+function E.ShoutLine(text)
+    return string.format("Shout: \"%s\"", (string.gsub(E.LineText(text), "\"", "'")))
+end
+
+--A narrative section's mode marker: "Choose together: Which way?".
+function E.NarrativeModeLine(mode, prompt)
+    local head = mode == "individual" and "Choose individually:" or "Choose together:"
+    prompt = E.LineText(prompt)
+    if prompt == "" then
+        return head
+    end
+    return head .. " " .. prompt
+end
+
+function E.UnlockLine(featureName)
+    return "Unlock: " .. E.LineText(featureName)
+end
+
+--Starter blocks for new beats and sections.
+function E.NarrativeBeatBlock()
+    return { "# Narrative", "", "The heroes gather before the road ahead.", "",
+        "## The Road Ahead", "", "The road forks beneath a lightning-split oak.", "",
+        "Choose together: Which way do you go?", "",
+        "### The high road", "", "The ridge path is longer but safer.", "", "|+1 hero token", "",
+        "### The low road", "", "The valley path is quick and dark." }
+end
+
+function E.MontageBeatBlock()
+    return { "# Montage", "", "The road ahead is long and dangerous.", "", "## Round 1" }
+end
+
+function E.EncounterBeatBlock()
+    return { "# Encounter", "", "[[encounter]]" }
+end
+
+function E.StoryBlock(title, text)
+    return { "# " .. E.LineText(title), "", E.LineText(text) }
+end
+
+function E.NarrativeSectionBlock(name)
+    return { "## " .. E.LineText(name), "", "Describe what happens.", "", "Choose together: What do you do?", "",
+        "### Press on", "", "### Turn back" }
+end
+
+function E.ReinforcementBlock(name)
+    return { "## Reinforcements: " .. E.LineText(name), "", "Arrive: Round 3", "", "[[encounter]]" }
+end
+
+--- keeping [[tag]] islands on their data -------------------------------------------
+--
+--A journal document binds each [[tag]] to its saved data by order: the
+--first [[scene]] is key "scene", the second "scene-1", and so on
+--(MarkdownDocument:GetReferencedAnnotations). Moving or deleting a block
+--that holds a tag would shift every later tag of that name onto the wrong
+--data -- a beat's backdrop swapping with another's. These helpers track
+--each tag through an edit so the caller can move its data to its new key.
+
+--Every [[tag]] in `lines`, in order: { { line, name (the full text inside
+--the brackets), key }, ... }.
+function E.TagOccurrences(lines)
+    local result = {}
+    local seen = {}
+    for i, l in ipairs(lines) do
+        for name in string.gmatch(l, "%[%[(.-)%]%]") do
+            local key = name
+            local index = 1
+            while seen[key] do
+                key = name .. "-" .. index
+                index = index + 1
+            end
+            seen[key] = true
+            result[#result + 1] = { line = i, name = name, key = key }
+        end
+    end
+    return result
+end
+
+--The old line -> new line map of a set of patches on ONE document (lines a
+--patch replaced map to nil).
+function E.PatchLineMap(lineCount, patches)
+    local map = {}
+    for l = 1, lineCount do
+        ---@type integer|nil
+        local new = l
+        for _, p in ipairs(patches) do
+            if l >= p.first and l <= p.last then
+                new = nil
+                break
+            end
+            if p.last < l then
+                new = new + #p.lines - (p.last - p.first + 1)
+            end
+        end
+        map[l] = new
+    end
+    return map
+end
+
+--Swap two blocks of lines a1..a2 and b1..b2 (a2 < b1), keeping the lines
+--between them where they are. Returns the new lines and the line map.
+function E.SwapBlocks(lines, a1, a2, b1, b2)
+    local out, map = {}, {}
+    local function Take(from, to)
+        for l = from, to do
+            out[#out + 1] = lines[l]
+            map[l] = #out
+        end
+    end
+    Take(1, a1 - 1)
+    Take(b1, b2)
+    Take(a2 + 1, b1 - 1)
+    Take(a1, a2)
+    Take(b2 + 1, #lines)
+    return out, map
+end
+
+--How the tags' keys change between `oldLines` and `newLines` given the
+--line map. A tag on a line that survived keeps its identity; a tag on a new
+--line takes the identity of a removed tag of the same name, in order (a
+--block moved as delete + insert). Returns { [oldKey] = newKey } for every
+--tag that survived, and the list of old keys whose tag is gone.
+function E.RekeyTags(oldLines, newLines, map)
+    local old = E.TagOccurrences(oldLines)
+    local new = E.TagOccurrences(newLines)
+    local newByLine = {}
+    for _, o in ipairs(new) do
+        newByLine[o.line] = newByLine[o.line] or {}
+        table.insert(newByLine[o.line], o)
+    end
+    local claimed = {}
+    local remap = {}
+    local unmatched = {}
+    for _, o in ipairs(old) do
+        local target = map[o.line]
+        local found = nil
+        for _, n in ipairs(target ~= nil and newByLine[target] or {}) do
+            if not claimed[n] and n.name == o.name then
+                found = n
+                break
+            end
+        end
+        if found ~= nil then
+            claimed[found] = true
+            remap[o.key] = found.key
+        else
+            unmatched[#unmatched + 1] = o
+        end
+    end
+    local gone = {}
+    for _, o in ipairs(unmatched) do
+        local found = nil
+        for _, n in ipairs(new) do
+            if not claimed[n] and n.name == o.name then
+                found = n
+                break
+            end
+        end
+        if found ~= nil then
+            claimed[found] = true
+            remap[o.key] = found.key
+        else
+            gone[#gone + 1] = o.key
+        end
+    end
+    return remap, gone
+end
+
+--Does a remap change anything?
+function E.RekeyChanges(remap, gone)
+    if #(gone or {}) > 0 then
+        return true
+    end
+    for k, v in pairs(remap or {}) do
+        if k ~= v then
+            return true
+        end
+    end
+    return false
+end

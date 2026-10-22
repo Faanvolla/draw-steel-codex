@@ -2929,6 +2929,14 @@ TierSymbols.lookupSymbols = {
         local match = regex.MatchGroups(c.tier, "slide +(?<value>[0-9]+)")
         return (match ~= nil and tonumber(match.value)) or 0
     end,
+
+    --The damage types this tier deals ("untyped" for plain damage), e.g.
+    --Tier.DamageTypes has "cold". Lets a power-roll trigger react to the type
+    --of the damage it answered (Topaz Dragon's Absorption).
+    damagetypes = function(c)
+        local strings = RollPropertiesPowerTable.new{tiers = {c.tier}}:GetDamageTypes() or {}
+        return StringSet.new{strings = strings}
+    end,
 }
 
 function RollPropertiesPowerTable:GetSymbols(rollInfo, targetCreature)

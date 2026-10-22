@@ -1364,6 +1364,27 @@ function dmhub.IsSteamOverlayRunning() end
 --- @param gameid? string
 function dmhub.InviteToGameViaSteam(gameid) end
 
+--- Opens the Steam overlay's 'invite a friend' dialog with an invite that Lua handles rather than a game to enter. kind names the feature that owns it (lowercase letters/digits, e.g. 'eotw'); payload is its data (letters, digits, '-', '_', ':'). A friend who accepts gets it from dmhub.TakeSteamInvite() at their titlescreen. Returns false when it could not be sent: not running under Steam, the overlay is unavailable, or kind/payload are invalid.
+--- @param kind? string
+--- @param payload? string
+--- @return boolean
+function dmhub.InviteViaSteam(kind, payload) end
+
+--- Advertises an invite (same kind/payload rules as InviteViaSteam) as this player's Steam 'Join Game' target, so friends can join from the friends list without an explicit invite. group/groupSize show friends 'In a group of N' (groupSize 0 = no group). Lasts 10 seconds after the last call, so re-push from a think handler; pass nil to clear it. While set it replaces the in-game join target.
+--- @param kind? string
+--- @param payload? string
+--- @param group? string
+--- @param groupSize? integer
+function dmhub.SetSteamJoinTarget(kind, payload, group, groupSize) end
+
+--- Takes (and clears) the Steam invite this player accepted, or returns nil. Set when a friend's InviteViaSteam / SetSteamJoinTarget invite is accepted, including one that launched the app; an invite accepted inside a game is held until the player has left it. Poll it at the titlescreen.
+--- @return nil|{kind: string, payload: string}
+function dmhub.TakeSteamInvite() end
+
+--- Testing aid: handle a Steam connect string exactly as if a friend's 'Join Game' or invite had just been accepted ('dshub1:{gameid}' enters a game; 'dshub2:{kind}:{payload}' queues an invite for TakeSteamInvite). Works without Steam, so dev builds can exercise the receiving side.
+--- @param connect? string
+function dmhub.SimulateSteamJoin(connect) end
+
 --- True if this account has a Patreon entitlement to the given creator organization. Honors the creator's persist-on-lapse policy.
 --- @param orgid string The id of the creator organization.
 --- @return boolean
@@ -1950,14 +1971,15 @@ function dmhub.GetMouseWorldPoint() end
 --- @return LuaTargetingMarkers
 function dmhub.HighlightLine(options) end
 
---- Mark the line of sight between the attacker and target on the map. Call Destroy() on the returned reference to clear the marker. Optionally pass pierceSurfaces to ignore thin walls. arrowColor sets the arrow color: 'red' (enemies), 'green' (allies), 'black' (mixed). maxRange greys out the portion of the arrow past the range boundary (in tile units).
+--- Mark the line of sight between the attacker and target on the map. Call Destroy() on the returned reference to clear the marker. Optionally pass pierceSurfaces to ignore thin walls. arrowColor sets the arrow color: 'red' (enemies), 'green' (allies), 'black' (mixed), 'orange' (planned attacks). maxRange greys out the portion of the arrow past the range boundary (in tile units). fromLoc previews an attack from a square the attacker has not reached yet (the Monster AI's plan preview): that arrow is local to this client and not attached to the attacker.
 --- @param attacker CharacterToken
 --- @param target CharacterToken
 --- @param pierceSurfaces number? Optional number of thin wall surfaces (thickness <= 1 square) to ignore.
---- @param arrowColor string? Arrow color: 'red' (default), 'green', or 'black'.
+--- @param arrowColor string? Arrow color: 'red' (default), 'green', 'black', or 'orange'.
 --- @param maxRange number? Optional max range in tile units. If the target is beyond this distance, the portion of the arrow past the range boundary is greyed out.
+--- @param fromLoc Loc? Optional square the attacker will attack from. The arrow starts there instead of at the attacker, is drawn on this client only, and stays put if the attacker moves.
 --- @return LuaTargetingMarkers
-function dmhub.MarkLineOfSight(attacker, target, pierceSurfaces, arrowColor, maxRange) end
+function dmhub.MarkLineOfSight(attacker, target, pierceSurfaces, arrowColor, maxRange, fromLoc) end
 
 --- Applies the given easing function to t and returns the result. Useful for animation interpolation.
 --- @param t number A value between 0 and 1.

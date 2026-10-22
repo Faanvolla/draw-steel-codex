@@ -3650,6 +3650,60 @@ function UpdateTriggerReactionPanel(options)
     g_triggerReactionPanel:FireEventTree("refreshTriggerReactions", options)
 end
 
+--A Monster AI roll waiting on hero triggers shows this Tip banner notice (text
+--plus a "Dismiss Triggers" button) instead of the dice above. The roll dialog
+--re-posts it every 0.2s while it waits, so a notice not re-posted for a second
+--belongs to a dialog that has gone away and hides itself. The state lives on
+--DrawSteelActionBar, not a local: this file's main chunk is at Lua's 200-local limit.
+--- @type nil|{text: string, callback: fun(), posted: number}
+DrawSteelActionBar._aiTriggerHint = nil
+
+--- @param options nil|{text: string, callback: fun()}
+function UpdateAITriggerHint(options)
+    if options == nil then
+        DrawSteelActionBar._aiTriggerHint = nil
+        return
+    end
+
+    local wasShown = DrawSteelActionBar._aiTriggerHint ~= nil
+    DrawSteelActionBar._aiTriggerHint = { text = options.text, callback = options.callback, posted = dmhub.Time() }
+    if not wasShown then
+        --the banner polls notices at 1Hz; tick it now so the prompt shows at once.
+        local gh = rawget(_G, "GameHud") and GameHud.instance
+        if gh ~= nil then
+            pcall(function() gh:_TipDriverTick() end)
+        end
+    end
+end
+
+Tip = rawget(_G, "Tip") or {}
+Tip.notices = Tip.notices or {}
+Tip.notices["ai-roll-triggers"] = {
+    id = "ai-roll-triggers",
+    --above the Monster AI's "Waiting for..." notice (1000): this is what it waits on.
+    priority = 1050,
+    text = function()
+        local hint = DrawSteelActionBar._aiTriggerHint
+        if hint == nil or dmhub.Time() - hint.posted > 1 then
+            return nil
+        end
+        return hint.text, {
+            action = {
+                text = "Dismiss Triggers",
+                press = function()
+                    --compare callbacks, not tables: the dialog re-posts a new hint
+                    --table every 0.2s, so the one captured here is nearly always stale.
+                    local current = DrawSteelActionBar._aiTriggerHint
+                    if current ~= nil and current.callback == hint.callback then
+                        DrawSteelActionBar._aiTriggerHint = nil
+                        hint.callback()
+                    end
+                end,
+            },
+        }
+    end,
+}
+
 local function CreateTriggerReactionPanel()
     local m_stateBaseline = nil
     local m_state = nil

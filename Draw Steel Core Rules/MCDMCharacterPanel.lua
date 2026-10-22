@@ -7793,7 +7793,10 @@ function TacPanel.Summoner()
             vmargin = 4,
 
             gui.Button{
-                classes = {"sizeM", "editOnly"},
+                --Shown to whoever controls the summoner, even when the panel
+                --is read-only. It used to be hidden on your own hero in
+                --Encounter of the Week.
+                classes = {"sizeM", "collapsed"},
                 halign = "center",
                 width = 175,
                 height = 40,
@@ -7804,11 +7807,11 @@ function TacPanel.Summoner()
                 data = { token = nil },
                 refreshToken = function(element, token)
                     element.data.token = token
+                    element:SetClass("collapsed", token == nil or not token.valid or not token.canControlAsUser)
                 end,
                 press = function(element)
-                    if TacPanel.IsReadOnly(element) then return end
                     local token = element.data.token
-                    if token == nil or not token.valid then return end
+                    if token == nil or not token.valid or not token.canControlAsUser then return end
                     local ability = MCDMUtils.GetStandardAbility("Summoner Sacrifice Minions")
                     if ability == nil then return end
                     local clone = ability:MakeTemporaryClone()
@@ -7888,8 +7891,10 @@ function TacPanel.Summoner()
             },
 
             -- Opens the squad manager modal; the panel itself is read-only.
+            -- Shown only to whoever controls the summoner, like Sacrifice
+            -- Minions above.
             gui.Button{
-                classes = {"sizeS", "editOnly"},
+                classes = {"sizeS", "collapsed"},
                 halign = "center",
                 width = 150,
                 height = 28,
@@ -7898,14 +7903,14 @@ function TacPanel.Summoner()
                 data = { token = nil },
                 refreshToken = function(element, token)
                     element.data.token = token
+                    element:SetClass("collapsed", token == nil or not token.valid or not token.canControlAsUser)
                 end,
                 hover = function(element)
                     element.tooltip = gui.Tooltip("Open the squad manager to reassign, combine, split, rename, recolor, or delete your squads.")
                 end,
                 press = function(element)
-                    if TacPanel.IsReadOnly(element) then return end
                     local token = element.data.token
-                    if token == nil or not token.valid then return end
+                    if token == nil or not token.valid or not token.canControlAsUser then return end
                     DrawSteelMinion.ShowSquadManager(token)
                 end,
             },

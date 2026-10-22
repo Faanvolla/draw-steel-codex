@@ -3930,8 +3930,8 @@ local function IsPractice(ctx)
     return practice
 end
 
---Whether the Hero on show may still be rebuilt in the builder: your own, until
---they win an encounter.
+--Whether the Hero on show may be rebuilt in the builder: any Hero on your
+--roster (the button is disabled while they are away with a party).
 ---@param ctx table
 ---@return boolean
 local function CanEditInBuilder(ctx)
@@ -3939,7 +3939,7 @@ local function CanEditInBuilder(ctx)
     if rawget(_G, "EotwRoster") ~= nil then
         pcall(function() hero = EotwRoster.FindHero(ctx.charid) end)
     end
-    return hero ~= nil and #(hero.completed or {}) == 0
+    return hero ~= nil
 end
 
 --The bar's right-hand side, packed against Close: the away and practice
@@ -3969,8 +3969,8 @@ local function RightContent(ctx)
 
     local dead = d.stamina ~= nil and d.stamina.state == "dead"
     if mine and not dead and not ctx.inGame and ctx.state == "ready" then
-        --the town is where the Hero changes: appearance always, the full
-        --builder only until the Hero's first encounter is won
+        --the town is where the Hero changes: appearance or the full builder,
+        --any time the Hero is home
         local offTip = cond(away ~= nil, "Not while away with a party.", nil)
         right[#right+1] = OwnerButton("Change Appearance", nil, offTip, function()
             local heroid = ctx.charid
@@ -3995,7 +3995,7 @@ local function RightContent(ctx)
             end
         end)
         if CanEditInBuilder(ctx) then
-            right[#right+1] = OwnerButton("Edit in Builder", "Change any choice until this Hero wins an encounter.", offTip, function()
+            right[#right+1] = OwnerButton("Edit in Builder", "Change any of this Hero's choices while they are in Blackbottom.", offTip, function()
                 local heroid = ctx.charid
                 local host = ctx.host
                 ctx.Close()

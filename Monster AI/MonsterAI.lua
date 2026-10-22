@@ -327,6 +327,713 @@ dmhub.Coroutine(function()
         coroutine.yield(0.2)
     end
 end)
+
+--Plan preview ("show me what the monster will do, then wait") ---------------
+--
+--Before each unit of a monster's turn (one move cycle: "run in and Sword Stab",
+--then "run off and Hide"; or a whole minion squad's strike) the host publishes
+--the plan to this shared document and waits. Every client shows it from the
+--document: a ghost of each monster where it will stand, movement arrows there,
+--orange attack arrows from there to its targets, and a preview card in the
+--ability sidebar (who acts, how far they move, whom they target, the ability's
+--card, then Proceed / Play Entire Turn and the "Monsters Pause Before Acting"
+--check). Any player may press the buttons.
+--Not registered for checkpoints: a rewind must never bring a preview back.
+--  seq:       unique per preview
+--  userid:    the host publishing it
+--  actorName: who acts ("Clawfish Squad 1", "Goblin Assassin")
+--  actors:    charids of the acting monsters (their portraits)
+--  attacking: true when the unit attacks ("Advance" rather than "Move")
+--  ability:   {charid, name} the ability whose card to show, or nil
+--  moves:     {charid, to = loc.str, via = nil|loc.str} movement arrows
+--  attacks:   {charid, from = loc.str, target = charid, label, friendly}
+--             attack arrows (green for an ally, orange for an enemy)
+--  targets:   charids of everyone the action affects, for the card
+--  malice:    {cost, pool} for a Malice ability: what it spends of the pool
+--  area:      an area ability's {shape = "Cube", locs = loc.str[], caught =
+--             charids, x, y (the square to centre the camera on)}, or nil
+--  continued: the seq of the preview someone pressed Proceed on
+--  playTurn:  the seq of the preview someone pressed Play Entire Turn on
+local PREVIEW_DOC = "monsterAIPreview"
+
+--"Monsters Pause Before Acting" unchecked (on the preview card or in Settings):
+--no previews for anyone until someone checks it again.
+--  by:  the userid who unchecked it
+--  run: g_runId of that user's client when they did
+--It lapses when that user leaves or restarts the app, so pauses come back on
+--each session. (Games from before this held {queue = guid}; that is ignored.)
+local PREVIEW_OFF_DOC = "monsterAIPreviewOff"
+
+--Tells this run of the app apart from earlier ones (a Lua reload makes a new one too).
+local g_runId = dmhub.GenerateGuid()
+
+--When the AI previews its plans. Read on the host, where the AI runs.
+local g_previewSetting = setting{
+    id = "monsterai:previewplans",
+    description = "Show the Monster AI's plans and wait for Proceed",
+    storage = "preference",
+    default = "eotw",
+    enum = {
+        {value = "eotw", text = "In Encounter of the Week"},
+        {value = "always", text = "Always"},
+        {value = "never", text = "Never"},
+    },
+}
+
+--Type it on the host: the AI runs there, and the setting is that machine's preference.
+Commands.RegisterMacro{
+    name = "aipreview",
+    summary = "show the Monster AI's plans before it acts",
+    doc = "Usage: /aipreview eotw | always | never\nBefore each monster action the AI shows its movement, its targets and the ability, and waits for anyone to press Proceed. eotw (the default) does this only in Encounter of the Week games. Type it on the machine hosting the game.",
+    command = function(str)
+        local arg = string.lower(string.gsub(str or "", "^%s*(.-)%s*$", "%1"))
+        if arg == "on" then
+            arg = "always"
+        elseif arg == "off" then
+            arg = "never"
+        end
+        if arg == "eotw" or arg == "always" or arg == "never" then
+            g_previewSetting:Set(arg)
+        end
+        print(string.format("Monster AI plan previews: %s (now %s here); usage /aipreview eotw|always|never",
+            g_previewSetting:Get(), MonsterAI.PreviewPlansEnabled() and "on" or "off"))
+    end,
+}
+
+--- True when the AI on this client should preview each plan and wait for Proceed.
+--- @return boolean
+function MonsterAI.PreviewPlansEnabled()
+    local value = g_previewSetting:Get()
+    if value == "always" then
+        return true
+    elseif value == "never" then
+        return false
+    end
+    --EncounterOfTheWeek loads after this mod, so look it up when asked.
+    local eotw = rawget(_G, "EncounterOfTheWeekGame")
+    local isEotw = false
+    if eotw ~= nil then
+        pcall(function() isEotw = eotw.IsEotwGame() == true end)
+    end
+    return isEotw
+end
+
+--- True when someone unchecked "Monsters Pause Before Acting" and it still holds:
+--- they are still in the game, in the same run of the app.
+--- @return boolean
+function MonsterAI.PausesOff()
+    local data = mod:GetDocumentSnapshot(PREVIEW_OFF_DOC).data
+    local userid = data.by
+    if type(userid) ~= "string" then
+        return false
+    end
+    if userid == dmhub.userid then
+        return data.run == g_runId
+    end
+    local info = dmhub.GetSessionInfo(userid)
+    return info ~= nil and not info.loggedOut and (info.timeSinceLastContact or 0) < STATUS_ONLINE_SECONDS
+end
+
+--- Turn the pauses off (or back on) for everyone. Off lasts until someone turns
+--- them back on, or this user leaves or restarts.
+--- @param off boolean
+function MonsterAI.SetPausesOff(off)
+    local doc = mod:GetDocumentSnapshot(PREVIEW_OFF_DOC)
+    if off and MonsterAI.PausesOff() then
+        return
+    end
+    if not off and doc.data.by == nil and doc.data.queue == nil then
+        return
+    end
+    doc:BeginChange()
+    doc.data.queue = nil
+    if off then
+        doc.data.by = dmhub.userid
+        doc.data.run = g_runId
+    else
+        doc.data.by = nil
+        doc.data.run = nil
+    end
+    doc:CompleteChange(off and "Monsters stop pausing before acting" or "Monsters pause before acting",
+        {undoable = false})
+end
+
+--The same switch in Settings > General > Encounter of the Week, so it can be
+--changed at any time, not only while a preview card is up. Transient: the
+--shared document is the real value, and the loop below keeps the two in step.
+local g_pauseSetting
+g_pauseSetting = setting{
+    id = "monsterai:pausebeforeacting",
+    description = "Monsters Pause Before Acting",
+    help = "Before each monster action, show what the monster will do and wait for someone to press Proceed. Turning it off turns it off for the whole table until someone turns it back on.",
+    storage = "transient",
+    section = "EncounterOfTheWeek",
+    editor = "check",
+    default = true,
+    onchange = function()
+        MonsterAI.SetPausesOff(g_pauseSetting:Get() ~= true)
+    end,
+}
+
+dmhub.Coroutine(function()
+    while not mod.unloaded do
+        local ok, err = pcall(function()
+            --our own "off" from before a restart: pauses come back this session.
+            local data = mod:GetDocumentSnapshot(PREVIEW_OFF_DOC).data
+            if data.by == dmhub.userid and data.run ~= g_runId then
+                MonsterAI.SetPausesOff(false)
+            end
+            local on = not MonsterAI.PausesOff()
+            if (g_pauseSetting:Get() == true) ~= on then
+                g_pauseSetting:Set(on)
+            end
+        end)
+        if not ok then
+            print("MonsterAI:: pause setting sync failed:", err)
+        end
+        coroutine.yield(0.2)
+    end
+end)
+
+--Play Entire Turn: the rest of the current initiative entry's turn plays with
+--no pauses. Kept on the host, keyed by the turn, so the next turn pauses again.
+local g_playTurnKey = nil
+
+local function CurrentTurnKey()
+    local q = dmhub.initiativeQueue
+    if q == nil or q.hidden then
+        return nil
+    end
+    return string.format("%s:%s:%s", tostring(q.guid), tostring(q.round), tostring(q:CurrentInitiativeId()))
+end
+
+--- True when the AI should stop and preview its next plan: it runs as the
+--- background process on this client, previews are enabled, nobody turned the
+--- pauses off, and this turn is not being played through.
+--- Checked before a preview is built, because building one costs planning work.
+--- @return boolean
+function MonsterAI.PlanPreviewsOn()
+    if not AIRunningHere() or not MonsterAI.PreviewPlansEnabled() or MonsterAI.PausesOff() then
+        return false
+    end
+    return g_playTurnKey == nil or g_playTurnKey ~= CurrentTurnKey()
+end
+
+--- Host: play the rest of the current turn without pausing (Play Entire Turn).
+function MonsterAI.PlayRestOfTurnWithoutPauses()
+    g_playTurnKey = CurrentTurnKey()
+end
+
+--- Take down whatever preview this client published. Safe to call any time.
+function MonsterAI.ClearPlanPreview()
+    local doc = mod:GetDocumentSnapshot(PREVIEW_DOC)
+    if doc.data.seq == nil then
+        return
+    end
+    doc:BeginChange()
+    for k in pairs(doc.data) do
+        doc.data[k] = nil
+    end
+    doc:CompleteChange("Monster AI plan preview cleared", {undoable = false})
+end
+
+--True when the players cannot see the token, so previewing it would give it away.
+local function HiddenFromPlayers(token)
+    if token == nil or not token.valid or token.properties == nil then
+        return true
+    end
+    if token.invisibleToPlayers then
+        return true
+    end
+    local hidden = false
+    pcall(function() hidden = token.properties:HasNamedCondition("Hidden") end)
+    return hidden
+end
+
+local function PreviewName(token)
+    local name = nil
+    if token ~= nil and token.valid then
+        name = token.name
+        if (type(name) ~= "string" or name == "") and token.properties ~= nil then
+            name = token.properties:try_get("monster_type")
+        end
+    end
+    if type(name) ~= "string" or name == "" then
+        return "A monster"
+    end
+    return name
+end
+
+--Plans hold their targets as a token, {token = t, charge = loc}, or a list of
+--either. Returns a list of {token, charge}.
+local function PreviewTargets(value)
+    local result = {}
+    local function Add(entry)
+        if type(entry) == "userdata" then
+            result[#result+1] = {token = entry}
+        elseif type(entry) == "table" and type(entry.token) == "userdata" then
+            result[#result+1] = {token = entry.token, charge = entry.charge}
+        end
+    end
+    if type(value) == "table" and value.token == nil then
+        for _,entry in ipairs(value) do
+            Add(entry)
+        end
+    else
+        Add(value)
+    end
+    return result
+end
+
+--Answer the preview on screen: Proceed, or Play Entire Turn (playTurn).
+local function AnswerPlanPreview(seq, playTurn)
+    local doc = mod:GetDocumentSnapshot(PREVIEW_DOC)
+    if doc.data.seq ~= seq or doc.data.continued == seq then
+        return
+    end
+    doc:BeginChange()
+    doc.data.continued = seq
+    if playTurn then
+        doc.data.playTurn = seq
+    end
+    doc:CompleteChange(playTurn and "Play the monsters' turn" or "Proceed with the monster's action",
+        {undoable = false})
+end
+
+--The preview that should be on screen now, or nil. A preview left behind by a
+--host whose AI has stopped (or crashed) is ignored.
+local function LivePlanPreview()
+    local data = mod:GetDocumentSnapshot(PREVIEW_DOC).data
+    if type(data.seq) ~= "string" or data.continued == data.seq then
+        return nil
+    end
+    if not MonsterAI.IsAIRunningAnywhere() then
+        return nil
+    end
+    return data
+end
+
+--The preview card -------------------------------------------------------------
+--Sits where the ability card appears when the cast starts (the ability sidebar
+--on the right), at that card's width and in the same card style, so the
+--preview reads as the top of the ability card.
+local PREVIEW_CARD_WIDTH = 346
+
+local g_previewStyles = {
+    {
+        selectors = {"aiPreviewCard"},
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        bgcolor = "@bgAlt",
+        border = 1,
+        borderColor = "@border",
+        cornerRadius = 6,
+        vmargin = 4,
+        hpad = 14,
+        vpad = 10,
+        borderBox = true,
+    },
+    {
+        selectors = {"aiPreviewRow"},
+        width = "100%",
+        height = "auto",
+        flow = "horizontal",
+        vmargin = 4,
+    },
+    {
+        selectors = {"label", "aiPreviewName"},
+        fontFace = "Newzald",
+        fontSize = 22,
+        color = "@fgStrong",
+        --not "100% available": a hover relayout measured the label's height at a
+        --near-zero width (nine wrapped lines), the card grew under the cursor,
+        --the button slid away and unhovered, and the card flickered.
+        width = "auto",
+        maxWidth = 180,
+        height = "auto",
+        valign = "center",
+        lmargin = 8,
+        minFontSize = 14,
+    },
+    {
+        selectors = {"label", "aiPreviewKey"},
+        fontSize = 12,
+        color = "@fgMuted",
+        width = 80,
+        height = "auto",
+        valign = "center",
+        bold = true,
+    },
+    {
+        selectors = {"label", "aiPreviewValue"},
+        fontSize = 16,
+        color = "@fg",
+        width = "100%-80",
+        height = "auto",
+        valign = "center",
+    },
+}
+
+--Small token portraits in a wrapping row, named in their tooltips.
+local function PreviewPortraits(charids, size)
+    local children = {}
+    for _,charid in ipairs(charids) do
+        local token = dmhub.GetTokenById(charid)
+        if token ~= nil and token.valid then
+            local name = token.canLocalPlayerSeeName and token.name or nil
+            local options = {
+                width = size,
+                height = size,
+                rmargin = 4,
+                bmargin = 2,
+                valign = "center",
+            }
+            --set at creation: this runs in the preview coroutine, where writing
+            --image.events afterwards would go through LuaStringMap's metamethods.
+            if type(name) == "string" and name ~= "" then
+                options.hover = function(element)
+                    gui.Tooltip(name)(element)
+                end
+            end
+            children[#children+1] = gui.CreateTokenImage(token, options)
+        end
+    end
+    return children
+end
+
+--"Advance 4/3/1/1 spaces" from each arrow's path length, in squares.
+local function PreviewMovementText(data, steps)
+    if #steps == 0 then
+        return data.attacking and "None: strikes from where it stands" or "None"
+    end
+    local counts = {}
+    local total = 0
+    for _,n in ipairs(steps) do
+        counts[#counts+1] = tostring(n)
+        total = total + n
+    end
+    local verb = data.attacking and "Advance" or "Move"
+    local unit = (#steps == 1 and total == 1) and "space" or "spaces"
+    return string.format("%s %s %s", verb, table.concat(counts, "/"), unit)
+end
+
+--The ability's own card, as the sidebar shows it when the cast begins.
+local function PreviewAbilityCard(abilityInfo)
+    if type(abilityInfo) ~= "table" or type(abilityInfo.charid) ~= "string" then
+        return nil
+    end
+    local token = dmhub.GetTokenById(abilityInfo.charid)
+    if token == nil or not token.valid or token.properties == nil then
+        return nil
+    end
+    for _,ability in ipairs(token.properties:GetActivatedAbilities()) do
+        if ability.name == abilityInfo.name then
+            local ok, card = pcall(CreateAbilityTooltip, ability:GetActiveVariation(token), {
+                token = token,
+                width = PREVIEW_CARD_WIDTH,
+                maxHeight = math.max(200, dmhub.screenDimensionsBelowTitlebar.y - 420),
+            })
+            if ok and card ~= nil then
+                card:MakeNonInteractiveRecursive()
+                return card
+            end
+            return nil
+        end
+    end
+    return nil
+end
+
+local function BuildPlanPreviewPanel(data, steps)
+    local seq = data.seq
+
+    --Targets, in order, once each: the full list when the host sent one (it
+    --includes a caster acting on itself), else the attack arrows' targets.
+    local targetIds = {}
+    local seen = {}
+    for _,charid in ipairs(type(data.targets) == "table" and data.targets or {}) do
+        if type(charid) == "string" and not seen[charid] then
+            seen[charid] = true
+            targetIds[#targetIds+1] = charid
+        end
+    end
+    for _,attack in ipairs(data.attacks or {}) do
+        if type(attack.target) == "string" and not seen[attack.target] then
+            seen[attack.target] = true
+            targetIds[#targetIds+1] = attack.target
+        end
+    end
+
+    local infoRows = {
+        --who acts
+        gui.Panel{
+            classes = {"aiPreviewRow"},
+            gui.Panel{
+                width = "auto",
+                height = "auto",
+                maxWidth = 150,
+                flow = "horizontal",
+                wrap = true,
+                valign = "center",
+                children = PreviewPortraits(data.actors or {}, 32),
+            },
+            gui.Label{
+                classes = {"aiPreviewName"},
+                text = data.actorName or "Monster",
+            },
+        },
+    }
+    --a Malice ability that moves no one has no movement to describe.
+    if #steps > 0 or type(data.malice) ~= "table" then
+        infoRows[#infoRows+1] = gui.Panel{
+            classes = {"aiPreviewRow"},
+            gui.Label{classes = {"aiPreviewKey"}, text = "MOVEMENT"},
+            gui.Label{classes = {"aiPreviewValue"}, text = PreviewMovementText(data, steps)},
+        }
+    end
+    local malice = data.malice
+    if type(malice) == "table" and type(malice.cost) == "number" then
+        local text = string.format("Spends %d", malice.cost)
+        if type(malice.pool) == "number" then
+            text = string.format("Spends %d (%d left)", malice.cost, math.max(0, malice.pool - malice.cost))
+        end
+        infoRows[#infoRows+1] = gui.Panel{
+            classes = {"aiPreviewRow"},
+            gui.Label{classes = {"aiPreviewKey"}, text = "MALICE"},
+            gui.Label{classes = {"aiPreviewValue"}, text = text},
+        }
+    end
+    local area = data.area
+    if type(area) == "table" and type(area.locs) == "table" then
+        --"Cube target": click it to look at the area; then whoever it catches.
+        local centerx, centery = area.x, area.y
+        local children = {
+            gui.Panel{
+                classes = {"bordered", "hoverable"},
+                bgimage = true,
+                width = "auto",
+                height = "auto",
+                hpad = 8,
+                vpad = 3,
+                rmargin = 6,
+                bmargin = 2,
+                borderBox = true,
+                valign = "center",
+                click = function()
+                    if type(centerx) == "number" and type(centery) == "number" then
+                        dmhub.CenterOnLoc{x = centerx, y = centery, smooth = true}
+                    end
+                end,
+                gui.Label{
+                    classes = {"aiPreviewValue"},
+                    width = "auto",
+                    text = string.format("%s target", area.shape or "Area"),
+                },
+            },
+        }
+        for _,portrait in ipairs(PreviewPortraits(area.caught or {}, 40)) do
+            children[#children+1] = portrait
+        end
+        infoRows[#infoRows+1] = gui.Panel{
+            classes = {"aiPreviewRow"},
+            gui.Label{classes = {"aiPreviewKey"}, text = "TARGETS"},
+            gui.Panel{
+                width = "100%-80",
+                height = "auto",
+                flow = "horizontal",
+                wrap = true,
+                valign = "center",
+                children = children,
+            },
+        }
+    elseif #targetIds > 0 then
+        infoRows[#infoRows+1] = gui.Panel{
+            classes = {"aiPreviewRow"},
+            gui.Label{classes = {"aiPreviewKey"}, text = "TARGETS"},
+            gui.Panel{
+                width = "100%-80",
+                height = "auto",
+                flow = "horizontal",
+                wrap = true,
+                valign = "center",
+                children = PreviewPortraits(targetIds, #targetIds > 8 and 28 or 40),
+            },
+        }
+    end
+
+    return gui.Panel{
+        styles = ThemeEngine.MergeStyles(g_previewStyles),
+        width = PREVIEW_CARD_WIDTH,
+        height = "auto",
+        flow = "vertical",
+        halign = "center",
+        valign = "center",
+
+        gui.Panel{
+            classes = {"aiPreviewCard"},
+            bgimage = "panels/square.png",
+            children = infoRows,
+        },
+
+        PreviewAbilityCard(data.ability),
+
+        gui.Panel{
+            classes = {"aiPreviewCard"},
+            bgimage = "panels/square.png",
+            gui.Check{
+                text = "Monsters Pause Before Acting",
+                value = true,
+                width = "100%",
+                change = function(element)
+                    if not element.value then
+                        --off for everyone until someone checks it again (here or in
+                        --Settings); this action goes ahead too.
+                        MonsterAI.SetPausesOff(true)
+                        AnswerPlanPreview(seq, false)
+                    end
+                end,
+            },
+            gui.Panel{
+                classes = {"aiPreviewRow"},
+                tmargin = 8,
+                gui.Button{
+                    classes = {"sizeM"},
+                    text = "Proceed",
+                    halign = "left",
+                    click = function()
+                        AnswerPlanPreview(seq, false)
+                    end,
+                },
+                gui.Button{
+                    classes = {"sizeM"},
+                    text = "Play Entire Turn",
+                    halign = "right",
+                    click = function()
+                        AnswerPlanPreview(seq, true)
+                    end,
+                },
+            },
+        },
+    }
+end
+
+--What this client shows for the current preview, so it can take it down.
+local g_previewDrawn = {seq = nil, markers = {}, panel = nil}
+
+local function ClearDrawnPlanPreview()
+    for _,marker in ipairs(g_previewDrawn.markers) do
+        pcall(function() marker:Destroy() end)
+    end
+    local panel = g_previewDrawn.panel
+    if panel ~= nil and panel.valid then
+        panel:DestroySelf()
+    end
+    g_previewDrawn = {seq = nil, markers = {}, panel = nil}
+end
+
+local function DrawPlanPreview(data)
+    local steps = {}
+    for _,move in ipairs(data.moves or {}) do
+        local token = dmhub.GetTokenById(move.charid)
+        if token ~= nil and token.valid and type(move.to) == "string" then
+            local to = core.Loc(move.to)
+            --separate: each monster gets an arrow of its own (a whole squad shows
+            --at once) instead of the one shared arrow a drag uses.
+            local options = {separate = true}
+            if type(move.via) == "string" then
+                options.waypoints = {core.Loc(move.via)}
+            end
+            pcall(function()
+                local result = token:MarkMovementArrow(to, options)
+                if result ~= nil then
+                    if result.marker ~= nil then
+                        g_previewDrawn.markers[#g_previewDrawn.markers+1] = result.marker
+                    end
+                    if result.path ~= nil and result.path.numSteps > 0 then
+                        steps[#steps+1] = result.path.numSteps
+                    end
+                end
+            end)
+            --a ghost of the monster where it will stand when it acts.
+            pcall(function()
+                local ghost = token:CreateGhost(to)
+                if ghost ~= nil then
+                    g_previewDrawn.markers[#g_previewDrawn.markers+1] = ghost
+                end
+            end)
+        end
+    end
+    for _,attack in ipairs(data.attacks or {}) do
+        local attacker = dmhub.GetTokenById(attack.charid)
+        local target = dmhub.GetTokenById(attack.target)
+        if attacker ~= nil and attacker.valid and target ~= nil and target.valid then
+            pcall(function()
+                local fromLoc = type(attack.from) == "string" and core.Loc(attack.from) or nil
+                --orange, so attacks read apart from the red movement arrows;
+                --green for an ally (a buff or a heal).
+                local marker = dmhub.MarkLineOfSight(attacker, target,
+                    attacker.properties:GetPierceWalls(), attack.friendly and "green" or "orange", nil, fromLoc)
+                if marker ~= nil then
+                    if type(attack.label) == "string" and attack.label ~= "" then
+                        marker:AddLabel(attack.label, attack.friendly and "buff" or "debuff")
+                    end
+                    g_previewDrawn.markers[#g_previewDrawn.markers+1] = marker
+                end
+            end)
+        end
+    end
+
+    --an area ability's area, outlined in the attack arrows' orange.
+    local area = data.area
+    if type(area) == "table" and type(area.locs) == "table" and #area.locs > 0 then
+        pcall(function()
+            local locs = {}
+            for _,str in ipairs(area.locs) do
+                locs[#locs+1] = core.Loc(str)
+            end
+            local marker = dmhub.MarkLocs{locs = locs, color = "#ff9a1a", style = "solid"}
+            if marker ~= nil then
+                g_previewDrawn.markers[#g_previewDrawn.markers+1] = marker
+            end
+        end)
+    end
+
+    --the card, in the ability sidebar.
+    local gh = rawget(GameHud, "instance")
+    local host = gh ~= nil and rawget(gh, "abilityDisplayPanel") or nil
+    if host ~= nil and host.valid then
+        local ok, panel = pcall(BuildPlanPreviewPanel, data, steps)
+        if ok and panel ~= nil then
+            host:AddChild(panel)
+            g_previewDrawn.panel = panel
+        elseif not ok then
+            print("MonsterAI:: plan preview card failed:", panel)
+        end
+    end
+end
+
+--Every client, the host included, shows the preview from the document.
+dmhub.Coroutine(function()
+    while not mod.unloaded do
+        local ok, err = pcall(function()
+            local data = LivePlanPreview()
+            local seq = data ~= nil and data.seq or nil
+            if seq ~= g_previewDrawn.seq then
+                ClearDrawnPlanPreview()
+                if data ~= nil then
+                    g_previewDrawn.seq = seq
+                    DrawPlanPreview(data)
+                end
+            end
+        end)
+        if not ok then
+            print("MonsterAI:: plan preview draw failed:", err)
+        end
+        coroutine.yield(0.1)
+    end
+    ClearDrawnPlanPreview()
+end)
+
 MonsterAI.maliceAbilityMinimumScore = 0.65
 MonsterAI.maliceAbilityRepeatPenalty = 0.20
 MonsterAI.areaTelegraphBlinks = 3
@@ -2105,12 +2812,24 @@ function MonsterAI:FindSquadActionToken()
     for _,member in ipairs(self.squadMembers) do
         if self.TokenIsLiveCombatant(member.token) then
             for _,ability in ipairs(member.token.properties:GetActivatedAbilities()) do
-                if ability.categorization == "Signature Ability" and ability:CanAfford(member.token) then
+                if MonsterAI.IsMinionSignatureAbility(ability) and ability:CanAfford(member.token) then
                     return member.token
                 end
             end
         end
     end
+end
+
+--- True when a minion squad may use this ability as its signature: it is tagged
+--- "Signature Ability" and costs a main action, as every Draw Steel signature does.
+--- The cost check keeps out maneuvers mis-tagged as signatures, such as the Quick
+--- Snack a pollywog's aura grants its allies, which minions used to cast at heroes
+--- once their real signature had spent the main action.
+--- @param ability ActivatedAbility
+--- @return boolean
+function MonsterAI.IsMinionSignatureAbility(ability)
+    return ability.categorization == "Signature Ability"
+        and ability:ActionResource() == CharacterResource.actionResourceId
 end
 
 --The turn can move to another entry while the AI is mid-turn (a turn-grab
@@ -2155,6 +2874,10 @@ function MonsterAI:PlayTurnCoroutine(initiativeid)
 
         local processedSquads = {}
         for i=1,#tokens do
+            --stopped already: the start-of-turn Malice preview was abandoned.
+            if self:try_get("_tmp_abortTurn") ~= nil then
+                break
+            end
             if not TurnStillCurrent(initiativeid) then
                 self._tmp_abortTurn = g_abortTurnTaken
                 break
@@ -2928,6 +3651,14 @@ function MonsterAI:HandleMaliceAbilityStartOfTurnInternal(initiativeid, actingTo
     })
     self:FocusCameraOnActor(caster)
     self:SetupCombatants(caster, queue)
+    if self.PlanPreviewsOn() and not self:AwaitPlanPreview(
+        self:BuildMalicePreview(caster, bestCandidate.ability, bestCandidate.scoringInfo)) then
+        self:LogDecision("MALICE FINISHED", {
+            ability = bestCandidate.ability.name,
+            result = "not used: the turn stopped during its preview",
+        })
+        return false
+    end
     local execute = registration.execute or function(_, ai, token, scoringInfo, ability, context)
         ai:ExecuteAbility(token, ability)
     end
@@ -3960,6 +4691,14 @@ function MonsterAI:ExecuteSquadStrike(ability)
             end
         end
 
+        --The whole squad's plan is shown before anyone moves; members planned
+        --again in round 2 (after the squad moved) go without another pause.
+        if round == 1 and (#plans > 0 or #advancers > 0) and self.PlanPreviewsOn() then
+            if not self:AwaitPlanPreview(self:BuildSquadPreview(plans, advancers, ability)) then
+                return false
+            end
+        end
+
         if #plans > 0 then
             if not announced then
                 announced = true
@@ -3972,7 +4711,7 @@ function MonsterAI:ExecuteSquadStrike(ability)
         end
 
         for _,memberToken in ipairs(advancers) do
-            advanced = self:ExecuteAdvanceFallback(memberToken) or advanced
+            advanced = self:ExecuteAdvanceFallback(memberToken, true) or advanced
         end
     end
     RefreshAssignments()
@@ -5199,7 +5938,9 @@ function MonsterAI:FindAdvancePlan(token, paths)
     return best
 end
 
-function MonsterAI:ExecuteAdvanceFallback(token)
+--previewed: the caller has already shown this advance (a squad strike shows its
+--advancing members with the rest of the squad), so it is not previewed again.
+function MonsterAI:ExecuteAdvanceFallback(token, previewed)
     local mover = self:GetMovementToken(token)
     local plan = self:FindAdvancePlan(token, self:CalculateRemainingMovementPaths(token))
     local advance = nil
@@ -5210,6 +5951,15 @@ function MonsterAI:ExecuteAdvanceFallback(token)
             self:CalculateMovementPaths(token, math.max(0, mover.properties:CurrentMovementSpeed())*10))
     end
     if plan == nil then return false end
+
+    if not previewed and self.PlanPreviewsOn() then
+        --an advance attacks no one, whatever Use Move Action's targeting says.
+        local preview = self:BuildPlanPreview(token, {advance}, {loc = plan.loc}, function() return {} end)
+        preview.title = string.format("%s advances toward %s", PreviewName(token), PreviewName(plan.enemy))
+        if not self:AwaitPlanPreview(preview) then
+            return false
+        end
+    end
 
     self:LogDecision("ADVANCE FALLBACK", {
         actor = self.TokenLogName(token),
@@ -5241,6 +5991,497 @@ function MonsterAI:ExecuteAdvanceFallback(token)
     end
     self.Sleep(0.5)
     return mover.valid and mover.loc.str ~= origin
+end
+
+--Plan preview, host side --------------------------------------------------
+--Each unit of a turn is described as a preview before it runs, then
+--AwaitPlanPreview shows it to the table (see PREVIEW_DOC) and waits for
+--Proceed. A preview is:
+--  title:   banner text
+--  actor:   the token whose plan it is (its card is shown; hidden actors are not previewed)
+--  ability: the ability whose card to show, or nil
+--  moves:   {token, to = Loc, via = nil|Loc} movement arrows
+--  attacks: {token, from = Loc, target = token, label} attack arrows
+--  area, areaCenter: an area ability's LuaShape and the square it is aimed at
+
+--- Describe one move: the actor goes to plan.loc (unless already there) and
+--- uses the last of `abilities` on the plan's targets. A plan that names no
+--- targets gets the ones the standard execute picks after moving, or the ones
+--- pickTargets(token, ability, loc) returns.
+--- @param token CharacterToken
+--- @param abilities nil|ActivatedAbility[]
+--- @param plan nil|table the move's scoring info
+--- @param pickTargets nil|fun(token: CharacterToken, ability: ActivatedAbility, loc: Loc): table|nil nil = use the default search
+--- @return table preview
+function MonsterAI:BuildPlanPreview(token, abilities, plan, pickTargets)
+    abilities = abilities or {}
+    local ability = abilities[#abilities]
+    local mover = self:GetMovementToken(token) or token
+    local planLoc = plan ~= nil and plan.loc or nil
+    local moveTo = planLoc
+    if moveTo ~= nil and self:MovementTokenIsAtLoc(token, moveTo) then
+        moveTo = nil
+    end
+
+    local targets = {}
+    if plan ~= nil then
+        targets = PreviewTargets(plan.targets)
+        if #targets == 0 then
+            targets = PreviewTargets(plan.target)
+        end
+    end
+    if #targets == 0 and ability ~= nil then
+        local from = planLoc or mover.loc
+        local picked = pickTargets ~= nil and pickTargets(token, ability, from) or nil
+        if picked ~= nil then
+            targets = PreviewTargets(picked)
+        elseif ability.targetType == "target" then
+            local candidates = self:FindValidTargetsOfStrike(token, ability, from)
+            for i=1,math.min(ability:GetNumTargets(token), #candidates) do
+                targets[#targets+1] = {token = candidates[i].token, charge = candidates[i].charge}
+            end
+        elseif ability.targetType == "all" then
+            local range = ability:GetRange(token.properties)
+            for _,enemy in ipairs(self.enemyTokens or {}) do
+                if self.TokenIsLiveCombatant(enemy)
+                    and self:TargetDistanceFromLoc(token, enemy, from) <= range then
+                    targets[#targets+1] = {token = enemy}
+                end
+            end
+        end
+    end
+
+    --A charge moves on from the planned square as part of the ability.
+    local chargeLoc = nil
+    for _,target in ipairs(targets) do
+        if target.charge ~= nil then
+            chargeLoc = target.charge
+            break
+        end
+    end
+
+    local preview = {actor = token, actors = {token}, actorName = PreviewName(token),
+        ability = ability, moves = {}, attacks = {}, targets = {}}
+    if chargeLoc ~= nil then
+        preview.moves[1] = {token = mover, to = chargeLoc, via = moveTo}
+    elseif moveTo ~= nil then
+        preview.moves[1] = {token = mover, to = moveTo}
+    end
+
+    --An area ability shows its area, and whoever is caught in it, instead of
+    --an attack arrow per target.
+    if ability ~= nil then
+        preview.area, preview.areaCenter = self:BuildPlanArea(token, ability, plan)
+        if preview.area ~= nil then
+            targets = {}
+        end
+    end
+
+    local from = chargeLoc or planLoc or mover.loc
+    local names = {}
+    for _,target in ipairs(targets) do
+        if self.TokenIsLiveCombatant(target.token) then
+            if target.token.charid ~= token.charid then
+                preview.attacks[#preview.attacks+1] = {
+                    token = token,
+                    from = from,
+                    target = target.token,
+                    label = ability ~= nil and ability.name or nil,
+                    friendly = dmhub.TokensAreFriendly(token, target.token),
+                }
+            end
+            preview.targets[#preview.targets+1] = target.token
+            names[#names+1] = PreviewName(target.token)
+        end
+    end
+
+    local abilityNames = {}
+    for _,a in ipairs(abilities) do
+        abilityNames[#abilityNames+1] = a.name
+    end
+    local title = PreviewName(token)
+    if #abilityNames > 0 then
+        title = title .. ": " .. table.concat(abilityNames, " + ")
+    elseif #preview.moves > 0 then
+        title = title .. " moves"
+    end
+    if #names > 0 then
+        title = title .. " on " .. table.concat(names, ", ")
+    end
+    preview.title = title
+    return preview
+end
+
+--Area target types the preview can rebuild, and the engine shape for each.
+local g_previewAreaShapes = {cube = "cube", line = "line", cone = "cone", sphere = "sphere", cylinder = "cylinder"}
+
+--A plan field that is already the area (a LuaShape), or nil.
+local function PlanShapeField(plan)
+    for _,key in ipairs({"area", "targetArea"}) do
+        local value = plan[key]
+        if type(value) == "userdata" then
+            --only a LuaShape has locations; anything else fails the read below.
+            ---@cast value LuaShape
+            local ok, locs = pcall(function() return value.locations end)
+            if ok and type(locs) == "table" then
+                return value
+            end
+        end
+    end
+    return nil
+end
+
+--The square a plan aims its area at: the cube centre or the line's end.
+local function PlanAreaPoint(plan)
+    local point = plan.center or plan.targetLoc
+    if point == nil and type(plan.cube) == "table" then
+        point = plan.cube.loc
+    end
+    if point == nil and type(plan.line) == "table" then
+        point = plan.line.targetLoc
+    end
+    return point
+end
+
+--- The area an area ability in this plan will cover, or nil when the ability
+--- is not a placed area or the plan does not say where it goes. Built the way
+--- the AI's own cube and line planners build it, from where the caster will
+--- stand (plan.locOverride, else plan.loc) toward the square the plan aims at.
+--- @param token CharacterToken
+--- @param ability ActivatedAbility
+--- @param plan nil|table
+--- @return nil|LuaShape area
+--- @return nil|Loc center the square it is aimed at, when the plan names one
+function MonsterAI:BuildPlanArea(token, ability, plan)
+    local shape = g_previewAreaShapes[ability.targetType]
+    if shape == nil or plan == nil then
+        return nil
+    end
+    local point = PlanAreaPoint(plan)
+    local area = PlanShapeField(plan)
+    if area ~= nil then
+        return area, point
+    end
+    if point == nil then
+        return nil
+    end
+    local casterLoc = plan.locOverride or plan.loc
+    local altitudeLoc = shape == "cube" and point.withGroundAltitude or (casterLoc or token.loc)
+    local ok, result = pcall(dmhub.CalculateShape, {
+        shape = shape,
+        targetPoint = token:PosAtLoc(point),
+        token = token,
+        range = ability:GetRange(token.properties),
+        radius = ability:GetRadius(token.properties),
+        locOverride = casterLoc,
+        checklos = shape == "line",
+        altitude = altitudeLoc.altitude * dmhub.unitsPerSquare,
+    })
+    if ok and result ~= nil then
+        return result, point
+    end
+    return nil
+end
+
+--- Describe a start-of-turn Malice ability: its card, whom it affects, and
+--- the Malice it spends. A plan that names its targets or its area shows
+--- those; otherwise the targets are the ones the cast picks when it is given
+--- none: everyone the ability's filter accepts (within range for a burst),
+--- or the caster for a self ability.
+--- @param caster CharacterToken
+--- @param ability ActivatedAbility
+--- @param scoringInfo nil|table
+--- @return table preview
+function MonsterAI:BuildMalicePreview(caster, ability, scoringInfo)
+    local plan = type(scoringInfo) == "table" and scoringInfo or nil
+    local preview = self:BuildPlanPreview(caster, {ability}, plan, function(token, castAbility)
+        if castAbility.targetType == "self" then
+            return {{token = token}}
+        end
+        if castAbility.targetType ~= "all" and castAbility.targetType ~= "map" then
+            return nil
+        end
+        local range = nil
+        if castAbility.targetType == "all" then
+            range = castAbility:GetRange(token.properties)
+        end
+        local result = {}
+        for _,other in ipairs(dmhub.allTokens) do
+            if self.TokenIsLiveCombatant(other)
+                and castAbility:TargetPassesFilter(token, other, {mode = 1})
+                and (range == nil or MonsterAI.TargetDistance(other, token) <= range) then
+                result[#result+1] = {token = other}
+            end
+        end
+        return result
+    end)
+    preview.malice = {
+        cost = SynthesizedMaliceCost(caster, ability),
+        pool = CharacterResource.GetMalice(),
+    }
+    return preview
+end
+
+--- Describe a minion squad's strike: every member's move into position (and
+--- charge), each member's attack, and where the members that cannot reach a
+--- target will advance to.
+--- @param plans table[] the squad's member plans ({token, ability, option = {loc, token, charge}})
+--- @param advancers CharacterToken[] members that will advance instead
+--- @param ability ActivatedAbility the squad's signature ability
+--- @return table preview
+function MonsterAI:BuildSquadPreview(plans, advancers, ability)
+    local preview = {ability = ability, actors = {}, moves = {}, attacks = {}}
+    local names = {}
+    local named = {}
+    for _,plan in ipairs(plans) do
+        local member = plan.token
+        preview.actor = preview.actor or member
+        preview.actors[#preview.actors+1] = member
+        local mover = self:GetMovementToken(member) or member
+        local loc = plan.option.loc
+        local moveTo = loc
+        if moveTo ~= nil and self:MovementTokenIsAtLoc(member, moveTo) then
+            moveTo = nil
+        end
+        local charge = plan.option.charge
+        if charge ~= nil then
+            preview.moves[#preview.moves+1] = {token = mover, to = charge, via = moveTo}
+        elseif moveTo ~= nil then
+            preview.moves[#preview.moves+1] = {token = mover, to = moveTo}
+        end
+        local target = plan.option.token
+        preview.attacks[#preview.attacks+1] = {
+            token = member,
+            from = charge or loc or mover.loc,
+            target = target,
+            label = (plan.ability or ability).name,
+        }
+        if target ~= nil and target.valid and not named[target.charid] then
+            named[target.charid] = true
+            names[#names+1] = PreviewName(target)
+        end
+    end
+    for _,member in ipairs(advancers) do
+        preview.actor = preview.actor or member
+        preview.actors[#preview.actors+1] = member
+        pcall(function()
+            local advancePlan = self:FindAdvancePlan(member, self:CalculateRemainingMovementPaths(member))
+            if advancePlan ~= nil then
+                preview.moves[#preview.moves+1] = {token = self:GetMovementToken(member) or member, to = advancePlan.loc}
+            end
+        end)
+    end
+
+    local kind = nil
+    if preview.actor ~= nil and preview.actor.properties ~= nil then
+        kind = preview.actor.properties:try_get("monster_type")
+    end
+    if type(kind) ~= "string" or kind == "" then
+        kind = PreviewName(preview.actor)
+    end
+    --the squad's own name ("Clawfish Squad 1"), as its Stamina bar shows it.
+    local squadName = nil
+    if preview.actor ~= nil and preview.actor.properties ~= nil then
+        pcall(function() squadName = preview.actor.properties:MinionSquad() end)
+    end
+    preview.actorName = type(squadName) == "string" and squadName or (kind .. " squad")
+    if #plans == 0 then
+        preview.title = string.format("%s squad advances", kind)
+    else
+        preview.title = string.format("%s squad: %s", kind, ability.name)
+        if #names > 0 then
+            preview.title = preview.title .. " on " .. table.concat(names, ", ")
+        end
+    end
+    return preview
+end
+
+--- The area for the preview document: its squares, the creatures caught in
+--- it that the players can see, a square to centre the camera on, and the
+--- ability's shape name ("Cube").
+--- @param area LuaShape
+--- @param center nil|Loc the square the area is aimed at (else the middle of its squares)
+--- @param ability nil|ActivatedAbility
+--- @return table
+function MonsterAI:PlanAreaDocument(area, center, ability)
+    local locs = {}
+    local sumx, sumy = 0, 0
+    for _,loc in ipairs(area.locations or {}) do
+        locs[#locs+1] = loc.str
+        sumx = sumx + loc.x
+        sumy = sumy + loc.y
+    end
+    local caught = {}
+    pcall(function()
+        for _,other in pairs(dmhub.tokenInfo.TokensInShape(area)) do
+            if self.TokenIsLiveCombatant(other) and not HiddenFromPlayers(other) then
+                caught[#caught+1] = other.charid
+            end
+        end
+    end)
+    local centerx, centery = nil, nil
+    if center ~= nil then
+        centerx, centery = center.x, center.y
+    elseif #locs > 0 then
+        centerx, centery = math.floor(sumx/#locs + 0.5), math.floor(sumy/#locs + 0.5)
+    end
+    local shapeName = ability ~= nil and tostring(ability.targetType) or "area"
+    return {
+        shape = shapeName:sub(1, 1):upper() .. shapeName:sub(2),
+        locs = locs,
+        caught = caught,
+        x = centerx,
+        y = centery,
+    }
+end
+
+--- Show `preview` to the table and wait until someone presses Proceed.
+--- Returns true to go ahead, which is immediate when previews are off
+--- (PlanPreviewsOn) or nothing the players can see would be shown.
+--- Returns false when the AI stopped or the turn moved on while waiting; the
+--- turn is then marked aborted so it ends without advancing initiative.
+--- @param preview nil|table see BuildPlanPreview
+--- @return boolean
+function MonsterAI:AwaitPlanPreview(preview)
+    if preview == nil or not MonsterAI.PlanPreviewsOn() then
+        return true
+    end
+
+    local moves = {}
+    for _,move in ipairs(preview.moves or {}) do
+        if move.to ~= nil and not HiddenFromPlayers(move.token) then
+            moves[#moves+1] = {
+                charid = move.token.charid,
+                to = move.to.str,
+                via = move.via ~= nil and move.via.str or nil,
+            }
+        end
+    end
+    local attacks = {}
+    for _,attack in ipairs(preview.attacks or {}) do
+        if attack.from ~= nil and not HiddenFromPlayers(attack.token)
+            and self.TokenIsLiveCombatant(attack.target) then
+            attacks[#attacks+1] = {
+                charid = attack.token.charid,
+                from = attack.from.str,
+                target = attack.target.charid,
+                label = attack.label,
+                friendly = attack.friendly == true,
+            }
+        end
+    end
+    --A map-wide ability (Goblin Mode on every goblin) would draw an arrow to
+    --half the board; past this many the card's portraits say who it affects.
+    if #attacks > 8 then
+        attacks = {}
+    end
+    local actors = {}
+    for _,actor in ipairs(preview.actors or {}) do
+        if not HiddenFromPlayers(actor) then
+            actors[#actors+1] = actor.charid
+        end
+    end
+    local actorHidden = HiddenFromPlayers(preview.actor)
+    if actorHidden and #moves == 0 and #attacks == 0 then
+        self:LogDecision("PLAN PREVIEW SKIPPED", {
+            actor = self.TokenLogName(preview.actor),
+            reason = "the players cannot see the acting monster",
+        })
+        return true
+    end
+
+    local queue = dmhub.initiativeQueue
+    local initiativeid = queue ~= nil and queue:CurrentInitiativeId() or nil
+    local seq = dmhub.GenerateGuid()
+    local doc = mod:GetDocumentSnapshot(PREVIEW_DOC)
+    doc:BeginChange()
+    for k in pairs(doc.data) do
+        doc.data[k] = nil
+    end
+    doc.data.seq = seq
+    doc.data.userid = dmhub.userid
+    doc.data.actorName = preview.actorName or PreviewName(preview.actor)
+    doc.data.actors = actors
+    doc.data.attacking = #attacks > 0
+    --every client finds the ability on the actor by name to show its card.
+    local card = preview.ability
+    if card ~= nil and not actorHidden then
+        doc.data.ability = {charid = preview.actor.charid, name = card.name}
+    end
+    doc.data.moves = moves
+    doc.data.attacks = attacks
+    if preview.area ~= nil then
+        doc.data.area = self:PlanAreaDocument(preview.area, preview.areaCenter, card)
+    end
+    --every creature it affects, the caster included (an ability on itself).
+    local targetIds = {}
+    for _,target in ipairs(preview.targets or {}) do
+        if not HiddenFromPlayers(target) then
+            targetIds[#targetIds+1] = target.charid
+        end
+    end
+    doc.data.targets = targetIds
+    if preview.malice ~= nil then
+        doc.data.malice = preview.malice
+    end
+    doc:CompleteChange("Monster AI plan preview", {undoable = false})
+
+    self:LogDecision("PLAN PREVIEW", {
+        actor = self.TokenLogName(preview.actor),
+        ability = card ~= nil and card.name or nil,
+        plan = preview.title,
+        result = "waiting for Proceed",
+    })
+
+    local startedAt = dmhub.Time()
+    local reason = nil
+    while true do
+        if mod.unloaded or not MonsterAI.active then
+            reason = "Monster AI stop requested"
+            break
+        end
+        local q = dmhub.initiativeQueue
+        if initiativeid ~= nil and (q == nil or q.hidden or q:CurrentInitiativeId() ~= initiativeid) then
+            reason = g_abortTurnTaken
+            break
+        end
+        local data = mod:GetDocumentSnapshot(PREVIEW_DOC).data
+        --Cleared or replaced from under us: the AI restarted, or a second AI
+        --thread is previewing too. Never take that as a go-ahead; stop instead.
+        if data.seq ~= seq then
+            reason = "plan preview was cleared or replaced"
+            break
+        end
+        --Proceed, Play Entire Turn, or pauses turned off (card or Settings).
+        if data.continued == seq or MonsterAI.PausesOff() then
+            break
+        end
+        coroutine.yield(0.1)
+    end
+
+    local playTurn = mod:GetDocumentSnapshot(PREVIEW_DOC).data.playTurn == seq
+    if reason == nil and playTurn then
+        MonsterAI.PlayRestOfTurnWithoutPauses()
+    end
+
+    --Everything comes down before anything moves: the cast puts the ability's
+    --own card up when it gets there. Only our own preview: one that replaced
+    --it belongs to someone else.
+    if mod:GetDocumentSnapshot(PREVIEW_DOC).data.seq == seq then
+        pcall(MonsterAI.ClearPlanPreview)
+    end
+
+    self:LogDecision("PLAN PREVIEW FINISHED", {
+        actor = self.TokenLogName(preview.actor),
+        result = reason ~= nil and "turn stopped" or (playTurn and "play entire turn" or "proceed"),
+        reason = reason,
+        duration = dmhub.Time() - startedAt,
+    })
+    if reason ~= nil then
+        self._tmp_abortTurn = reason
+        return false
+    end
+    return true
 end
 
 function MonsterAI:FindAndExecuteMove()
@@ -5288,7 +6529,7 @@ function MonsterAI:FindAndExecuteMove()
             return g_moveResultNone
         end
         for _,ability in ipairs(abilities) do
-            if ability.categorization == "Signature Ability" then
+            if MonsterAI.IsMinionSignatureAbility(ability) then
                 if not ability:CanAfford(token) then
                     self:LogDecision("MOVE REJECTED", {
                         category = "Main Action",
@@ -5476,6 +6717,27 @@ function MonsterAI:FindAndExecuteMove()
         })
         local executed = false
         ProfEnd(chooseProf)
+        if self.PlanPreviewsOn() then
+            local synthesizedPreview = self:BuildPlanPreview(token, {synthesizedMove.ability}, synthesizedMove,
+                function(actor, ability, loc)
+                    if synthesizedMove.profile.targetType ~= "target" then
+                        return nil
+                    end
+                    --the targets ExecuteSynthesizedAbilityPlan picks after moving.
+                    local candidates = self:FindValidTargetsOfStrike(actor, ability, loc)
+                    table.sort(candidates, function(a, b)
+                        return SynthesizedDefaultTargetScore(a) > SynthesizedDefaultTargetScore(b)
+                    end)
+                    local targets = {}
+                    for i=1,math.min(ability:GetNumTargets(actor), #candidates) do
+                        targets[#targets+1] = candidates[i]
+                    end
+                    return targets
+                end)
+            if not self:AwaitPlanPreview(synthesizedPreview) then
+                return g_moveResultNone
+            end
+        end
         local executePhase = ProfPhaseBegin("execute: " .. moveid)
         local ok, err = RunYieldingFunction(function()
             executed = self:ExecuteSynthesizedAbilityPlan(token, synthesizedMove)
@@ -5526,6 +6788,10 @@ function MonsterAI:FindAndExecuteMove()
         })
         local executeResult
         ProfEnd(chooseProf)
+        if self.PlanPreviewsOn()
+            and not self:AwaitPlanPreview(self:BuildPlanPreview(token, bestScore.usingAbilities, bestScore)) then
+            return g_moveResultNone
+        end
         local executePhase = ProfPhaseBegin("execute: " .. bestMove.id)
         local ok, err = RunYieldingFunction(function()
             executeResult = bestMove.execute(bestMove, self, token, bestScore,
@@ -5902,20 +7168,45 @@ function MonsterAI:Speech(token, text, options)
     self:ExecuteAbility(token, ability, {}, options)
 end
 
+--The id of a language given by id or by name (case-insensitive), or nil.
+--- @param idOrName string
+--- @return string|nil
+function MonsterAI.FindLanguageId(idOrName)
+    local languages = dmhub.GetTable(Language.tableName) or {}
+    if languages[idOrName] ~= nil then
+        return idOrName
+    end
+    local wanted = string.lower(idOrName)
+    for id, language in unhidden_pairs(languages) do
+        if string.lower(tostring(language.name)) == wanted then
+            return id
+        end
+    end
+    return nil
+end
+
 --Show a speech bubble over a token straight away. Speech() casts an ability
 --and waits for it, so several tokens could not talk at once; this writes the
 --bubble directly, as the Character Speech behavior does. A creature that
 --speaks no language says "...".
-function MonsterAI:SpeakNow(token, text)
+--options.language: a language id or name (e.g. "Caelian") to speak in
+--instead of the creature's own, so players who know it can read the line.
+function MonsterAI:SpeakNow(token, text, options)
     if not self.TokenIsLiveCombatant(token) then
         return
     end
     if type(text) == "table" then
         text = text[math.random(1, #text)]
     end
-    local language = token.properties:CurrentlySpokenLanguage()
+    local language = nil
+    if options ~= nil and options.language ~= nil then
+        language = MonsterAI.FindLanguageId(options.language)
+    end
     if language == nil then
-        text = "..."
+        language = token.properties:CurrentlySpokenLanguage()
+        if language == nil then
+            text = "..."
+        end
     end
     token:ModifyProperties{
         description = "Speech",
@@ -6136,7 +7427,7 @@ function MonsterAI:Analysis()
                 if tok.properties.minion then
                     local abilities = tok.properties:GetActivatedAbilities()
                     for _,ability in ipairs(abilities) do
-                        if ability.categorization == "Signature Ability" then
+                        if MonsterAI.IsMinionSignatureAbility(ability) then
                             resultEntry.moves[#resultEntry.moves+1] = {
                                 id = "Minion Signature Ability",
                                 category = "Main Actions",
@@ -6623,7 +7914,7 @@ Commands.RegisterMacro{
             ai.paths = ai:CalculateRemainingMovementPaths(token)
 
             --minion signature abilities execute as a squad strike, like the AI turn loop does.
-            if token.properties.minion and ability.categorization == "Signature Ability" then
+            if token.properties.minion and MonsterAI.IsMinionSignatureAbility(ability) then
                 TestAIMessage(string.format("%s: executing \"%s\" as a squad strike.", tokenName, ability.name))
                 TestAIExecuteSquadStrike(ai, token, ability)
                 ai:WaitForAbilityIdle()

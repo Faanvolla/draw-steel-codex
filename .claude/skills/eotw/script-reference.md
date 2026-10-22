@@ -20,6 +20,15 @@ Everything is case-insensitive unless noted. A journal soft break
   same map folder. Keep sub-documents directly in the Map Documents folder
   (that is what gets published). A sub-document is a "part", never a script
   of its own.
+- **Encounter Rules.** A document named `Encounter Rules` in the same folder
+  is never a script: it is the players' rules reference for the fight
+  (special terrain, objectives, what the villain's tricks do). Once combat
+  begins a book button appears in the bottom-left corner of the EotW
+  interface, above Journal, and opens it in a read-only reading window. It is
+  ordinary journal markdown (images, links and embeds render as in the
+  journal) and is published with the map. A series may give one part its own,
+  `Encounter Rules: Part 2` (also `- Part 2` or `(Part 2)`), which that part
+  shows instead of the general one.
 - Warnings name the document they came from (`'Mysterious Cottage' line 29: ...`).
 - Rich tags (`[[scene]]`, `[[encounter]]`) stay with the document they are in.
 
@@ -295,6 +304,9 @@ and starts a scripted scene; each non-blank line after it is one step:
 - `Name: text` = speech (PC, or a character who enters in this entry).
   `Name: (in Hyrallic) text` is garbled for anyone whose hero does not speak it.
 - Emotes: `Witch is alert` / `alarmed` / `scared`, or `Goblin (scared): text`.
+- Off-stage voice: `??? (offstage): Who goes there?` / `Guard (offstage): Halt!`
+  -- a speaker who never enters: their name shows over the line, no portrait.
+  Without `(offstage)`, a speaker who never entered is plain narration.
 - Narration: any other line.
 - Branches: `if <cond> then` ... `elseif <cond> then` ... `else` ... `end`.
   Conditions: `PC speaks X`, `PC is X` (class/ancestry, or `PC is small` /

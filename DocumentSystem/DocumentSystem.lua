@@ -4287,14 +4287,18 @@ function CustomDocument:CreateInterface(args)
         end
     end
 
+    --presentationAllowClose: a presentation-mode window (no editing chrome)
+    --the reader may still close themselves -- e.g. the Encounter of the Week
+    --rules reader -- as opposed to one the Director holds open.
+    local m_presentationLocked = args.presentationMode and not args.presentationAllowClose
     local m_closeButton = gui.Button {
-        classes = { "closeButton", "sizeXs", cond(args.suppressCloseButton or args.presentationMode or (args.dialog == nil and args.close == nil), "collapsed") },
+        classes = { "closeButton", "sizeXs", cond(args.suppressCloseButton or m_presentationLocked or (args.dialog == nil and args.close == nil), "collapsed") },
         hmargin = 4,
         closedocuments = function(element)
             --a presented document is held open by the Director; the
             --/closedocuments macro (fired tree-wide, so it reaches this
             --button even collapsed) must not dismiss it.
-            if args.presentationMode then
+            if m_presentationLocked then
                 return
             end
             element:FireEvent("press")

@@ -148,6 +148,85 @@ EotwDowntime.PROJECTS = {
             },
         },
     },
+    --A COMMUNITY project: every hero in town adds to one total (1000 points,
+    --in city-core.ts). Under way from the start; worked on at the
+    --Construction, which becomes the Hall of Heroes when it completes.
+    ["build-hall-of-heroes"] = {
+        id = "build-hall-of-heroes",
+        scope = "community",
+        title = "Build the Hall of Heroes",
+        icon = "phosphor/hammer-fill.png",
+        location = "hall",
+        locationName = "the Construction",
+        characteristics = { "mgt", "rea" },
+        skills = { "Architecture", "Blacksmithing", "Carpentry", "Mechanics" },
+        benefit = "The Hall of Heroes opens for the whole town",
+        completeBanner = { text = "The Hall of Heroes!", subtitle = "Blackbottom built it together. Its doors are open to every hero." },
+        blurb = function(state)
+            if state ~= nil and state.maxed then
+                return "The Hall of Heroes stands complete."
+            end
+            return "The whole town builds it together: every Downtime Activity spent here adds to Blackbottom's total."
+        end,
+        rollLines = {
+            early = {
+                hopeful = {
+                    "The foundations are dug. Deep enough to hold a legend or two.",
+                    "The first stone is laid, and a crowd cheered. A small crowd. Still counts.",
+                    "The mason says my mortar is 'adequate'. From him, that is a hymn.",
+                },
+                neutral = {
+                    "Mostly mud today. Honourable mud, but mud.",
+                    "We moved a lot of rubble. Some of it twice.",
+                    "The plans are bigger than the plot. Someone is measuring again.",
+                },
+                frustrated = {
+                    "Somebody stole the shovels. Who steals shovels?",
+                    "It rained. The foundations are now a pond.",
+                    "The foreman shouted at me in three languages. All of them meant 'no'.",
+                },
+            },
+            mid = {
+                hopeful = {
+                    "The walls are up to my shoulders. You can see the shape of it now.",
+                    "We raised the first pillar today. The whole street came out to watch.",
+                    "A carver is cutting the names of fallen heroes into the lintel. It's beautiful.",
+                },
+                neutral = {
+                    "Another day of hauling stone. The Hall rises an inch at a time.",
+                    "The scaffolding creaks, but it holds.",
+                    "We argued about the doors for an hour, then built a wall instead.",
+                },
+                frustrated = {
+                    "A whole cart of marble went into the canal. Again.",
+                    "The pulley snapped and I learned some new words from the dwarves.",
+                    "My back hurts, my hands hurt, and the gargoyle is crooked.",
+                },
+            },
+            late = {
+                hopeful = {
+                    "The roof beams are going up. It's nearly done!",
+                    "They hung the great bronze doors today. They gleam.",
+                    "The banners are sewn. All we need now is the last of the stone.",
+                },
+                neutral = {
+                    "Polishing, sweeping, polishing. The end is in sight.",
+                    "Just the finishing touches left. Lots of finishing touches.",
+                    "The scribes are already arguing over whose deeds go in first.",
+                },
+                frustrated = {
+                    "The stained glass arrived in four hundred pieces. It was meant to be in forty.",
+                    "So close, and the chimney collapsed. Up we go again.",
+                    "If the architect changes the spire one more time...",
+                },
+            },
+            done = {
+                "The last stone is set. The Hall of Heroes stands!",
+                "The doors swing open, and the whole town cheers. We built this.",
+                "Let every deed be written here. The Hall of Heroes is complete!",
+            },
+        },
+    },
 }
 
 --A Draw Steel test's tier from a 2d10 roll: 11 or less, 12-16, 17+, and a
@@ -163,35 +242,41 @@ end
 --projectid -> the project's state as the City last reported it:
 --{projectid, completions, maxCompletions, points, goal, maxed, recent, open}.
 local m_projects = {}
-local m_listing = false
+--scope -> a list request is in flight.
+local m_listing = {}
 
 --A project's last known state, or nil before the first list.
 function EotwDowntime.GetProject(projectid)
     return m_projects[projectid]
 end
 
---Ask the City for this account's projects (player scope) and cache them.
+--Ask the City for this account's projects and the town's community ones,
+--and cache them.
 function EotwDowntime.RefreshProjects()
     local conn = EotwRoster.Connection()
-    if conn == nil or not conn.connected or m_listing then
+    if conn == nil or not conn.connected then
         return
     end
-    m_listing = true
-    conn:Request{
-        action = "list-projects",
-        args = { scope = "player" },
-        success = function(result)
-            m_listing = false
-            for _, project in ipairs(result.projects or {}) do
-                m_projects[project.projectid] = project
-            end
-            Bump()
-        end,
-        error = function(message)
-            m_listing = false
-            printf("EotW town: could not list projects: %s", tostring(message))
-        end,
-    }
+    for _, scope in ipairs({ "player", "community" }) do
+        if not m_listing[scope] then
+            m_listing[scope] = true
+            conn:Request{
+                action = "list-projects",
+                args = { scope = scope },
+                success = function(result)
+                    m_listing[scope] = false
+                    for _, project in ipairs(result.projects or {}) do
+                        m_projects[project.projectid] = project
+                    end
+                    Bump()
+                end,
+                error = function(message)
+                    m_listing[scope] = false
+                    printf("EotW town: could not list %s projects: %s", scope, tostring(message))
+                end,
+            }
+        end
+    end
 end
 
 --The ids of the characteristics a project allows, with display names, in
@@ -399,6 +484,32 @@ function EotwDowntime.RespiteBusy()
     return m_respiteBusy
 end
 
+--Secret Twin's drawback: after each respite roll a d10, and on a 1 or 2 the
+--hero's past catches up. EotW plays it out: the hero is marked with
+--ASSASSIN_FIELD, and the next montage they play gets an assassin threat
+--(EncounterMontage). No roll while an assassin is still on their trail.
+local SECRET_TWIN_ID = "d8af2c17-c677-44bb-b237-d695fcff49c1"
+EotwDowntime.ASSASSIN_FIELD = "eotwAssassinPending"
+
+--Heroes whose past caught up in the respite being taken, waiting for their
+--banner (ShowPastCatchesUp): { heroid, ... }.
+local m_pastCatchesUp = {}
+
+--Roll Secret Twin's d10 for a hero who is resting. Runs inside RestHero's
+--ModifyProperties.
+local function RollSecretTwin(tok)
+    local props = tok.properties
+    if not props:try_get("complications", {})[SECRET_TWIN_ID] or props:try_get(EotwDowntime.ASSASSIN_FIELD, false) then
+        return
+    end
+    local roll = math.random(1, 10)
+    printf("EotW town: %s rolls %d for Secret Twin", tostring(tok.name), roll)
+    if roll <= 2 then
+        props[EotwDowntime.ASSASSIN_FIELD] = true
+        m_pastCatchesUp[#m_pastCatchesUp+1] = tok.charid
+    end
+end
+
 --Rest one hero's working copy for this respite, unless it already has.
 local function RestHero(tok, respiteid, victories)
     local done = false
@@ -416,6 +527,7 @@ local function RestHero(tok, respiteid, victories)
             local props = tok.properties
             --heals, turns Victories into XP and refreshes Recoveries.
             props:Rest("long")
+            RollSecretTwin(tok)
             local stamps = {}
             local old = rawget(props, "eotwRespites")
             if type(old) == "table" then
@@ -818,7 +930,9 @@ end
 --banner's default is the Draw Steel sting). Returns false if it could not
 --be shown.
 local m_bannerPanel = nil
-local function ShowBanner(host, text, subtitle, sound)
+---@param tokenid nil|string the token whose portrait the banner shows
+---@param bannerType nil|string an id from DramaticBanner.types ("heroic" when nil)
+local function ShowBanner(host, text, subtitle, sound, tokenid, bannerType)
     local ok = pcall(function()
         if m_bannerPanel == nil or not m_bannerPanel.valid then
             m_bannerPanel = gui.Panel{
@@ -833,9 +947,24 @@ local function ShowBanner(host, text, subtitle, sound)
             --on top of whatever opened since.
             m_bannerPanel:SetAsLastSibling()
         end
-        DramaticBanner.Show{ text = text, subtitle = subtitle, sound = sound }
+        DramaticBanner.Show{ text = text, subtitle = subtitle, sound = sound, tokenid = tokenid, bannerType = bannerType }
     end)
     return ok
+end
+
+--After a respite: a malice banner, one after another, for each Secret Twin
+--hero whose d10 came up 1 or 2 (RollSecretTwin).
+local function ShowPastCatchesUp(host)
+    local list = m_pastCatchesUp
+    m_pastCatchesUp = {}
+    for i, heroid in ipairs(list) do
+        dmhub.Schedule((i - 1) * 4.5, function()
+            if mod.unloaded or not host.valid then
+                return
+            end
+            ShowBanner(host, "Secret Twin", "You sense your past will soon catch up with you...", nil, heroid, "malice")
+        end)
+    end
 end
 
 --How long a gain takes to ease into place on a project bar, in seconds.
@@ -2431,6 +2560,37 @@ function EotwDowntime.ProjectSidePanel(host, projectid, width)
     }
 end
 
+--- the Construction (the Hall of Heroes being built) --------------------------
+
+--The Construction scene's card: what is being built, and the town's shared
+--project (Build the Hall of Heroes) with its progress, the latest builders
+--and the way in to the roll dialog. host mounts the roll dialog.
+function EotwDowntime.ConstructionPanel(host)
+    return gui.Panel{
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        gui.Label{
+            text = "Join in the construction of the great Hall of Heroes where the works and deeds of heroes shall be recorded!",
+            fontSize = 20,
+            italics = true,
+            color = TEXT,
+            width = "100%",
+            height = "auto",
+            bmargin = 12,
+        },
+        gui.Label{
+            text = "This is the whole town's project. Every hero in Blackbottom can spend Downtime Activities here, and every roll adds to the same total. When it is done, the Hall of Heroes opens for everyone.",
+            fontSize = 15,
+            color = DIM,
+            width = "100%",
+            height = "auto",
+            bmargin = 16,
+        },
+        EotwDowntime.ProjectCard(host, "build-hall-of-heroes"),
+    }
+end
+
 --- the Blue Fish Inn ----------------------------------------------------------
 
 --One hero's row at the inn: portrait, name, Stamina and Recoveries, what a
@@ -2684,7 +2844,7 @@ function EotwDowntime.InnPanel(host, openLocation)
                             width = 300,
                             height = 34,
                             tmargin = 6,
-                            linger = gui.Tooltip(cond(project.location == "inn", "Work on it here.", "Go to the Hero's Guild to work on it.")),
+                            linger = gui.Tooltip(cond(project.location == "inn", "Work on it here.", string.format("Go to %s to work on it.", project.locationName or "the Hero's Guild"))),
                             click = function()
                                 if project.location == "inn" then
                                     EotwDowntime.ShowRollDialog(host, id)
@@ -2822,6 +2982,9 @@ function EotwDowntime.InnPanel(host, openLocation)
                         end
                         if not ok and statusLabel ~= nil and statusLabel.valid then
                             statusLabel.text = tostring(message)
+                        end
+                        if ok then
+                            ShowPastCatchesUp(host)
                         end
                         Rebuild()
                     end)

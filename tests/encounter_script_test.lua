@@ -1242,6 +1242,27 @@ check(emoteLines[2].emotes ~= nil and emoteLines[2].emotes[1].name == "Witch" an
     "a speaker's own emote lands on their line")
 check(emoteLines[3].emotes == nil, "a line with no emote carries none")
 
+--off-stage voices: speech from someone who never enters, with no portrait
+local voiceParse = EncounterScript.Parse(table.concat({
+    "# Montage", "## Opportunity: Gate", "---",
+    "??? (offstage): Who goes there?", "Guard (off-stage): (in Caelian) Halt!", "Stranger: Hello.",
+    "### Knock", "|Knock: Presence", "|a", "|b", "|c",
+}, string.char(10)))
+local gate = EncounterScript.MontageEntries(voiceParse.beats[1])[1]
+check(gate.scene[1].kind == "say" and gate.scene[1].speaker == "???" and gate.scene[1].offstage == true
+    and gate.scene[1].text == "Who goes there?", "'??? (offstage): ...' is an off-stage voice")
+check(gate.scene[2].kind == "say" and gate.scene[2].speaker == "Guard" and gate.scene[2].offstage == true
+    and gate.scene[2].lang == "Caelian" and gate.scene[2].text == "Halt!", "'(off-stage)' with a language")
+check(gate.scene[3].kind == "narrate", "an unmarked speaker who never entered is still narration")
+check(gate.actors["guard"] == nil, "an off-stage voice is not a character")
+local voiceLines = EncounterScript.FlattenScene(gate.scene, { actors = gate.actors, test = function() return false end }, {})
+check(#voiceLines == 3 and #voiceLines[1].cast == 0 and #voiceLines[2].cast == 0 and voiceLines[1].speaker == "???",
+    "an off-stage voice never comes on stage")
+check(EncounterScript.SceneBranchLine("if PC speaks Caelian then") == "if", "SceneBranchLine: if")
+check(select(2, EncounterScript.SceneBranchLine("Else if tier2")) == "tier2", "SceneBranchLine: else if, condition text")
+check(EncounterScript.SceneBranchLine("If you listen closely, you hear it.") == nil, "SceneBranchLine: narration starting with If")
+check(EncounterScript.SceneBranchLine("End if") == "end" and EncounterScript.SceneBranchLine("otherwise") == "else", "SceneBranchLine: end / else")
+
 --delves: a "# Delve:" section of obstacles, a chest table and scenes,
 --entered by an option's "Delve: <Name>" line
 local DELVE = table.concat({
