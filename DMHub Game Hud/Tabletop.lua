@@ -2418,7 +2418,7 @@ end
 --above its name strip) from the middle, never stretched. aspect is the
 --image's width over its height.
 function g_card.Crop(aspect)
-    local box = (g_card.width - 2) / (g_card.height - g_card.caption - 1)
+    local box = g_card.width / (g_card.height - g_card.caption)
     local w, h = 1, 1
     if aspect > box then
         w = box / aspect
@@ -2504,13 +2504,12 @@ function g_card.Button(rec, ops, scale)
     local picture = gui.Panel{
         bgimage = image,
         bgcolor = cond(placeholder, "#1b1814ff", "white"),
-        cornerRadius = 5,
+        cornerRadius = 6,
         floating = true,
         halign = "center",
         valign = "top",
-        y = 1,
-        width = g_card.width - 2,
-        height = g_card.height - g_card.caption - 1,
+        width = g_card.width,
+        height = g_card.height - g_card.caption,
         interactable = false,
     }
     local card
@@ -2518,10 +2517,8 @@ function g_card.Button(rec, ops, scale)
         classes = {"tabletopTableButton", "tabletopWindowCard"},
         bgimage = "panels/square.png",
         bgcolor = "#1b1814ff",
+        --no frame (Venla, 2026-10-22): the picture runs to the card's edges.
         cornerRadius = 6,
-        borderWidth = 1,
-        --a dark edge, no white frame (Venla, 2026-10-22).
-        borderColor = "#00000099",
         floating = true,
         halign = "left",
         valign = "top",
@@ -2559,11 +2556,9 @@ function g_card.Button(rec, ops, scale)
             g_card.Expand(rec, ops)
         end,
         hover = function(element)
-            element.selfStyle.borderColor = "#000000ff"
             expand:SetClass("hidden", false)
         end,
         dehover = function(element)
-            element.selfStyle.borderColor = "#00000099"
             expand:SetClass("hidden", true)
         end,
         rightClick = function(element)
