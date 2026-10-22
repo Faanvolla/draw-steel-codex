@@ -726,6 +726,10 @@ function EncounterScriptValidator.BuildReport(docid, partyid)
         if parse.part.number == 1 then
             note = string.format("Part 1%s of a series: always open; winning it unlocks Part 2", title)
         end
+        if parse.part.comingSoon ~= nil then
+            note = string.format("Part %d%s of a series: marked 'Coming soon', so the town shows it locked%s", parse.part.number, title,
+                cond(parse.part.comingSoon.text ~= nil, " (\"" .. tostring(parse.part.comingSoon.text) .. "\")", ""))
+        end
         children[#children + 1] = RowLabel{ depth = 0, class = "note", text = note }
         local encounter = nil
         pcall(function()

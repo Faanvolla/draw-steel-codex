@@ -332,6 +332,9 @@ part's result and every track change are printed in the console
    encounter is listed under "Encounters to Try" with "<module> by <author>"
    and its backstory, and Form a Party works for it. A series is one entry
    with a button per part; later parts are locked until the one before is won.
+   To publish a series before every part is ready, put a `Coming soon` line
+   under the unfinished parts' headings (reference, "Series"): they show
+   locked in town with a "Coming soon." hover.
    **Preview before republishing** (developer mode only): in the running app,
    `EncounterOfTheWeek.StagePoolModule(moduleid, { maps = {<map names>},
    eotwEncounters = {<as the publisher would send it>} })` makes the town show

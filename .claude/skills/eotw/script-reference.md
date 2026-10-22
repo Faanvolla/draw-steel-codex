@@ -570,6 +570,16 @@ time).
   parts 1, 2, 3... with no gaps or repeats (publishing refuses otherwise).
   Once any document on the map has a part heading, documents without one are
   never the script.
+- **A part that is not ready yet**: put a `Coming soon` line under its part
+  heading or above it (or `Coming soon: <text>` to choose the hover text). The
+  town shows the part's button locked, with that text (default: "Coming
+  soon.") on hover, so nobody can play it, even after winning the part before;
+  a game that somehow reaches it does not run it (Test Encounter still can).
+  The publisher only warns about that part's problems (a missing `# Encounter`
+  beat) and ships it apart from the playable parts, so apps older than this
+  feature do not offer it at all. A series can ship with its first parts
+  playable and the rest as placeholders. Remove the line and publish an update
+  to open it.
 - Each part is a whole script: its own beats, its own `# Encounter` and
   `[[encounter]]` island, and its own `# Town Gate` / `# Conclusion` /
   `# Defeat`. Sub-documents work as usual, per part.

@@ -2365,4 +2365,47 @@ When Part 1 was not recorded: +1 malice
     check(EncounterScript.DescribeEffect(bell) == "Rite's Progress +1", "describe a track clause")
 end)()
 
+--a part marked "Coming soon"
+;(function()
+    local plain = EncounterScript.Parse([==[
+# Part 2: The Hall
+Coming soon
+
+# Encounter
+]==])
+    check(plain.part ~= nil and plain.part.comingSoon ~= nil and plain.part.comingSoon.text == nil, "Coming soon with no text")
+    local told = EncounterScript.Parse([==[
+# Part 2
+Coming soon: The doors are still sealed.
+Track: Alarm
+
+# Encounter
+]==])
+    check(told.part ~= nil and told.part.comingSoon ~= nil and told.part.comingSoon.text == "The doors are still sealed.", "Coming soon with hover text")
+    check(#told.tracks == 1, "a Track line after Coming soon still counts")
+    local loose = EncounterScript.Parse([==[
+Coming soon
+
+# Encounter
+]==])
+    check(loose.part == nil and #loose.warnings > 0, "Coming soon outside a part warns")
+    local above = EncounterScript.Parse([==[
+Coming soon: Not yet.
+
+# Part 3: The Crypt
+
+# Encounter
+]==])
+    check(above.part ~= nil and above.part.comingSoon ~= nil and above.part.comingSoon.text == "Not yet.", "Coming soon above the part heading counts")
+    local dotted = EncounterScript.Parse("# Part 2\nComing soon.\n\n# Encounter\n")
+    check(dotted.part ~= nil and dotted.part.comingSoon ~= nil and dotted.part.comingSoon.text == nil, "Coming soon. with a full stop")
+    local prose = EncounterScript.Parse([==[
+# Part 1
+Coming soon to a theater near you
+
+# Encounter
+]==])
+    check(prose.part ~= nil and prose.part.comingSoon == nil, "other prose starting 'Coming soon' is a note")
+end)()
+
 print(string.format("encounter_script_test: %d checks passed", passed))

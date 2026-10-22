@@ -1708,7 +1708,9 @@ end
 --hidden, description}, ... }, map?}, ... }, one per part; map names a part
 --played on its own part map ("<series> (Part <n>)", Part 1 too), which is
 --checked with its series and never listed as an encounter of its own; the
---series is keyed by the plain name even when no map has it. Also ticks
+--series is keyed by the plain name even when no map has it. Parts marked
+--"Coming soon" go in comingSoonParts = { {number, title, text?}, ... }
+--instead, so an app that predates them never offers them. Also ticks
 --every document a script is built from (ctx.include), since nothing else
 --ties a map to the documents in its journal folder.
 local CheckEncounterModule = function(ctx)
@@ -1856,6 +1858,7 @@ local CheckEncounterModule = function(ctx)
 			end
 
 			local parts = {}
+			local comingSoonParts = {}
 			for _,entry in ipairs(scripts) do
 				local script = entry.script
 				local hasEncounter = false
@@ -1864,8 +1867,17 @@ local CheckEncounterModule = function(ctx)
 						hasEncounter = true
 					end
 				end
+				local comingSoon = script.parse.part ~= nil and script.parse.part.comingSoon or nil
+				if comingSoon ~= nil then
+					warnings[#warnings+1] = string.format("%s: marked 'Coming soon', so players see it locked and cannot play it yet.", entry.label)
+				end
 				if not hasEncounter then
-					errors[#errors+1] = string.format("%s: the script has no # Encounter beat, so the fight never starts.", entry.label)
+					local problem = string.format("%s: the script has no # Encounter beat, so the fight never starts.", entry.label)
+					if comingSoon ~= nil then
+						warnings[#warnings+1] = problem
+					else
+						errors[#errors+1] = problem
+					end
 				end
 
 				local scriptWarnings = script.parse.warnings or {}
@@ -1896,15 +1908,27 @@ local CheckEncounterModule = function(ctx)
 						tracks = tracks or {}
 						tracks[#tracks+1] = { name = decl.name, hidden = decl.hidden == true, description = decl.description }
 					end
-					parts[#parts+1] = { number = entry.number, title = entry.title, townGate = townGateText, townGateSource = townGateSource, tracks = tracks, map = entry.map }
+					if comingSoon ~= nil then
+						comingSoonParts[#comingSoonParts+1] = { number = entry.number, title = entry.title, text = comingSoon.text }
+					else
+						parts[#parts+1] = { number = entry.number, title = entry.title, townGate = townGateText, townGateSource = townGateSource, tracks = tracks, map = entry.map }
+					end
 				elseif townGateText ~= nil or townGateSource ~= nil then
 					result.encounters[m.name] = { townGate = townGateText, townGateSource = townGateSource }
 				end
 			end
-			if series and #parts > 0 then
+			if series and (#parts > 0 or #comingSoonParts > 0) then
 				--the town lists the parts and locks each behind the one before;
 				--townGate is part 1's, for a town that knows nothing of parts.
-				result.encounters[m.name] = { townGate = parts[1].townGate, parts = parts }
+				--Coming-soon parts are kept apart so older apps never offer them.
+				local record = { parts = parts }
+				if parts[1] ~= nil then
+					record.townGate = parts[1].townGate
+				end
+				if #comingSoonParts > 0 then
+					record.comingSoonParts = comingSoonParts
+				end
+				result.encounters[m.name] = record
 			end
 		end
 	end

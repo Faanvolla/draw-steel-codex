@@ -708,16 +708,22 @@ function EncounterOfTheWeek.EncounterDisplayName(key)
     return string.format("%s (%s)%s", title, moduleName, suffix)
 end
 
+--The hover text on a part the author marked "Coming soon" without saying more.
+local COMING_SOON_TEXT = "Coming soon."
+
 --The parts of a series map from its module record's eotwEncounters entry:
---{ {number, title, townGate, mapName}, ... } sorted by number, or nil when
---the map is not a series. mapName is set for a part on its own part map.
+--{ {number, title, townGate, mapName, comingSoon}, ... } sorted by number, or
+--nil when the map is not a series. mapName is set for a part on its own part
+--map. Parts listed under comingSoonParts come back as locked placeholders
+--whose comingSoon field is the hover text.
 --Read leniently: Firebase may hand a list back keyed "0", "1".
 local function ReadSeriesParts(story)
-    if type(story) ~= "table" or type(story.parts) ~= "table" then
+    if type(story) ~= "table" then
         return nil
     end
     local parts = {}
-    for _, p in pairs(story.parts) do
+    local numbers = {}
+    for _, p in pairs(type(story.parts) == "table" and story.parts or {}) do
         if type(p) == "table" and tonumber(p.number) ~= nil then
             local title, townGate = nil, nil
             if type(p.title) == "string" and p.title ~= "" then
@@ -730,7 +736,23 @@ local function ReadSeriesParts(story)
             if type(p.map) == "string" and p.map ~= "" then
                 mapName = p.map
             end
-            parts[#parts+1] = { number = math.floor(tonumber(p.number) or 0), title = title, townGate = townGate, mapName = mapName }
+            local number = math.floor(tonumber(p.number) or 0)
+            numbers[number] = true
+            parts[#parts+1] = { number = number, title = title, townGate = townGate, mapName = mapName }
+        end
+    end
+    for _, p in pairs(type(story.comingSoonParts) == "table" and story.comingSoonParts or {}) do
+        local number = type(p) == "table" and tonumber(p.number) or nil
+        if number ~= nil and not numbers[math.floor(number)] then
+            local title = nil
+            if type(p.title) == "string" and p.title ~= "" then
+                title = p.title
+            end
+            local text = COMING_SOON_TEXT
+            if type(p.text) == "string" and p.text ~= "" then
+                text = p.text
+            end
+            parts[#parts+1] = { number = math.floor(number), title = title, comingSoon = text }
         end
     end
     if #parts == 0 then
@@ -775,9 +797,14 @@ end
 --part n-1 ON THE SAME BOARD: at the Town Gate any of its heroes' wins
 --(EotwRoster.AccountCompleted), in the Proving Pits its practice wins
 --(EotwRoster.PracticeWon). A Proving Pits win does not carry over to the Gate.
+--A part marked "Coming soon" stays locked for everyone.
 --Returns true, or false + the reason to show.
 function EncounterOfTheWeek.PartUnlocked(key)
     local seriesKey, part = EncounterOfTheWeek.SplitPartKey(key)
+    local entry = EncounterOfTheWeek.GetPart(key)
+    if entry ~= nil and entry.comingSoon ~= nil then
+        return false, entry.comingSoon
+    end
     if part <= 1 then
         return true
     end

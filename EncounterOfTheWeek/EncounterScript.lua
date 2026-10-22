@@ -3225,6 +3225,8 @@ function EncounterScript.Parse(text)
     --a "When <condition>:" line with nothing after the colon, waiting for
     --the [[encounter]] island or "## Reinforcements:" heading it gates.
     local pendingGate = nil
+    --a "Coming soon" line above the part heading, waiting for it.
+    local pendingComingSoon = nil
     local function DropPendingGate()
         if pendingGate ~= nil then
             Warn(pendingGate.line, "'When %s:' is not directly above an [[encounter]] island or a '## Reinforcements:' heading; ignored", pendingGate.text)
@@ -3232,14 +3234,30 @@ function EncounterScript.Parse(text)
         end
     end
 
-    --"Track: Rite's Progress (Hidden) -- what it means" lines of a paragraph
-    --become declarations; the other lines are handed back.
-    local function TakeTrackDeclarations(text, firstLine)
+    --The lines a series part puts under its heading (or above the first
+    --heading): "Track: ..." declarations and a "Coming soon" mark. The
+    --other lines of the paragraph are handed back.
+    local function TakePartLines(text, firstLine)
         local rest = {}
         local lineIndex = firstLine
         for _, l in ipairs(SplitLines(text)) do
-            local declText = string.match(trim(l), "^[Tt][Rr][Aa][Cc][Kk]:%s*(.*)$")
-            if declText ~= nil then
+            local t = trim(l)
+            local declText = string.match(t, "^[Tt][Rr][Aa][Cc][Kk]:%s*(.*)$")
+            --"Coming soon" or "Coming soon: <hover text>": the town shows this
+            --part locked until the author removes the line.
+            local soonRest = string.match(t, "^[Cc]oming [Ss]oon(.*)$")
+            local soonText = nil
+            if soonRest ~= nil then
+                soonText = string.match(soonRest, "^:%s*(.-)$") or (string.match(soonRest, "^%.?$") and "" or nil)
+            end
+            if soonText ~= nil then
+                local mark = { text = cond(soonText ~= "", soonText, nil), line = lineIndex }
+                if result.part ~= nil then
+                    result.part.comingSoon = mark
+                else
+                    pendingComingSoon = mark
+                end
+            elseif declText ~= nil then
                 local decl = EncounterScript.ParseTrackDeclaration(declText)
                 if decl == nil then
                     Warn(lineIndex, "'Track:' needs a name (write 'Track: Rite's Progress'); ignored")
@@ -3389,7 +3407,7 @@ function EncounterScript.Parse(text)
         g_parseLine = spanFirst
         --"Track:" declarations sit above the first heading or under "# Part N".
         if beat == nil or beat.kind == "part" then
-            text = TakeTrackDeclarations(text, spanFirst)
+            text = TakePartLines(text, spanFirst)
             if text == "" then
                 return
             end
@@ -3773,7 +3791,8 @@ function EncounterScript.Parse(text)
                 if result.part ~= nil then
                     Warn(i, "a second '# %s'; a script is one part, so only '# Part %d' counts (give each part its own document)", title, result.part.number)
                 else
-                    result.part = { number = partNumber, title = partTitle, line = i }
+                    result.part = { number = partNumber, title = partTitle, line = i, comingSoon = pendingComingSoon }
+                    pendingComingSoon = nil
                 end
             elseif kind == "results" then
                 --not a beat: what this part's outcome does to the story,
@@ -4568,6 +4587,9 @@ function EncounterScript.Parse(text)
     end
 
     DropPendingGate()
+    if pendingComingSoon ~= nil then
+        Warn(pendingComingSoon.line, "'Coming soon' only works in a series part (a document with a '# Part N' heading); ignored")
+    end
     EncounterScript.CheckStory(result, Warn)
 
     --implicit encounter: no beats at all, but an [[encounter]] island

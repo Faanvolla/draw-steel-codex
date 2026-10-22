@@ -4927,6 +4927,15 @@ local function RunScriptBeat(ctx)
     end
 
     local script = montage.FindMapScript()
+    --A part marked "Coming soon" never plays in a real game, even if a party
+    --somehow reached it. Tests can still play it.
+    if script.parse.part ~= nil and script.parse.part.comingSoon ~= nil and not EncounterOfTheWeekGame.IsTestRunning() then
+        if not Series.reportedComingSoon then
+            Series.reportedComingSoon = true
+            printf("EotW: Part %d is marked 'Coming soon', so it does not run outside a test", script.parse.part.number)
+        end
+        return
+    end
     local beats = script.parse.beats
     local index = GetBeatIndex()
     local beat = beats[index]
