@@ -1798,7 +1798,7 @@ function EncounterOfTheWeekHud.ShowAbout()
                 height = ABOUT_ART_HEIGHT,
                 image = ABOUT_ART,
                 creator = "czepeku",
-                badge = { hmargin = 16, vmargin = 12 },
+                badge = { hmargin = 16, vmargin = 12, light = true },
             },
         },
 

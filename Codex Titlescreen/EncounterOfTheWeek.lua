@@ -7996,8 +7996,8 @@ CreateScreen = function(args)
             video = scene.video,
             aspect = scene.aspect,
             focusX = scene.focusX,
-            --the Town Gate's art is dark, so its credit shows the logo white.
-            badge = { hmargin = SCENE_BADGE_HMARGIN, vmargin = 24, light = loc.id == "gate" },
+            --every EotW scene shows the creator's logo white.
+            badge = { hmargin = SCENE_BADGE_HMARGIN, vmargin = 24, light = true },
             children = {
                 gui.Panel{
                     floating = true,

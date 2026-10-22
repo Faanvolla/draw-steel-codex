@@ -5075,7 +5075,7 @@ local function CreateCreditHolder()
             element.data.creator = creator
             local badge = nil
             if creator ~= nil then
-                badge = CreatorCredit.Badge{ creator = creator }
+                badge = CreatorCredit.Badge{ creator = creator, light = true }
             end
             element.children = { badge }
         end,
