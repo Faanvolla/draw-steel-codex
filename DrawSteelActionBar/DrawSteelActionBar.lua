@@ -3650,6 +3650,60 @@ function UpdateTriggerReactionPanel(options)
     g_triggerReactionPanel:FireEventTree("refreshTriggerReactions", options)
 end
 
+--A Monster AI roll waiting on hero triggers shows this Tip banner notice (text
+--plus a "Dismiss Triggers" button) instead of the dice above. The roll dialog
+--re-posts it every 0.2s while it waits, so a notice not re-posted for a second
+--belongs to a dialog that has gone away and hides itself. The state lives on
+--DrawSteelActionBar, not a local: this file's main chunk is at Lua's 200-local limit.
+--- @type nil|{text: string, callback: fun(), posted: number}
+DrawSteelActionBar._aiTriggerHint = nil
+
+--- @param options nil|{text: string, callback: fun()}
+function UpdateAITriggerHint(options)
+    if options == nil then
+        DrawSteelActionBar._aiTriggerHint = nil
+        return
+    end
+
+    local wasShown = DrawSteelActionBar._aiTriggerHint ~= nil
+    DrawSteelActionBar._aiTriggerHint = { text = options.text, callback = options.callback, posted = dmhub.Time() }
+    if not wasShown then
+        --the banner polls notices at 1Hz; tick it now so the prompt shows at once.
+        local gh = rawget(_G, "GameHud") and GameHud.instance
+        if gh ~= nil then
+            pcall(function() gh:_TipDriverTick() end)
+        end
+    end
+end
+
+Tip = rawget(_G, "Tip") or {}
+Tip.notices = Tip.notices or {}
+Tip.notices["ai-roll-triggers"] = {
+    id = "ai-roll-triggers",
+    --above the Monster AI's "Waiting for..." notice (1000): this is what it waits on.
+    priority = 1050,
+    text = function()
+        local hint = DrawSteelActionBar._aiTriggerHint
+        if hint == nil or dmhub.Time() - hint.posted > 1 then
+            return nil
+        end
+        return hint.text, {
+            action = {
+                text = "Dismiss Triggers",
+                press = function()
+                    --compare callbacks, not tables: the dialog re-posts a new hint
+                    --table every 0.2s, so the one captured here is nearly always stale.
+                    local current = DrawSteelActionBar._aiTriggerHint
+                    if current ~= nil and current.callback == hint.callback then
+                        DrawSteelActionBar._aiTriggerHint = nil
+                        hint.callback()
+                    end
+                end,
+            },
+        }
+    end,
+}
+
 local function CreateTriggerReactionPanel()
     local m_stateBaseline = nil
     local m_state = nil
@@ -3895,7 +3949,10 @@ local function CreateActionBar()
                 end
             end
 
-            if #g_casterTokenStack == 0 then
+            --Keep the same caster until the ability is cast or cancelled. Dragging
+            --a hero while targeting used to make the hero the caster, so the mote's
+            --Catalyst removed the hero instead of the mote.
+            if #g_casterTokenStack == 0 and g_currentAbility == nil then
                 g_token = DrawSteelActionBar._operate.BaseBarToken()
             end
 
@@ -3903,7 +3960,9 @@ local function CreateActionBar()
             --while no caster is pushed: during an invoked/overview cast the
             --engine's selection override makes selectedOrPrimaryTokens report
             --the caster, and the strip should stay put until the cast pops.
-            if #g_casterTokenStack == 0 then
+            --Not while targeting either, so the bar notices the new selection
+            --once the cast ends.
+            if #g_casterTokenStack == 0 and g_currentAbility == nil then
                 local selected = {}
                 for _, tok in ipairs(dmhub.selectedOrPrimaryTokens) do
                     if tok ~= nil and tok.valid and tok.onBoard and tok.properties ~= nil then
@@ -3918,6 +3977,13 @@ local function CreateActionBar()
                     g_overviewLens = "all"
                 end
                 element.data.selectionSignature = signature
+            end
+
+            --If the caster is deleted while targeting, cancel the ability.
+            --Otherwise the action bar disappears and targeting never ends.
+            if g_currentAbility ~= nil and #g_casterTokenStack == 0 and (g_token == nil or not g_token.valid) and g_abilityController ~= nil then
+                g_abilityController:FireEvent("cancelCasting", { norefresh = true })
+                g_token = DrawSteelActionBar._operate.BaseBarToken()
             end
 
             if g_token == nil or not g_token.valid then
@@ -12044,7 +12110,8 @@ CreateAbilityController = function()
             element:FireEvent("cancelCasting")
         end,
 
-        cancelCasting = function(element)
+        --- @param opts nil|{norefresh: nil|boolean} norefresh when called from inside the bar's own refresh
+        cancelCasting = function(element, opts)
             --Director overview (slice (e)): whatever ended this cast, the
             --pending implicit-claim record dies with it.
             g_overviewCastPending = nil
@@ -12140,6 +12207,16 @@ CreateAbilityController = function()
             end
 
             element:SetClass("collapsed", true)
+
+            --If another token was selected while targeting, show its abilities now.
+            if (opts == nil or not opts.norefresh) and #g_casterTokenStack == 0 and g_actionBar ~= nil and g_actionBar.valid then
+                local selected = DrawSteelActionBar._operate.BaseBarToken()
+                local selectedid = selected ~= nil and selected.charid or nil
+                local boundid = (g_token ~= nil and g_token.valid) and g_token.charid or nil
+                if selectedid ~= boundid then
+                    g_actionBar:FireEventTree("refresh")
+                end
+            end
         end,
 
         chooseTargetToken = function(element, options)

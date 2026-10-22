@@ -1841,8 +1841,16 @@ local function LiveTierRows(roll)
                     return
                 end
                 local d = element.data
+                local lastState = d.lastState
+                d.lastState = ds.rollState
 
-                if ds.rollState == "rolling" and ds.rollId ~= nil and ds.rollId ~= d.rollId then
+                --a Re-roll keeps the dialog's rollId and only flips rollState
+                --back to "rolling", so going back into "rolling" is a new
+                --throw too. Without this the broadcast tier, already worked
+                --out from the re-roll's result, showed before the dice landed.
+                local reroll = ds.rollState == "rolling" and ds.rollId ~= nil and ds.rollId == d.rollId
+                    and lastState ~= nil and lastState ~= "rolling"
+                if ds.rollState == "rolling" and ds.rollId ~= nil and (ds.rollId ~= d.rollId or reroll) then
                     local rollMsg = nil
                     for _, msg in ipairs(chat.messages) do
                         if msg.key == ds.rollId then
@@ -1852,6 +1860,8 @@ local function LiveTierRows(roll)
                     end
                     if rollMsg == nil then
                         --the chat message lands a beat after the broadcast.
+                        --Keep the old state so the retry still sees the change.
+                        d.lastState = lastState
                         element:ScheduleEvent("syncRoll", 0.1)
                         return
                     end
@@ -1865,14 +1875,22 @@ local function LiveTierRows(roll)
                             numDice = numDice + 1
                         end
                     end
+                    --a re-roll changes only the dice, and the message's total
+                    --can still be the old roll's, so keep the first throw's
+                    --flat modifier.
+                    if reroll and d.mod ~= nil then
+                        flat = d.mod
+                    end
                     element.data = {
                         rollId = ds.rollId,
                         rollMsg = rollMsg,
                         mod = flat,
+                        reroll = reroll,
                         numDice = numDice,
                         faces = {},
                         endTime = nil,
                         finished = false,
+                        lastState = ds.rollState,
                     }
                     element.thinkTime = 0.1
                     if numDice == 0 and rollMsg.total ~= nil then
@@ -1882,6 +1900,14 @@ local function LiveTierRows(roll)
                         SetLandedTier(rows, nil, false)
                     end
                     return
+                end
+
+                --the roll finished with no die ever reporting a face here
+                --(e.g. a re-roll whose dice this client never saw): stop
+                --waiting and take the broadcast tier.
+                if d.rollId ~= nil and not d.finished and d.endTime == nil and ds.rollState == "finished" then
+                    d.finished = true
+                    element.thinkTime = nil
                 end
 
                 --not animating (or already settled): the broadcast tier is
@@ -1925,7 +1951,16 @@ local function LiveTierRows(roll)
                 if d.endTime ~= nil and dmhub.Time() > d.endTime and d.rollMsg.total ~= nil then
                     d.finished = true
                     element.thinkTime = nil
-                    SetLandedTier(rows, RunningTier(d, d.rollMsg.total), true)
+                    --a re-roll's message total may be the old roll's; the
+                    --landed faces are the re-roll's.
+                    local total = d.rollMsg.total
+                    if d.reroll then
+                        total = d.mod
+                        for _, value in pairs(d.faces) do
+                            total = total + value
+                        end
+                    end
+                    SetLandedTier(rows, RunningTier(d, total), true)
                     --pick up the broadcast tier if it has already moved on.
                     element:FireEvent("syncRoll")
                 end
@@ -5040,7 +5075,7 @@ local function CreateCreditHolder()
             element.data.creator = creator
             local badge = nil
             if creator ~= nil then
-                badge = CreatorCredit.Badge{ creator = creator }
+                badge = CreatorCredit.Badge{ creator = creator, light = true }
             end
             element.children = { badge }
         end,
@@ -5206,8 +5241,10 @@ local function CreateStage(args)
         roundLabel,
     }
 
-    local opportunities = gui.Panel{ width = "100%", height = "auto", flow = "vertical", halign = "center", valign = "top" }
-    local threats = gui.Panel{ width = "100%", height = "auto", flow = "vertical", halign = "center", valign = "top" }
+    --inset from the scroll area, which clips: a card under a dragged hero
+    --scales up 3% (drag-target-hover) and would lose its side borders.
+    local opportunities = gui.Panel{ width = "100%-24", height = "auto", flow = "vertical", halign = "center", valign = "top" }
+    local threats = gui.Panel{ width = "100%-24", height = "auto", flow = "vertical", halign = "center", valign = "top" }
 
     local function Column(title, list)
         return gui.Panel{

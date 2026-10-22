@@ -2110,7 +2110,7 @@ local function BuildWindow(rec)
         dragInPlace = true,
         dragging = function(element)
             if not rec.maximized then
-                DirectorScreen.ItemDragging(g_sharing.ScreenKey(rec), element.xdrag, rec.width)
+                DirectorScreen.ItemDragging(g_sharing.ScreenKey(rec), element.xdrag, rec.width, element)
             end
         end,
         drag = function(element)
@@ -2277,7 +2277,7 @@ end
 --goes out on the table (DirectorScreen grows it). One size for every card.
 --(One table, g_card, holds the card's size and helpers: this file's top
 --level is near Lua's 200-local limit.)
-local g_card = {width = 168, height = 112}
+local g_card = {width = 168, height = 112, caption = 24}
 
 --A minimized window's button size on the table, in documents-layer units.
 function g_card.Size(rec)
@@ -2414,10 +2414,11 @@ function g_card.Name(rec)
     return MapName(rec.mapid)
 end
 
---The part of an image a card shows: cropped to the card's shape from the
---middle, never stretched. aspect is the image's width over its height.
+--The part of an image a card shows: cropped to the picture's shape (the card
+--above its name strip) from the middle, never stretched. aspect is the
+--image's width over its height.
 function g_card.Crop(aspect)
-    local box = g_card.width / g_card.height
+    local box = g_card.width / (g_card.height - g_card.caption)
     local w, h = 1, 1
     if aspect > box then
         w = box / aspect
@@ -2443,15 +2444,33 @@ function g_card.Expand(rec, ops)
     ops.restore(rec)
 end
 
---A minimized window's card (see g_card.width): its picture with its name along
---the bottom. Dragged like the button; double-click, or the expand button
+--A minimized window's card (see g_card.width): its picture, with its name on
+--a strip of its own below it (Venla, 2026-10-22: nothing laid over the map,
+--which made dark maps hard to read). Dragged like the button; double-click, or the expand button
 --that shows on hover, grows it back into its window.
 function g_card.Button(rec, ops, scale)
     local image, placeholder
+    --a map card shows the whole map (its thumbnail, pack or loading art),
+    --filling the card from the middle (Venla, 2026-10-19). The window's
+    --snapshot is the fallback: it is see-through wherever the window showed
+    --no map, so it cannot fill the card.
+    local mapAspect = nil
     if ops.image ~= nil then
         image, placeholder = ops.image(rec)
     else
-        image, placeholder = Tabletop.FrozenImage(rec)
+        local thumbnails = rawget(_G, "MapThumbnail")
+        local thumb, source = nil, nil
+        if thumbnails ~= nil then
+            thumb, source = thumbnails.Image(rec.mapid)
+        end
+        if thumb ~= nil and source ~= "snapshot" then
+            image, placeholder = thumb, false
+            if source == "thumbnail" then
+                mapAspect = thumbnails.Aspect(rec.mapid)
+            end
+        else
+            image, placeholder = Tabletop.FrozenImage(rec)
+        end
     end
     local expand = gui.Panel{
         classes = {"tabletopCardExpand", "hidden"},
@@ -2480,14 +2499,26 @@ function g_card.Button(rec, ops, scale)
             interactable = false,
         },
     }
-    local card
-    card = gui.Panel{
-        classes = {"tabletopTableButton", "tabletopWindowCard"},
+    --the picture sits on a solid card: a map snapshot is see-through where the
+    --window showed no map, which let what lies under the card show through.
+    local picture = gui.Panel{
         bgimage = image,
         bgcolor = cond(placeholder, "#1b1814ff", "white"),
         cornerRadius = 6,
-        borderWidth = 1,
-        borderColor = "#ffffff30",
+        floating = true,
+        halign = "center",
+        valign = "top",
+        width = g_card.width,
+        height = g_card.height - g_card.caption,
+        interactable = false,
+    }
+    local card
+    card = gui.Panel{
+        classes = {"tabletopTableButton", "tabletopWindowCard"},
+        bgimage = "panels/square.png",
+        bgcolor = "#1b1814ff",
+        --no frame (Venla, 2026-10-22): the picture runs to the card's edges.
+        cornerRadius = 6,
         floating = true,
         halign = "left",
         valign = "top",
@@ -2502,7 +2533,7 @@ function g_card.Button(rec, ops, scale)
         dragging = function(element, target)
             ChatItemLinks.Dragging(function() return ops.chatItems(rec) end)
             local w = g_card.Size(rec)
-            DirectorScreen.ItemDragging(g_sharing.ScreenKey(rec), element.xdrag, w)
+            DirectorScreen.ItemDragging(g_sharing.ScreenKey(rec), element.xdrag, w, element)
         end,
         drag = function(element, target)
             if ChatItemLinks.Dropped() then
@@ -2525,11 +2556,9 @@ function g_card.Button(rec, ops, scale)
             g_card.Expand(rec, ops)
         end,
         hover = function(element)
-            element.selfStyle.borderColor = "#ffffff90"
             expand:SetClass("hidden", false)
         end,
         dehover = function(element)
-            element.selfStyle.borderColor = "#ffffff30"
             expand:SetClass("hidden", true)
         end,
         rightClick = function(element)
@@ -2547,48 +2576,36 @@ function g_card.Button(rec, ops, scale)
             }
         end,
 
-        --its name along the bottom, with the map or scene icon.
-        gui.Panel{
-            bgimage = "panels/square.png",
-            bgcolor = "#16171bee",
+        picture,
+        --its name, one line, on the card below the picture.
+        gui.Label{
+            text = g_card.Name(rec),
+            --a long name shrinks to stay on the card (about 22 characters
+            --fit at 12).
+            fontSize = math.max(9, math.min(12, 12 * 22 / math.max(1, #g_card.Name(rec)))),
+            color = "#efe6dc",
             floating = true,
             halign = "left",
             valign = "bottom",
-            width = "100%",
-            height = 22,
-            flow = "horizontal",
+            x = 8,
+            width = g_card.width - 16,
+            height = g_card.caption,
+            textAlignment = "left",
+            textWrap = false,
             interactable = false,
-            gui.Panel{
-                bgimage = ops.icon,
-                bgcolor = "#ffffffc0",
-                width = 12,
-                height = 12,
-                valign = "center",
-                lmargin = 7,
-                rmargin = 5,
-                interactable = false,
-            },
-            gui.Label{
-                text = g_card.Name(rec),
-                fontSize = 11,
-                color = "#ffffffe8",
-                width = g_card.width - 34,
-                height = "auto",
-                valign = "center",
-                textWrap = false,
-                interactable = false,
-            },
         },
         expand,
     }
-    --cropped to the card's shape: a map's snapshot has its window's shape;
-    --anything else is measured.
-    if type(image) == "string" and string.sub(image, 1, 13) == "#MapSnapshot:" then
-        card.selfStyle.imageRect = g_card.Crop(rec.width / math.max(1, rec.height))
+    --cropped to the card's shape: a map's thumbnail has the map's shape, its
+    --snapshot its window's; anything else is measured.
+    if mapAspect ~= nil then
+        picture.selfStyle.imageRect = g_card.Crop(mapAspect)
+    elseif type(image) == "string" and string.sub(image, 1, 13) == "#MapSnapshot:" then
+        picture.selfStyle.imageRect = g_card.Crop(rec.width / math.max(1, rec.height))
     elseif type(image) == "string" and string.sub(image, 1, 1) ~= "#" and not placeholder then
         gui.GetImageDimensionsCallback(image, function(dims)
-            if card.valid and dims ~= nil and (dims.width or 0) > 0 and (dims.height or 0) > 0 then
-                card.selfStyle.imageRect = g_card.Crop(dims.width / dims.height)
+            if picture.valid and dims ~= nil and (dims.width or 0) > 0 and (dims.height or 0) > 0 then
+                picture.selfStyle.imageRect = g_card.Crop(dims.width / dims.height)
             end
         end)
     end
@@ -2669,7 +2686,7 @@ local function UpdateTableButton(rec)
         dragging = function(element, target)
             IconRailDocDragging(target)
             ChatItemLinks.Dragging(function() return ops.chatItems(rec) end)
-            DirectorScreen.ItemDragging(g_sharing.ScreenKey(rec), element.xdrag, BUTTON_SIZE * scale)
+            DirectorScreen.ItemDragging(g_sharing.ScreenKey(rec), element.xdrag, BUTTON_SIZE * scale, element)
         end,
         drag = function(element, target)
             IconRailDocDragging(nil)
@@ -3601,8 +3618,13 @@ local function OnCurrentMapChanged(newMapId, fromMapId)
         g_liveId = target.id
         g_focusedId = target.id
         if target.minimized then
-            --we are on its map now: it opens back up.
-            RestoreWindow(target)
+            --we are on its map now: it opens back up. Not a card on the
+            --Director's Screen: a map row dropped there opens a window,
+            --travels to its map and is shrunk to a card before the travel
+            --lands (Venla, 2026-10-19); double-clicking the card grows it.
+            if not target.card then
+                RestoreWindow(target)
+            end
         elseif g_chrome.CoveringMap(target) ~= nil then
             --hidden under the maximized map: it takes the maximize over.
             ToggleMaximize(target)
@@ -6040,7 +6062,7 @@ local function BuildCard(card)
                 DirectorScreen.ItemDragging(nil, 0, 0)
             else
                 local cw = CardSize()
-                DirectorScreen.ItemDragging(CardItemId(card.charid), element.xdrag, cw * (card.scale or 1))
+                DirectorScreen.ItemDragging(CardItemId(card.charid), element.xdrag, cw * (card.scale or 1), element)
             end
             dmhub.SetDraggingMonster()
             local overMap = dmhub.tabletopDragSurface == "map"
@@ -8053,7 +8075,7 @@ do
                 IconRailDocDragging(target)
                 ChatItemLinks.Dragging(function() return {ChatItemLinks.DocItem(item.entryid)} end)
                 local iw = ItemSize(item)
-                DirectorScreen.ItemDragging(DocItemId(item.entryid), element.xdrag, iw * (item.scale or 1))
+                DirectorScreen.ItemDragging(DocItemId(item.entryid), element.xdrag, iw * (item.scale or 1), element)
             end,
             drag = function(element, target)
                 IconRailDocDragging(nil)
@@ -9417,7 +9439,7 @@ local function DefineSceneWindows()
             dragInPlace = true,
             dragging = function(element)
                 if not rec.maximized then
-                    DirectorScreen.ItemDragging(g_sharing.ScreenKey(rec), element.xdrag, rec.width)
+                    DirectorScreen.ItemDragging(g_sharing.ScreenKey(rec), element.xdrag, rec.width, element)
                 end
             end,
             drag = function(element)
@@ -11681,6 +11703,10 @@ function Tabletop.CreateLayer()
         blocksGameInteraction = false,
         swallowPress = true,
         rightClick = function(element)
+            --a right-click on a table die opens the die's menu instead.
+            if rawget(_G, "TableDice") ~= nil and TableDice.DieJustRightClicked() then
+                return
+            end
             ShowTableMenu()
         end,
 

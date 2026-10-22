@@ -10089,6 +10089,10 @@ end
 
 function creature:EndRound(token)
 
+    --"At the end of each round" triggers see the round as it ended, before
+    --round-scoped effects and auras expire below.
+    self:DispatchEvent("endround")
+
     --remove ongoing effects.
 	if self:has_key("ongoingEffects") then
 		local hasRemoves = false

@@ -949,6 +949,7 @@ function EotwHeroSheet.Equip(tok, itemid)
             p:Equipment()[slot] = itemid
         end,
     }
+    EotwAnalytics.Track("eotw_equip", { action = "equip", heroid = tok.charid, itemid = itemid, slot = slot })
     return true, nil
 end
 
@@ -973,6 +974,9 @@ end
 --- @param tok CharacterToken
 --- @param slot string
 function EotwHeroSheet.Unequip(tok, slot)
+    local itemid = nil
+    pcall(function() itemid = tok.properties:Equipment()[slot] end)
+    EotwAnalytics.Track("eotw_equip", { action = "unequip", heroid = tok.charid, itemid = itemid, slot = slot })
     tok:ModifyProperties{
         description = "Unequip treasure",
         execute = function()

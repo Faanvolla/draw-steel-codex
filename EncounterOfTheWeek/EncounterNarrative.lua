@@ -519,6 +519,34 @@ local function ResolveSection(m, doc, beat, section, heroes, optionIndex, decide
     m.log = m.log or {}
     m.log[#m.log + 1] = log
     m.seq = (tonumber(m.seq) or 0) + 1
+
+    --analytics (host): which way the party went. For an individual section,
+    --how many heroes took each option ("2,1,0" by option order).
+    local fields = {
+        section = section.name,
+        mode = section.mode,
+        options = #(section.options or {}),
+        landed = applied,
+    }
+    if section.mode == "individual" then
+        local counts = {}
+        for i = 1, #(section.options or {}) do
+            counts[i] = 0
+        end
+        for _, group in ipairs(result.groups or {}) do
+            counts[group.optionIndex] = #(group.heroNames or {})
+        end
+        local parts = {}
+        for i, n in ipairs(counts) do
+            parts[i] = tostring(n)
+        end
+        fields.optionCounts = table.concat(parts, ",")
+    else
+        fields.option = result.optionName
+        fields.optionIndex = optionIndex
+        fields.decidedBy = decidedBy
+    end
+    EotwAnalytics.Track("eotw_narrative_choice", fields)
 end
 
 --A split agreed-upon vote: the host picks a player at random and records the

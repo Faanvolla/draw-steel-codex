@@ -1812,6 +1812,9 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 			Tabletop.CreateButtonLayer(),
 			--the Director's Screen's tab and drop hint, over the windows.
 			DirectorScreen.CreateTabLayer(),
+			--3D dice resting on the table: the Director's dice button and the
+			--dice sync (TableDice.lua; the dice themselves draw in the engine).
+			(rawget(_G, "TableDice") ~= nil and TableDice.CreateLayer()) or gui.Panel{width = 1, height = 1, interactable = false},
 			--mode banners (e.g. the encounter builder's staging banner) sit over
 			--every window, so click-to-front on a map window cannot bury them.
 			gamehud:CreateBannerLayer(),
@@ -2753,30 +2756,14 @@ function GameHud:CreateTipBanner()
 	}
 
 	--Floating so it pins to the right edge regardless of sibling layout.
-	local dismissButton = gui.Label{
+	local dismissButton = gui.Button{
 		id = "tipBannerDismiss",
-		classes = {"tipBannerContent", "sizeS"},
+		classes = {"tipBannerContent", "sizeM"},
 		text = "Dismiss",
-		color = "white",
-		fontSize = 14,
-		bold = true,
-		width = "auto",
-		height = "auto",
 		floating = true,
 		halign = "right",
 		valign = "center",
 		hmargin = 24,
-		styles = {
-			{
-				selectors = {"hover"},
-				color = "#ffe39a",
-				brightness = 1.1,
-			},
-			{
-				selectors = {"press"},
-				brightness = 0.7,
-			},
-		},
 		press = function(element)
 			GameHud.instance:HideTip()
 		end,
@@ -2784,34 +2771,16 @@ function GameHud:CreateTipBanner()
 
 	--A notice's extra button (e.g. "Select Shadow"), pinned to the left edge
 	--opposite Dismiss. Collapsed unless the notice's controls ask for it.
-	local actionButton = gui.Label{
+	local actionButton = gui.Button{
 		id = "tipBannerAction",
-		classes = {"tipBannerContent", "sizeS", "collapsed"},
+		classes = {"tipBannerContent", "sizeM", "collapsed"},
 		text = "",
-		color = "white",
-		fontSize = 14,
-		bold = true,
-		width = "auto",
-		height = "auto",
-		maxWidth = 150,
-		textWrap = true,
 		floating = true,
 		halign = "left",
 		valign = "center",
 		hmargin = 24,
 		--action: the {text, press} currently shown, set by _ApplyTipControls.
 		data = {},
-		styles = {
-			{
-				selectors = {"hover"},
-				color = "#ffe39a",
-				brightness = 1.1,
-			},
-			{
-				selectors = {"press"},
-				brightness = 0.7,
-			},
-		},
 		press = function(element)
 			local action = element.data.action
 			if action ~= nil then

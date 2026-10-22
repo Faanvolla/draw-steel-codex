@@ -7836,6 +7836,32 @@ creature.RegisterSymbol {
     }
 }
 
+--"For each hero in the encounter": live heroes on the map, and in initiative when
+--combat is running. Unlike NumberOfPlayers this counts what is actually present.
+creature.RegisterSymbol {
+    symbol = "heroesinencounter",
+    lookup = function(c)
+        local q = dmhub.initiativeQueue
+        local entries = (q ~= nil and not q.hidden) and q.entries or nil
+        local count = 0
+        for _, tok in ipairs(dmhub.allTokens) do
+            local props = tok.properties
+            if tok.valid and props ~= nil and props:IsHero() and not props:IsDead() then
+                if entries == nil or entries[InitiativeQueue.GetInitiativeId(tok)] ~= nil then
+                    count = count + 1
+                end
+            end
+        end
+        return count
+    end,
+    help = {
+        name = "HeroesInEncounter",
+        type = "number",
+        desc = "The number of live heroes on the map; while combat runs, only those in initiative.",
+        seealso = {"NumberOfPlayers"},
+    }
+}
+
 creature.RegisterSymbol {
     symbol = "shortname",
     lookup = function(c)
@@ -8397,6 +8423,48 @@ GameSystem.RegisterGoblinScriptField{
 
         return false
     end,
+}
+
+--Distance in squares from this creature to the nearest live Targetable object whose
+--object keywords include the given keyword, on the same actual floor. Footprint to
+--footprint, like token:Distance. 999 when there is no such object, so a "within N"
+--test simply fails. Topaz Dragon spikes use it: "each enemy within 2 squares of a spike".
+creature.RegisterSymbol {
+    symbol = "distancetoobjectwithkeyword",
+    lookup = function(c)
+        return function(keyword)
+            local token = GetDeployedCreatureToken(c)
+            if token == nil or keyword == nil or keyword == "" then
+                return 999
+            end
+
+            local actualFloor = GetTokenActualFloor(token)
+            local best = 999
+            --GetTargetableObjectsWithKeyword only returns objects on the current map
+            --(object tokens report hasTokenOnThisMap = false, so it can't be used here).
+            for _,other in ipairs(Encounter.GetTargetableObjectsWithKeyword(string.lower(tostring(keyword)))) do
+                if other.charid ~= token.charid and GetTokenActualFloor(other) == actualFloor then
+                    local alive = true
+                    pcall(function()
+                        alive = other.properties:CurrentHitpoints() > 0
+                    end)
+                    if alive then
+                        local distance = tonumber(token:Distance(other)) or 999
+                        if distance < best then
+                            best = distance
+                        end
+                    end
+                end
+            end
+            return best
+        end
+    end,
+    help = {
+        name = "DistanceToObjectWithKeyword",
+        type = "function",
+        desc = "Given an object keyword, the distance in squares to the nearest live targetable object with that keyword on this creature's floor. 999 if there is none.",
+        examples = { 'DistanceToObjectWithKeyword("topaz spike") <= 2' },
+    },
 }
 
 

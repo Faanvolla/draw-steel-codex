@@ -907,6 +907,209 @@ local function CreatePanelButton(panelName)
     }
 end
 
+--- Encounter Rules (bottom-left corner) --------------------------------------
+
+--An encounter may ship an "Encounter Rules" journal document (filed in its
+--map's journal folder; see EncounterMontage.FindRulesDocument). Once combat
+--begins a book button joins the corner strip and opens it in a read-only
+--reading window.
+local RULES_ICON = "phosphor/book-bookmark.png"
+local RULES_WINDOW_WIDTH = 760
+local RULES_WINDOW_HEIGHT = 860
+
+---@type Panel?
+local m_rulesDialog = nil
+--the read-only copy last shown, so a reopened window keeps where the
+--player dragged it (_tmp_location lives on the document).
+---@type MarkdownDocument?
+local m_rulesCopy = nil
+--documents opened this session: the button's "new" badge goes once read.
+local m_rulesSeen = {}
+--the live corner button, if any (a rail rebuild replaces it).
+---@type Panel?
+local m_rulesButton = nil
+
+--The Encounter Rules document to offer now, or nil: only once combat has
+--begun, and only when the map (or this series part) has one.
+local function CurrentRulesDocument()
+    local montage = rawget(_G, "EncounterMontage")
+    local eotw = rawget(_G, "EncounterOfTheWeekGame")
+    if montage == nil or eotw == nil or montage.FindRulesDocument == nil or eotw.CombatStarted == nil then
+        return nil
+    end
+    local doc = nil
+    pcall(function()
+        if eotw.CombatStarted() then
+            doc = montage.FindRulesDocument()
+        end
+    end)
+    return doc
+end
+
+local function IsRulesOpen()
+    return m_rulesDialog ~= nil and m_rulesDialog.valid
+end
+
+local function CloseRules()
+    local dialog = m_rulesDialog
+    if dialog ~= nil and dialog.valid then
+        dialog:DestroySelf()
+    end
+    m_rulesDialog = nil
+end
+
+local function ShowRules(doc)
+    CloseRules()
+    m_rulesSeen[doc.id] = true
+    --a local read-only copy: nothing in the window can edit or upload the
+    --encounter's document, even for a Director running an authoring test
+    --or the author playing their own module.
+    local copy = DeepCopy(doc)
+    copy.readonly = true
+    if m_rulesCopy ~= nil and m_rulesCopy.id == doc.id and m_rulesCopy:has_key("_tmp_location") then
+        copy._tmp_location = m_rulesCopy._tmp_location
+    end
+    m_rulesCopy = copy
+    m_rulesDialog = copy:PresentDocument{
+        --no editing, presenting or journal breadcrumb; the reader keeps
+        --the close button.
+        presentationMode = true,
+        presentationAllowClose = true,
+        width = RULES_WINDOW_WIDTH,
+        height = RULES_WINDOW_HEIGHT,
+    }
+    GameHud.instance.documentsPanel:AddChild(m_rulesDialog)
+    --the rail-mode Font Size zoom needs the window attached.
+    m_rulesDialog:FireEvent("setWindowScale")
+end
+
+local function CreateRulesButton()
+    local m_doc = nil
+    local m_badgeShown = false
+
+    local badge = gui.Panel{
+        floating = true,
+        halign = "left",
+        valign = "top",
+        x = RAIL_BUTTON_SIZE - 3,
+        y = 2,
+        width = 1,
+        height = 1,
+        flow = "none",
+        interactable = false,
+    }
+
+    --shows/hides the button, lights it while the window is up, and keeps
+    --the "new" badge until the rules are first read.
+    local function Sync(button)
+        local doc = CurrentRulesDocument()
+        m_doc = doc
+        button:SetClass("collapsed", doc == nil)
+        if doc == nil then
+            --combat reset (an authoring test restarted or ended): the
+            --window goes with the button.
+            CloseRules()
+            return
+        end
+        button:SetClass("active", IsRulesOpen())
+        local showBadge = not m_rulesSeen[doc.id]
+        if showBadge ~= m_badgeShown then
+            m_badgeShown = showBadge
+            if showBadge then
+                badge.children = {
+                    gui.NewContentAlert{
+                        count = 1,
+                        size = 16,
+                        halign = "center",
+                        valign = "center",
+                        x = 0,
+                        y = 0,
+                        interactable = false,
+                    },
+                }
+            else
+                badge.children = {}
+            end
+        end
+    end
+
+    local button
+    button = gui.Panel{
+        classes = {"iconRailButton", "collapsed"},
+        width = RAIL_BUTTON_SIZE,
+        height = RAIL_BUTTON_SIZE,
+        vmargin = 4,
+        bgimage = "panels/square.png",
+        blurBackground = true,
+        swallowPress = true,
+
+        press = function(element)
+            audio.FireSoundEvent("Mouse.Click")
+            if IsRulesOpen() then
+                CloseRules()
+            elseif m_doc ~= nil then
+                ShowRules(m_doc)
+            end
+            Sync(element)
+        end,
+
+        hover = function(element)
+            gui.Tooltip("Encounter Rules")(element)
+        end,
+
+        gui.Panel{
+            classes = {"iconRailIcon"},
+            bgimage = RULES_ICON,
+            width = 20,
+            height = 20,
+            halign = "center",
+            valign = "center",
+            interactable = false,
+        },
+
+        gui.Panel{
+            classes = {"iconRailActiveMark"},
+            bgimage = true,
+            width = 16,
+            height = 2,
+            halign = "center",
+            valign = "bottom",
+            y = -3,
+            interactable = false,
+        },
+
+        badge,
+    }
+
+    --the thinking wrapper never collapses (a collapsed panel's think
+    --never runs); it shrinks to nothing while the button is collapsed.
+    return gui.Panel{
+        width = "auto",
+        height = "auto",
+        halign = "center",
+        flow = "vertical",
+        thinkTime = 0.25,
+        create = function(element)
+            m_rulesButton = element
+            Sync(button)
+        end,
+        think = function(element)
+            Sync(button)
+        end,
+        destroy = function(element)
+            --the interface going away (End Test, the Director-UI hatch)
+            --takes the window with it; a rail rebuild that remounts the
+            --button within a moment keeps it.
+            dmhub.Schedule(0.5, function()
+                if mod.unloaded or m_rulesButton == nil or not m_rulesButton.valid then
+                    CloseRules()
+                end
+            end)
+        end,
+        button,
+    }
+end
+
 --The bottom-left corner strip: the Journal, Chat and Action Log buttons
 --survive the takeover (user direction 2026-08-28 for chat/log,
 --2026-08-30 for the journal) so players keep the encounter's briefing
@@ -914,12 +1117,15 @@ end
 --(vertical flow, so first in the list is the topmost button).
 --The map tools (playtest 2026-10-19 N4) sit above those, behind a short
 --rule: the EotW takeover hides the map rail that normally carries them.
+--The Encounter Rules book sits directly above Journal, collapsed until
+--combat begins in an encounter that has rules.
 local function CreateCornerButtonsPanel()
     local buttons = {}
     for _, name in ipairs({"Measuring Tool", "Whiteboard"}) do
         buttons[#buttons+1] = CreatePanelButton(name)
     end
     local toolCount = #buttons
+    buttons[#buttons+1] = CreateRulesButton()
     for _, name in ipairs({"Journal", "Chat", "Action Log"}) do
         buttons[#buttons+1] = CreatePanelButton(name)
     end
@@ -1592,7 +1798,7 @@ function EncounterOfTheWeekHud.ShowAbout()
                 height = ABOUT_ART_HEIGHT,
                 image = ABOUT_ART,
                 creator = "czepeku",
-                badge = { hmargin = 16, vmargin = 12 },
+                badge = { hmargin = 16, vmargin = 12, light = true },
             },
         },
 
