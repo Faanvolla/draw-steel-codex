@@ -25,8 +25,8 @@ function dice.CreateTableDie(args) end
 --- @return nil|TableFigureLua
 function dice.CreateTableFigure(args) end
 
---- Creates a 3D tracker token for the tabletop (see TableTrackerLua): shape 'diamond' (steel and red enamel), 'coin' (gold) or 'stone' (steel and pewter), size its diameter in screen pixels, text the number on its face. Show it with a panel whose bgimage is the token's image.
---- @param args {shape: string, size: nil|number, text: nil|string, tilt: nil|number}
+--- Creates a 3D tracker token for the tabletop (see TableTrackerLua): shape 'diamond' (steel and red enamel), 'coin' (gold), 'stone' (steel and pewter), or the trinkets 'flipcoin' (thin and two-sided: see Flip), 'gem' (a faceted octagon) and 'arrow' (the pointer: see yaw); size its diameter in screen pixels, text the number on its face. bezel ('steel', 'gold', 'bronze', 'silver', 'ruby') and face ('redEnamel', 'blueEnamel', 'blackEnamel', 'goldSatin', 'silverSatin', 'pewter', 'sand', 'ruby') change the metals; left out, the shape's own are used. Show it with a panel whose bgimage is the token's image.
+--- @param args {shape: string, bezel: nil|string, face: nil|string, size: nil|number, text: nil|string, tilt: nil|number}
 --- @return nil|TableTrackerLua
 function dice.CreateTableTracker(args) end
 

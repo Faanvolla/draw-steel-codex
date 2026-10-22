@@ -332,6 +332,23 @@ function DTProject:_invalidateProgressCache()
     self._progressDirty = true
 end
 
+--- Repairs progress items that came back from storage as plain, method-less tables.
+--- A record saved without its "__typeName" tag deserializes with no metatable, so
+--- calling GetID or GetAmount on it would fail. The list it lives in says what it
+--- should be, and every field of these types has a type-level default (or is read
+--- via try_get), so re-attaching the metatable is the whole repair.
+--- @param items table The projectRolls or progressAdjustments list
+--- @param gameType table DTRoll or DTAdjustment
+--- @return table items The same list, with every plain table entry restored
+local function _rehydrateItems(items, gameType)
+    for _, item in ipairs(items) do
+        if type(item) == "table" and getmetatable(item) == nil then
+            setmetatable(item, gameType.mt)
+        end
+    end
+    return items
+end
+
 --- Gets a specific project roll
 --- @param rollId string GUID ID of the roll to find
 --- @return DTRoll|nil roll The roll object or nil if not found
@@ -341,10 +358,11 @@ function DTProject:GetRoll(rollId)
         return nil, nil
     end
 
-    for i = #self.projectRolls, 1, -1 do
-        local roll = self.projectRolls[i]
+    local rolls = self:GetRolls()
+    for i = #rolls, 1, -1 do
+        local roll = rolls[i]
         if roll and roll:GetID() == rollId then
-            return self.projectRolls[i], i
+            return roll, i
         end
     end
 
@@ -354,7 +372,7 @@ end
 --- Gets all project rolls
 --- @return table projectRolls Array of DTRoll instances
 function DTProject:GetRolls()
-    return self.projectRolls or {}
+    return _rehydrateItems(self.projectRolls or {}, DTRoll)
 end
 
 --- Sets project status before adding or removing a progress item
@@ -478,7 +496,7 @@ end
 --- Gets all progress adjustments
 --- @return table adjustments Array of DTAdjustment instances
 function DTProject:GetAdjustments()
-    return self.progressAdjustments or {}
+    return _rehydrateItems(self.progressAdjustments or {}, DTAdjustment)
 end
 
 --- Adds a progress adjustment to this project
@@ -506,8 +524,9 @@ function DTProject:RemoveAdjustment(adjustmentId)
         return self
     end
 
-    for i = #self.progressAdjustments, 1, -1 do
-        local adjustment = self.progressAdjustments[i]
+    local adjustments = self:GetAdjustments()
+    for i = #adjustments, 1, -1 do
+        local adjustment = adjustments[i]
         if adjustment and adjustment:GetID() == adjustmentId then
             self:_setStateFromProgressChange(adjustment, -1)
             table.remove(self.progressAdjustments, i)

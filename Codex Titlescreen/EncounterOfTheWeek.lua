@@ -162,6 +162,15 @@ setting{
     storage = "preference",
 }
 
+--The newest chat message this player has seen in the town's chat drawer,
+--per channel ("town", or a party's gameid), in server ms. Drives the
+--drawer's New divider.
+setting{
+    id = "eotw:chatlastviewed",
+    default = {},
+    storage = "preference",
+}
+
 --The town's city (see EotwRoster.lua). Its server is EotwRoster.CityOptions(),
 --read at each connect.
 local LOBBY_ID = EotwRoster.CITY_ID
@@ -2674,6 +2683,21 @@ CreateScreen = function(args)
     local statusLabel = nil
     local chatErrorLabel = nil
     local chatTitleLabel = nil
+    local chatTabRow = nil
+    local chatInput = nil
+
+    --whether the chat drawer is open, and per channel the last-viewed mark
+    --taken when it opened: newer messages sit below the New divider until
+    --the drawer closes (or we post).
+    local m_chatOpen = false
+    local m_chatDividers = {}
+    --follow new messages to the bottom unless the player has scrolled up
+    --to read history; reset on opening the drawer or changing channel.
+    local m_chatStickBottom = true
+    local m_chatChannel = nil
+    --in a party view the drawer has a Town Chat and a Game Chat tab; this
+    --is the one showing ("town" or "game"). Entering a party keeps it.
+    local m_chatTab = "town"
 
     --The two party boards: the Town Gate's ("gate": the Encounter of the
     --Week and the past ones) and the Proving Pits' ("danger"). Each is the
@@ -2695,8 +2719,8 @@ CreateScreen = function(args)
     local m_dangerStats = {}
 
     --When set, the games area shows this game's lobby view (slots + your
-    --heroes) instead of the games list, and the chat column switches to
-    --the game's private chat channel.
+    --heroes) instead of the games list, and the chat drawer gains a tab
+    --for the game's private chat channel.
     local m_viewGameid = nil
 
     --The hero-card keys ("userid|kind|id") rendered by the last game-view
@@ -2704,6 +2728,24 @@ CreateScreen = function(args)
     --without animation; afterwards any hero not in this set is NEW and its
     --card plays the grow + fade-in entrance.
     local m_knownHeroCards = nil
+
+    --The party whose host is choosing how long to blow the horn for (the
+    --button row shows the 2/5/10 minute choices instead), or nil.
+    local m_hornPickerFor = nil
+
+    --Milliseconds the party's horn still sounds, or 0. While it sounds the
+    --server refuses Begin unless every slot is filled.
+    local HornRemainingMs = function(record)
+        if type(record.hornUntil) ~= "number" then
+            return 0
+        end
+        return math.max(0, record.hornUntil - dmhub.serverTimeMilliseconds)
+    end
+
+    local FormatCountdown = function(ms)
+        local secs = math.ceil(ms / 1000)
+        return string.format("%d:%02d", math.floor(secs / 60), secs % 60)
+    end
 
     --Other players' roster heroes, read from the City for their cards, keyed
     --"userid|heroid": a detached token once loaded, false while the request
@@ -2751,6 +2793,47 @@ CreateScreen = function(args)
         }
     end
 
+    --True when a channel holds someone else's message newer than our
+    --last look at it.
+    local ChatUnread = function(channel, chat)
+        if chat == nil then
+            return false
+        end
+        local viewed = dmhub.GetSettingValue("eotw:chatlastviewed")
+        local seen = type(viewed) == "table" and viewed[channel] or 0
+        for _,msg in pairs(chat) do
+            if type(msg) == "table" and type(msg.ts) == "number" and msg.ts > seen and msg.userid ~= dmhub.loginUserid then
+                return true
+            end
+        end
+        return false
+    end
+
+    --One of the chat drawer's two tabs; a red NEW marks unread messages.
+    local ChatTab = function(tab, text)
+        return gui.Label{
+            classes = { "chatTab" },
+            bgimage = "panels/square.png",
+            text = text,
+            fontSize = 20,
+            bold = true,
+            color = Styles.textColor,
+            textAlignment = "center",
+            width = "50%",
+            height = "100%",
+            refreshTab = function(element, info)
+                element:SetClass("selected", info.selected == tab)
+                element.text = cond(info.unread[tab], text .. " <color=#f23f43><size=70%>NEW</size></color>", text)
+            end,
+            press = function(element)
+                if m_chatTab ~= tab then
+                    m_chatTab = tab
+                    RefreshChat()
+                end
+            end,
+        }
+    end
+
     --A board's scene card is narrow over its lists, so the art (the Gate's
     --tower, the Proving Pits' monster) stays clear, and wide in a party view,
     --where a full party's six hero cards need one row. The list panel sits in
@@ -2795,6 +2878,59 @@ CreateScreen = function(args)
             halign = "center",
             textAlignment = "center",
             vmargin = 24,
+        }
+    end
+
+    --A chat message's time: "3:42 PM" today, "Oct 19, 3:42 PM" before.
+    local FormatChatTime = function(ms)
+        local secs = math.floor(ms / 1000)
+        local t = os.date("*t", secs) --[[@as osdate]]
+        local now = os.date("*t") --[[@as osdate]]
+        local hour = t.hour % 12
+        if hour == 0 then
+            hour = 12
+        end
+        local clock = string.format("%d:%02d %s", hour, t.min, cond(t.hour < 12, "AM", "PM"))
+        if t.year == now.year and t.yday == now.yday then
+            return clock
+        end
+        return string.format("%s, %s", os.date("%b %d", secs), clock)
+    end
+
+    --Chat text shown as typed: rich-text tags in it are not applied.
+    local ChatPlain = function(text)
+        return "<noparse>" .. string.gsub(text, "</?[nN][oO][pP][aA][rR][sS][eE]>", "") .. "</noparse>"
+    end
+
+    --The red line between unread chat messages and those already seen.
+    local ChatNewDivider = function()
+        local red = "#f23f43"
+        return gui.Panel{
+            width = "96%",
+            height = 18,
+            halign = "left",
+            vmargin = 6,
+            flow = "horizontal",
+            gui.Panel{
+                bgimage = "panels/square.png",
+                bgcolor = red,
+                width = "100%-52",
+                height = 1,
+                valign = "center",
+            },
+            gui.Label{
+                text = "NEW",
+                fontSize = 12,
+                bold = true,
+                color = "#ffffff",
+                bgimage = "panels/square.png",
+                bgcolor = red,
+                width = 44,
+                height = 16,
+                lmargin = 8,
+                valign = "center",
+                textAlignment = "center",
+            },
         }
     end
 
@@ -4234,8 +4370,90 @@ CreateScreen = function(args)
             }
         end
 
+        --the horn: a countdown everyone in the party sees while it sounds.
+        if isOpen and type(record.hornUntil) == "number" then
+            local HornText = function()
+                local remaining = HornRemainingMs(record)
+                if slotsFilled >= slotsTotal then
+                    return "The horn has sounded and the party is full."
+                elseif remaining <= 0 then
+                    return "The horn has sounded."
+                end
+                return string.format("The horn sounds! Waiting %s for more heroes to join -- the party can begin when it is full or time runs out.", FormatCountdown(remaining))
+            end
+            children[#children+1] = gui.Label{
+                text = HornText(),
+                fontSize = 18,
+                color = "#d9b56a",
+                width = "90%",
+                height = "auto",
+                halign = "center",
+                textAlignment = "center",
+                vmargin = 8,
+                thinkTime = 0.5,
+                think = function(element)
+                    element.text = HornText()
+                end,
+            }
+        end
+
         --controls. (Adding heroes is the "+" card in the lineup above.)
         local buttons = {}
+        --Blow the Horn: host of an open public party, once. The host picks
+        --how long to wait; the town chat and Discord hear it.
+        local canHorn = isHost and isOpen and record.public == true and record.hornUntil == nil and slotsFilled < slotsTotal
+        if canHorn and m_hornPickerFor == gameid then
+            for _,minutes in ipairs({ 2, 5, 10 }) do
+                buttons[#buttons+1] = gui.Button{
+                    text = string.format("Wait %d min", minutes),
+                    fontSize = 20,
+                    width = 140,
+                    height = 44,
+                    hmargin = 6,
+                    click = function()
+                        m_hornPickerFor = nil
+                        if m_conn == nil then
+                            return
+                        end
+                        EotwAnalytics.Track("eotw_party_horn", {
+                            runid = gameid,
+                            encounter = record.encounter,
+                            minutes = minutes,
+                            slotsFilled = slotsFilled,
+                        })
+                        m_conn:Request{
+                            action = "blow-horn",
+                            args = { gameid = gameid, minutes = minutes },
+                            error = ShowGamesError,
+                        }
+                    end,
+                }
+            end
+            buttons[#buttons+1] = gui.Button{
+                text = "Cancel",
+                fontSize = 20,
+                width = 120,
+                height = 44,
+                hmargin = 6,
+                click = function()
+                    m_hornPickerFor = nil
+                    RefreshGames()
+                end,
+            }
+        elseif canHorn then
+            buttons[#buttons+1] = gui.Button{
+                text = "Blow the Horn",
+                fontSize = 20,
+                width = 180,
+                height = 44,
+                hmargin = 6,
+                hover = gui.Tooltip("Call for more heroes in town and on Discord. The party waits until it is full or the time you choose runs out."),
+                click = function()
+                    m_hornPickerFor = gameid
+                    RefreshGames()
+                end,
+            }
+        end
         if not isMember and isOpen and (record.public == true or isHost) then
             buttons[#buttons+1] = gui.Button{
                 text = "Join Game",
@@ -4254,16 +4472,28 @@ CreateScreen = function(args)
         --enters via CheckLaunchedGames and runs setup in-game; members
         --wait for the game-side "ready-game" signal to flip the record to
         --"ready" before entering (see CheckLaunchedGames).
-        if isHost and isOpen then
+        if isHost and isOpen and m_hornPickerFor ~= gameid then
             local canBegin = slotsFilled >= MIN_HEROES and slotsFilled <= slotsTotal
+            --the horn holds Begin until the party is full or time is up.
+            local HornHolds = function()
+                return slotsFilled < slotsTotal and HornRemainingMs(record) > 0
+            end
             buttons[#buttons+1] = gui.Button{
                 text = "Begin",
                 fontSize = 20,
                 width = 160,
                 height = 44,
                 hmargin = 6,
-                opacity = cond(canBegin, 1, 0.45),
+                opacity = cond(canBegin and not HornHolds(), 1, 0.45),
+                thinkTime = 0.5,
+                think = function(element)
+                    element.selfStyle.opacity = cond(canBegin and not HornHolds(), 1, 0.45)
+                end,
                 click = function()
+                    if HornHolds() then
+                        ShowGamesError(string.format("The horn is still sounding: the party can begin when it is full or in %s.", FormatCountdown(HornRemainingMs(record))))
+                        return
+                    end
                     if not canBegin then
                         if slotsFilled > slotsTotal then
                             ShowGamesError(string.format("At most %d heroes can begin (%d filled).", slotsTotal, slotsFilled))
@@ -4963,6 +5193,20 @@ CreateScreen = function(args)
         end
         local presence = m_conn:GetPath("/presence")
         local names = {}
+        --the Game Chat tab lists the party, marking who is not in town.
+        if m_viewGameid ~= nil and m_chatTab == "game" then
+            local record = m_conn:GetPath("/state/games/" .. m_viewGameid)
+            for userid,player in pairs(record ~= nil and record.players or {}) do
+                local name = ChatPlain(player.name or "?")
+                if presence == nil or presence[userid] == nil then
+                    name = name .. " <color=#ffffff80>(away)</color>"
+                end
+                names[#names+1] = name
+            end
+            table.sort(names)
+            presenceLabel.text = string.format("In this party (%d): %s", #names, table.concat(names, ", "))
+            return
+        end
         if presence ~= nil then
             for _,entry in pairs(presence) do
                 names[#names+1] = entry.name or "?"
@@ -4985,37 +5229,134 @@ CreateScreen = function(args)
             return
         end
 
-        --in a game lobby view the chat column shows that game's private
-        --channel; otherwise the lobby-wide chat.
-        local chat
+        --the line above the messages follows the tab: town or party.
+        RefreshPresence()
+
+        --in a party view the tabs pick the town or the party's private
+        --channel; otherwise the drawer is the town chat alone.
+        local townChat = m_conn:GetPath("/chat")
+        local gameChat = nil
         if m_viewGameid ~= nil then
-            chat = m_conn:GetPath("/gamechat/" .. m_viewGameid)
-            if chatTitleLabel ~= nil and chatTitleLabel.valid then
-                chatTitleLabel.text = "Game Chat"
+            gameChat = m_conn:GetPath("/gamechat/" .. m_viewGameid)
+        end
+        local gameTab = m_viewGameid ~= nil and m_chatTab == "game"
+        local chat = townChat
+        local channel = "town"
+        if gameTab then
+            chat = gameChat
+            channel = m_viewGameid --[[@as string]] --gameTab implies a party view
+        end
+        if chatTitleLabel ~= nil and chatTitleLabel.valid then
+            chatTitleLabel:SetClass("collapsed", m_viewGameid ~= nil)
+        end
+        if chatTabRow ~= nil and chatTabRow.valid then
+            chatTabRow:SetClass("collapsed", m_viewGameid == nil)
+            if m_viewGameid ~= nil then
+                chatTabRow:FireEventTree("refreshTab", {
+                    selected = m_chatTab,
+                    unread = {
+                        town = gameTab and ChatUnread("town", townChat),
+                        game = (not gameTab) and ChatUnread(m_viewGameid, gameChat),
+                    },
+                })
             end
-        else
-            chat = m_conn:GetPath("/chat")
-            if chatTitleLabel ~= nil and chatTitleLabel.valid then
-                chatTitleLabel.text = "Lobby Chat"
-            end
+        end
+        --players must know when what they type also shows on Discord.
+        if chatInput ~= nil and chatInput.valid then
+            local mirrored = channel == "town" and m_conn:GetPath("/city/discordBridge") == true
+            chatInput.placeholderText = cond(mirrored, "Say something... (also posted to Discord)", "Say something...")
         end
         local ids = {}
+        local newestTs = nil
         if chat ~= nil then
-            for msgid,_ in pairs(chat) do
+            for msgid,msg in pairs(chat) do
                 ids[#ids+1] = msgid
+                if type(msg.ts) == "number" and (newestTs == nil or msg.ts > newestTs) then
+                    newestTs = msg.ts
+                end
             end
         end
-        --msgids sort chronologically; show newest first so the latest
-        --message is always visible without scroll-position management.
-        table.sort(ids, function(a,b) return a > b end)
+        --msgids sort chronologically: oldest at the top, newest at the bottom.
+        table.sort(ids)
+        if channel ~= m_chatChannel then
+            m_chatChannel = channel
+            m_chatStickBottom = true
+        end
+
+        --while the drawer is open everything shown counts as seen, but the
+        --divider stays where it was when the drawer opened. false = no
+        --divider (first visit to this channel).
+        local divider = nil
+        if m_chatOpen then
+            local viewed = dmhub.GetSettingValue("eotw:chatlastviewed")
+            if type(viewed) ~= "table" then
+                viewed = {}
+            end
+            if m_chatDividers[channel] == nil then
+                m_chatDividers[channel] = viewed[channel] or false
+            end
+            divider = m_chatDividers[channel]
+            local lastViewed = viewed[channel] --[[@as number|nil]]
+            if newestTs ~= nil and (lastViewed == nil or newestTs > lastViewed) then
+                --keep only the town and the party in view: party chats come and go.
+                local keep = { town = viewed.town }
+                if m_viewGameid ~= nil then
+                    keep[m_viewGameid] = viewed[m_viewGameid]
+                end
+                keep[channel] = newestTs
+                dmhub.SetSettingValue("eotw:chatlastviewed", keep)
+            end
+
+            --posting clears the divider, as in Discord.
+            if divider and chat ~= nil then
+                for _,msg in pairs(chat) do
+                    if msg.userid == dmhub.loginUserid and type(msg.ts) == "number" and msg.ts > divider then
+                        divider = false
+                        m_chatDividers[channel] = newestTs
+                        break
+                    end
+                end
+            end
+        end
 
         local children = {}
+        local seenAbove = false
         for _,msgid in ipairs(ids) do
             --ids is empty unless chat is non-nil.
             ---@cast chat -nil
             local msg = chat[msgid]
+            local ts = type(msg.ts) == "number" and msg.ts or nil
+            if divider and ts ~= nil then
+                if ts <= divider then
+                    seenAbove = true
+                elseif seenAbove then
+                    children[#children+1] = ChatNewDivider()
+                    seenAbove = false
+                    divider = false
+                end
+            end
+            local stamp = ""
+            if ts ~= nil then
+                stamp = string.format("<color=#ffffff80><size=80%%>%s</size></color>  ", FormatChatTime(ts))
+            end
+            --messages bridged in from the Discord channel carry a tag.
+            local name = string.format("<b>%s:</b>", ChatPlain(msg.name or "?"))
+            if msg.source == "discord" then
+                name = string.format("<color=#8c9eff><b>%s</b> <size=70%%>DISCORD</size>:</color>", ChatPlain(msg.name or "?"))
+            end
+            local edited = ""
+            if msg.edited then
+                edited = " <color=#ffffff80><size=80%>(edited)</size></color>"
+            end
+            local body = ChatPlain(msg.text or "")
+            --a horn's announcement reads as one gold line: "Aria blows the horn! ...",
+            --as does its close (horn-launched / horn-canceled / horn-expired).
+            if type(msg.kind) == "string" and (msg.kind == "horn" or msg.kind:sub(1, 5) == "horn-") then
+                name = string.format("<color=#d9b56a><b>%s</b>", ChatPlain(msg.name or "?"))
+                body = body .. "</color>"
+            end
             children[#children+1] = gui.Label{
-                text = string.format("<b>%s:</b> %s", msg.name or "?", msg.text or ""),
+                text = string.format("%s%s %s%s", stamp, name, body, edited),
                 fontSize = 18,
                 color = Styles.textColor,
                 width = "96%",
@@ -5025,6 +5366,11 @@ CreateScreen = function(args)
             }
         end
         chatMessagesPanel.children = children
+        if m_chatStickBottom then
+            --set again once layout has measured the new children.
+            chatMessagesPanel.vscrollPosition = 0
+            chatMessagesPanel:ScheduleEvent("moveToBottom", 0.05)
+        end
     end
 
     local RefreshStatus = function()
@@ -5039,9 +5385,9 @@ CreateScreen = function(args)
         if status == "connected" then
             statusLabel.text = ""
         elseif status == "closed" then
-            statusLabel.text = "Disconnected from the lobby."
+            statusLabel.text = "Disconnected from the town."
         else
-            statusLabel.text = "Connecting to the lobby..."
+            statusLabel.text = "Connecting to the town..."
         end
     end
 
@@ -5061,6 +5407,7 @@ CreateScreen = function(args)
 
     CloseGameView = function()
         m_viewGameid = nil
+        m_chatTab = "town"
         m_knownHeroCards = nil
         RefreshGames()
         RefreshChat()
@@ -8550,12 +8897,51 @@ CreateScreen = function(args)
             chatTitleLabel = element
         end),
 
+        --in a party view the title gives way to Town Chat | Game Chat tabs.
+        gui.Panel{
+            classes = { "collapsed" },
+            width = "94%",
+            height = 40,
+            halign = "center",
+            vmargin = 16,
+            flow = "horizontal",
+            styles = {
+                {
+                    selectors = { "chatTab" },
+                    bgcolor = "#ffffff0e",
+                    borderWidth = 1,
+                    borderColor = "#8f8a7f88",
+                    opacity = 0.7,
+                },
+                {
+                    selectors = { "chatTab", "hover" },
+                    borderColor = "#e6dcc6",
+                    opacity = 1,
+                },
+                {
+                    selectors = { "chatTab", "selected" },
+                    bgcolor = "#5a4a2acc",
+                    borderColor = "#f6ead0",
+                    opacity = 1,
+                },
+            },
+            create = function(element)
+                chatTabRow = element
+            end,
+            ChatTab("town", "Town Chat"),
+            ChatTab("game", "Game Chat"),
+        },
+
         gui.Label{
             fontSize = 16,
             color = Styles.textColor,
             opacity = 0.7,
             width = "94%",
-            height = "auto",
+            --two lines at most, so a busy town cannot push the input
+            --off the bottom of the drawer.
+            height = 42,
+            textAlignment = "topleft",
+            textOverflow = "ellipsis",
             halign = "center",
             text = "",
             create = function(element)
@@ -8566,7 +8952,7 @@ CreateScreen = function(args)
 
         gui.Panel{
             width = "94%",
-            height = "100%-190",
+            height = "100%-214",
             halign = "center",
             flow = "vertical",
             vscroll = true,
@@ -8576,6 +8962,14 @@ CreateScreen = function(args)
             create = function(element)
                 chatMessagesPanel = element
                 RefreshChat()
+            end,
+            moveToBottom = function(element)
+                if m_chatStickBottom then
+                    element.vscrollPosition = 0
+                end
+            end,
+            scroll = function(element)
+                m_chatStickBottom = element.vscrollPosition <= 0.02
             end,
         },
 
@@ -8607,15 +9001,18 @@ CreateScreen = function(args)
             fontSize = 18,
             placeholderText = "Say something...",
             characterLimit = 400,
+            create = function(element)
+                chatInput = element
+            end,
             change = function(element)
                 local text = (element.text or ""):match("^%s*(.-)%s*$")
                 if text == "" or m_conn == nil then
                     return
                 end
                 element.text = ""
-                --inside a party view the send targets that party's channel.
+                --on the Game Chat tab the send targets that party's channel.
                 local args = { text = text }
-                if m_viewGameid ~= nil then
+                if m_viewGameid ~= nil and m_chatTab == "game" then
                     args.gameid = m_viewGameid
                 end
                 m_conn:Request{
@@ -8630,6 +9027,15 @@ CreateScreen = function(args)
             end,
         },
     }
+
+    --closing forgets the dividers, so the next open places them afresh.
+    local SetChatOpen = function(open)
+        m_chatOpen = open
+        m_chatDividers = {}
+        m_chatStickBottom = true
+        chatPanel:SetClass("collapsed", not open)
+        RefreshChat()
+    end
 
     resultPanel = gui.Panel{
         id = "encounterOfTheWeekScreen",
@@ -8667,7 +9073,7 @@ CreateScreen = function(args)
             --close the topmost town panel first: the chat drawer, then
             --an open location, and the town itself last.
             if chatPanel ~= nil and chatPanel.valid and not chatPanel:HasClass("collapsed") then
-                chatPanel:SetClass("collapsed", true)
+                SetChatOpen(false)
                 return
             end
             if m_locationId ~= nil then
@@ -8961,8 +9367,7 @@ CreateScreen = function(args)
                 chatButton = element
             end,
             click = function(element)
-                chatPanel:SetClass("collapsed", not chatPanel:HasClass("collapsed"))
-                RefreshChat()
+                SetChatOpen(chatPanel:HasClass("collapsed"))
             end,
         },
 
@@ -9041,6 +9446,7 @@ CreateScreen = function(args)
                 --roster changes can also end a game lobby view (record
                 --dropped) or change the slots on show there.
                 RefreshGames()
+                RefreshPresence()
             end
         end)
         m_conn:MonitorStatus(function(status)

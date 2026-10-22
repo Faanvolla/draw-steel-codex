@@ -83,6 +83,10 @@ local g = {
     trackers = {},
     trackerLayer = nil,
     trackerScreenLayer = nil,
+    --- @type Panel|nil the table pass's image (TrackerLayers)
+    tableImage = nil,
+    --- @type number|nil the image's crop, as last set
+    tableImageCrop = nil,
 }
 
 ----------------------------------------------------------------------
@@ -503,7 +507,11 @@ end
 --- @field model nil|string a dice-set tile: the set its die wears ("" = default)
 --- @field setValue nil|string a dice-set tile: the set picking it chooses
 --- @field figureBlob nil|string a figure-library tile: the uploaded figure it places
---- @field opens nil|string a tile that opens a row under the category ("figures")
+--- @field opens nil|string a tile that opens a row under the category ("figures", "heroes")
+--- @field opensNoun nil|string what that row shows, for the tooltip ("your figures")
+--- @field trackerText nil|string a tracker tile: the number its medallion shows
+--- @field portrait nil|string a character tile (a standee): the portrait it shows
+--- @field thumbnail nil|string a dice-set tile: the still picture of its die
 --- @field action nil|fun() a tile that does something other than place an item
 --- @field tracker nil|string a tracker tile: the medallion it shows (TableDice.TrackerToken)
 
@@ -527,13 +535,23 @@ local CATEGORIES = {
         {id = "d3", dice = {3}, name = "d3", icon = "phosphor/dice-three.png", place = DiePlacer(3)},
     }},
     {id = "trinkets", name = "Trinkets", icon = "phosphor/diamond.png", test = "Something you move or flip; it keeps no number.", items = {
-        {id = "coin", name = "Coin", note = "Flip it", icon = "phosphor/coin.png"},
-        {id = "gem", name = "Gem", icon = "phosphor/diamond.png"},
-        {id = "skull", name = "Skull", icon = "phosphor/skull.png"},
-        {id = "key", name = "Key", icon = "phosphor/key.png"},
+        {id = "coin", name = "Coin", note = "Flip it", icon = "phosphor/coin.png", place = function(px, py, private)
+            TableDice.AddTracker("coin", px, py, private, {result = "heads"})
+        end},
+        {id = "gem", name = "Gem", note = "The treasure", icon = "phosphor/diamond.png", place = function(px, py, private)
+            TableDice.AddTracker("gem", px, py, private)
+        end},
+        {id = "skull", name = "Skull", note = "Danger here", icon = "phosphor/skull.png", place = function(px, py, private)
+            TableDice.AddTracker("skull", px, py, private)
+        end},
+        {id = "key", name = "Key", note = "The locked door", icon = "phosphor/key.png", place = function(px, py, private)
+            TableDice.AddTracker("key", px, py, private)
+        end},
         {id = "figure", name = "Figure", note = "Your 3D minis", icon = "phosphor/user.png", opens = "figures"},
-        {id = "standee", name = "Standee", note = "Any character", icon = "phosphor/user.png"},
-        {id = "pointer", name = "Pointer", icon = "phosphor/arrow-fat-right.png"},
+        {id = "standee", name = "Standee", note = "Any character", icon = "phosphor/user.png", opens = "standees", opensNoun = "the characters"},
+        {id = "pointer", name = "Pointer", note = "Turn it to point", icon = "phosphor/arrow-fat-right.png", place = function(px, py, private)
+            TableDice.AddTracker("pointer", px, py, private, {yaw = 0})
+        end},
         {id = "stamp", name = "Stamp", icon = "phosphor/stamp.png"},
         {id = "ruler", name = "Ruler", icon = "phosphor/ruler.png"},
     }},
@@ -547,10 +565,13 @@ local CATEGORIES = {
         {id = "counter", tracker = "counter", name = "Counter", note = "Any name", icon = "phosphor/plus-minus.png", place = function(px, py, private)
             TableDice.AddTracker("counter", px, py, private)
         end},
-        {id = "victories", name = "Victories", note = "Per hero", icon = "phosphor/trophy.png"},
-        {id = "sandtimer", name = "Sand timer", note = "Flip to start", icon = "phosphor/hourglass.png"},
-        {id = "rounds", name = "Round tracker", icon = "phosphor/arrows-clockwise.png"},
-        {id = "countdown", name = "Countdown", icon = "phosphor/timer.png"},
+        {id = "hero", tracker = "hero", name = "Hero", note = "Pick a hero", icon = "phosphor/user.png", opens = "heroes", opensNoun = "the heroes"},
+        {id = "countdown", tracker = "countdown", name = "Countdown", note = "Rounds left", icon = "phosphor/timer.png", place = function(px, py, private)
+            TableDice.AddTracker("countdown", px, py, private, {value = 3})
+        end},
+        {id = "sandtimer", tracker = "sandtimer", name = "Sand timer", note = "Flip to start", icon = "phosphor/hourglass.png", place = function(px, py, private)
+            TableDice.AddTracker("sandtimer", px, py, private, {duration = 60})
+        end},
         {id = "initiative", name = "Initiative strip", icon = "phosphor/list-numbers.png"},
         {id = "vote", name = "Vote", note = "One token each", icon = "phosphor/check-square.png"},
     }},
@@ -631,6 +652,16 @@ local g_drawerStyles = {
     {selectors = {"tableTrackerStep"}, bgcolor = "@bg", borderColor = "@border", borderWidth = 1, cornerRadius = 13},
     {selectors = {"tableTrackerStep", "hover"}, bgcolor = "@bgRaised"},
     {selectors = {"tableTrackerStepLabel"}, color = "@fgStrong", fontSize = 18, bold = true},
+    {selectors = {"tableTrackerPlate", "expired"}, bgcolor = "#7A1424", borderColor = "#E0445C"},
+    {selectors = {"tableTrackerPip"}, bgcolor = "#1A1A1E", borderColor = "#8A8A90", borderWidth = 1.5, cornerRadius = 6},
+    {selectors = {"tableTrackerPip", "lit"}, bgcolor = "#F2C14E", borderColor = "#FFF0B8"},
+    {selectors = {"tableTrackerPip", "hover"}, borderColor = "#FFFFFF"},
+    {selectors = {"tableTrackerPip", "resting"}, opacity = 0.45},
+    {selectors = {"tableStandeeCard"}, bgcolor = "#E8DCC4", borderColor = "#5A3A22", borderWidth = 1.5, cornerRadius = 3},
+    {selectors = {"tableTrackerChip"}, bgcolor = "@bg", borderColor = "@border", borderWidth = 1, cornerRadius = 9},
+    {selectors = {"tableTrackerChip", "hover"}, bgcolor = "@bgRaised"},
+    {selectors = {"tableTrackerChipIcon"}, bgcolor = "#F2C14E"},
+    {selectors = {"tableTrackerChipLabel"}, color = "@fgStrong", fontSize = 12, bold = true},
 }
 
 --The drawer while it exists. category is a category id, "recent" or
@@ -878,6 +909,9 @@ local function BuildPreview(tile, item, faces, index)
     if die == nil then
         return
     end
+    --the drawer's dice sit over the drawer, not on the table under it (an
+    --engine without table layering has no aboveUI: they are over it anyway).
+    pcall(function() die.aboveUI = true end)
     local preview = {die = die, tile = tile, item = item, faces = faces, index = index}
     --a dice-set tile's die: clicking or moving it picks the set; it stays put.
     if item.setValue ~= nil then
@@ -993,6 +1027,12 @@ local function BuildTile(item)
             value = CharacterResource.GetGlobalResource(CharacterResource.maliceResourceId) or 0
         elseif item.tracker == "herotokens" then
             value = CharacterResource.GetGlobalResource(CharacterResource.heroTokenId) or 0
+        elseif item.tracker == "countdown" then
+            value = 3
+        end
+        local text = item.trackerText or string.format("%d", math.floor(value))
+        if item.tracker == "sandtimer" and item.trackerText == nil then
+            text = "1:00"
         end
         icon = gui.Panel{
             width = 44,
@@ -1002,13 +1042,24 @@ local function BuildTile(item)
             interactable = false,
             TableDice.TrackerToken(item.tracker, 44, gui.Label{
                 classes = {"tableTrackerValue"},
-                text = string.format("%d", math.floor(value)),
+                text = text,
                 fontSize = 17,
                 width = "100%",
                 height = "100%",
                 textAlignment = "center",
                 interactable = false,
             }),
+        }
+    elseif item.portrait ~= nil then
+        icon = gui.Panel{
+            bgimage = item.portrait,
+            bgcolor = "white",
+            width = 40,
+            height = 40,
+            cornerRadius = 6,
+            halign = "center",
+            tmargin = 6,
+            interactable = false,
         }
     else
         --a real die rests here (SyncPreviews); other items show their icon.
@@ -1036,7 +1087,8 @@ local function BuildTile(item)
         data = {item = item},
         hover = function(element)
             if item.opens ~= nil then
-                gui.Tooltip(cond(open, "Hide your figures", "Show your figures"))(element)
+                local noun = item.opensNoun or "your figures"
+                gui.Tooltip(cond(open, "Hide " .. noun, "Show " .. noun))(element)
             elseif item.action ~= nil then
                 gui.Tooltip(item.note or item.name)(element)
             elseif item.figureBlob ~= nil then
@@ -1094,6 +1146,10 @@ local function BuildTile(item)
             classes = {"tableDrawerTileName"},
             text = item.name,
             tmargin = 6,
+            --long names (a hero's) shrink to stay inside the tile.
+            textWrap = false,
+            maxWidth = TILE_WIDTH - 8,
+            minFontSize = 9,
             interactable = false,
         },
         gui.Label{
@@ -1153,11 +1209,14 @@ local function DiceSetItems()
         if value == "Default" then
             value = ""
         end
+        --a still, numberless picture of the set's d10 (DiceIconManager, as the
+        --Dice panel shows), not a live die: a live one read as a die to grab
+        --(Venla, 2026-10-21).
         result[#result+1] = {
             id = "set:" .. tostring(value),
             name = tostring(entry.text),
             icon = "phosphor/dice-five.png",
-            dice = {10},
+            thumbnail = string.format("#DiceIcon:%s:d10", tostring(entry.value)),
             model = value,
             setValue = value,
         }
@@ -1184,10 +1243,12 @@ local function BuildSetTile(item)
             SelectDiceSet(item.setValue)
         end,
         gui.Panel{
-            width = 28,
-            height = 44,
+            bgimage = item.thumbnail,
+            bgcolor = "white",
+            width = 40,
+            height = 40,
             halign = "center",
-            tmargin = 4,
+            tmargin = 6,
             interactable = false,
         },
         gui.Label{
@@ -1268,6 +1329,45 @@ RebuildDrawer = function()
                 TableDice.PickFigureFile()
             end,
         }
+    end
+    --Trinkets with Standee open: a standee for each character in the game.
+    if g_drawer.category == "trinkets" and g_drawer.search == "" and g_drawer.openRow == "standees" then
+        children[#children+1] = SectionLabel("Characters")
+        for _, entry in ipairs(TableDice.StandeeCharacters()) do
+            local charid = entry.charid
+            children[#children+1] = BuildTile{
+                id = "standee:" .. charid,
+                name = entry.name,
+                note = entry.note,
+                icon = "phosphor/user.png",
+                portrait = entry.portrait,
+                place = function(px, py, private)
+                    TableDice.AddTracker("standee", px, py, private, {charid = charid})
+                end,
+            }
+        end
+    end
+    --Trackers with Hero open: a medallion for each hero in the game.
+    if g_drawer.category == "trackers" and g_drawer.search == "" and g_drawer.openRow == "heroes" then
+        children[#children+1] = SectionLabel("Heroes")
+        local heroes = TableDice.Heroes()
+        for _, hero in ipairs(heroes) do
+            local charid = hero.charid
+            children[#children+1] = BuildTile{
+                id = "hero:" .. charid,
+                tracker = "hero",
+                trackerText = hero.value,
+                name = hero.name,
+                note = hero.resource,
+                icon = "phosphor/user.png",
+                place = function(px, py, private)
+                    TableDice.AddTracker("hero", px, py, private, {charid = charid})
+                end,
+            }
+        end
+        if #heroes == 0 then
+            children[#children+1] = BuildTile{id = "no-heroes", name = "No heroes", note = "None in this game", icon = "phosphor/user.png", action = function() end}
+        end
     end
     grid.children = children
     local title = g_drawer.title
@@ -2106,7 +2206,16 @@ end
 --(kind "trackers"); the panels are ordinary UI on this layer.
 
 --- @class TableTrackerRecord
---- @field type string "malice", "herotokens" or "counter"
+--- @field type string "malice", "herotokens", "counter", "hero", "countdown" or "sandtimer"
+--- @field charid nil|string a hero medallion's hero
+--- @field round nil|number a countdown: the initiative round it last counted
+--- @field combat nil|string a countdown: the combat (initiative guid) that round belongs to
+--- @field duration nil|number a sand timer's length, in seconds
+--- @field startedAt nil|number a sand timer: dmhub.serverTime when it was flipped
+--- @field result nil|string a coin: "heads" or "tails"
+--- @field flipAt nil|number a coin: dmhub.serverTime of its last flip
+--- @field flipSeq nil|number a coin: bumped on every flip, so clients play it once
+--- @field yaw nil|number a pointer's turn, in degrees clockwise from pointing up the screen
 --- @field fx number
 --- @field fy number
 --- @field seq number
@@ -2124,12 +2233,156 @@ local TRACKER_HISTORY_MAX = 8
 
 --resourceKey names the CharacterResource field holding the resource's id.
 --Draw Steel's rules set those after this file loads, so they are read when used.
---- @type table<string, {name: string, resourceKey: nil|string}>
+--- @type table<string, {name: string, resourceKey: nil|string, trinket: nil|boolean, icon: nil|string}>
 local TRACKER_TYPES = {
     malice = {name = "Malice", resourceKey = "maliceResourceId"},
     herotokens = {name = "Hero Tokens", resourceKey = "heroTokenId"},
     counter = {name = "Counter"},
+    hero = {name = "Hero"},
+    countdown = {name = "Countdown"},
+    sandtimer = {name = "Sand timer"},
+    --Trinkets (TABLE_DICE_BRIEF.md, "Trinkets category"): pieces with no
+    --number that anyone can move, flip, turn or remove (decision 2).
+    coin = {name = "Coin", trinket = true},
+    gem = {name = "Gem", trinket = true},
+    skull = {name = "Skull", trinket = true, icon = "phosphor/skull.png"},
+    key = {name = "Key", trinket = true, icon = "phosphor/key.png"},
+    standee = {name = "Standee", trinket = true},
+    pointer = {name = "Pointer", trinket = true},
 }
+
+--- @param record TableTrackerRecord
+--- @return boolean
+local function IsTrinket(record)
+    local info = TRACKER_TYPES[record.type]
+    return info ~= nil and info.trinket == true
+end
+
+--How long a flip takes (the engine's spin), and how long its result shows.
+local COIN_FLIP_SECONDS = 1.1
+local COIN_RESULT_SECONDS = 6
+
+--The sand timer's lengths, in seconds (its right-click menu).
+local SAND_LENGTHS = {30, 60, 180, 300}
+
+--A hero medallion's hero (TABLE_DICE_BRIEF.md, decision 5), or nil if it is
+--gone from the game.
+--- @param record TableTrackerRecord
+--- @return nil|CharacterToken
+local function HeroToken(record)
+    if type(record.charid) ~= "string" then
+        return nil
+    end
+    return dmhub.GetCharacterById(record.charid)
+end
+
+--Whether combat is on. A hero's heroic resource and surges exist only in
+--combat (the game clears them outside it), so the medallion rests then.
+--- @return boolean
+local function InCombat()
+    local q = dmhub.initiativeQueue
+    return q ~= nil and not q.hidden
+end
+
+--What a hero's big number is called: the class's heroic resource (Wrath...).
+--- @param token nil|CharacterToken
+--- @return string
+local function HeroResourceName(token)
+    local name = "Heroic Resource"
+    if token ~= nil and token.properties ~= nil then
+        pcall(function() name = token.properties:GetHeroicResourceName() or name end)
+    end
+    return name
+end
+
+--- Every hero in the game, for the drawer's Hero row: {charid, name, resource, value}.
+--- @return {charid: string, name: string, resource: string, value: string}[]
+function TableDice.Heroes()
+    local result = {}
+    for charid, token in pairs(dmhub.GetAllCharacters() or {}) do
+        --a hero with a class: blank characters left from character creation
+        --are heroes too, but have nothing to track.
+        local isHero = false
+        pcall(function()
+            local props = token.properties --[[@as character]]
+            isHero = props ~= nil and props:IsHero() and props:GetClass() ~= nil
+        end)
+        if isHero then
+            local value = token.properties:GetUnboundedResourceQuantity(CharacterResource.heroicResourceId) or 0
+            result[#result+1] = {
+                charid = charid,
+                name = token.name or "Hero",
+                resource = HeroResourceName(token),
+                value = string.format("%d", math.floor(value)),
+            }
+        end
+    end
+    table.sort(result, function(a, b) return a.name < b.name end)
+    return result
+end
+
+--- Every character a standee can show, heroes first: {charid, name, note, portrait}.
+--- @return {charid: string, name: string, note: string, portrait: nil|string}[]
+function TableDice.StandeeCharacters()
+    local heroes, others = {}, {}
+    for charid, token in pairs(dmhub.GetAllCharacters() or {}) do
+        local isHero = false
+        pcall(function() isHero = token.properties ~= nil and token.properties:IsHero() end)
+        --nameless characters (blanks left from character creation) are skipped.
+        if type(token.name) ~= "string" or token.name == "" then
+            goto continue
+        end
+        local entry = {
+            charid = charid,
+            name = token.name or "Character",
+            note = cond(isHero, "Hero", "Character"),
+            --no portrait: the tile shows the plain person icon instead.
+            portrait = cond(type(token.portrait) == "string" and token.portrait ~= "", token.portrait, nil),
+        }
+        if isHero then
+            heroes[#heroes+1] = entry
+        else
+            others[#others+1] = entry
+        end
+        ::continue::
+    end
+    local byName = function(a, b) return a.name < b.name end
+    table.sort(heroes, byName)
+    table.sort(others, byName)
+    local result = heroes
+    for _, entry in ipairs(others) do
+        if #result >= 60 then
+            break
+        end
+        result[#result+1] = entry
+    end
+    return result
+end
+
+--A sand timer's seconds left (its whole length until it is flipped).
+--- @param record TableTrackerRecord
+--- @return number
+local function SandLeft(record)
+    local duration = tonumber(record.duration) or 60
+    if type(record.startedAt) ~= "number" then
+        return duration
+    end
+    return math.max(0, duration - (dmhub.serverTime - record.startedAt))
+end
+
+--Whether a timer has run out: a countdown at zero, or a flipped sand timer
+--that is empty.
+--- @param record TableTrackerRecord
+--- @return boolean
+local function TrackerExpired(record)
+    if record.type == "countdown" then
+        return (tonumber(record.value) or 0) <= 0
+    end
+    if record.type == "sandtimer" then
+        return type(record.startedAt) == "number" and SandLeft(record) <= 0
+    end
+    return false
+end
 
 --The game resource a live tracker shows, or nil for a counter.
 --- @param record TableTrackerRecord
@@ -2145,11 +2398,16 @@ end
 --- @param record TableTrackerRecord
 --- @return boolean
 local function TrackerChangeable(record)
-    if dmhub.isDM then
+    if dmhub.isDM or IsTrinket(record) then
         return true
     end
     if record.type == "herotokens" then
         return true
+    end
+    --a hero's own player changes their medallion (as on their sheet).
+    if record.type == "hero" then
+        local token = HeroToken(record)
+        return token ~= nil and token.canControlAsUser == true
     end
     return record.type == "counter" and record.playersCanChange == true
 end
@@ -2161,7 +2419,39 @@ local function TrackerValue(record)
     if resourceid ~= nil then
         return CharacterResource.GetGlobalResource(resourceid) or 0
     end
+    if record.type == "hero" then
+        local token = HeroToken(record)
+        if token == nil or token.properties == nil then
+            return 0
+        end
+        return token.properties:GetUnboundedResourceQuantity(CharacterResource.heroicResourceId) or 0
+    end
+    if record.type == "sandtimer" then
+        return SandLeft(record)
+    end
     return tonumber(record.value) or 0
+end
+
+--What a tracker's face shows: its number, or a sand timer's m:ss.
+--- @param record TableTrackerRecord
+--- @return string
+local function TrackerText(record)
+    local value = TrackerValue(record)
+    if record.type == "sandtimer" then
+        local secs = math.ceil(value)
+        return string.format("%d:%02d", math.floor(secs / 60), secs % 60)
+    end
+    if record.type == "hero" and not InCombat() then
+        return "-"
+    end
+    --a coin's face says H (its back says T); other trinkets say nothing.
+    if record.type == "coin" then
+        return "H"
+    end
+    if IsTrinket(record) then
+        return ""
+    end
+    return string.format("%d", math.floor(value))
 end
 
 --- @param record TableTrackerRecord
@@ -2169,6 +2459,24 @@ end
 local function TrackerName(record)
     if record.type == "counter" and type(record.name) == "string" and record.name ~= "" then
         return record.name
+    end
+    if record.type == "hero" or record.type == "standee" then
+        local token = HeroToken(record)
+        return (token ~= nil and token.name) or TRACKER_TYPES[record.type].name
+    end
+    --a coin says how it landed for a few seconds; other trinkets have no plate.
+    if record.type == "coin" then
+        local since = type(record.flipAt) == "number" and dmhub.serverTime - record.flipAt or nil
+        if since ~= nil and since >= COIN_FLIP_SECONDS and since < COIN_FLIP_SECONDS + COIN_RESULT_SECONDS then
+            return cond(record.result == "tails", "Tails", "Heads")
+        end
+        return ""
+    end
+    if IsTrinket(record) then
+        return ""
+    end
+    if TrackerExpired(record) then
+        return "Time's up"
     end
     local info = TRACKER_TYPES[record.type]
     return (info ~= nil and info.name) or "Tracker"
@@ -2195,6 +2503,23 @@ local function SetTrackerValue(id, private, record, n, note)
         end
         CharacterResource.SetGlobalResource(resourceid, n, note)
         return
+    end
+    if record.type == "hero" then
+        local token = HeroToken(record)
+        if token == nil then
+            return
+        end
+        local current = TrackerValue(record)
+        token:ModifyProperties{
+            description = "Change " .. HeroResourceName(token),
+            execute = function()
+                token.properties:AddUnboundedResource(CharacterResource.heroicResourceId, n - current, note)
+            end,
+        }
+        return
+    end
+    if record.type == "countdown" and n < 0 then
+        n = 0
     end
     Modify(id, private, "Change a table counter", function(r)
         r.value = n
@@ -2237,14 +2562,68 @@ local function TrackerHistory(record)
     if resourceid ~= nil then
         return CharacterResource.GetGlobalResourceHistory(resourceid)
     end
+    if record.type == "hero" then
+        --read without GetStatHistory, which would make an empty one.
+        local token = HeroToken(record)
+        local history = token ~= nil and token.properties ~= nil and token.properties:try_get(CharacterResource.heroicResourceId .. "_history") or nil
+        if history ~= nil and history.typeName == "StatHistory" then
+            return history:GetHistory()
+        end
+        return {}
+    end
     return CounterHistory(record)
+end
+
+--The history tooltip's heading: a hero's shows their resource's name.
+--- @param record TableTrackerRecord
+--- @return string
+local function TrackerHistoryTitle(record)
+    if record.type == "hero" then
+        local name = HeroResourceName(HeroToken(record))
+        if not InCombat() then
+            return name .. " (only in combat)"
+        end
+        return name
+    end
+    return TrackerName(record)
 end
 
 --The token itself: its shape tells live trackers apart from plain ones.
 --Malice is the red cost diamond (as on the action bar), Hero Tokens a gold
 --coin, a Counter a neutral stone. The value label sits on top, unrotated.
---Each tracker's 3D token (TableTrackers.cs in the engine).
-local TRACKER_SHAPES = {malice = "diamond", herotokens = "coin", counter = "stone"}
+--Each tracker's 3D token (TableTrackers.cs in the engine): its outline and
+--metals. A hero is steel and blue enamel, a countdown bronze and black, a
+--sand timer gold and sand.
+local TRACKER_LOOKS = {
+    malice = {shape = "diamond"},
+    herotokens = {shape = "coin"},
+    counter = {shape = "stone"},
+    hero = {shape = "coin", bezel = "steel", face = "blueEnamel"},
+    countdown = {shape = "coin", bezel = "bronze", face = "blackEnamel"},
+    sandtimer = {shape = "coin", bezel = "gold", face = "sand"},
+    --a pewter face, so its light H and T read (light on silver did not).
+    coin = {shape = "flipcoin", bezel = "silver", face = "pewter"},
+    gem = {shape = "gem", bezel = "ruby", face = "ruby"},
+    skull = {shape = "coin", bezel = "steel", face = "pewter"},
+    key = {shape = "coin", bezel = "steel", face = "pewter"},
+    standee = {shape = "coin", bezel = "bronze", face = "blackEnamel"},
+    pointer = {shape = "arrow", bezel = "gold", face = "redEnamel"},
+}
+
+--The flat medallions' colours for the round ones (the drawer's tiles, and an
+--engine without 3D tokens): fill, rim, inner ring.
+local FLAT_COINS = {
+    herotokens = {"#B8892B", "#F0CD6A", "#8A6418"},
+    hero = {"#1C2E7A", "#C9CDD3", "#3B55B8"},
+    countdown = {"#141416", "#C28150", "#5A3A22"},
+    sandtimer = {"#D9B27A", "#F0CD6A", "#9A7440"},
+    coin = {"#C9CCD2", "#F2F3F6", "#8E929A"},
+    gem = {"#9E0F28", "#E0445C", "#6A0A1A"},
+    skull = {"#6E7076", "#C9CDD3", "#4A4C52"},
+    key = {"#6E7076", "#C9CDD3", "#4A4C52"},
+    standee = {"#141416", "#C28150", "#5A3A22"},
+    pointer = {"#9E0F28", "#F0CD6A", "#6A0A1A"},
+}
 
 --- @param ttype string
 --- @param size number
@@ -2265,17 +2644,18 @@ function TableDice.TrackerToken(ttype, size, label)
             borderColor = "#FF5076",
             interactable = false,
         }
-    elseif ttype == "herotokens" then
+    elseif FLAT_COINS[ttype] ~= nil then
+        local colors = FLAT_COINS[ttype]
         shape = gui.Panel{
             width = size * 0.9,
             height = size * 0.9,
             halign = "center",
             valign = "center",
             bgimage = true,
-            bgcolor = "#B8892B",
+            bgcolor = colors[1],
             cornerRadius = size * 0.45,
             borderWidth = math.max(2, size * 0.04),
-            borderColor = "#F0CD6A",
+            borderColor = colors[2],
             interactable = false,
             --the coin's inner ring.
             gui.Panel{
@@ -2287,7 +2667,7 @@ function TableDice.TrackerToken(ttype, size, label)
                 bgcolor = "clear",
                 cornerRadius = size * 0.35,
                 borderWidth = math.max(1, size * 0.025),
-                borderColor = "#8A6418",
+                borderColor = colors[3],
                 interactable = false,
             },
         }
@@ -2318,31 +2698,73 @@ function TableDice.TrackerToken(ttype, size, label)
 end
 
 --- Puts a tracker on the table, for everyone (or behind the screen).
---- @param ttype string "malice", "herotokens" or "counter"
+--- @param ttype string "malice", "herotokens", "counter", "hero", "countdown" or "sandtimer"
 --- @param px number screen pixels
 --- @param py number
 --- @param private boolean
-function TableDice.AddTracker(ttype, px, py, private)
+--- @param fields? table more of the record: a hero's charid, a countdown's value, a sand timer's duration
+function TableDice.AddTracker(ttype, px, py, private, fields)
     if not dmhub.isDM or TRACKER_TYPES[ttype] == nil then
         return
     end
     local fx, fy = ScreenToTable(px, py)
-    Add(dmhub.GenerateGuid(), private, {
+    local record = {
         type = ttype,
         fx = fx,
         fy = fy,
         seq = 1,
         value = 0,
         playersCanChange = false,
-    }, "trackers")
+    }
+    for k, v in pairs(fields or {}) do
+        record[k] = v
+    end
+    Add(dmhub.GenerateGuid(), private, record, "trackers")
 end
+
+--Flips a coin, for everyone: it lands heads or tails at random. Anyone can.
+--- @param id string
+--- @param private boolean
+local function FlipCoin(id, private)
+    local tails = math.random() < 0.5
+    Modify(id, private, "Flip a coin", function(r)
+        r.result = cond(tails, "tails", "heads")
+        r.flipAt = dmhub.serverTime
+        r.flipSeq = (r.flipSeq or 0) + 1
+    end, "trackers")
+end
+
+--Turns a pointer to yaw degrees, for everyone.
+--- @param id string
+--- @param private boolean
+--- @param yaw number
+local function TurnPointer(id, private, yaw)
+    Modify(id, private, "Turn a pointer", function(r)
+        r.yaw = yaw % 360
+    end, "trackers")
+end
+
+--Flips a sand timer: it starts running out now, for everyone.
+--- @param id string
+--- @param private boolean
+local function FlipSand(id, private)
+    Modify(id, private, "Flip a sand timer", function(r)
+        r.startedAt = dmhub.serverTime
+        r.seq = (r.seq or 0) + 1
+    end, "trackers")
+end
+
+local BuildHeroExtras
+local TickCountdown
+local ShowTrackerTip
+local BuildStandeeCard
 
 --A tracker's right-click menu (Director only).
 --- @param id string
 local function ShowTrackerMenu(id)
     local handle = g.trackers[id]
     local anchor = MenuAnchor()
-    if handle == nil or anchor == nil or not dmhub.isDM then
+    if handle == nil or anchor == nil or not (dmhub.isDM or IsTrinket(handle.record)) then
         return
     end
     local private = handle.private
@@ -2351,6 +2773,29 @@ local function ShowTrackerMenu(id)
     anchor.y = handle.panel.y
     g.dieRightClickedAt = dmhub.Time()
     local entries = {}
+    if record.type == "sandtimer" then
+        entries[#entries+1] = {
+            text = "Flip",
+            click = function()
+                CloseMenu()
+                FlipSand(id, private)
+            end,
+        }
+        for _, secs in ipairs(SAND_LENGTHS) do
+            local label = cond(secs < 60, string.format("%d Seconds", secs), string.format("%d Minute%s", secs // 60, cond(secs >= 120, "s", "")))
+            entries[#entries+1] = {
+                text = cond((tonumber(record.duration) or 60) == secs, "* ", "") .. label,
+                click = function()
+                    CloseMenu()
+                    Modify(id, private, "Set a sand timer", function(r)
+                        r.duration = secs
+                        r.startedAt = nil
+                        r.seq = (r.seq or 0) + 1
+                    end, "trackers")
+                end,
+            }
+        end
+    end
     if record.type == "counter" then
         entries[#entries+1] = {
             text = cond(record.playersCanChange, "Players Can Change: On", "Players Can Change: Off"),
@@ -2371,7 +2816,7 @@ local function ShowTrackerMenu(id)
         }
     end
     entries[#entries+1] = {
-        text = "Remove Tracker",
+        text = cond(IsTrinket(record), "Remove " .. TRACKER_TYPES[record.type].name, "Remove Tracker"),
         click = function()
             CloseMenu()
             Modify(id, private, "Remove a table tracker", function() return false end, "trackers")
@@ -2394,6 +2839,269 @@ local function ShowTrackerMenu(id)
     end)
 end
 
+--A hero medallion's extras (decision 5): surge pips round the top of the
+--rim (click one to set the count there; click the last lit one to spend it)
+--and a victories chip at its lower right (click adds one, right-click takes
+--one away). handle.refreshExtras keeps them in step with the hero.
+--- @param handle table
+--- @param Hover fun(key: any)
+--- @param Dehover fun(key: any)
+--- @return Panel
+BuildHeroExtras = function(handle, Hover, Dehover)
+    local PIP = 12
+    local pips = {}
+    local container
+
+    local function Surges(token)
+        local n = 0
+        pcall(function() n = token.properties:GetAvailableSurges() end)
+        return n
+    end
+    local function MaxSurges(token)
+        local n = 3
+        pcall(function() n = token.properties:GetMaxSurgeCount() end)
+        return math.max(1, math.min(8, n))
+    end
+    local function SetSurges(token, n)
+        local surgeid = CharacterResource.nameToId["Surges"]
+        if surgeid == nil then
+            return
+        end
+        local current = Surges(token)
+        token:ModifyProperties{
+            description = "Change surges",
+            execute = function()
+                token.properties:AddUnboundedResource(surgeid, n - current, "Set on the table")
+            end,
+        }
+    end
+    local function SetVictories(token, n)
+        token:ModifyProperties{
+            description = "Change victories",
+            execute = function()
+                token.properties:SetVictories(math.max(0, n))
+            end,
+        }
+    end
+
+    local victoryLabel = gui.Label{
+        classes = {"tableTrackerChipLabel"},
+        text = "0",
+        width = "auto",
+        height = "auto",
+        valign = "center",
+        lmargin = 2,
+        interactable = false,
+    }
+    local chip = gui.Panel{
+        classes = {"tableTrackerChip"},
+        bgimage = "panels/square.png",
+        floating = true,
+        halign = "left",
+        valign = "top",
+        x = TRACKER_WIDTH / 2 + TRACKER_SIZE * 0.22,
+        y = TRACKER_SIZE * 0.68,
+        width = "auto",
+        height = 18,
+        hpad = 4,
+        borderBox = true,
+        flow = "horizontal",
+        swallowPress = true,
+        hover = function(element)
+            Hover(element)
+            local tip = "Victories"
+            if TrackerChangeable(handle.record) then
+                tip = "Victories: click to add one, right-click to take one away."
+            end
+            gui.Tooltip(tip)(element)
+        end,
+        dehover = function(element)
+            Dehover(element)
+        end,
+        click = function(element)
+            local token = HeroToken(handle.record)
+            if token ~= nil and TrackerChangeable(handle.record) then
+                SetVictories(token, token.properties:GetVictories() + 1)
+            end
+        end,
+        rightClick = function(element)
+            local token = HeroToken(handle.record)
+            if token ~= nil and TrackerChangeable(handle.record) then
+                SetVictories(token, token.properties:GetVictories() - 1)
+            end
+        end,
+        gui.Panel{
+            classes = {"tableTrackerChipIcon"},
+            bgimage = "phosphor/trophy.png",
+            width = 11,
+            height = 11,
+            valign = "center",
+            interactable = false,
+        },
+        victoryLabel,
+    }
+
+    container = gui.Panel{
+        floating = true,
+        width = TRACKER_WIDTH,
+        height = TRACKER_HEIGHT,
+        flow = "none",
+        interactable = false,
+        chip,
+    }
+
+    --pips spread over the top of the rim, centred on its top.
+    local function LayoutPips(count)
+        for _, pip in ipairs(pips) do
+            if pip.valid then
+                pip:DestroySelf()
+            end
+        end
+        pips = {}
+        local radius = TRACKER_SIZE * 0.5 + 3
+        local spread = math.min(140, 26 * (count - 1))
+        for i = 1, count do
+            local t = count == 1 and 0.5 or (i - 1) / (count - 1)
+            local angle = math.rad(-90 - spread / 2 + spread * t)
+            local cx = TRACKER_WIDTH / 2 + math.cos(angle) * radius
+            local cy = TRACKER_SIZE / 2 + math.sin(angle) * radius
+            local index = i
+            local pip = gui.Panel{
+                classes = {"tableTrackerPip"},
+                bgimage = "panels/square.png",
+                floating = true,
+                halign = "left",
+                valign = "top",
+                x = cx - PIP / 2,
+                y = cy - PIP / 2,
+                width = PIP,
+                height = PIP,
+                swallowPress = true,
+                hover = function(element)
+                    Hover(element)
+                    local tip = "Surges"
+                    if not InCombat() then
+                        tip = "Surges (only in combat)"
+                    elseif TrackerChangeable(handle.record) then
+                        tip = "Surges: click to set"
+                    end
+                    gui.Tooltip(tip)(element)
+                end,
+                dehover = function(element)
+                    Dehover(element)
+                end,
+                click = function(element)
+                    local token = HeroToken(handle.record)
+                    if token == nil or not TrackerChangeable(handle.record) or not InCombat() then
+                        return
+                    end
+                    local n = Surges(token)
+                    SetSurges(token, cond(n >= index, index - 1, index))
+                end,
+            }
+            container:AddChild(pip)
+            pips[#pips+1] = pip
+        end
+    end
+
+    local shownMax, shownSurges, shownVictories = -1, -1, -1
+    local shownResting = nil
+    handle.refreshExtras = function()
+        local token = HeroToken(handle.record)
+        if token == nil or token.properties == nil then
+            return
+        end
+        local max = MaxSurges(token)
+        local surges = Surges(token)
+        if max ~= shownMax then
+            shownMax = max
+            shownSurges = -1
+            shownResting = nil
+            LayoutPips(max)
+        end
+        local resting = not InCombat()
+        if resting ~= shownResting then
+            shownResting = resting
+            for _, pip in ipairs(pips) do
+                if pip.valid then
+                    pip:SetClass("resting", resting)
+                end
+            end
+        end
+        if surges ~= shownSurges then
+            shownSurges = surges
+            for i, pip in ipairs(pips) do
+                if pip.valid then
+                    pip:SetClass("lit", i <= surges)
+                end
+            end
+        end
+        local victories = token.properties:GetVictories()
+        if victories ~= shownVictories then
+            shownVictories = victories
+            victoryLabel.text = string.format("%d", victories)
+        end
+    end
+    return container
+end
+
+--What hovering a tracker shows: a trinket says what it does; a sand timer
+--how to use it; the rest their change history.
+--- @param element Panel
+--- @param handle table
+ShowTrackerTip = function(element, handle)
+    local r = handle.record
+    if r.type == "sandtimer" then
+        gui.Tooltip(cond(dmhub.isDM, "Click to flip. Right-click to set its length.", "A sand timer"))(element)
+        return
+    end
+    if IsTrinket(r) then
+        local tips = {
+            coin = "Click to flip. Drag to move.",
+            pointer = "Click to turn it. Drag to move; while you hold it, the mouse wheel turns it.",
+        }
+        gui.Tooltip(tips[r.type] or (TrackerName(r) ~= "" and TrackerName(r) or TRACKER_TYPES[r.type].name) .. ". Drag to move; right-click to remove.")(element)
+        return
+    end
+    element.tooltip = gui.StatsHistoryTooltip{
+        description = TrackerHistoryTitle(r),
+        entries = TrackerHistory(r),
+    }
+end
+
+--A standee's card: the character's portrait, standing on the base (the 3D
+--token) in a thin frame. It reaches above the panel; the panel still drags.
+--- @param handle table
+--- @param Hover fun(key: any)
+--- @param Dehover fun(key: any)
+--- @return Panel
+BuildStandeeCard = function(handle, Hover, Dehover)
+    local token = HeroToken(handle.record)
+    local width = TRACKER_SIZE * 0.82
+    local height = TRACKER_SIZE * 1.1
+    return gui.Panel{
+        classes = {"tableStandeeCard"},
+        bgimage = "panels/square.png",
+        floating = true,
+        halign = "left",
+        valign = "top",
+        x = TRACKER_WIDTH / 2 - width / 2,
+        y = TRACKER_SIZE * 0.42 - height,
+        width = width,
+        height = height,
+        pad = 3,
+        borderBox = true,
+        interactable = false,
+        gui.Panel{
+            width = "100%",
+            height = "100%",
+            bgimage = (token ~= nil and token.portrait) or "panels/square.png",
+            bgcolor = cond(token ~= nil and token.portrait ~= nil, "white", "#444448"),
+            interactable = false,
+        },
+    }
+end
+
 --One tracker's panel. handle.record is kept current by SyncTrackers, so the
 --handlers always act on the latest record.
 --- @param id string
@@ -2405,7 +3113,11 @@ local function BuildTracker(id, record, private)
     --engine gets the flat 2D one (TableDice.TrackerToken).
     local token = nil
     if dice.CreateTableTracker ~= nil then
-        token = dice.CreateTableTracker{shape = TRACKER_SHAPES[record.type] or "coin", size = TRACKER_SIZE}
+        local look = TRACKER_LOOKS[record.type] or {shape = "coin"}
+        token = dice.CreateTableTracker{shape = look.shape, bezel = look.bezel, face = look.face, size = TRACKER_SIZE}
+        if token ~= nil and record.type == "coin" then
+            token.backText = "T"
+        end
     end
     handle.token = token
     --what the mouse is over: the token or a step button. The buttons show
@@ -2414,7 +3126,11 @@ local function BuildTracker(id, record, private)
     local steps = {}
 
     local function ShowSteps()
-        local show = next(hovered) ~= nil and TrackerChangeable(handle.record)
+        --a sand timer has no steps: it is flipped, and set from its menu. A
+        --hero's resource has none outside combat (there is none to change).
+        local resting = handle.record.type == "hero" and not InCombat()
+        local show = next(hovered) ~= nil and TrackerChangeable(handle.record) and handle.record.type ~= "sandtimer" and not resting
+            and not IsTrinket(handle.record)
         for _, step in ipairs(steps) do
             if step.valid then
                 step:SetClass("collapsed", not show)
@@ -2483,13 +3199,10 @@ local function BuildTracker(id, record, private)
         --a 3D token draws over the UI, so its number is the token's own and
         --this label only takes the mouse (an edit would be hidden under it).
         opacity = cond(token ~= nil, 0, 1),
-        editable = token == nil and TrackerChangeable(record),
+        editable = token == nil and TrackerChangeable(record) and not IsTrinket(record),
         hover = function(element)
             Hover(element)
-            element.tooltip = gui.StatsHistoryTooltip{
-                description = TrackerName(handle.record),
-                entries = TrackerHistory(handle.record),
-            }
+            ShowTrackerTip(element, handle)
         end,
         dehover = function(element)
             Dehover(element)
@@ -2528,6 +3241,44 @@ local function BuildTracker(id, record, private)
         end,
     }
 
+    if record.type == "hero" then
+        handle.extras = BuildHeroExtras(handle, Hover, Dehover)
+    elseif record.type == "standee" then
+        handle.extras = BuildStandeeCard(handle, Hover, Dehover)
+    end
+
+    --skull and key: their symbol stamped on the face (dark, with a light
+    --lower edge, as if pressed into the metal).
+    local stamp = nil
+    local stampIcon = (TRACKER_TYPES[record.type] or {}).icon
+    if stampIcon ~= nil then
+        stamp = gui.Panel{
+            floating = true,
+            halign = "center",
+            valign = "center",
+            width = TRACKER_SIZE * 0.44,
+            height = TRACKER_SIZE * 0.44,
+            interactable = false,
+            gui.Panel{
+                floating = true,
+                width = "100%",
+                height = "100%",
+                y = 1.5,
+                bgimage = stampIcon,
+                bgcolor = "#FFFFFF55",
+                interactable = false,
+            },
+            gui.Panel{
+                floating = true,
+                width = "100%",
+                height = "100%",
+                bgimage = stampIcon,
+                bgcolor = "#26272BE6",
+                interactable = false,
+            },
+        }
+    end
+
     local tokenPanel
     if token ~= nil then
         --the token's image is bigger than the token, to hold its shadow.
@@ -2548,11 +3299,29 @@ local function BuildTracker(id, record, private)
                 bgcolor = "white",
                 interactable = false,
             },
-            valueLabel,
+            stamp or valueLabel,
+            stamp ~= nil and valueLabel or nil,
         }
     else
         tokenPanel = TableDice.TrackerToken(record.type, TRACKER_SIZE, valueLabel)
+        if stamp ~= nil then
+            tokenPanel:AddChild(stamp)
+        end
     end
+
+    --the name plate; a trinket with nothing to say has none (TrackerName "").
+    local plate = gui.Panel{
+        classes = {"tableTrackerPlate", cond(TrackerName(record) == "", "collapsed", nil)},
+        bgimage = "panels/square.png",
+        width = "auto",
+        height = "auto",
+        hpad = 8,
+        vpad = 2,
+        borderBox = true,
+        halign = "center",
+        valign = "bottom",
+        nameLabel,
+    }
 
     local panel
     panel = gui.Panel{
@@ -2566,16 +3335,14 @@ local function BuildTracker(id, record, private)
         bgimage = true,
         bgcolor = "clear",
         swallowPress = true,
-        --only the Director moves trackers (TABLE_DICE_BRIEF.md, decision 4).
-        draggable = dmhub.isDM,
+        --only the Director moves trackers (TABLE_DICE_BRIEF.md, decision 4);
+        --anyone moves a trinket (Trinkets, decision 2).
+        draggable = dmhub.isDM or IsTrinket(record),
         dragInPlace = true,
         data = {id = id},
         hover = function(element)
             Hover(element)
-            element.tooltip = gui.StatsHistoryTooltip{
-                description = TrackerName(handle.record),
-                entries = TrackerHistory(handle.record),
-            }
+            ShowTrackerTip(element, handle)
         end,
         dehover = function(element)
             Dehover(element)
@@ -2583,11 +3350,30 @@ local function BuildTracker(id, record, private)
         rightClick = function(element)
             ShowTrackerMenu(id)
         end,
-        --the 3D token lifts while it is carried.
+        click = function(element)
+            local r = handle.record
+            if r.type == "sandtimer" and dmhub.isDM then
+                FlipSand(id, handle.private)
+            elseif r.type == "coin" then
+                FlipCoin(id, handle.private)
+            elseif r.type == "pointer" then
+                TurnPointer(id, handle.private, (tonumber(r.yaw) or 0) + 45)
+            end
+        end,
+        --the 3D token lifts while it is carried; a held pointer turns with
+        --the mouse wheel, a notch at a time, as a held figure does.
         dragging = function(element)
             local t = handle.token
             if t ~= nil and t.valid and not t.held then
                 t.held = true
+            end
+            if handle.record.type == "pointer" and t ~= nil and t.valid then
+                local wheel = dmhub.mouseWheel
+                if wheel ~= 0 then
+                    handle.heldYaw = ((handle.heldYaw or tonumber(handle.record.yaw) or 0) + cond(wheel > 0, -15, 15)) % 360
+                    --the engine turns anticlockwise; the record counts clockwise.
+                    t.yaw = -handle.heldYaw
+                end
             end
         end,
         drag = function(element)
@@ -2595,6 +3381,8 @@ local function BuildTracker(id, record, private)
             if t ~= nil and t.valid then
                 t.held = false
             end
+            local heldYaw = handle.heldYaw
+            handle.heldYaw = nil
             element.x = element.xdrag
             element.y = element.ydrag
             local w, h = TableSize()
@@ -2604,31 +3392,26 @@ local function BuildTracker(id, record, private)
             fy = math.max(0, math.min(1, fy))
             local behind = BehindScreen(fx)
             if behind ~= handle.private then
-                Transfer(id, behind, fx, fy, "trackers")
+                Transfer(id, behind, fx, fy, "trackers", {yaw = heldYaw})
                 return
             end
             Modify(id, handle.private, "Move a table tracker", function(r)
                 r.fx, r.fy = fx, fy
+                if heldYaw ~= nil then
+                    r.yaw = heldYaw
+                end
                 r.seq = (r.seq or 0) + 1
             end, "trackers")
         end,
         tokenPanel,
         Step(-1, "left"),
         Step(1, "right"),
-        gui.Panel{
-            classes = {"tableTrackerPlate"},
-            bgimage = "panels/square.png",
-            width = "auto",
-            height = "auto",
-            hpad = 8,
-            vpad = 2,
-            borderBox = true,
-            halign = "center",
-            valign = "bottom",
-            nameLabel,
-        },
+        plate,
+        --last: nil for all but a hero or standee, which must not leave a hole.
+        handle.extras,
     }
     handle.panel = panel
+    handle.plate = plate
     handle.valueLabel = valueLabel
     handle.nameLabel = nameLabel
     return handle
@@ -2679,6 +3462,36 @@ local function TrackerLayers()
     end
     local shared = g.trackerLayer --[[@as Panel]]
     local private = g.trackerScreenLayer --[[@as Panel]]
+
+    --The dice and figures lying on the table, drawn by the engine's table pass
+    --("#DiceTable"): over the shared trackers, under every window and panel.
+    local image = g.tableImage
+    if image == nil or not image.valid or image.parent ~= shared then
+        image = gui.Panel{
+            floating = true,
+            width = "100%",
+            height = "100%",
+            bgimage = "#DiceTable",
+            bgcolor = "white",
+            interactable = false,
+        }
+        shared:AddChild(image)
+        g.tableImage = image
+        g.tableImageCrop = nil
+    end
+    local sharedChildren = shared.children
+    if sharedChildren[#sharedChildren] ~= image then
+        image:SetAsLastSibling()
+    end
+    --the image is the whole screen; the table is the part below the title bar
+    --(imageRect's y counts up from the bottom).
+    local screen = dmhub.screenDimensions
+    local below = dmhub.screenDimensionsBelowTitlebar
+    local crop = screen.y > 0 and below.y / screen.y or 1
+    if crop ~= g.tableImageCrop then
+        g.tableImageCrop = crop
+        image.selfStyle.imageRect = {x1 = 0, x2 = 1, y1 = 0, y2 = crop}
+    end
     local children = docs.children
     if children[1] ~= shared then
         shared:SetAsFirstSibling()
@@ -2711,6 +3524,49 @@ DestroyTrackers = function()
         DestroyTracker(handle)
         g.trackers[id] = nil
     end
+end
+
+--A countdown ticks down as combat rounds pass (decision 6). Only the
+--Director's client writes it: it notes the combat and round it last saw,
+--and takes one off for each new round since.
+--- @param id string
+--- @param private boolean
+--- @param record TableTrackerRecord
+--- @param handle table
+TickCountdown = function(id, private, record, handle)
+    local q = dmhub.initiativeQueue
+    if q == nil or q.hidden then
+        return
+    end
+    local round = tonumber(q.round) or 0
+    local key = tostring(q.guid) .. ":" .. round
+    if handle.tickedAt == key then
+        return
+    end
+    handle.tickedAt = key
+    if record.combat ~= q.guid or type(record.round) ~= "number" then
+        Modify(id, private, "Start a countdown", function(r)
+            r.combat = q.guid
+            r.round = round
+        end, "trackers")
+        return
+    end
+    if round <= record.round then
+        return
+    end
+    local passed = round - record.round
+    Modify(id, private, "A round passed", function(r)
+        r.round = round
+        local value = math.max(0, (tonumber(r.value) or 0) - passed)
+        r.value = value
+        local history = type(r.history) == "table" and r.history or {}
+        history[#history+1] = {userid = dmhub.userid, timestamp = ServerTimestamp(), set = value, note = "A round passed"}
+        while #history > TRACKER_HISTORY_MAX do
+            table.remove(history, 1)
+        end
+        r.history = history
+        r.seq = (r.seq or 0) + 1
+    end, "trackers")
 end
 
 --Keeps the trackers' panels in line with the stores (TableDice.Sync).
@@ -2757,19 +3613,66 @@ local function SyncTrackers(covered, screenOpen)
             if (want.record.seq or 0) ~= handle.seq then
                 handle.seq = want.record.seq or 0
                 PlaceTracker(handle)
-                handle.nameLabel.text = TrackerName(want.record)
-                handle.valueLabel.editable = handle.token == nil and TrackerChangeable(want.record)
+                handle.valueLabel.editable = handle.token == nil and TrackerChangeable(want.record) and not IsTrinket(want.record)
             end
             --follows the table if the window changes size.
             PlaceToken(handle)
         end
-        local value = TrackerValue(want.record)
-        if value ~= handle.shown then
-            handle.shown = value
-            handle.valueLabel.text = string.format("%d", math.floor(value))
+        if want.record.type == "countdown" and dmhub.isDM then
+            TickCountdown(id, want.private, want.record, handle)
+        end
+        local text = TrackerText(want.record)
+        if text ~= handle.shown then
+            handle.shown = text
+            handle.valueLabel.text = text
             if handle.token ~= nil and handle.token.valid then
-                handle.token.text = handle.valueLabel.text
+                handle.token.text = text
             end
+        end
+        if handle.refreshExtras ~= nil then
+            handle.refreshExtras()
+        end
+        local t = handle.token
+        if t ~= nil and t.valid then
+            --a pointer's turn (unless it is being turned in hand).
+            if want.record.type == "pointer" and handle.heldYaw == nil then
+                --the engine turns anticlockwise; the record counts clockwise.
+                local yaw = -(tonumber(want.record.yaw) or 0)
+                if t.yaw ~= yaw then
+                    t.yaw = yaw
+                end
+            end
+            --a coin flip: played once, on every client, if it is fresh;
+            --otherwise the coin just lies the way it landed.
+            if want.record.type == "coin" then
+                if want.record.flipSeq ~= handle.flipSeq then
+                    local fresh = handle.coinSeen == true
+                    if type(want.record.flipAt) == "number" and dmhub.serverTime - want.record.flipAt > 2 then
+                        fresh = false
+                    end
+                    handle.flipSeq = want.record.flipSeq
+                    t:Flip(want.record.result == "tails", fresh)
+                end
+                handle.coinSeen = true
+            end
+        end
+        --a trinket's plate comes and goes with what it has to say (a coin's
+        --result); everything else keeps its plate.
+        local name = TrackerName(want.record)
+        if name ~= handle.shownName then
+            handle.shownName = name
+            handle.nameLabel.text = name
+            handle.plate:SetClass("collapsed", name == "")
+        end
+        --a timer running out: the plate says so, and it pings once (not when
+        --it was already out as the table loaded).
+        local expired = TrackerExpired(want.record)
+        if expired ~= handle.expired then
+            if expired and handle.expired == false then
+                audio.FireSoundEvent("Notify.Ping")
+            end
+            handle.expired = expired
+            handle.panel:SetClassTree("expired", expired)
         end
         local visible = not covered and (not want.private or screenOpen)
         if handle.panel:HasClass("collapsed") == visible then
