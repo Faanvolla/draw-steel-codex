@@ -1,20 +1,25 @@
 ---
 name: codex-code-review
-description: Codex Code Review. Review a developer's own Lua changes in the draw-steel-codex for correctness and clarity, report what it found in plain words, then offer to make the fixes. Checks comments against the codex comment rules, one-off local functions, work an existing helper already does, single-letter variable names, and codex-specific traps. Use when someone says "review my code", "review my changes", "codex code review", "check my diff", or invokes /codex-code-review. Lua codex only; not for C# engine code or compendium YAML.
+description: Codex Code Review. A developer runs this on their own Lua changes in the draw-steel-codex BEFORE opening a pull request. It checks correctness and clarity, explains what it found in plain words as suggestions, and offers to help make any of them. Checks comments against the codex comment rules, one-off local functions, work an existing helper already does, single-letter variable names, and codex-specific traps. Use when someone says "review my code", "review my changes", "codex code review", "check my diff", "is this ready for a PR", or invokes /codex-code-review. Lua codex only; not for C# engine code or compendium YAML, and not for reviewing someone else's PR.
 ---
 
 # Codex Code Review
 
-The goal: the changed code is **correct**, and **someone new to this code can read it
-and understand it** without asking the author. The review reports what it found to the
-person who wrote the code, explains each point in plain words, and then offers to fix
-them. It never edits anything before they say which fixes they want.
+Developers run this on their own work before they open a pull request, so the senior
+review that follows is short. The goal: the changed code is **correct**, and **someone
+new to this code can read it and understand it** without asking the author.
+
+The report is written to the developer who ran it. Every finding is a suggestion: it
+explains the rule so they learn it, and they decide what to change. Offer to help make
+the changes, but never edit anything before they say which ones they want.
 
 ## Step 1 -- Find the changes
 
-The argument, if given, says what to review: a branch name, a commit range, a PR number
-(`gh pr diff <n>`), or file paths. With no argument, review everything this person has
-changed that is not on `main` yet:
+The argument, if given, says what to review: a branch name, a commit range, or file
+paths. A PR number is not supported: this runs before the PR exists. If someone asks to
+review another person's PR, say this skill is for checking your own changes before a PR
+and stop. With no argument, review everything this person has changed that is not on
+`main` yet:
 
 ```bash
 git status --short
@@ -82,10 +87,15 @@ Read the logic as if you had to prove it works. Look for:
 - Reading a `_tmp_` field that may never have been set (use `try_get`), or checking
   `obj.SomeMethod == nil` on a game type (it raises instead of returning nil).
 - Scheduled or coroutine callbacks that don't check `mod.unloaded` before doing work.
-- Iterating a data table with `pairs` instead of `unhidden_pairs` (shows deleted entries).
+- A compendium table from `dmhub.GetTable(...)` iterated with `pairs` instead of
+  `unhidden_pairs`, which also returns deleted entries. Plain Lua tables use `pairs`
+  as normal; don't flag those.
 - A missing `local` that makes a new global by accident.
 - A padded panel (`pad`, `hpad`, `vpad`) without `borderBox = true`.
-- A new `.lua` file that was not registered with its CodeMod (it will never load).
+
+New `.lua` files can't be checked from the code: whether a file loads depends on its
+registration with its mod, which is stored in the cloud. For each new file, add a Note
+(see Step 4) reminding them to register it, or it will never load.
 
 ### B. Reuse: does something already do this? (should fix)
 
@@ -102,6 +112,13 @@ does the codex already have this? Search before deciding:
 When you find a match, name it with its file and line, and show what the new code would
 look like using it. Do not report a "maybe there is a helper for this" without having
 looked.
+
+Sometimes the better fix reaches outside the change: making an existing function take a
+parameter, or changing the places that already call it. You may suggest that, carefully:
+list every existing call site it would touch (found with `Grep`, not guessed), say what
+could break, and offer a version that stays inside their change when there is one.
+Existing code may be relied on in ways the diff doesn't show, so present it as something
+to check with a senior dev, not a must-fix.
 
 ### C. One-off local functions (should fix)
 
@@ -165,8 +182,8 @@ Every comment finding includes a suggested rewrite.
 - Magic numbers or strings with no name or comment.
 - Dead code and commented-out code.
 - New `print` calls. Some files keep tagged trace prints on purpose (`XFLOOR::`,
-  `MARK::` ...). A new print that follows the file's existing tag is a question for the
-  author ("keep this?"), not a finding. Any other new print is a finding.
+  `MARK::` ...). A new print that follows the file's existing tag goes under Notes as a
+  question ("keep this?"). Any other new print is a finding.
 - New code that does not match the style of the file around it (indentation, naming
   case, `--Text` comment spacing).
 
@@ -190,12 +207,18 @@ Syntax: OK / <errors>. Types: OK / <n problems> / not run (why). ASCII: OK / <hi
 ### Should fix
 <same format, grouped: Reuse, One-off functions, Names, Comments, Clarity>
 
+### Notes
+<same numbering: reminders and questions that are not problems, e.g. "register the new
+file", "keep this trace print?", a call-site change to check with a senior dev>
+
 ### Looks good
 <one or two specific things done well, if there are any. Skip if nothing stands out.>
 ```
 
 Rules for the report:
 
+- Number every item in one sequence across Must fix, Should fix and Notes (1, 2, 3 ...
+  without restarting), so the developer can answer with numbers.
 - Every finding has a `file:line` and a concrete suggestion. No vague "consider
   improving".
 - Only report what you checked. If you think a helper exists but did not find it, do not
@@ -205,18 +228,22 @@ Rules for the report:
   five, not five findings.
 - If nothing needs fixing, say so plainly. Don't invent findings to fill the report.
 
-## Step 5 -- Offer the fixes
+## Step 5 -- Offer to help
 
-The developer must read the full report before being asked about fixes. So write the
-report as your reply, finish it with one plain question, and end your turn:
+The developer must read the full report before being asked about changes. Fixing is
+optional: they may prefer to make the changes themselves, which is often how the rule
+sticks. So write the report as your reply, finish it with one plain question, and end
+your turn:
 
-> Which of these should I fix? You can say "all", "the must-fix items", or list numbers.
+> Want me to make any of these changes? Say "all", "the must-fix items", or list
+> numbers. Or make them yourself and run the review again.
 
 Do not use `AskUserQuestion` or any other prompt or card for this: those can show up
-before or over the report, so the developer gets asked about fixes they haven't read yet.
-Do not start fixing anything until they answer. Then:
+before or over the report, so the developer gets asked about changes they haven't read
+yet. Do not change anything until they answer. Then:
 
-- Make only the fixes they picked. Do not touch lines outside the change.
+- Make only the changes they picked. Stay inside their change, except where a picked
+  item said it reaches existing call sites; then touch only the sites that item listed.
 - Write code changes first, then do the comments in a separate pass against section E.
 - Re-run `luac -p` (and the type check if it ran before) on every file you edited.
 - Do not commit. Tell them what changed so they can review it and commit it themselves.
