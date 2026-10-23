@@ -4269,12 +4269,41 @@ function CharacterModifier:FillConditionImmunities(modContext, creature, result)
 	end
 end
 
+--- Marks the modes a Modify Abilities "Add Mode" adds, so we can tell which
+--- modifier added them.
+--- @param modifier CharacterModifier
+--- @return string
+function CharacterModifier.AddedModeMarker(modifier)
+	return tostring(modifier:try_get("guid", modifier.behavior))
+end
+
 function CharacterModifier:ModifyAbility(modContext, creature, ability)
 	local typeInfo = CharacterModifier.TypeInfo[self.behavior] or {}
 	local fn = typeInfo.modifyAbility
 	if fn ~= nil then
 		self:InstallSymbolsFromContext(modContext)
-		return fn(self, creature, ability)
+		local result = fn(self, creature, ability)
+
+		--A mode added by an earlier modifier holds its own copy of the ability.
+		--Modify that copy too, or picking the mode would lose this modifier.
+		if result ~= nil and result.multipleModes then
+			local marker = CharacterModifier.AddedModeMarker(self)
+			for _,mode in ipairs(result:try_get("modeList", {})) do
+				if mode.addedBy ~= nil and mode.addedBy ~= marker and mode.variation ~= nil then
+					--The copy belongs to this result alone, so mark it temporary
+					--while fn runs and fn changes it in place instead of copying it.
+					--Then unmark it again (see AddModes for why it must not stay marked).
+					local variation = mode.variation
+					variation._tmp_temporaryClone = true
+					variation = fn(self, creature, variation) or variation
+					variation._tmp_temporaryClone = nil
+					mode.variation._tmp_temporaryClone = nil
+					mode.variation = variation
+				end
+			end
+		end
+
+		return result
 	end
 
 	return ability
