@@ -23,8 +23,9 @@ local playersManageProjects = setting{
 
 --- May the current user work the Director's controls on a downtime project -
 --- status, milestones, adjustments, the event roll? True for the Director
---- always, and for a player only while the game hands it to them. Asked again
---- on every refresh, since the permission can be granted with a sheet open.
+--- always, and for a player only while the game hands it to them. Project
+--- cards read it when built; a player's open sheet picks up a change to the
+--- setting when it is next opened.
 --- @return boolean
 function DTCharSheetTab.CanManageProjects()
 	return dmhub.isDM or playersManageProjects:Get()
@@ -127,12 +128,10 @@ function DTCharSheetTab.CreateDowntimePanel()
                         end,
                     }
                     --its shares end with it, so no recipient keeps a stale entry.
+                    --Sharing with no one revokes every share in one change.
                     local token = getToken()
                     if token ~= nil then
-                        local shares = DTShares.CreateNew()
-                        for _, recipientId in ipairs(shares:GetProjectSharedWith(token.charid, projectId)) do
-                            shares:Revoke(token.charid, recipientId, projectId)
-                        end
+                        DTShares.CreateNew():Share(token.charid, projectId, {})
                     end
                     DTSettings.Touch()
                     element:FireEventTree("refreshToken")
@@ -141,8 +140,9 @@ function DTCharSheetTab.CreateDowntimePanel()
         end,
 
         --a roll that names no payer refunds this sheet's Hero, as before.
+        --roller is nil when the one who rolled no longer resolves.
         refundRoll = function(element, roll, roller)
-            DTProjectEditor.RefundProjectRoll(roll, getToken(), roller:GetTokenID())
+            DTProjectEditor.RefundProjectRoll(roll, getToken(), roller and roller:GetTokenID())
             DTSettings.Touch()
             element:FireEventTree("refreshToken")
         end,

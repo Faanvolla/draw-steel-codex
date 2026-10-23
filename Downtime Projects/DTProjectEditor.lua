@@ -1434,14 +1434,13 @@ function DTProjectEditor:_createAdjustmentsPanel()
                 },
             },
             gui.Panel {
+                --Adjustments move progress, so they can complete a project and
+                --give its item: the Director's control, like deleting them.
+                --Read at build, like the form's other Director controls.
+                classes = {cond(not DTCharSheetTab.CanManageProjects(), "collapsed")},
                 width = "12%",
                 height = "auto",
                 halign = "right",
-                --Adjustments move progress, so they can complete a project and
-                --give its item: the Director's control, like deleting them.
-                refreshToken = function(element)
-                    element:SetClass("collapsed", not DTCharSheetTab.CanManageProjects())
-                end,
                 linger = function(element)
                     gui.Tooltip("Add an adjustment")(element)
                 end,
@@ -1613,7 +1612,7 @@ end
 --- Turns one completed roll into the project's record of it
 --- @param info table The harvested roll
 --- @param roller DTRoller The entity that rolled
---- @param token any The hero whose project this is
+--- @param token any The Hero who paid for the roll, recorded as rolledById (RefundProjectRoll refunds them)
 --- @param attrid string The characteristic rolled
 --- @param isBreakthrough boolean Whether this roll came of a breakthrough
 --- @return DTRoll roll The record
@@ -1880,8 +1879,15 @@ end
 --- Creates action buttons for owned project panels (delete + share)
 --- @return table buttons Array containing delete button and share button elements
 function DTProjectEditor:_createOwnedProjectButtons()
+    --Only the Hero's own player or the Director deletes a project.
+    --canControlAsUser is true for the Director too.
+    local function canDelete()
+        local token = DTCharSheetTab.GetToken()
+        return token ~= nil and token.canControlAsUser
+    end
+
     local deleteButton = gui.Button {
-        classes = {"deleteButton", "sizeS"},
+        classes = {"deleteButton", "sizeS", cond(not canDelete(), "collapsed")},
         halign = "left",
         valign = "top",
         hmargin = 5,
@@ -1906,10 +1912,8 @@ function DTProjectEditor:_createOwnedProjectButtons()
                 end
             end
         end,
-        --Only the Hero's own player or the Director deletes a project.
         refreshToken = function(element)
-            local token = DTCharSheetTab.GetToken()
-            element:SetClass("collapsed", not (dmhub.isDM or (token ~= nil and token.canControlAsUser)))
+            element:SetClass("collapsed", not canDelete())
         end,
     }
 
@@ -2184,19 +2188,19 @@ function DTProjectEditor:CreateEditorPanel()
             if downtimeController then
                 local roll = element.data.project:GetRoll(rollId)
                 if roll then
+                    --nil when the roller is gone (a deleted follower); the roll
+                    --still goes, and the refund falls back to its payer or Hero.
                     local roller = DTRoller.CreateNew(roll)
-                    if roller then
-                        modifyTokenProps{
-                            execute = function()
-                                element.data.project:RemoveRoll(rollId)
-                            end,
-                        }
-                        downtimeController:FireEvent("refundRoll", roll, roller)
-                        dmhub.Schedule(0.1, function()
-                            DTSettings.Touch()
-                            DTShares.Touch()
-                        end)
-                    end
+                    modifyTokenProps{
+                        execute = function()
+                            element.data.project:RemoveRoll(rollId)
+                        end,
+                    }
+                    downtimeController:FireEvent("refundRoll", roll, roller)
+                    dmhub.Schedule(0.1, function()
+                        DTSettings.Touch()
+                        DTShares.Touch()
+                    end)
                 end
             end
         end,
@@ -2660,7 +2664,7 @@ end
 --- refunds nothing. A roll that names no payer refunds the fallback.
 --- @param roll DTRoll
 --- @param fallbackToken any The Hero to refund when the roll names no payer
---- @param fallbackKey string|nil The roller id to refund under in that case
+--- @param fallbackKey string|nil The roller id to refund under in that case; nil means the Hero
 function DTProjectEditor.RefundProjectRoll(roll, fallbackToken, fallbackKey)
     if roll:GetBreakthrough() then
         return
@@ -2675,11 +2679,24 @@ function DTProjectEditor.RefundProjectRoll(roll, fallbackToken, fallbackKey)
     if holder == nil then
         holder = fallbackToken
         key = fallbackKey
-    elseif key == nil or key == "" then
+    end
+    if holder == nil then
+        return
+    end
+
+    --A follower who is gone, or no longer rolls on projects, has no count
+    --anyone can see or spend, so their roll comes back to the Hero instead.
+    if key ~= nil and key ~= "" and key ~= holder.charid then
+        local follower = dmhub.GetCharacterById(key)
+        if follower == nil or not DTFollowers.RollsOnProjects(follower) then
+            key = nil
+        end
+    end
+    if key == nil or key == "" then
         key = holder.charid
     end
 
-    DTProjectEditor.AdjustDowntimeRolls(holder, key or "", 1)
+    DTProjectEditor.AdjustDowntimeRolls(holder, key, 1)
 end
 
 --- Comma-separated display names for a project's test characteristics

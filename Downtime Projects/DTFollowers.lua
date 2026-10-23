@@ -32,20 +32,31 @@ function DTFollowers:GetFollower(followerId)
     return self.followers[followerId or ""]
 end
 
---- Artisans and sages work on projects; retainers fight and never roll. The
---- Respite pays the same two (RSPSession.FollowersOf), so a retainer's leftover
---- count from before is neither counted nor offered.
---- @param follower CharacterToken
---- @return boolean
-local function RollsOnProjects(follower)
+--- A follower's type in lower case ("artisan", "sage" or "retainer"), or nil
+--- when the token is not a follower.
+--- @param follower CharacterToken|nil
+--- @return string|nil
+function DTFollowers.FollowerType(follower)
     local followerType = nil
     pcall(function()
-        if follower.properties:IsFollower() then
+        if follower ~= nil and follower.properties:IsFollower() then
             followerType = string.lower(follower.properties:try_get("followerType", ""))
         end
     end)
+    return followerType
+end
+
+--- Artisans and sages work on projects; retainers fight and never roll. The
+--- one check for this: the Respite, the activities dialog and the roll picker
+--- all use it, so a retainer's leftover count is neither counted nor offered.
+--- @param follower CharacterToken|nil
+--- @return boolean
+function DTFollowers.RollsOnProjects(follower)
+    local followerType = DTFollowers.FollowerType(follower)
     return followerType == "artisan" or followerType == "sage"
 end
+
+local RollsOnProjects = DTFollowers.RollsOnProjects
 
 --- Retrieve the total number of rolls the followers have. Only counts followers
 --- that still resolve to a live character, so rolls stranded on a deleted

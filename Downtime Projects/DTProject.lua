@@ -21,7 +21,7 @@
 --- @field projectRolls table Array of DTRoll objects - History of all rolls made on this project
 --- @field progressAdjustments table Array of DTAdjustment objects - History of all adjustments made to project progress
 --- @field createdBy string GUID identifier of the user who created this project
---- @field itemGranted boolean True once a crafting project has given its item; it never gives another
+--- @field itemsGiven table<string, boolean>|nil Item ids this project has given; each is given once, even if picked again
 DTProject = RegisterGameType("DTProject")
 DTProject.sortOrder = 1
 
@@ -39,7 +39,6 @@ DTProject.status = DEFAULT_STATUS
 DTProject.statusReason = "New Project - Ask your Director to review"
 DTProject.milestoneThreshold = 0
 DTProject.createdBy = dmhub.userid
-DTProject.itemGranted = false
 
 DTProject._cachedProgress = nil        -- Stores the calculated progress value
 DTProject._progressDirty = true        -- Marks cache as needing recalculation
@@ -404,14 +403,37 @@ function DTProject:WaitsOnDirector()
     return status == DTConstants.STATUS.PAUSED.key or status == DTConstants.STATUS.MILESTONE.key
 end
 
---- A crafting project finished before itemGranted existed gave its item when its
+--- Has this project already given the item it is crafting now?
+--- @return boolean
+function DTProject:HasGivenItem()
+    local itemId = self:GetItemID()
+    local given = self:try_get("itemsGiven")
+    return itemId ~= "" and given ~= nil and given[itemId] == true
+end
+
+--- Records that this project gave the item it is crafting now.
+--- A new table each time, so the write never lands on a shared default.
+function DTProject:_recordItemGiven()
+    local itemId = self:GetItemID()
+    if itemId == "" then
+        return
+    end
+    local given = {}
+    for id, value in pairs(self:try_get("itemsGiven") or {}) do
+        given[id] = value
+    end
+    given[itemId] = true
+    self.itemsGiven = given
+end
+
+--- A crafting project finished before itemsGiven existed gave its item when its
 --- progress reached the goal, so one that is Complete at its goal counts as given.
 --- Without this, deleting its last roll and rolling again would give a second copy.
 --- @param progress number The progress before the change being made
 function DTProject:_healLegacyGrant(progress)
     if self:GetStatus() == DTConstants.STATUS.COMPLETE.key and progress >= self:GetProjectGoal()
-            and self:GetItemID() ~= "" and not self:try_get("itemGranted", false) then
-        self.itemGranted = true
+            and self:try_get("itemsGiven") == nil then
+        self:_recordItemGiven()
     end
 end
 
@@ -424,9 +446,9 @@ end
 function DTProject:_markComplete(currentStatus)
     local STATUS = DTConstants.STATUS
     local completing = currentStatus ~= STATUS.COMPLETE.key
-    if not self:try_get("itemGranted", false) then
+    if not self:HasGivenItem() then
         if DTBusinessRules.GiveItemToCharacter(self) then
-            self.itemGranted = true
+            self:_recordItemGiven()
         end
     end
     self:SetStatusReason("Project complete.")
