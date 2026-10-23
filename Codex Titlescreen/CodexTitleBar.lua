@@ -4467,82 +4467,250 @@ local function CreateAudioIndicator()
         return audio.muted or IsLocalMuted()
     end
 
+    --The mixer popover (redesign 2026-10-23): a now-playing card, "Your mix"
+    --(every role: the personal master + personal mute), then for the
+    --Director or a DJ "Table mix" (the broadcast levels and the game-wide
+    --mute), and a footer with Stop all audio / Audio Studio. Sliders keep
+    --the app's diamond handle, quieted to the muted tokens.
     local function BuildPopover()
         local bar = rawget(_G, "g_drawSteelAudioBar")
         if bar == nil then
             return nil
         end
 
+        local canControl = bar.CanControlAudio ~= nil and bar.CanControlAudio()
+
         -- Now-playing line is a snapshot at open time -- this is a transient
         -- popover (same accepted pattern as the Studio's bindings popover),
         -- not a live-refreshing panel.
         local nowPlayingName = bar.PrimaryPlayingName()
 
-        --Muted-cause line (DJ delegation decision 4): the popover top tier is
-        --now PERSONAL for every role, so when the glyph shows muted the cause
-        --may be either layer - name it. Snapshot popover, but both mute
-        --toggles below refresh this line on press so it never contradicts an
-        --action taken inside the popover itself.
-        local mutedCauseLine
+        --A small round icon button (mute toggles, stop).
+        local function IconButton(args)
+            local t = {
+                classes = {"apIconButton"},
+                width = 24,
+                height = 24,
+                valign = "center",
+                gui.Panel{
+                    classes = {"apIcon"},
+                    width = 16,
+                    height = 16,
+                    halign = "center",
+                    valign = "center",
+                    interactable = false,
+                    bgimage = args.icon,
+                },
+            }
+            for k, v in pairs(args) do
+                if k ~= "icon" then
+                    t[k] = v
+                end
+            end
+            return gui.Panel(t)
+        end
+
+        --Swaps a mute button's glyph to match a muted flag.
+        local function SetMuteGlyph(button, muted)
+            button.children[1].bgimage = cond(muted, "phosphor/speaker-slash-fill.png", "phosphor/speaker-high-fill.png")
+        end
+
+        --Muted-cause notice (DJ delegation decision 4): the glyph can read muted
+        --for either of two layers, so name which one. Both mute controls below
+        --refresh it so it never contradicts an action taken in the popover.
+        local mutedCauseLabel = gui.Label{
+            classes = {"sizeXs"},
+            width = "100%-24",
+            height = "auto",
+            valign = "center",
+            textWrap = true,
+            color = "#d8b23a",
+        }
+        local mutedCause = gui.Panel{
+            classes = {"apNotice", "collapsed"},
+            width = "100%-16",
+            height = "auto",
+            halign = "center",
+            flow = "horizontal",
+            hpad = 10,
+            vpad = 6,
+            borderBox = true,
+            tmargin = 6,
+            gui.Panel{
+                width = 14,
+                height = 14,
+                valign = "center",
+                rmargin = 8,
+                bgimage = "phosphor/speaker-slash-fill.png",
+                bgcolor = "#d8b23a",
+            },
+            mutedCauseLabel,
+        }
         local function RefreshMutedCause()
             if audio.muted then
-                mutedCauseLine.text = "The table is muted for everyone."
-                mutedCauseLine:SetClass("collapsed", false)
+                mutedCauseLabel.text = "The table is muted for everyone"
+                mutedCause:SetClass("collapsed", false)
             elseif IsLocalMuted() then
-                mutedCauseLine.text = "Your personal mute is on."
-                mutedCauseLine:SetClass("collapsed", false)
+                mutedCauseLabel.text = "Your personal mute is on"
+                mutedCause:SetClass("collapsed", false)
             else
-                mutedCauseLine:SetClass("collapsed", true)
+                mutedCause:SetClass("collapsed", true)
             end
         end
-        mutedCauseLine = gui.Label{
-            classes = {"sizeXxs", "fgMuted", "collapsed"},
-            width = "100%",
-            height = "auto",
-            textWrap = true,
+
+        --Section heading with a quiet note on the right and the hairline under it.
+        local function SectionHeader(text, note)
+            return gui.Panel{
+                flow = "vertical",
+                width = "100%",
+                height = "auto",
+                tmargin = 10,
+                gui.Panel{
+                    width = "100%",
+                    height = 18,
+                    hpad = 14,
+                    borderBox = true,
+                    gui.Label{
+                        classes = {"sizeXs", "bold", "fgMuted"},
+                        text = text,
+                        width = "auto",
+                        height = "auto",
+                        halign = "left",
+                        valign = "center",
+                    },
+                    gui.Label{
+                        classes = {"sizeXxs", "fgMuted"},
+                        text = note,
+                        width = "auto",
+                        height = "auto",
+                        halign = "right",
+                        valign = "center",
+                        opacity = 0.7,
+                    },
+                },
+                gui.Panel{
+                    classes = {"audioPopoverHairline"},
+                    width = "100%",
+                    height = 1,
+                    tmargin = 2,
+                    bmargin = 2,
+                },
+            }
+        end
+
+        --One mixer row: label, the fader (which carries its own % readout),
+        --and an optional control in a fixed right-hand slot so every slider
+        --lines up.
+        local function MixRow(text, slider, extra)
+            return gui.Panel{
+                classes = {"apRow"},
+                flow = "horizontal",
+                width = "100%",
+                height = 28,
+                hpad = 14,
+                borderBox = true,
+                styles = {
+                    { selectors = {"sliderLabel"}, fontSize = 11, color = "@fgMuted", lmargin = 9, priority = 6 },
+                },
+                gui.Label{
+                    classes = {"sizeXs"},
+                    text = text,
+                    width = 74,
+                    height = "auto",
+                    valign = "center",
+                },
+                slider,
+                extra or gui.Panel{ width = 24, height = 24 },
+            }
+        end
+
+        local stopButton = nil
+        if canControl then
+            stopButton = IconButton{
+                icon = "ui-icons/ph-stop-fill.png",
+                linger = function(element)
+                    gui.Tooltip("Stop all audio")(element)
+                end,
+                press = function()
+                    bar.StopAll()
+                    resultPanel.popup = nil
+                end,
+            }
+        end
+
+        --Now playing: an icon tile, the track, and (Director/DJ) a stop button.
+        local nowPlayingCard = gui.Panel{
+            classes = {"apCard"},
+            flow = "horizontal",
+            width = "100%-16",
+            height = 56,
+            halign = "center",
+            hpad = 10,
+            borderBox = true,
+            gui.Panel{
+                classes = {"apTile"},
+                width = 36,
+                height = 36,
+                valign = "center",
+                rmargin = 10,
+                gui.Panel{
+                    width = 18,
+                    height = 18,
+                    halign = "center",
+                    valign = "center",
+                    classes = {"apTileIcon", cond(nowPlayingName ~= nil, "playing", nil)},
+                    bgimage = "phosphor/music-notes.png",
+                },
+            },
+            gui.Panel{
+                flow = "vertical",
+                width = cond(canControl, "100%-78", "100%-46"),
+                height = "auto",
+                valign = "center",
+                gui.Label{
+                    classes = {"sizeS", cond(nowPlayingName == nil, "fgMuted", nil)},
+                    width = "100%",
+                    height = "auto",
+                    textWrap = false,
+                    textOverflow = "ellipsis",
+                    text = nowPlayingName or "Nothing playing",
+                },
+                gui.Label{
+                    classes = {"sizeXxs", "fgMuted"},
+                    width = "100%",
+                    height = "auto",
+                    textWrap = false,
+                    textOverflow = "ellipsis",
+                    text = cond(nowPlayingName == nil,
+                        cond(canControl, "Pick something in the Audio Studio", "The Director picks the music"),
+                        "Playing for the table"),
+                },
+            },
+            stopButton,
         }
 
         --Personal tier (DJ delegation decision 4): EVERY role, including the
         --Director, gets the personal master + personal mute here - reflex
-        --control keeps reflex semantics for every human. The game-wide mute
-        --moved into the broadcast block below as a labeled control (PR-note
-        --obligation: this repurposes the DM's trained mute-glyph behavior).
-        local muteToggle = gui.Panel{
-            bgcolor = "white",
-            width = 16,
-            height = 16,
-            valign = "center",
-            hmargin = 4,
+        --control keeps reflex semantics for every human.
+        local muteToggle = IconButton{
+            icon = "phosphor/speaker-high-fill.png",
             press = function(element)
                 dmhub.SetSettingValue("localmuted", not IsLocalMuted())
                 -- The bar glyph self-heals on its 0.5s think, but this copy
                 -- lives in a snapshot popover -- swap it now or it reads
                 -- stale until the popover is reopened.
-                element:SetClass("muted", IsClientMuted())
+                SetMuteGlyph(element, IsClientMuted())
                 RefreshMutedCause()
             end,
             linger = function(element)
                 gui.Tooltip("Mute (only you)")(element)
             end,
-            styles = {
-                { bgimage = "phosphor/speaker-high-fill.png" },
-                { selectors = {"muted"}, bgimage = "phosphor/speaker-slash-fill.png" },
-                { selectors = {"hover"}, brightness = 2 },
-            },
-            create = function(element)
-                element:SetClass("muted", IsClientMuted())
-            end,
         }
-        muteToggle:SetClass("muted", IsClientMuted())
+        SetMuteGlyph(muteToggle, IsClientMuted())
 
-        -- Mute rides the RIGHT end of the Master row (its own row read as
-        -- orphaned chrome -- James field report, 2026-07-03). Master keeps the
-        -- left slot so its slider stays column-aligned with the Levels sliders
-        -- below; MakeFaderRow hardcodes width 100%, so the fader row is
-        -- narrowed post-construction to make room for the toggle.
         --Personal per-user master for every role - the same "volume" setting
         --as Settings->Audio's Master Volume. (The game-wide master lives in
-        --the dock/Studio/Settings; it is no longer in this popover.)
+        --the dock/Studio/Settings; it is not in this popover.)
         local masterSlider
         if bar.MakePersonalFader == nil then
             --Fallback for a stale export during partial reloads.
@@ -4550,135 +4718,93 @@ local function CreateAudioIndicator()
         else
             masterSlider = bar.MakePersonalFader("volume")
         end
-        local masterFaderRow = bar.MakeFaderRow("Master", masterSlider, false)
-        masterFaderRow.selfStyle.width = "100%-26"
-        local masterRow = gui.Panel{
-            flow = "horizontal",
-            width = "100%",
-            height = 22,
-            valign = "center",
-            masterFaderRow,
-            muteToggle,
-        }
 
         local children = {
-            -- "Now Playing" header (bold @fgStrong -- the popover inherits
-            -- themed styles via popupsInheritStyles, so it tracks the theme
-            -- like the menus do) with the track title on its own line
-            -- beneath, mirroring the Studio's Now Playing card.
-            gui.Label{
-                classes = {"sizeXs", "bold", "fgStrong"},
-                width = "100%",
-                height = "auto",
-                text = "Now Playing",
-            },
-            gui.Label{
-                classes = {"sizeXs", cond(nowPlayingName == nil, "fgMuted", nil)},
-                width = "100%",
-                height = "auto",
-                textWrap = false,
-                textOverflow = "ellipsis",
-                text = nowPlayingName or "Nothing playing",
-            },
-            masterRow,
-            mutedCauseLine,
-            --Personal-tier caption for EVERY role now (decision 4): the tier
-            --above is personal regardless of who you are; the broadcast block
-            --below is what plays to the table.
-            gui.Label{
-                classes = {"sizeXxs", "fgMuted"},
-                width = "100%",
-                height = "auto",
-                textWrap = true,
-                text = "These change your mix only.",
-            },
+            nowPlayingCard,
+            SectionHeader("Your mix", "only you hear this"),
+            MixRow("Master", masterSlider, muteToggle),
         }
-        RefreshMutedCause()
 
-        --Broadcast tier: Director or DJ only (DJ delegation decision 4). All
-        --game-wide controls live here, including the game-wide mute as a
-        --labeled control (promoted from the old master-row glyph tooltip).
-        if bar.CanControlAudio ~= nil and bar.CanControlAudio() then
-            --Section header per the panel design language: label + full-width
-            --hairline underline. The underline doubles as the seam between
-            --the personal tier above and the broadcast tier below, so no
-            --separate divider (the style guide bans a hairline directly
-            --above a header -- they double up).
-            children[#children+1] = gui.Panel{
-                flow = "vertical",
-                width = "100%",
-                height = "auto",
-                tmargin = 6,
-                gui.Label{
-                    classes = {"sizeXs", "fgMuted"},
-                    width = "100%",
-                    height = "auto",
-                    text = "Levels",
-                    bmargin = 2,
-                },
-                gui.Panel{
-                    classes = {"audioPopoverHairline"},
-                    width = "100%",
-                    height = 1,
-                },
-            }
-            children[#children+1] = bar.MakeFaderRow("Music", bar.MakeBroadcastFader("music"), false)
-            children[#children+1] = bar.MakeFaderRow("Ambience", bar.MakeBroadcastFader("ambience"), false)
-            children[#children+1] = bar.MakeFaderRow("Effects", bar.MakeBroadcastFader("effects"), false)
-            children[#children+1] = bar.MakeFaderRow("UI Sounds", bar.MakeBroadcastFader("uisounds"), false)
-            children[#children+1] = bar.MakeFaderRow("Anthem", bar.MakeBroadcastFader("anthem"), false)
+        --Broadcast tier: Director or DJ only (DJ delegation decision 4).
+        if canControl then
+            children[#children+1] = SectionHeader("Table mix", "everyone hears this")
+            children[#children+1] = MixRow("Music", bar.MakeBroadcastFader("music"))
+            children[#children+1] = MixRow("Ambience", bar.MakeBroadcastFader("ambience"))
+            children[#children+1] = MixRow("Effects", bar.MakeBroadcastFader("effects"))
+            children[#children+1] = MixRow("UI sounds", bar.MakeBroadcastFader("uisounds"))
+            children[#children+1] = MixRow("Anthem", bar.MakeBroadcastFader("anthem"))
 
-            local gameMuteToggle = gui.Panel{
-                bgcolor = "white",
-                width = 16,
-                height = 16,
+            --Game-wide mute as a switch: track plus a knob that slides right when on.
+            local knob = gui.Panel{
+                classes = {"apKnob"},
+                width = 12,
+                height = 12,
+                halign = "left",
                 valign = "center",
-                hmargin = 4,
+                hmargin = 2,
+                interactable = false,
+            }
+            local function SyncSwitch(element)
+                element:SetClass("on", audio.muted)
+                knob.selfStyle.halign = cond(audio.muted, "right", "left")
+            end
+            children[#children+1] = gui.Panel{
+                classes = {"apRow"},
+                flow = "horizontal",
+                width = "100%",
+                height = 28,
+                hpad = 14,
+                borderBox = true,
+                tmargin = 2,
                 press = function(element)
                     audio.muted = not audio.muted
                     audio.UploadMuted()
-                    element:SetClass("muted", audio.muted)
-                    muteToggle:SetClass("muted", IsClientMuted())
+                    element:FireEventTree("syncSwitch")
+                    SetMuteGlyph(muteToggle, IsClientMuted())
                     RefreshMutedCause()
                 end,
-                styles = {
-                    { bgimage = "phosphor/speaker-high-fill.png" },
-                    { selectors = {"muted"}, bgimage = "phosphor/speaker-slash-fill.png" },
-                    { selectors = {"hover"}, brightness = 2 },
-                },
-                create = function(element)
-                    element:SetClass("muted", audio.muted)
-                end,
-            }
-            children[#children+1] = gui.Panel{
-                flow = "horizontal",
-                width = "100%",
-                height = 22,
-                valign = "center",
-                tmargin = 4,
                 gui.Label{
                     classes = {"sizeXs"},
                     text = "Mute for everyone",
-                    width = "100%-26",
+                    width = "100%-32",
                     height = "auto",
                     valign = "center",
                 },
-                gameMuteToggle,
+                gui.Panel{
+                    classes = {"apSwitch"},
+                    width = 30,
+                    height = 16,
+                    valign = "center",
+                    halign = "right",
+                    interactable = false,
+                    create = SyncSwitch,
+                    syncSwitch = SyncSwitch,
+                    knob,
+                },
             }
+        end
 
+        children[#children+1] = mutedCause
+
+        if canControl then
             children[#children+1] = gui.Panel{
-                flow = "horizontal",
+                classes = {"audioPopoverHairline"},
                 width = "100%",
-                height = "auto",
-                tmargin = 4,
-                gui.Button{
-                    classes = {"sizeXs"},
+                height = 1,
+                tmargin = 8,
+            }
+            children[#children+1] = gui.Panel{
+                width = "100%",
+                height = 34,
+                hpad = 14,
+                borderBox = true,
+                gui.Label{
+                    classes = {"sizeXs", "apLink"},
                     text = "Stop all audio",
                     width = "auto",
-                    height = 22,
-                    hpad = 8,
-                    borderBox = true,
-                    hmargin = 3,
+                    height = "auto",
+                    halign = "left",
+                    valign = "center",
                     linger = function(element)
                         gui.Tooltip("Stop all audio. Also cancels auto game-mode music.")(element)
                     end,
@@ -4687,21 +4813,40 @@ local function CreateAudioIndicator()
                         resultPanel.popup = nil
                     end,
                 },
-                gui.Button{
-                    classes = {"sizeXs"},
-                    text = "Open Audio Studio",
+                gui.Panel{
+                    flow = "horizontal",
                     width = "auto",
-                    height = 22,
-                    hpad = 8,
-                    borderBox = true,
-                    hmargin = 3,
+                    height = "auto",
+                    halign = "right",
+                    valign = "center",
                     press = function()
                         resultPanel.popup = nil
                         LaunchablePanel.LaunchPanelByName("Audio Studio")
                     end,
+                    gui.Label{
+                        classes = {"sizeXs", "apLink"},
+                        text = "Audio Studio",
+                        width = "auto",
+                        height = "auto",
+                        valign = "center",
+                        interactable = false,
+                    },
+                    gui.Panel{
+                        classes = {"apLinkIcon"},
+                        width = 12,
+                        height = 12,
+                        lmargin = 4,
+                        valign = "center",
+                        interactable = false,
+                        bgimage = "phosphor/caret-right-bold.png",
+                    },
                 },
             }
+        else
+            children[#children+1] = gui.Panel{ width = 1, height = 10 }
         end
+
+        RefreshMutedCause()
 
         --Frameless flat chrome matching the title bar's context menus
         --(Venla 2026-08-24 menu rework): @bg fill continuing the bar, no
@@ -4713,17 +4858,17 @@ local function CreateAudioIndicator()
             cornerRadius = 10,
             margin = 4,
             flow = "vertical",
-            width = 340,
+            width = 320,
             height = "auto",
-            pad = 8,
+            tpad = 8,
             borderBox = true,
             halign = "right",
             valign = "bottom",
             --Muted slider recipe, scoped to this popover: the shared fader
             --rows ship the app-wide bright track/fill/handle, which is six
             --loud sliders in a small panel. Quiet them to the border/muted
-            --tokens so the section text reads first. priority beats the
-            --equal-specificity DefaultStyles base rules.
+            --tokens (the handle keeps its diamond) so the names read first.
+            --priority beats the equal-specificity DefaultStyles base rules.
             styles = ThemeEngine.MergeTokens{
                 --opacity keeps the unfilled track clearly dimmer than the
                 --@fgMuted fill; at full brightness the two grays are close
@@ -4732,6 +4877,26 @@ local function CreateAudioIndicator()
                 { selectors = {"sliderFill"}, bgcolor = "@fgMuted", priority = 10 },
                 { selectors = {"sliderHandleInner"}, bgcolor = "@fgMuted", priority = 10 },
                 { selectors = {"audioPopoverHairline"}, bgimage = true, bgcolor = "@border", opacity = 0.35 },
+                { selectors = {"apRow"}, bgimage = true, bgcolor = "clear" },
+                { selectors = {"apRow", "hover"}, bgcolor = "@bgAlt", transitionTime = 0.1 },
+                { selectors = {"apCard"}, bgimage = true, bgcolor = "@bgAlt", cornerRadius = 8 },
+                { selectors = {"apTile"}, bgimage = true, bgcolor = "@bg", cornerRadius = 6 },
+                { selectors = {"apTileIcon"}, bgcolor = "@fgMuted", opacity = 0.6 },
+                { selectors = {"apTileIcon", "playing"}, bgcolor = "@fg", opacity = 1 },
+                { selectors = {"apNotice"}, bgimage = true, bgcolor = "#2a2414", cornerRadius = 6 },
+                { selectors = {"apIconButton"}, bgimage = true, bgcolor = "clear", cornerRadius = 5 },
+                { selectors = {"apIconButton", "hover"}, bgcolor = "@bgAlt" },
+                { selectors = {"apIcon"}, bgcolor = "@fgMuted" },
+                { selectors = {"apIcon", "parent:hover"}, bgcolor = "@fg" },
+                { selectors = {"apSwitch"}, bgimage = true, bgcolor = "@border", cornerRadius = 8 },
+                { selectors = {"apSwitch", "on"}, bgcolor = "@accent" },
+                { selectors = {"apKnob"}, bgimage = true, bgcolor = "@fgMuted", cornerRadius = 6 },
+                { selectors = {"apKnob", "parent:on"}, bgcolor = "@fgStrong" },
+                { selectors = {"apLink"}, color = "@fgMuted" },
+                { selectors = {"apLink", "hover"}, color = "@fg" },
+                { selectors = {"apLink", "parent:hover"}, color = "@fg" },
+                { selectors = {"apLinkIcon"}, bgcolor = "@fgMuted" },
+                { selectors = {"apLinkIcon", "parent:hover"}, bgcolor = "@fg" },
             },
             children = children,
         }
