@@ -43,6 +43,16 @@ local function FindAbility(token, name)
     end
 end
 
+--Group Malice features only: the Minotaur Stampede's signature strike is also
+--named "Bull Rush", and a plain name lookup would return it first.
+local function FindMaliceAbility(token, name)
+    for _,ability in ipairs(token.properties:GetActivatedAbilities()) do
+        if ability.name == name and ability.categorization == "Malice" then
+            return ability
+        end
+    end
+end
+
 --pcall: hero properties raise on a read of the monster-only keywords field.
 local function IsMinotaur(token)
     if not LiveCreature(token) then
@@ -88,6 +98,17 @@ local function CountWithin(token, enemies, range)
         end
     end
     return result
+end
+
+local function EnemyInSightWithin(token, enemies, range)
+    local pierceWalls = token.properties:GetPierceWalls()
+    for _,enemy in ipairs(enemies) do
+        if MonsterAI.TargetDistance(token, enemy) <= range
+            and token:GetLineOfSight(enemy, pierceWalls) > 0 then
+            return true
+        end
+    end
+    return false
 end
 
 --How far a minotaur strikes: its signature ability's range, else melee 1.
@@ -221,11 +242,17 @@ MonsterAI:RegisterMove{
         if HasOngoingEffect(token, primalBayEffectId) then
             return nil, "Primal Bay is already active"
         end
-        local flail = FindAbility(token, "Flail and Blade")
-        if flail ~= nil and ai:FindBestMoveToUseStrike(token, flail) ~= nil then
-            return nil, "an enemy is in reach; strike instead"
-        end
+        --CanStrikeThisTurn is cheap but optimistic (it ignores whatever blocks a
+        --charge), so trust its "no". Only when no enemy is in sight within reach
+        --and none is ruled out does Flail and Blade's own exact search decide.
         local nearest = NearestDistance(token, ai.enemyTokens or {})
+        if ai:CanStrikeThisTurn(token) then
+            local flail = FindAbility(token, "Flail and Blade")
+            if flail == nil or EnemyInSightWithin(token, ai.enemyTokens or {}, StrikeReach(token))
+                or ai:FindBestMoveToUseStrike(token, flail) ~= nil then
+                return nil, "an enemy is in reach; strike instead"
+            end
+        end
         local speed = token.properties:CurrentMovementSpeed() or 0
         if nearest == nil or nearest > speed*2 + StrikeReach(token) then
             return nil, "no enemy close enough to benefit next turn"
@@ -266,7 +293,7 @@ local function BullRushPlan(context)
     for _,actor in ipairs(context.actingTokens or {}) do
         if IsMinotaur(actor) and not HasOngoingEffect(actor, bullRushEffectId)
             and BullRushHelps(actor, enemies) then
-            local actorAbility = FindAbility(actor, "Bull Rush")
+            local actorAbility = FindMaliceAbility(actor, "Bull Rush")
             if caster == nil and actorAbility ~= nil and actorAbility:CanAfford(actor) then
                 caster = actor
                 ability = actorAbility
@@ -340,7 +367,7 @@ MonsterAI:RegisterMaliceAbility{
         local enemies = context.enemyTokens or {}
         local best = nil
         for _,actor in ipairs(context.actingTokens or {}) do
-            local actorAbility = IsMinotaur(actor) and FindAbility(actor, "Cut the ... Nonsense!") or nil
+            local actorAbility = IsMinotaur(actor) and FindMaliceAbility(actor, "Cut the ... Nonsense!") or nil
             if actorAbility ~= nil and actorAbility:CanAfford(actor)
                 and not HasOngoingEffect(actor, cutTheNonsenseEffectId) then
                 local near = CountWithin(actor, enemies, 3)
@@ -367,7 +394,7 @@ MonsterAI:RegisterMaliceAbility{
             return
         end
         --Self-targeted, so the minotaur who benefits must cast it.
-        local actorAbility = FindAbility(actor, "Cut the ... Nonsense!") or ability
+        local actorAbility = FindMaliceAbility(actor, "Cut the ... Nonsense!") or ability
         ai:RunWithTokenControl(actor, function()
             ai:ExecuteAbility(actor, actorAbility, {{token = actor}}, {sleep = abilityPause})
         end)
@@ -380,15 +407,45 @@ MonsterAI:RegisterMaliceAbility{
 
 --The enemy each minotaur is retaliating against, by minotaur charid. Set when
 --the trigger is accepted; read by the Charge and strike prompts that follow.
+--Each entry is stamped with the time it was set, so one left behind by an
+--aborted retaliation goes stale. Not the turn: the core waits up to 45 seconds
+--for the triggering cast to finish, and the turn can change in that time.
 local g_retaliationTargets = {}
+local retaliationWindowSeconds = 60
 
+local function SetRetaliationTarget(token, target)
+    if target == nil then
+        g_retaliationTargets[token.charid] = nil
+    else
+        g_retaliationTargets[token.charid] = {charid = target.charid, time = dmhub.Time()}
+    end
+end
+
+local function RetaliationTargetId(token)
+    local entry = g_retaliationTargets[token.charid]
+    if entry == nil then
+        return nil
+    end
+    if dmhub.Time() - entry.time > retaliationWindowSeconds then
+        g_retaliationTargets[token.charid] = nil
+        return nil
+    end
+    return entry.charid
+end
+
+--Where the retaliatory charge lands. An attacker already within reach is a
+--charge of zero squares, landing where the minotaur stands.
 local function RetaliationCharge(ai, token, target)
     local speed = token.properties:CurrentMovementSpeed() or 0
     local reach = StrikeReach(token)
     if MonsterAI.TargetDistance(token, target) > speed + reach then
         return nil
     end
-    local probe = ai:ChargeProbe(ai:GetMovementToken(token), target, speed, reach)
+    local mover = ai:GetMovementToken(token)
+    if MonsterAI.TargetDistance(token, target) <= reach then
+        return {dest = mover.loc, chargeDist = 0}
+    end
+    local probe = ai:ChargeProbe(mover, target, speed, reach)
     if probe == nil or probe.chargeDist <= 0 then
         return nil
     end
@@ -401,12 +458,12 @@ MonsterAI:RegisterTrigger{
     abilities = {"Retaliatory Strike"},
     description = "Charge an enemy who damaged the minotaur whenever a straight-line charge reaches them.",
     handler = function(ai, token, triggerInfo)
-        g_retaliationTargets[token.charid] = nil
+        SetRetaliationTarget(token, nil)
         for _,charid in ipairs(triggerInfo.targets or {}) do
             local attacker = dmhub.GetTokenById(charid)
             if attacker ~= nil and LiveCreature(attacker) and IsHostile(token, attacker)
                 and RetaliationCharge(ai, token, attacker) ~= nil then
-                g_retaliationTargets[token.charid] = attacker.charid
+                SetRetaliationTarget(token, attacker)
                 return {activate = true}
             end
         end
@@ -420,7 +477,7 @@ MonsterAI:RegisterPrompt{
     id = "Minotaur: Retaliatory Charge",
     prompts = {"Minotaur:Invoked Ability"},
     handler = function(ai, invokerToken, casterToken, abilityClone, symbols, options)
-        local targetid = g_retaliationTargets[casterToken.charid]
+        local targetid = RetaliationTargetId(casterToken)
         if targetid == nil then
             return nil
         end
@@ -436,7 +493,7 @@ MonsterAI:RegisterPrompt{
         local target = dmhub.GetTokenById(targetid)
         local probe = LiveCreature(target) and RetaliationCharge(ai, casterToken, target) or nil
         if probe == nil then
-            g_retaliationTargets[casterToken.charid] = nil
+            SetRetaliationTarget(casterToken, nil)
             return {targets = {}}
         end
         return {abilityOverride = charge, targets = {{loc = probe.dest}}}
@@ -448,11 +505,11 @@ MonsterAI:RegisterPrompt{
     id = "Minotaur: Retaliatory Attack",
     prompts = {"Minotaur:Attack when Charging"},
     handler = function(ai, invokerToken, casterToken, abilityClone, symbols, options)
-        local targetid = g_retaliationTargets[casterToken.charid]
+        local targetid = RetaliationTargetId(casterToken)
         if targetid == nil then
             return nil
         end
-        g_retaliationTargets[casterToken.charid] = nil
+        SetRetaliationTarget(casterToken, nil)
 
         local target = dmhub.GetTokenById(targetid)
         if not LiveCreature(target) then
@@ -485,6 +542,23 @@ MonsterAI:RegisterPrompt{
 --------------------------------------------------------------------------------
 -- Flail and Blade's shift, and Cut the ... Nonsense!'s Knockback.
 --------------------------------------------------------------------------------
+
+--True when nothing but objects stands where the token would land. A shift may
+--pass through an ally's square but cannot end in one, and a size 2 minotaur
+--covers four squares.
+local function LandingIsFree(token, loc)
+    if loc == nil or not loc.valid then
+        return false
+    end
+    for _,occupied in ipairs(token:LocsOccupyingWhenAt(loc)) do
+        for _,other in ipairs(dmhub.GetTokensAtLoc(occupied) or {}) do
+            if other.valid and other.charid ~= token.charid and not other.isObject then
+                return false
+            end
+        end
+    end
+    return true
+end
 
 --After Flail and Blade, shift to stay within reach of an enemy (ideally one
 --Goring Horns can daze) without ending boxed in by adjacent enemies.
@@ -528,7 +602,7 @@ MonsterAI:RegisterPrompt{
         local currentValue = Value(casterToken.loc, 0)
         local best = nil
         for _,info in pairs(casterToken:CalculatePathfindingArea(range*10, {"shift"})) do
-            if info.loc.str ~= casterToken.loc.str then
+            if info.loc.str ~= casterToken.loc.str and LandingIsFree(casterToken, info.loc) then
                 local value = Value(info.loc, info.cost)
                 if value > currentValue and (best == nil or value > best.value) then
                     best = {loc = info.loc, value = value}

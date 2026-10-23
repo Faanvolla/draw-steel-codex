@@ -43,6 +43,16 @@ local function FindAbility(token, name)
     end
 end
 
+--Group Malice features only, so a human's own ability of the same name is
+--never picked up instead.
+local function FindMaliceAbility(token, name)
+    for _,ability in ipairs(token.properties:GetActivatedAbilities()) do
+        if ability.name == name and ability.categorization == "Malice" then
+            return ability
+        end
+    end
+end
+
 --pcall: hero properties raise on a read of the monster-only keywords field.
 local function HasKeyword(token, keyword)
     local keywords = nil
@@ -204,16 +214,28 @@ local function DiedThisEncounter(corpse)
     return initiativeid ~= nil and q.entries[initiativeid] ~= nil
 end
 
---Corpse objects of dead minions within reach of a square, nearest first.
---The ability's own target filter checks the corpse is a minion.
-local function RaisableCorpses(ai, token, ability, loc)
+--Corpse objects the cultist could raise from anywhere: dead minions (the
+--ability's own target filter checks that) who died this encounter. None of
+--this depends on where the cultist stands, so build it once per decision.
+local function EligibleCorpses(token, ability)
+    local result = {}
+    for _,corpse in ipairs(dmhub.allObjectTokens) do
+        if corpse.valid and corpse.isCorpse and DiedThisEncounter(corpse)
+            and ability:TargetPassesFilter(token, corpse, {}) then
+            result[#result+1] = corpse
+        end
+    end
+    return result
+end
+
+--The eligible corpses within reach of a square, nearest first.
+local function RaisableCorpses(ai, token, loc, eligible)
     local result = {}
     ai:ExecuteWithTheoreticalMovementLoc(token, loc, function()
-        for _,corpse in ipairs(dmhub.allObjectTokens) do
-            if corpse.valid and corpse.isCorpse and token:Distance(corpse) <= riseMyMinionsRange
-                and DiedThisEncounter(corpse)
-                and ability:TargetPassesFilter(token, corpse, {}) then
-                result[#result+1] = {token = corpse, distance = token:Distance(corpse)}
+        for _,corpse in ipairs(eligible) do
+            local distance = token:Distance(corpse)
+            if distance <= riseMyMinionsRange then
+                result[#result+1] = {token = corpse, distance = distance}
             end
         end
     end)
@@ -232,9 +254,13 @@ MonsterAI:RegisterMove{
         if malice < 2 then
             return nil, "not enough Malice to raise two minions"
         end
+        local eligible = EligibleCorpses(token, ability)
+        if #eligible < 2 then
+            return nil, "fewer than two dead minions to raise"
+        end
         local best = nil
         for _,info in pairs(ai.paths or {}) do
-            local count = math.min(malice, #RaisableCorpses(ai, token, ability, info.loc))
+            local count = math.min(malice, #RaisableCorpses(ai, token, info.loc, eligible))
             local value = count - (info.cost or 0)*0.001
             if count >= 2 and (best == nil or value > best.value) then
                 best = {loc = info.loc, count = count, value = value}
@@ -248,7 +274,7 @@ MonsterAI:RegisterMove{
     execute = function(self, ai, token, scoringInfo, ability)
         MoveCinematically(ai, token, scoringInfo.loc)
         --Pay for no more corpses than there is Malice for (1 each).
-        local corpses = RaisableCorpses(ai, token, ability, token.loc)
+        local corpses = RaisableCorpses(ai, token, token.loc, EligibleCorpses(token, ability))
         local targets = {}
         for i=1,math.min(#corpses, CurrentMalice()) do
             local corpse = corpses[i].token
@@ -297,7 +323,7 @@ MonsterAI:RegisterPrompt{
         local range = abilityClone:GetRange(casterToken.properties)
         local best = nil
         for _,ally in ipairs(dmhub.allTokens) do
-            if LiveCreature(ally) and not IsHostile(casterToken, ally)
+            if LiveCreature(ally) and not IsHostile(casterToken, ally) and not IsMinion(ally)
                 and MonsterAI.TargetDistance(casterToken, ally) <= range
                 and abilityClone:TargetPassesFilter(casterToken, ally, symbols or {}) then
                 local missing = MissingStamina(ally)
@@ -394,7 +420,7 @@ local function SavingManeuverToRaise(ai, actor)
     end
     local rise = FindAbility(actor, "Rise, My Minions")
     return rise ~= nil and CurrentMalice() >= 2
-        and #RaisableCorpses(ai, actor, rise, actor.loc) >= 2
+        and #RaisableCorpses(ai, actor, actor.loc, EligibleCorpses(actor, rise)) >= 2
 end
 
 MonsterAI:RegisterMaliceAbility{
@@ -405,7 +431,7 @@ MonsterAI:RegisterMaliceAbility{
     score = function(self, ai, token, ability, context)
         local best = nil
         for _,actor in ipairs(context.actingTokens or {}) do
-            local actorAbility = IsHuman(actor) and not IsMinion(actor) and FindAbility(actor, "Alchemical Device") or nil
+            local actorAbility = IsHuman(actor) and not IsMinion(actor) and FindMaliceAbility(actor, "Alchemical Device") or nil
             if actorAbility ~= nil and actorAbility:CanAfford(actor) and not SavingManeuverToRaise(ai, actor) then
                 local plan = FindBestCubePlan(actor, actorAbility, context.enemyTokens or {})
                 if plan ~= nil and plan.count >= 2 and (best == nil or plan.count > best.count) then
@@ -427,7 +453,7 @@ MonsterAI:RegisterMaliceAbility{
         if not LiveCreature(actor) then
             return
         end
-        local actorAbility = FindAbility(actor, "Alchemical Device") or ability
+        local actorAbility = FindMaliceAbility(actor, "Alchemical Device") or ability
         ai:RunWithTokenControl(actor, function()
             local area = BuildCubeArea(actor, actorAbility, scoringInfo.center)
             local targets = TokensInArea(actor, actorAbility, area)
@@ -439,6 +465,22 @@ MonsterAI:RegisterMaliceAbility{
         end)
     end,
 }
+
+--A condition is either inflicted directly (inflictedConditions is keyed by
+--condition id, so # is always 0) or comes from an ongoing effect that names one.
+local function HasAnyCondition(token)
+    if next(token.properties:try_get("inflictedConditions", {})) ~= nil then
+        return true
+    end
+    local effectsTable = dmhub.GetTable("characterOngoingEffects") or {}
+    for _,effect in ipairs(token.properties:ActiveOngoingEffects()) do
+        local info = effectsTable[effect.ongoingEffectid]
+        if info ~= nil and info.condition ~= "none" then
+            return true
+        end
+    end
+    return false
+end
 
 --Exploit Opening is worth 5 Malice when several humans act this turn with an
 --enemy in reach; conditioned enemies (double edge) make it better still.
@@ -466,7 +508,7 @@ MonsterAI:RegisterMaliceAbility{
         end
         local conditioned = 0
         for _,enemy in ipairs(enemies) do
-            if LiveCreature(enemy) and #enemy.properties:try_get("inflictedConditions", {}) > 0 then
+            if LiveCreature(enemy) and HasAnyCondition(enemy) then
                 conditioned = conditioned + 1
             end
         end
@@ -484,8 +526,19 @@ MonsterAI:RegisterMaliceAbility{
     end,
 }
 
---Staying Power heals each non-minion human 5 x level; only worth 7 Malice
---when someone is badly hurt and the healing would not be wasted.
+--Staying Power heals each non-minion human in the encounter 5 x level; only
+--worth 7 Malice when someone is badly hurt and the healing would not be wasted.
+--allyTokens holds only combatants, so humans elsewhere on the map are ignored.
+local function StayingPowerHumans(context)
+    local result = {}
+    for _,other in ipairs(context.allyTokens or {}) do
+        if IsHuman(other) and not IsMinion(other) then
+            result[#result+1] = other
+        end
+    end
+    return result
+end
+
 MonsterAI:RegisterMaliceAbility{
     id = "Human Malice: Staying Power",
     monsterGroups = humanGroup,
@@ -494,12 +547,10 @@ MonsterAI:RegisterMaliceAbility{
     score = function(self, ai, token, ability, context)
         local healing = 0
         local badlyHurt = false
-        for _,other in ipairs(dmhub.allTokens) do
-            if IsHuman(other) and not IsMinion(other) and not IsHostile(token, other) then
-                healing = healing + math.min(MissingStamina(other), 5*MonsterLevel(other))
-                if StaminaFraction(other) <= 0.5 then
-                    badlyHurt = true
-                end
+        for _,other in ipairs(StayingPowerHumans(context)) do
+            healing = healing + math.min(MissingStamina(other), 5*MonsterLevel(other))
+            if StaminaFraction(other) <= 0.5 then
+                badlyHurt = true
             end
         end
         if not badlyHurt or healing < 10 then
@@ -508,6 +559,12 @@ MonsterAI:RegisterMaliceAbility{
         return {score = math.min(0.9, 0.68 + healing*0.008)}
     end,
     execute = function(self, ai, token, scoringInfo, ability, context)
-        ExecuteMapAbility(ai, token, ability, nil)
+        local inEncounter = {}
+        for _,human in ipairs(StayingPowerHumans(context)) do
+            inEncounter[human.charid] = true
+        end
+        ExecuteMapAbility(ai, token, ability, function(target)
+            return inEncounter[target.charid] == true
+        end)
     end,
 }
