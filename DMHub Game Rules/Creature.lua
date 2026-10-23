@@ -9328,10 +9328,12 @@ creature.lookupSymbols = {
 		end
 	end,
 
-	--Matches items by name so content can cap carried things without knowing item ids,
-	--e.g. a Pick Up ability filtered on ItemCount("Bluepowder Barrel") < Might.
+	--Counts carried and equipped items whose name matches, ignoring case.
 	itemcount = function(c)
 		return function(name)
+			if type(name) ~= "string" then
+				return 0
+			end
 			name = string.lower(name)
 			local gearTable = GetTableCached(equipment.tableName)
 
@@ -9339,7 +9341,7 @@ creature.lookupSymbols = {
 			for itemid,_ in pairs(c:try_get("inventory", {})) do
 				itemids[itemid] = true
 			end
-			for _,equipid in pairs(c:Equipment()) do
+			for _,equipid in pairs(c:try_get("equipment", {})) do
 				if type(equipid) == "string" then
 					itemids[equipid] = true
 				end
@@ -9348,7 +9350,7 @@ creature.lookupSymbols = {
 			local total = 0
 			for itemid,_ in pairs(itemids) do
 				local item = gearTable[itemid]
-				if item ~= nil and string.lower(item.name) == name then
+				if item ~= nil and type(item.name) == "string" and string.lower(item.name) == name then
 					total = total + c:GetItemQuantityIncludingEquipment(itemid)
 				end
 			end
