@@ -42,12 +42,13 @@ text("encounter.about.part_named", [[Part {number}: {title}]])
 text("encounter.about.title_with_part", [[{title} -- {part}]])
 
 ----------------------------------------------------------------------------
--- ARRANGE YOUR HEROES: the panel when the heroes win the initiative
+-- ARRANGE YOUR HEROES: the panel before a fight whose initiative a montage decided
 ----------------------------------------------------------------------------
 
---The panel's heading and the line under it.
+--The panel's heading and the line under it (intro_lost when the enemy goes first).
 text("encounter.arrange.title", [[Arrange Your Heroes]])
 text("encounter.arrange.intro", [[You have won the initiative. Choose starting locations, then press Ready.]])
+text("encounter.arrange.intro_lost", [[You have lost the initiative; the enemy acts first. Choose starting locations, then press Ready.]])
 
 --The button. Short: it is a button.
 text("encounter.arrange.ready_button", [[Ready]])
