@@ -1109,7 +1109,7 @@ text("author.script.unlock.outside_narrative", [['Unlock: {feature}' only works 
 text("author.script.intelligence_not_unlocked", [['{clause}' but nothing unlocks Intelligence; write 'Unlock: Intelligence' in a narrative beat or the party can never spend it]])
 
 --Beats and their headings. {title} is the heading as written.
-text("author.script.unknown_beat", [[unknown beat '{title}' (expected Montage, Narrative, Encounter, Delve: <name>, Part <n>: <title>, Town Gate, Conclusion or Defeat); ignored]])
+text("author.script.unknown_beat", [[unknown beat '{title}' (expected Montage, Narrative, Encounter, Delve: <name>, Part <n>: <title>, Results, Town Gate, Conclusion or Defeat); ignored]])
 text("author.script.second_story", [[a second '# {title}'; only the first is used]])
 --{part} is the part number already given.
 text("author.script.second_part", [[a second '# {title}'; a script is one part, so only '# Part {part}' counts (give each part its own document)]])
@@ -1182,7 +1182,7 @@ text("author.script.scene.chose_unknown_option", [['PC chose {option}' names no 
 --What is wrong with a scene condition (shown after "scene condition '...': ").
 text("author.script.condition.missing_paren", [[missing ')']])
 text("author.script.condition.missing", [[a condition is missing]])
-text("author.script.condition.unknown", [['{condition}' is not a condition (use 'PC speaks X', 'PC is X', 'PC has X', 'PC can X', 'PC was a X', 'PC chose X', 'tier1'-'tier3' or 'crit')]])
+text("author.script.condition.unknown", [['{condition}' is not a condition (use 'PC speaks X', 'PC is X', 'PC has X', 'PC can X', 'PC was a X', 'PC chose X', 'tier1'-'tier3', 'crit', '<Track> is 2 or more' or 'Part 1 was a failure')]])
 --{word} is the word that was not expected.
 text("author.script.condition.unexpected", [[unexpected '{word}']])
 

@@ -1154,6 +1154,11 @@ text("script.effect.hero_tokens.one", [[the party gains {count} hero token]])
 text("script.effect.hero_tokens.other", [[the party gains {count} hero tokens]])
 text("script.effect.intelligence", [[the party gains {qty} Intelligence]])
 text("script.effect.malice", [[+{qty} malice]])
+--A story track changing. {track} is the track's name, {delta} the change
+--with its sign, like "+1" or "-2".
+text("script.effect.track", [[{track} {delta}]])
+--A track the script never declared. {track} is its name.
+text("script.effect.track_undeclared", [[nothing ('{track}' is not a declared track)]])
 --{ally} is the monster's name.
 text("script.effect.ally", [[{ally} joins the hero]])
 text("script.effect.vanquish", [[the threat is vanquished]])
