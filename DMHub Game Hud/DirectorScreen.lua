@@ -1388,6 +1388,45 @@ function DirectorScreen.Members()
     return SortedKeys(g.members)
 end
 
+--- Whether the screen hides a panel at the mouse: it is showing, the mouse
+--- is over it, and the panel lies behind the band (a shared window running
+--- under it). The band takes no mouse, so what is under it still answers to
+--- a pointer: a drop there must not reach what the Director cannot see.
+--- @param panel Panel
+--- @return boolean
+function DirectorScreen.Hides(panel)
+    local band = g.band
+    if not Shown() or band == nil or not band.valid or panel == nil or not panel.valid then
+        return false
+    end
+    local x = MouseOnTable()
+    if x < Edge() then
+        return false
+    end
+    local docs = band.parent
+    if docs == nil then
+        return false
+    end
+    --the panel's ancestor among the band's siblings: behind the band if it
+    --comes before it.
+    local top = panel
+    while top ~= nil and top.parent ~= docs do
+        top = top.parent
+    end
+    if top == nil then
+        return false
+    end
+    for _, child in ipairs(docs.children) do
+        if child == band then
+            return false
+        end
+        if child == top then
+            return true
+        end
+    end
+    return false
+end
+
 --- Where the screen's edge is (documents-layer units), or nil while it is
 --- closed or gone.
 --- @return number|nil
