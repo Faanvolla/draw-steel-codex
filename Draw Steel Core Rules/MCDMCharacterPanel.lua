@@ -6358,6 +6358,8 @@ function TacPanel.GrowingHRRow(entry, creature)
             classes = {"label", "gr-text"},
             text = StringInterpolateGoblinScript(entry.description, creature),
             update = function(element, newEntry, newCreature)
+                -- Rows are reused when the panel switches heroes, so fill in the
+                -- text for the current hero, not the one the row was built for.
                 local text = StringInterpolateGoblinScript(newEntry.description, newCreature or creature)
                 element.text = text
                 element.selfStyle.fontSize = _fitFontSize(TacPanelSizes.Fonts.grText, 50, #text)
@@ -6429,7 +6431,9 @@ function TacPanel.GrowingHRSection()
         classes = {"growing-resources"},
         data = { rows = {}, collapsed = false },
         refreshSection = function(element, creature, growingResources)
-            element:FireEventTree("setTitle", growingResources.name:upper())
+            -- Every table is shown now, so an unnamed one gets a blank title
+            -- instead of breaking the whole panel.
+            element:FireEventTree("setTitle", (growingResources:try_get("name") or ""):upper())
 
             local characterLevel = creature:CharacterLevel()
             local characterResources = creature:GetProgressionResource()
