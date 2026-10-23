@@ -2908,17 +2908,18 @@ local function UpdateDirectorUIHatch()
 end
 
 --- arranging the heroes -------------------------------------------------
---When the heroes win the initiative (a die roll, or a montage outcome that
---hands it to them), the Draw Steel banner announces it and then HOLDS the
---start of combat: the party may move their heroes anywhere inside the
---start zone (plus any zone a clause unlocked) before the first turn. Each
---player presses Ready; when every voter is ready, or ARRANGE_SECONDS have
---passed, the host creates the initiative queue and the heroes go first.
---A party that loses the initiative (which a surprised party always does)
---goes straight into the fight.
+--When a montage decides the initiative (no die is rolled), the Draw Steel
+--banner announces it and then HOLDS the start of combat: the party may move
+--their heroes anywhere inside the start zone (plus any zone a clause
+--unlocked) before the first turn. Each player presses Ready; when every
+--voter is ready, or ARRANGE_SECONDS have passed, the host creates the
+--initiative queue and the winning side goes first. The heroes get this
+--even when they lose or are surprised, so a start zone the montage opened
+--can still be used.
 --
 --State doc: data.arrange = nil | { phase = "arranging"|"done", startedAt,
---deadline, ready = { [voterKey] = { at } }, endedAt }. Voter keys are the
+--deadline, heroesWin, ready = { [voterKey] = { at } }, endedAt }. See
+--ArrangeHeroesWin for a doc with no heroesWin. Voter keys are the
 --narrative's (EncounterNarrative.Voters): one per player who owns heroes,
 --"PARTY" for party-owned heroes. Players write only their own key.
 local ARRANGE_SECONDS = 120
@@ -2938,6 +2939,12 @@ local function ArrangeState()
         return state
     end
     return nil
+end
+
+--True when the heroes won the initiative for this arrangement. Older docs
+--have no heroesWin: back then only a win was held, so nil means a win.
+local function ArrangeHeroesWin(state)
+    return state.heroesWin ~= false
 end
 
 local function ArrangeVoters()
@@ -2988,13 +2995,9 @@ function EncounterOfTheWeekGame.SetArrangeReady(ready)
     doc:CompleteChange("Encounter of the Week: heroes arranged", {undoable = false})
 end
 
---The banner resolved: hold for the arrangement when the heroes won. Only
+--The banner resolved: hold for the arrangement, whichever side won. Only
 --passed when no die was rolled (see StartEncounterCombat).
 local function HoldForArrangement(heroesWin, begin)
-    if not heroesWin then
-        begin()
-        return
-    end
     m_arrangeBegin = begin
     local doc = mod:GetDocumentSnapshot(STATE_DOC_ID)
     doc:BeginChange()
@@ -3002,10 +3005,12 @@ local function HoldForArrangement(heroesWin, begin)
         phase = "arranging",
         startedAt = dmhub.serverTime,
         deadline = dmhub.serverTime + ARRANGE_SECONDS,
+        heroesWin = heroesWin == true,
         ready = {},
     }
     doc:CompleteChange("Encounter of the Week: arrange the heroes", {undoable = false})
-    printf("EotW: the heroes won the initiative; they may arrange themselves for %ds", ARRANGE_SECONDS)
+    printf("EotW: the %s won the initiative; the heroes may arrange themselves for %ds",
+        cond(heroesWin, "heroes", "monsters"), ARRANGE_SECONDS)
 end
 
 --- the arrangement panel (every client) -----------------------------------
@@ -3115,7 +3120,8 @@ local function CreateArrangePanel()
             },
             gui.Label{
                 classes = {"fg"},
-                text = UIText.T("encounter.arrange.intro"),
+                text = cond(ArrangeHeroesWin(ArrangeState() or {}),
+                    UIText.T("encounter.arrange.intro"), UIText.T("encounter.arrange.intro_lost")),
                 width = "100%",
                 height = "auto",
                 halign = "center",
@@ -4390,11 +4396,12 @@ local function StartEncounterCombat(sides, options)
         immediateResult = options.forceResult
     end
 
-    --Only a party handed the initiative with no die gets the arrangement
-    --pause. When the die is rolled the heroes arrange themselves (still
+    --When a montage decided the initiative (no die), the heroes get the
+    --arrangement pause whether they won or lost, so they can still use a
+    --start zone the montage opened. When the die is rolled they arrange (still
     --confined to the start area) while the banner waits for someone to roll.
     local holdBeforeQueue = nil
-    if immediateResult == "heroes" and not options.noArrange then
+    if immediateResult ~= nil and not options.noArrange then
         holdBeforeQueue = HoldForArrangement
     end
 
@@ -4445,11 +4452,12 @@ local function ArrangeHostTick()
         begin()
     else
         --the banner's continuation died with a Lua reload: start again,
-        --the heroes first, with no second arrangement.
-        printf("EotW: the arrangement's combat start was lost; starting combat again with the heroes first")
+        --the same side first, with no second arrangement.
+        local first = cond(ArrangeHeroesWin(state), "heroes", "monsters")
+        printf("EotW: the arrangement's combat start was lost; starting combat again with the %s first", first)
         local sides = GatherCombatSides()
         if sides ~= nil then
-            StartEncounterCombat(sides, { forceHeroes = true, noArrange = true })
+            StartEncounterCombat(sides, { forceResult = first, noArrange = true })
         end
     end
     return true
@@ -4598,7 +4606,7 @@ pcall(function()
     Commands.RegisterMacro{
         name = "eotwencounter",
         summary = "run the Encounter of the Week encounter beat in an authoring game",
-        doc = "Usage: /eotwencounter start | stop | state\nstart runs the map script's # Encounter beat here: setup instructions, the monster spawn for the numheroes setting, pending reveals, then Draw Steel -- including the montage's initiative outcome, bystanders and the heroes' arrangement pause when they win the initiative. stop abandons a pending arrangement. state prints the arrangement and the bystanders. /eotwmontage reset puts the map back.",
+        doc = "Usage: /eotwencounter start | stop | state\nstart runs the map script's # Encounter beat here: setup instructions, the monster spawn for the numheroes setting, pending reveals, then Draw Steel -- including the montage's initiative outcome, bystanders and the heroes' arrangement pause (won or lost). stop abandons a pending arrangement. state prints the arrangement and the bystanders. /eotwmontage reset puts the map back.",
         command = function(str)
             local arg = string.lower(string.gsub(str or "", "^%s*(.-)%s*$", "%1"))
             if arg == "start" then
@@ -5408,7 +5416,7 @@ function EncounterOfTheWeekGame.MapScriptHostThink(ctx)
     --end of the game knows what treasure they won.
     pcall(EnsureArrivalItems)
 
-    --the heroes won the initiative and are arranging themselves: the held
+    --a montage decided the initiative and the heroes are arranging: the held
     --combat starts from here once they are ready.
     local arranging, arrangeResult = pcall(ArrangeHostTick)
     if not arranging then
