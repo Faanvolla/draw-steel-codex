@@ -1,6 +1,18 @@
 --Run from the codex root with ../dependencies/lua/bin/lua.exe tests/encounter_script_test.lua
 --Exercises the pure Encounter of the Week script parser against the sample
 --script from EncounterOfTheWeek.md and a few edge cases.
+--The parser's words come from UIText and its text files, which call
+--dmhub.GetModLoading() and report problems with dmhub.Error: stub those
+--when running outside the app, so a missing id prints.
+if dmhub == nil then
+    dmhub = {
+        GetModLoading = function() return {} end,
+        Error = function(message) print(message) end,
+    }
+end
+dofile("DMHub Utils/UIText.lua")
+dofile("EncounterOfTheWeek/EncounterText.lua")
+dofile("EncounterOfTheWeek/EncounterAuthoringText.lua")
 dofile("DMHub Game Rules/TestRiders.lua")
 dofile("EncounterOfTheWeek/EncounterScript.lua")
 

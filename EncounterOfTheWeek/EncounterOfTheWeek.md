@@ -347,6 +347,7 @@ In a real EotW game with **at least two clients** and the current week:
 | The schedule, debriefs, nominations and unlocks on the server | `cloudflare-game-server/src/city-core.ts` ("The Encounter of the Week and the Proving Pits"), `src/city.ts` |
 | Weekly assessment + rotation tooling | `tools/eotw_week.py` (admin HTTP), `.claude/skills/eotw-rotate/` (MCP) |
 | Authoring content | `C:\dev\eotw` (git repo, no remote) + the Local authoring game `e96656f3-a11c-477b-89f1-978452983324` |
+| All user-facing text (see "User-facing text") | `Codex Titlescreen/EotwTextTown.lua`, `Codex Titlescreen/EotwTextHeroes.lua`, `EncounterOfTheWeek/EncounterText.lua`, `EncounterOfTheWeek/EncounterAuthoringText.lua`; helper `DMHub Utils/UIText.lua`; checker `tests/uitext_check.lua` |
 
 Codemod gotchas that apply to all of it:
 
@@ -368,6 +369,68 @@ Codemod gotchas that apply to all of it:
   loads, so if that mod reloads after the EotW hud, the takeover silently
   disappears until a restart.
 - Do not hot-reload during someone's roll: it destroys the open roll dialog.
+
+## User-facing text (UIText; BUILT 2026-10-22, checks clean, NOT run in the app)
+
+Every string a player or an encounter author sees that is written in the EotW
+Lua lives in four ID-keyed text files, so a writer can rewrite it without
+touching code (decided with the user 2026-10-22, over a one-off spreadsheet
+export). Text from an encounter's own script document is not in them.
+
+| File | Holds |
+|---|---|
+| `Codex Titlescreen/EotwTextTown.lua` | the EotW screen, town map and locations, lobby/parties, Gate/Pits, debrief, welcome, survey, Steam invites, Hero's Guild, Graveyard, Hall of Heroes, the Blue Fish Inn, downtime, leads, the Arcane Market |
+| `Codex Titlescreen/EotwTextHeroes.lua` | the hero builder, hero sheet, hero card |
+| `EncounterOfTheWeek/EncounterText.lua` | in-game: arrival, the stage, montages, narratives, Tactical Preparation, the HUD, presence/hosting, victory notes, parser-generated effect prose (`script.`) |
+| `EncounterOfTheWeek/EncounterAuthoringText.lua` | the Montage/Encounter/Script Builders, the validator, the authoring test, parser warnings (`author.script.`), edit messages (`author.script_edit.`) |
+
+- **Format.** `text("market.buy_button", [[Buy]])`, one per line, with a
+  writer's `--` note above each. `{name}` placeholders; plurals are
+  `<id>.one` / `<id>.other` read with `UIText.Plural(id, count, args)`. Each
+  file opens with editing instructions for the writer. ASCII only (the Lua
+  runtime cannot read other bytes; curly quotes and em dashes break a file).
+- **Code.** `local T = UIText.T` (and `TP = UIText.Plural`) at the top of each
+  file; `game/EncounterOfTheWeek.lua` is at the 200-local limit so it calls
+  `UIText.T` directly. Ids are always literal strings. `DMHub Utils/UIText.lua`
+  is generic (any feature can use it); it lives in DMHub Utils because the
+  game-side codemod loads BEFORE Codex Titlescreen. A missing id shows `[id]`
+  and is reported once in the DebugConsole; `UIText.showIds = true` prefixes
+  every string with its id for an on-screen review (rebuild the UI after).
+- **Load order.** Code looks text up while it loads (location, project, step
+  and lead tables), so each text file is registered before the code in its
+  codemod: UIText after Utils; EotwTextTown, EotwTextHeroes first in Codex
+  Titlescreen; EncounterText, EncounterAuthoringText first in
+  EncounterOfTheWeek. A module publish of the game codemod needs a core codex
+  with UIText deployed first.
+- **Check.** `../dependencies/lua/bin/lua.exe tests/uitext_check.lua` (codex
+  root): every id used exists, each call gives every `{placeholder}`, no id
+  is defined twice or unused, no `%s` or non-ASCII left. The parser tests load
+  UIText and the two game-side text files (stubbing `dmhub`). Run the checker
+  after a writer's pass and before committing.
+- **The writer edits the Lua text files directly** (decided 2026-10-22; a
+  spreadsheet export/import round trip was built, then dropped at the user's
+  request). Run the checker on the files that come back.
+- **Deliberately left in code** (not user text): ids/keys, logs, undo
+  descriptions, dev commands and admin-only dialogs (`ShowWeekDialog`,
+  `ShowPoolDialog`, CodexMenuItems), compendium rules data, script syntax the
+  builders write into documents and the starter prose they insert, notation.
+  Also left because they are both shown and used as keys: the montage boon
+  effect names (`EncounterMontage.lua`, matched by name), DockablePanel names
+  used as HUD tooltips, game-menu command names in `EncounterTest.lua`, the
+  parser's `unrecognized effect` warnings (searched for by the builder and
+  validator), project skill lists (compendium skill names).
+- **Writer cautions** (noted in the files): text that is upper-cased in code
+  (`ListSectionTitle`, `Overline`) or lower-cased before it is inserted (the
+  builder's step names); the assassin threat entries (`montage.assassin.*`),
+  which are fed through the script parser; trailing spaces in some validator
+  labels; party default names and the roster's "Unnamed Hero", which are sent
+  to and stored on the City.
+- **Not done.** Not run in the app (needs a deploy and a restart; the hero
+  sheet and HUD About menu had small key/display splits worth eyeballing).
+  `EncounterMonsterAssessment.lua` was being written by another session and is
+  not converted. Shared files outside EotW (`DSVictoryScreen`, `CreatorCredit`,
+  ModShare's EotW publish checks) are not converted. No translation support
+  yet: a translation would be a second set of files with the same ids.
 
 ---
 
