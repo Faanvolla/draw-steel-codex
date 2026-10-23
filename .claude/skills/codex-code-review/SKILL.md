@@ -207,9 +207,14 @@ Rules for the report:
 
 ## Step 5 -- Offer the fixes
 
-End by asking which fixes to make, using `AskUserQuestion` with multiSelect: one option
-per finding group (for example "All must-fix items", "Comments", "Names", "Inline one-off
-functions", "Use existing helpers"). Then:
+The developer must read the full report before being asked about fixes. So write the
+report as your reply, finish it with one plain question, and end your turn:
+
+> Which of these should I fix? You can say "all", "the must-fix items", or list numbers.
+
+Do not use `AskUserQuestion` or any other prompt or card for this: those can show up
+before or over the report, so the developer gets asked about fixes they haven't read yet.
+Do not start fixing anything until they answer. Then:
 
 - Make only the fixes they picked. Do not touch lines outside the change.
 - Write code changes first, then do the comments in a separate pass against section E.
