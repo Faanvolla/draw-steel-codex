@@ -6930,11 +6930,23 @@ end
 --- @param token CharacterToken
 --- @param info {type: string, amount: number, instances: number, aura: AuraInstance}
 function creature:AuraDamage(token, info)
+    --Credit the damage to the aura's caster (e.g. Wall of Fire's elementalist), so
+    --their "deal damage" triggers and damage stats count it.
+    local attacker = nil
+    local casterid = info.aura:try_get("casterid")
+    local casterToken = casterid ~= nil and dmhub.GetTokenById(casterid) or nil
+    if casterToken ~= nil and casterToken.valid then
+        attacker = casterToken.properties
+    end
+
+    --Keywords of the ability that cast the aura (Fire, Magic, ...), if any.
+    local keywords = info.aura:try_get("keywords") or {}
+
     token:ModifyProperties {
         description = info.aura.aura.name,
         execute = function()
             for i = 1, info.instances do
-                self:InflictDamageInstance(info.amount, info.type, {}, info.aura.aura.name, { damagesound = "Attack.Enviro" })
+                self:InflictDamageInstance(info.amount, info.type, keywords, info.aura.aura.name, { damagesound = "Attack.Enviro", attacker = attacker })
             end
         end,
     }
@@ -7097,7 +7109,7 @@ function creature:PersistentAbilities()
             break
         elseif (q.round or 0) > (a.round or 0) or ((q.round or 0) == (a.round or 0) and (q.turn or 0) > (a.turn or 0)) then
             if a.ability == nil or type(a.ability) ~= "table" or getmetatable(a.ability) == nil then
-                break
+                goto continue
             end
             local ability = a.ability:MakeTemporaryClone()
 
@@ -7105,7 +7117,7 @@ function creature:PersistentAbilities()
             local persistenceMode = persistence.mode
 
             if persistenceMode == "none" then
-                break
+                goto continue
             end
 
             if persistenceMode == "recast_new" and a.ability:try_get("recastNewAbility") then
@@ -7224,6 +7236,8 @@ function creature:PersistentAbilities()
             local customPrompt = persistence.promptText
             if type(customPrompt) == "string" and trim(customPrompt) ~= "" then
                 promptText = string.format("%s: %s; %s", tr("Persistence"), ability.name, customPrompt)
+                --The "!" trigger card shows triggerPrompt as its rules text.
+                newAbility.triggerPrompt = customPrompt
             else
                 promptText = string.format(tr("Persistence: Recast %s"), ability.name)
             end
@@ -7259,6 +7273,7 @@ function creature:PersistentAbilities()
                 result[#result + 1] = mod
             end
         end
+        ::continue::
     end
 
     return result
@@ -7318,7 +7333,11 @@ function creature:EndPersistentAbilityById(guid)
         end
     end
 
-    for _, objref in ipairs(persistentAbilities[persistentIndex]:try_get("objects") or {}) do
+    --No entry with this guid (e.g. already ended): still sweep up auras stamped with it below.
+    local entryObjects = persistentIndex ~= nil and persistentAbilities[persistentIndex]:try_get("objects") or {}
+    local entryObjectIds = {}
+    for _, objref in ipairs(entryObjects) do
+        entryObjectIds[objref.objid] = true
         local obj = game.LookupObject(objref.floorid, objref.objid)
         if obj ~= nil then
             obj:Destroy()
@@ -7329,7 +7348,11 @@ function creature:EndPersistentAbilityById(guid)
     --Persisting"). RemoveAura destroys the aura and drops it from self.auras.
     local linkedAuras = {}
     for _, aura in ipairs(self:try_get("auras", {})) do
-        if aura:try_get("persistenceId") == guid then
+        --Also match by object, for auras saved before they were stamped with
+        --persistenceId. Their object was destroyed above, so otherwise they would
+        --stay as invisible auras that still deal damage.
+        local auraObject = aura:try_get("object")
+        if aura:try_get("persistenceId") == guid or (auraObject ~= nil and entryObjectIds[auraObject.objid]) then
             linkedAuras[#linkedAuras + 1] = aura.guid
         end
     end

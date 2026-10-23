@@ -9821,7 +9821,23 @@ function creature:BeginTurn()
             local auras = self:GetAurasAffecting(token, {includeAdjacentOnly = true})
             if auras ~= nil then
                 for i,auraInfo in ipairs(auras) do
-                    self:EnterAura(auraInfo, creature.AuraTokenOnlyAdjacent(auraInfo, token), true)
+                    local adjacentOnly = creature.AuraTokenOnlyAdjacent(auraInfo, token)
+                    self:EnterAura(auraInfo, adjacentOnly, true)
+
+                    --Move damage that also hits a creature starting its turn inside
+                    --(e.g. Wall of Fire). One instance, credited to the aura's caster.
+                    local auraInstance = auraInfo.auraInstance
+                    if not adjacentOnly and auraInstance.aura:try_get("movedamageStartTurn", false) then
+                        local damageInfo = auraInstance:GetDamageInfo()
+                        if damageInfo ~= nil and damageInfo.damage > 0 then
+                            self:AuraDamage(token, {
+                                type = damageInfo.type,
+                                amount = damageInfo.damage,
+                                instances = 1,
+                                aura = auraInstance,
+                            })
+                        end
+                    end
                 end
             end
         end
