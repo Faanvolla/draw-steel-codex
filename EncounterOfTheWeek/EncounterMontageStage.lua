@@ -2377,6 +2377,17 @@ local function CreateEntryCard(entry, appearIn)
                     done = true
                     status = T("stage.entry.status_vanquished")
                 end
+                --Challenge Mode: a threat to vanquish twice wears "x2" until
+                --the first vanquish, then says how many times are left.
+                local remaining = EncounterMontage.ThreatRemaining(m, entry)
+                if remaining >= 2 then
+                    nameLabel.text = T("stage.entry.name_times", { name = entry.name, count = remaining })
+                else
+                    nameLabel.text = entry.name
+                end
+                if not done and remaining < EncounterMontage.ThreatTimes(m, entry) then
+                    status = TP("stage.entry.status_vanquished_partly", remaining, { count = remaining })
+                end
             end
             --a resolved turn is over: its entry is open again at once (an
             --unvanquished threat may be tried by the next hero).

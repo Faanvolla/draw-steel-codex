@@ -900,6 +900,9 @@ text("author.test.picker.part", [[Part]])
 --title.
 text("author.test.picker.part_option", [[Part {number}]])
 text("author.test.picker.part_option_titled", [[Part {number}: {title}]])
+--The checkbox that tests the encounter's Challenge Mode, and its tooltip.
+text("author.test.picker.challenge", [[Challenge Mode]])
+text("author.test.picker.challenge_tooltip", [[Play the encounter's Challenge Mode: monsters balanced for one more hero (or the strongest leveled up for a party of 6), one more montage threat, and threat consequences that cost one more Malice or Recovery.]])
 --The heading over the list of heroes to choose from. Short.
 text("author.test.picker.heroes_heading", [[Heroes]])
 --Small headings that group the heroes in the list. Short.

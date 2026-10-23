@@ -775,6 +775,28 @@ function EncounterOfTheWeek.PartWon(key)
     return EotwRoster.AccountCompleted(key)
 end
 
+--Challenge Mode: an especially lethal version of every encounter (and of
+--every series part), offered once the normal mode is won on the board it is
+--played from -- the same rule as a series' next part. Winning it is a
+--completion of its own under this key; the City builds the same one
+--(challengeKey in cloudflare-game-server/src/city-core.ts).
+local CHALLENGE_KEY_SUFFIX = "!challenge"
+
+--The completion key for winning this encounter's (or part's) Challenge Mode.
+function EncounterOfTheWeek.ChallengeKey(key)
+    return tostring(key or "") .. CHALLENGE_KEY_SUFFIX
+end
+
+--May this account set out for this encounter's Challenge Mode? Once it has
+--won the normal mode: at the Town Gate any of its heroes' wins, in the
+--Proving Pits its practice wins.
+function EncounterOfTheWeek.ChallengeUnlocked(key)
+    if type(key) ~= "string" or key == "" then
+        return false
+    end
+    return EncounterOfTheWeek.PartWon(key)
+end
+
 --The part a party for this series should set out for by default: the first
 --unlocked part this account has not won yet, else the last unlocked one. key
 --may name any part; returns a part key (key itself when not a series).
@@ -2972,8 +2994,12 @@ CreateScreen = function(args)
                     ancestry = h.ancestry,
                     level = h.level,
                     --the city marks a hero who already won this party's
-                    --encounter; the game side skips their Victory.
+                    --encounter (in Challenge Mode: its challenge); the game
+                    --side skips their Victory.
                     completed = h.completed,
+                    --Challenge Mode: the hero has won the normal mode (one
+                    --Victory for the challenge, not two).
+                    completedNormal = h.completedNormal,
                 }
             end
         end
@@ -3276,7 +3302,11 @@ CreateScreen = function(args)
     --encounter; "" when the record has no choice (the module's default map).
     local EncounterSuffix = function(record)
         if record ~= nil and type(record.encounter) == "string" and record.encounter ~= "" then
-            return " -- " .. EncounterOfTheWeek.EncounterDisplayName(record.encounter)
+            local name = EncounterOfTheWeek.EncounterDisplayName(record.encounter)
+            if record.challenge == true then
+                name = T("eotw.party.challenge_suffix", { encounter = name })
+            end
+            return " -- " .. name
         end
         return ""
     end
@@ -3414,6 +3444,9 @@ CreateScreen = function(args)
             --a Proving Pits party: the host stamps the game as practice, so
             --no Victory or treasure is awarded and players debrief it in town.
             practice = encounterMap ~= nil and EncounterOfTheWeek.IsDangerRoomEncounter(encounterMap),
+            --Challenge Mode: the host stamps it into the game, which plays the
+            --encounter's lethal version and awards the challenge's Victories.
+            challenge = encounterMap ~= nil and record ~= nil and record.challenge == true,
             --members entered alongside the host (see fastLaunchSetting): the
             --game side waits for the host's setup stamp before placing heroes.
             fastLaunch = EncounterOfTheWeek.FastLaunch(),
@@ -4206,6 +4239,19 @@ CreateScreen = function(args)
         local backstory = EncounterOfTheWeek.GetTownGateText(record.encounter)
         if backstory ~= nil then
             children[#children+1] = BackstoryLabel(backstory, "86%")
+        end
+        if record.challenge == true then
+            children[#children+1] = gui.Label{
+                text = T("eotw.party.challenge_note"),
+                fontSize = 17,
+                color = "#ff9a7a",
+                width = "86%",
+                height = "auto",
+                halign = "center",
+                textAlignment = "center",
+                textWrap = true,
+                vmargin = 6,
+            }
         end
         if PartyMode(record) == "danger" then
             children[#children+1] = PracticeNote("86%")
@@ -5535,7 +5581,11 @@ CreateScreen = function(args)
         for _,hero in ipairs(heroes) do
             local spec, tok = RosterHeroSpec(hero)
             local noteText = nil
-            if EotwRoster.HasCompleted(hero, record.encounter ~= "" and record.encounter or ENCOUNTER_MAP_NAME) then
+            local completedKey = record.encounter ~= "" and record.encounter or ENCOUNTER_MAP_NAME
+            if record.challenge == true then
+                completedKey = EncounterOfTheWeek.ChallengeKey(completedKey)
+            end
+            if EotwRoster.HasCompleted(hero, completedKey) then
                 noteText = T("eotw.party.card_already_completed")
             end
             myCards[#myCards+1] = PickerCard(spec, tok, noteText)
@@ -5639,6 +5689,9 @@ CreateScreen = function(args)
         local partUnlocked, partLockedWhy = EncounterOfTheWeek.PartUnlocked(encounterKey)
 
         local m_public = true
+        --Challenge Mode, offered once this account has won the normal mode.
+        local challengeOffered = EncounterOfTheWeek.ChallengeUnlocked(encounterKey)
+        local m_challenge = false
         local m_busy = false
         ---@type Input
         local nameInput = nil
@@ -5688,12 +5741,13 @@ CreateScreen = function(args)
 
             m_conn:Request{
                 action = "create-game",
-                args = { name = name, public = m_public, encounter = m_encounter },
+                args = { name = name, public = m_public, encounter = m_encounter, challenge = m_challenge and challengeOffered },
                 success = function()
                     EotwAnalytics.Track("eotw_party_create", {
                         encounter = m_encounter,
                         board = cond(m_encounter ~= nil and EncounterOfTheWeek.IsDangerRoomEncounter(m_encounter), "pits", "gate"),
                         public = m_public,
+                        challenge = m_challenge and challengeOffered,
                     })
                     SetDialogStatus(T("eotw.create.creating"))
                     --one EotW game per account: capture the current slot
@@ -5872,6 +5926,21 @@ CreateScreen = function(args)
                 vmargin = 8,
                 change = function(element)
                     m_public = element.value
+                end,
+            },
+
+            --only once the normal mode has been won (ChallengeUnlocked).
+            gui.Check{
+                classes = { cond(not challengeOffered, "collapsed", nil) },
+                text = T("eotw.create.challenge_check"),
+                value = false,
+                fontSize = 20,
+                styles = g_CheckboxStyles,
+                halign = "center",
+                vmargin = 8,
+                linger = gui.Tooltip(T("eotw.create.challenge_tooltip")),
+                change = function(element)
+                    m_challenge = element.value
                 end,
             },
 

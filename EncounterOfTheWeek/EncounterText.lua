@@ -203,6 +203,13 @@ text("stage.entry.deadline_threat", [[Gone at the end of this round -- deal with
 --The status line at the bottom of a card. {hero} is who is there now.
 text("stage.entry.status_taken", [[Taken]])
 text("stage.entry.status_vanquished", [[Vanquished]])
+--Challenge Mode: a threat the party must vanquish more than once. Its title
+--reads like "Goblin Scouts x2". {name} is the threat's name, {count} how
+--many more times it must be vanquished.
+text("stage.entry.name_times", [[{name} x{count}]])
+--The status line once it has been vanquished once but not yet for good.
+text("stage.entry.status_vanquished_partly.one", [[Vanquished once -- once more to go]])
+text("stage.entry.status_vanquished_partly.other", [[Vanquished once -- {count} more times to go]])
 text("stage.entry.status_hero_here", [[{hero} is here]])
 text("stage.entry.status_drag_here", [[Drag a hero here]])
 
@@ -666,6 +673,10 @@ text("montage.effect.ally.not_placed", [[{monster} could not be placed]])
 
 --A threat dealt with.
 text("montage.effect.vanquished", [[The threat is vanquished]])
+--Challenge Mode: a threat that must be vanquished more than once, after a
+--vanquish that did not finish it. {count} is how many more times.
+text("montage.effect.vanquished_partly.one", [[The threat is weakened: vanquish it once more]])
+text("montage.effect.vanquished_partly.other", [[The threat is weakened: vanquish it {count} more times]])
 
 --A roll on one of the entry's dice tables. {table} is the table's name,
 --{total} what was rolled.

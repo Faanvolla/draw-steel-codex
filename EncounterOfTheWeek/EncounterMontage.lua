@@ -19,6 +19,14 @@
 --    acted = { [heroCharid] = true },       -- this round
 --    taken = { [entryId] = true },          -- opportunities consumed
 --    vanquished = { [entryId] = true },     -- threats resolved
+--    threatTimes = nil | { [entryId] = n }, -- Challenge Mode: a threat that
+--                                              must be vanquished n times
+--                                              ("x2"); absent = once
+--    vanquishHits = nil | { [entryId] = n },-- how many of those times it
+--                                              has been vanquished so far
+--    challengeRestored = nil | entryId,     -- Challenge Mode: the threat
+--                                              party-size scaling removed
+--                                              that came back
 --    unlocked = { [entryKey] = round },     -- "(Locked)" entries an "Unlock
 --                                              <name>" outcome has let onto
 --                                              the board, and the round it
@@ -1241,6 +1249,40 @@ function EncounterMontage.EntryAvailable(m, entry)
     return not ((m.vanquished or {})[entry.id] == true)
 end
 
+--How many times this threat must be vanquished: 1, or more for a Challenge
+--Mode threat the party faces twice ("x2", m.threatTimes).
+function EncounterMontage.ThreatTimes(m, entry)
+    if m == nil or entry == nil then
+        return 1
+    end
+    return math.max(1, tonumber((m.threatTimes or {})[entry.id]) or 1)
+end
+
+--How many more times this threat must be vanquished (0 once it is). An
+--unvanquished threat pays its consequence this many times.
+function EncounterMontage.ThreatRemaining(m, entry)
+    if m == nil or entry == nil then
+        return 1
+    end
+    if (m.vanquished or {})[entry.id] then
+        return 0
+    end
+    local hits = tonumber((m.vanquishHits or {})[entry.id]) or 0
+    return math.max(0, EncounterMontage.ThreatTimes(m, entry) - hits)
+end
+
+--Is this montage the encounter's Challenge Mode? Its threats' consequences
+--cost one more Malice and one more Recovery (ApplyEffects' ctx.challenge).
+local function IsChallenge()
+    local eotw = rawget(_G, "EncounterOfTheWeekGame")
+    local challenge = false
+    if eotw ~= nil and eotw.IsChallenge ~= nil then
+        pcall(function() challenge = eotw.IsChallenge() == true end)
+    end
+    return challenge
+end
+EncounterMontage.IsChallenge = IsChallenge
+
 --Is the floor free for the next approach? No turn at all, or one whose
 --result is already in -- a resolved turn is shown, not waited on.
 function EncounterMontage.TurnOver(m)
@@ -2278,7 +2320,9 @@ end
 --dice tables a "roll on <table>" clause rolls), doc (the script document,
 --inside an open change, for effects that outlive the beat),
 --splitIntelligence (true: Intelligence is split across the party instead of
---credited to heroEntry -- an agreed narrative choice) }. Returns the list of
+--credited to heroEntry -- an agreed narrative choice), challenge (true: a
+--threat's consequence in Challenge Mode -- "+N malice" gives one more and
+--"lose N recoveries" takes one more) }. Returns the list of
 --human-readable results and the list of ally charids spawned.
 function EncounterMontage.ApplyEffects(effects, ctx)
     local applied = {}
@@ -2426,6 +2470,9 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                         count = tonumber(diceTotals[string.format("r:%d:%s", effectIndex, target.charid)])
                             or RollDiceExpression(effect.dice)
                     end
+                    if ctx.challenge then
+                        count = (tonumber(count) or 0) + 1
+                    end
                     local callOk, lost = pcall(LoseRecoveries, target.token, count, SourceLabel(ctx))
                     lost = cond(callOk, lost or 0, 0)
                     if lost > 0 then
@@ -2514,9 +2561,13 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                     end
                 end
             elseif effect.kind == "malice" then
+                local qty = effect.qty
+                if ctx.challenge then
+                    qty = (tonumber(qty) or 0) + 1
+                end
                 local before = CharacterResource.GetMalice() or 0
-                CharacterResource.SetMalice(before + effect.qty, SourceLabel(ctx))
-                applied[#applied + 1] = T("montage.effect.malice", { amount = effect.qty })
+                CharacterResource.SetMalice(before + qty, SourceLabel(ctx))
+                applied[#applied + 1] = T("montage.effect.malice", { amount = qty })
             elseif effect.kind == "ally" then
                 local monsterid, asset = EncounterMontage.FindMonster(effect.name)
                 local joined = Targets(effect)
@@ -2545,11 +2596,29 @@ function EncounterMontage.ApplyEffects(effects, ctx)
                     end
                 end
             elseif effect.kind == "vanquish" then
+                --a Challenge Mode "x2" threat takes two vanquishes; the
+                --first only wears it down.
+                local left = 0
                 if ctx.montage ~= nil and ctx.entryId ~= nil then
-                    ctx.montage.vanquished = ctx.montage.vanquished or {}
-                    ctx.montage.vanquished[ctx.entryId] = true
+                    local m = ctx.montage
+                    local times = math.max(1, tonumber((m.threatTimes or {})[ctx.entryId]) or 1)
+                    local hits = 1
+                    if times > 1 then
+                        m.vanquishHits = m.vanquishHits or {}
+                        hits = (tonumber(m.vanquishHits[ctx.entryId]) or 0) + 1
+                        m.vanquishHits[ctx.entryId] = hits
+                    end
+                    left = math.max(0, times - hits)
+                    if left == 0 then
+                        m.vanquished = m.vanquished or {}
+                        m.vanquished[ctx.entryId] = true
+                    end
                 end
-                applied[#applied + 1] = T("montage.effect.vanquished")
+                if left > 0 then
+                    applied[#applied + 1] = TP("montage.effect.vanquished_partly", left, { count = left })
+                else
+                    applied[#applied + 1] = T("montage.effect.vanquished")
+                end
             elseif effect.kind == "initiative" then
                 --read BEFORE anything is written: whether the party was
                 --already warded decides both the condition and the wording.
@@ -3157,26 +3226,31 @@ local function ExpireTemporaryEntries(m, doc, beat, userid)
             m.expired[entry.id] = true
             local unresolved = entry.kind == "threat" and not (m.vanquished or {})[entry.id]
             if unresolved and entry.consequence ~= nil then
-                local applied = EncounterMontage.ApplyEffects(entry.consequence.effects, {
-                    heroEntry = nil,
-                    userid = userid,
-                    entryName = entry.name,
-                    entryId = entry.id,
-                    entry = entry,
-                    montage = m,
-                    doc = doc,
-                })
-                m.log = m.log or {}
-                m.log[#m.log + 1] = {
-                    round = round,
-                    consequence = true,
-                    expired = true,
-                    entryId = entry.id,
-                    entryName = entry.name,
-                    applied = applied,
-                }
-                printf("EotW montage: round %d ended with %s '%s' unresolved; its consequence lands now",
-                    round, entry.kind, entry.name)
+                --an "x2" threat never vanquished pays twice.
+                local times = EncounterMontage.ThreatRemaining(m, entry)
+                for _ = 1, times do
+                    local applied = EncounterMontage.ApplyEffects(entry.consequence.effects, {
+                        heroEntry = nil,
+                        userid = userid,
+                        entryName = entry.name,
+                        entryId = entry.id,
+                        entry = entry,
+                        montage = m,
+                        doc = doc,
+                        challenge = IsChallenge(),
+                    })
+                    m.log = m.log or {}
+                    m.log[#m.log + 1] = {
+                        round = round,
+                        consequence = true,
+                        expired = true,
+                        entryId = entry.id,
+                        entryName = entry.name,
+                        applied = applied,
+                    }
+                end
+                printf("EotW montage: round %d ended with %s '%s' unresolved; its consequence lands now (x%d)",
+                    round, entry.kind, entry.name, times)
             else
                 printf("EotW montage: round %d carries off %s '%s'%s", round, entry.kind, entry.name,
                     cond(unresolved, " (no consequence written)", ""))
@@ -3482,6 +3556,7 @@ local function ApplyConsequence(m, doc, beat, userid, totals)
             entry = entry,
             montage = m,
             doc = doc,
+            challenge = IsChallenge(),
         }
         if totals == nil then
             local rolls = EncounterMontage.PendingDice(entry.consequence.effects, ctx)
@@ -5474,6 +5549,21 @@ end
 local function RollRemovals(m, beat)
     local heroes = EncounterMontage.Heroes()
     local removed = EncounterScript.ChooseRemovedEntries(beat, #heroes)
+    --Challenge Mode: one more threat -- one the scaling removed comes back,
+    --else an existing one must be vanquished twice.
+    if IsChallenge() then
+        local pick = EncounterScript.ChooseChallengeThreat(beat, removed)
+        if pick ~= nil and pick.restore ~= nil then
+            removed[pick.restore] = nil
+            m.challengeRestored = pick.restore
+            printf("EotW montage: Challenge Mode keeps threat [%s]", pick.restore)
+        elseif pick ~= nil and pick.double ~= nil then
+            m.threatTimes = { [pick.double] = 2 }
+            printf("EotW montage: Challenge Mode doubles threat [%s] (x2)", pick.double)
+        else
+            printf("EotW montage: Challenge Mode found no threat to add")
+        end
+    end
     m.removed = removed
     --kept on the document so the draw is still explicable long after the
     --console scrollback is gone.
@@ -5880,14 +5970,17 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
             printf("EotW montage: round %d begins", m.round)
         else
             --every unvanquished threat, in document order, delivers its
-            --consequence.
+            --consequence -- once per time it is still to be vanquished (an
+            --"x2" threat never beaten pays twice).
             local list = {}
             for _, entry in ipairs(EncounterScript.MontageEntries(beat)) do
                 if entry.kind == "threat" and not (m.vanquished or {})[entry.id]
                     and not EncounterMontage.EntryRemoved(m, entry)
                     and not EncounterMontage.EntryExpired(m, entry)
                     and EncounterMontage.EntryUnlocked(m, entry) then
-                    list[#list + 1] = entry.id
+                    for _ = 1, EncounterMontage.ThreatRemaining(m, entry) do
+                        list[#list + 1] = entry.id
+                    end
                 end
             end
             m.consequences = list

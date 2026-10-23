@@ -2162,6 +2162,32 @@ function EncounterScript.ChooseRemovedEntries(beat, partySize, rand)
     return removed
 end
 
+--Challenge Mode's extra montage threat (pure; rand as above). The threats
+--party-size scaling removed stay removed except one, which comes back: one of
+--the earliest round's, at random. When scaling removed no threat, an existing
+--one must be vanquished twice instead ("x2"): one of the first round that has
+--a threat, at random. Locked threats are never picked. Returns
+--{ restore = entryId } or { double = entryId }, or nil when the beat has no
+--threat to pick.
+function EncounterScript.ChooseChallengeThreat(beat, removed, rand)
+    rand = rand or function(n) return math.random(n) end
+    removed = removed or {}
+    for _, how in ipairs({ "restore", "double" }) do
+        for _, r in ipairs((beat and beat.rounds) or {}) do
+            local pool = {}
+            for _, e in ipairs(r.entries or {}) do
+                if e.kind == "threat" and not e.locked and (removed[e.id] == true) == (how == "restore") then
+                    pool[#pool + 1] = e.id
+                end
+            end
+            if #pool > 0 then
+                return { [how] = pool[rand(#pool)] }
+            end
+        end
+    end
+    return nil
+end
+
 --- the document ------------------------------------------------------------
 
 --- scenes ------------------------------------------------------------------------

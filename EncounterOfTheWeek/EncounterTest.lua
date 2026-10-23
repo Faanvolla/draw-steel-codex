@@ -124,6 +124,8 @@ function EncounterTest.ShowDialog(modeid)
     --the first part that has the mode asked for.
     local seriesParts = EncounterOfTheWeekGame.SeriesParts()
     local chosenPart = testable[1]
+    --test the encounter's Challenge Mode instead of its normal one.
+    local chosenChallenge = false
     --the Start at choices for chosenPart; rebuilt when the part changes.
     local partModes = ModeOptionsForPart(chosenPart)
     local statusLabel
@@ -278,7 +280,7 @@ function EncounterTest.ShowDialog(modeid)
             local list = ChosenList()
             RememberHeroes(list)
             gamehud:CloseModal()
-            local started, why = EncounterOfTheWeekGame.StartTest{ mode = chosenMode, heroes = list, part = chosenPart }
+            local started, why = EncounterOfTheWeekGame.StartTest{ mode = chosenMode, heroes = list, part = chosenPart, challenge = chosenChallenge }
             if not started then
                 printf("EotW test: %s", tostring(why))
             end
@@ -373,6 +375,18 @@ function EncounterTest.ShowDialog(modeid)
                         PartChanged()
                     end,
                 },
+            },
+            gui.Check{
+                classes = { "sizeS" },
+                width = "100%",
+                height = 26,
+                tmargin = 6,
+                text = T("author.test.picker.challenge"),
+                value = false,
+                linger = gui.Tooltip(T("author.test.picker.challenge_tooltip")),
+                change = function(element)
+                    chosenChallenge = element.value == true
+                end,
             },
             gui.Label{
                 classes = { "sizeS", "bold" },

@@ -279,6 +279,11 @@ text("eotw.party.card_controlled_by", [[Controlled by {player}]])
 text("eotw.party.card_pregen_chip", [[Pregen]])
 --On a hero who has already won this encounter.
 text("eotw.party.card_already_completed", [[Already Completed]])
+--After the encounter's name in the games list and the party's byline, for
+--a Challenge Mode party. {encounter} is the encounter's name.
+text("eotw.party.challenge_suffix", [[{encounter} (Challenge Mode)]])
+--Under the encounter's story in a Challenge Mode party.
+text("eotw.party.challenge_note", [[Challenge Mode: an especially lethal version of this encounter. A hero's first win in Challenge Mode is worth an extra Victory, and a hero who has never won this encounter earns both at once.]])
 --Tooltips on the card's hover buttons.
 text("eotw.party.card_remove_tooltip", [[Remove from the lineup]])
 text("eotw.party.card_kick_tooltip", [[Kick {player} from the game (removes all their heroes)]])
@@ -354,6 +359,10 @@ text("eotw.create.default_name_player", [[{player}'s Party]])
 --The party's name when the player's name is unknown.
 text("eotw.create.default_name", [[Encounter of the Week]])
 text("eotw.create.public_check", [[Public party (anyone can join)]])
+--The Challenge Mode checkbox, offered once the player has won the
+--encounter, and its tooltip.
+text("eotw.create.challenge_check", [[Challenge Mode]])
+text("eotw.create.challenge_tooltip", [[Play an especially lethal version of this encounter. Gain an extra victory point the first time you win!]])
 --A warning, when the player already has a game.
 text("eotw.create.replace_warning", [[Creating a new game will permanently delete your current Encounter of the Week game.]])
 text("eotw.create.create_button", [[Create]])
