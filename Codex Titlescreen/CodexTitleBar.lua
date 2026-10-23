@@ -4832,7 +4832,7 @@ local function CreateAudioIndicator()
                         LaunchablePanel.LaunchPanelByName("Audio Studio")
                     end,
                     gui.Label{
-                        classes = {"sizeXs", "apLink"},
+                        classes = {"sizeXs", "apLink", "apLinkPart"},
                         text = "Audio Studio",
                         width = "auto",
                         height = "auto",
@@ -4902,7 +4902,9 @@ local function CreateAudioIndicator()
                 { selectors = {"apKnob", "parent:on"}, bgcolor = "@fgStrong" },
                 { selectors = {"apLink"}, color = "@fgMuted" },
                 { selectors = {"apLink", "hover"}, color = "@fg" },
-                { selectors = {"apLink", "parent:hover"}, color = "@fg" },
+                --only the Studio link's own label: "parent:hover" on every apLink
+                --also lit Stop all audio, whose parent (the footer) hovers too.
+                { selectors = {"apLinkPart", "parent:hover"}, color = "@fg" },
                 { selectors = {"apLinkIcon"}, bgcolor = "@fgMuted" },
                 { selectors = {"apLinkIcon", "parent:hover"}, bgcolor = "@fg" },
             },
