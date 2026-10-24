@@ -476,7 +476,15 @@ MonsterAI:RegisterPrompt{
         if isVertical then
             altitudeCalculator = abilityClone:TargetLocMaxElevationChangeFunction(casterToken, movementSymbols)
         end
+        --The engine reads a forced-move target's altitude as height above the
+        --ground there, so a sideways move must aim at altitude 0. Candidate
+        --squares are built from the target's own loc, which carries its
+        --absolute altitude: on raised ground that turned a push into a lift
+        --and a fall.
         local preferAltitude = function(loc)
+            if not isVertical then
+                return loc:WithAltitude(0)
+            end
             if altitudeCalculator == nil then
                 return loc
             end

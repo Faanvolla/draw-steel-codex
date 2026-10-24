@@ -752,6 +752,8 @@ local function FindHazardPullLanding(invokerToken, casterToken, abilityClone, sy
     local bestDistance = nil
     for _,loc in ipairs(shape.locations or {}) do
         if HazardAt(loc) > 0 and legal(loc) then
+            --aim on the ground: a target altitude means "this high above it".
+            loc = loc:WithAltitude(0)
             local preview = casterToken:MarkMovementArrow(loc, {
                 straightline = true,
                 ignorecreatures = false,
