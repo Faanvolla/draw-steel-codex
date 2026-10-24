@@ -1933,6 +1933,16 @@ function DSVictoryScreen.RegisterHeroCardNote(id, fn)
     g_heroCardNotes[id] = fn
 end
 
+-- Panels other modules show above Proceed on a live screen (never a replay).
+-- id -> fn(outcome, pressProceed), returning a panel or nil; pressProceed()
+-- presses Proceed for the local user. Encounter of the Week invites the party
+-- on to a series' next part with one.
+local g_footerPanels = {}
+
+function DSVictoryScreen.RegisterFooterPanel(id, fn)
+    g_footerPanels[id] = fn
+end
+
 ----------------------------------------------------------------------
 -- Card data
 --
@@ -2815,6 +2825,8 @@ function DSVictoryScreen.Create(options)
     local rootPanel
     local victoriesSection
     local victoryAmountInput
+    -- Holds the panels registered with RegisterFooterPanel, above Proceed.
+    local footerSection
 
     ------------------------------------------------------------------
     -- Full-screen dim. Interactable so it swallows clicks to the map
@@ -3130,6 +3142,11 @@ function DSVictoryScreen.Create(options)
         end,
 
         click = function(element)
+            element:FireEvent("press")
+        end,
+
+        -- The Proceed press itself, also fired by footer panels (RegisterFooterPanel).
+        press = function(element)
             --a replay just closes; there is no combat behind it.
             if replay ~= nil then
                 if rootPanel ~= nil and rootPanel.valid then
@@ -3242,6 +3259,21 @@ function DSVictoryScreen.Create(options)
         children = { victoriesTitleLabel, victoryAmountInput, awardVictoriesButton },
     }
 
+    footerSection = gui.Panel{
+        classes = {"victoryProceed", "collapsed"},
+        interactable = true,
+        flow = "vertical",
+        width = "auto",
+        height = "auto",
+        halign = "center",
+        valign = "bottom",
+        y = -140,
+        styles = {
+            { selectors = {"victoryProceed"}, opacity = 0, transitionTime = 0.5 },
+            { selectors = {"victoryProceed", "shown"}, opacity = 1, transitionTime = 0.5 },
+        },
+    }
+
     local rootArgs = {
         -- This overlay owns its cascade root, so the theme classes applied to
         -- the dim, cards, buttons, and labels below resolve against the active
@@ -3258,7 +3290,7 @@ function DSVictoryScreen.Create(options)
         -- with interactable=false would block its whole subtree from raycasts).
         interactable = true,
 
-        children = { dimPanel, defeatBackdrop, titleGroup, captionLabel, tabsPanel, heroRow, monsterRow, victoriesSection, proceedButton },
+        children = { dimPanel, defeatBackdrop, titleGroup, captionLabel, tabsPanel, heroRow, monsterRow, victoriesSection, footerSection, proceedButton },
 
         data = {
             -- A replay of a saved screen (see options.replay above).
@@ -3325,6 +3357,28 @@ function DSVictoryScreen.Create(options)
             proceedButton:SetClass("shown", false)
             proceedButton:SetClass("collapsed", not (element.data.replay or CanLocalUserProceed()))
             captionLabel:SetClass("shown", false)
+
+            --panels other modules add above Proceed (RegisterFooterPanel); they
+            --fade in with it.
+            local footers = {}
+            if not element.data.replay and CanLocalUserProceed() then
+                local pressProceed = function()
+                    if proceedButton ~= nil and proceedButton.valid then
+                        proceedButton:FireEvent("press")
+                    end
+                end
+                for id, fn in pairs(g_footerPanels) do
+                    local ok, panel = pcall(fn, outcome, pressProceed)
+                    if not ok then
+                        print("VICTORY:: footer panel", id, "failed:", panel)
+                    elseif panel ~= nil then
+                        footers[#footers + 1] = panel
+                    end
+                end
+            end
+            footerSection.children = footers
+            footerSection:SetClass("shown", false)
+            footerSection:SetClass("collapsed", #footers == 0)
 
             --reset the Director victories controls for this showing.
             element.data.awardPlayed = false
@@ -3487,6 +3541,7 @@ function DSVictoryScreen.Create(options)
         showProceed = function(element, g)
             if g ~= element.data.generation then return end
             proceedButton:SetClass("shown", true)
+            footerSection:SetClass("shown", true)
             if element.data.replay then
                 return
             end
@@ -3512,6 +3567,7 @@ function DSVictoryScreen.Create(options)
             rightSword:SetClass("rsw-open", false)
             rightSword:SetClass("rsw-closed", true)
             proceedButton:SetClass("shown", false)
+            footerSection:SetClass("shown", false)
             victoriesSection:SetClass("collapsed", true)
             tabsPanel:SetClass("shown", false)
             defeatBackdrop:SetClass("shown", false)
@@ -3549,6 +3605,7 @@ function DSVictoryScreen.Create(options)
             dimPanel.blurBackground = false
             heroRow.children = {}
             monsterRow.children = {}
+            footerSection.children = {}
             defeatBackdrop:SetClass("hidden", true)
         end,
 

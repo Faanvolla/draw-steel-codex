@@ -50,6 +50,7 @@
 --- @field playerControlledAndPrimary boolean (Read-only) True if this is the primary character of a player.
 --- @field activeControllerId nil|string (Read-only) the userid of the user who is best suited to responding to prompts on this token right now. Will return nil if the current user is the best suited to responding to prompts on this character.
 --- @field canSee boolean (Read-only) True if the current user can see this token (it's in their vision). False for a token that is not spawned on the current map, e.g. one from dmhub.GetCharacterById that lives on another map.
+--- @field hiddenFromLocalViewer boolean (Read-only) True if this client must not show this token at all because it is hidden from players: the creature's RefreshToken set _tmp_hiddenFromPlayers, and the current user is neither the Director nor in control of it in their own right (a player host counts as a player). While true the token fades out and then canSee reads false, so its sprite, HUD, auras and target reticules are not shown. The token object still exists on every client, so game logic and the Monster AI keep working. Use it to suppress other evidence of the creature (footprints, sounds).
 --- @field sheet Panel The panel that is attached to this token to display their UI.
 --- @field topsheet Panel The panel that is attached to this token to display their UI.
 --- @field bottomsheet Panel The panel that is attached to this token to display their UI.

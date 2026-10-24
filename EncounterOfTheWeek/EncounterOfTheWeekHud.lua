@@ -340,9 +340,9 @@ end
 
 --A strip above the roster showing the two encounter-wide pools everyone
 --cares about and which no card can carry: the monsters' Malice and the
---party's shared Hero Tokens. Read-only for everyone (strict rules: malice
---is spent by the Monster AI, hero tokens through the game's own flows);
---hovering a cell shows the pool's change history. Both pools live in the
+--party's shared Hero Tokens. Malice is read-only (the Monster AI spends
+--it); on a hero's turn its player can click Hero Tokens to spend them (see
+--CreatePoolCell). Hovering a cell shows the pool's change history. Both pools live in the
 --shared global-resource document, so that document is monitored for
 --prompt updates; the 1s think covers the combat-state gating (malice
 --reads as 0 outside combat without the document changing).
@@ -448,7 +448,7 @@ local POOL_TOOLTIP_WIDTH = 420
 --own `text` argument -- that is a bare auto-width label, so a paragraph handed
 --to it runs off the screen in a single line -- and the panel it returns paints
 --no background of its own here, so the card's chrome is this panel's.
-local function CreatePoolTooltip(kind, description)
+local function CreatePoolTooltip(kind, description, hint)
     --- @type Panel[]
     local children = {
         gui.Label{
@@ -461,6 +461,20 @@ local function CreatePoolTooltip(kind, description)
             color = "#ffffff",
         },
     }
+
+    --a call to action under the explanation (e.g. "click to spend").
+    if hint ~= nil then
+        children[#children+1] = gui.Label{
+            text = hint,
+            width = "auto",
+            height = "auto",
+            maxWidth = POOL_TOOLTIP_WIDTH,
+            fontSize = 18,
+            italics = true,
+            color = "#e0b84c",
+            tmargin = 8,
+        }
+    end
 
     local entries = PoolHistory(kind)
     if entries ~= nil and #entries > 0 then
@@ -487,6 +501,43 @@ local function CreatePoolTooltip(kind, description)
         valign = "bottom",
         children = children,
     }
+end
+
+--The hero the local player may spend Hero Tokens for from the pool cell: one
+--they control whose turn it is. nil between turns and on anyone else's turn.
+--- @return CharacterToken|nil
+local function SpendingHero()
+    local q = dmhub.initiativeQueue
+    if q == nil or q.hidden then
+        return nil
+    end
+    for _, tok in ipairs(dmhub.allTokens) do
+        local ok = false
+        pcall(function()
+            ok = tok.canControl and tok.properties:IsHero() and tok.properties:IsOurTurn()
+        end)
+        if ok then
+            return tok
+        end
+    end
+    return nil
+end
+
+--Whether the hero can buy anything from the pool right now. Under the strict
+--rules EotW forces, HeroTokenSpendOptions lists only what is affordable and
+--usable; the available check also covers a Director testing with them off.
+--- @param hero CharacterToken|nil
+--- @return boolean
+local function CanSpendHeroTokens(hero)
+    if hero == nil then
+        return false
+    end
+    for _, option in ipairs(CharacterResource.HeroTokenSpendOptions(hero)) do
+        if option.available then
+            return true
+        end
+    end
+    return false
 end
 
 local function CreatePoolCell(kind)
@@ -568,6 +619,8 @@ local function CreatePoolCell(kind)
         --the strip behind and neither the hover tint nor the tooltip fires.
         bgimage = "panels/square.png",
         bgcolor = "#00000000",
+        --the spend menu hangs off the cell, not wherever the pointer was.
+        popupPositioning = "panel",
         --the diamond is rotated, so give it a square slot of its own to
         --spin in rather than letting the flow measure its unrotated box.
         gui.Panel{
@@ -581,8 +634,46 @@ local function CreatePoolCell(kind)
         value,
         highlight,
 
+        --Hero Tokens only: on the local player's hero's turn, while they can
+        --afford something, the cell is outlined and a click opens the spend
+        --menu (CharacterResource.HeroTokenSpendOptions decides what is on it).
+        --Rides the strip's refreshPools tick, so it follows the turn and pool.
+        refreshPools = function(element)
+            if kind ~= "herotokens" then
+                return
+            end
+            local spendable = false
+            pcall(function() spendable = CanSpendHeroTokens(SpendingHero()) end)
+            if spendable ~= element:HasClass("spendable") then
+                element:SetClass("spendable", spendable)
+                if not spendable then
+                    element.popup = nil
+                end
+            end
+        end,
+
+        press = function(element)
+            if kind ~= "herotokens" or not element:HasClass("spendable") then
+                return
+            end
+            local entries = CharacterResource.HeroTokenSpendMenuEntries(SpendingHero(), function()
+                element.popup = nil
+            end)
+            --the hover tooltip would sit on top of the menu.
+            element.tooltip = nil
+            element.popup = gui.ContextMenu{
+                entries = entries,
+                halign = "left",
+                valign = "bottom",
+            }
+        end,
+
         hover = function(element)
-            element.tooltip = CreatePoolTooltip(kind, description)
+            local hint = nil
+            if element:HasClass("spendable") then
+                hint = T("hud.pool.herotokens.spend_hint")
+            end
+            element.tooltip = CreatePoolTooltip(kind, description, hint)
         end,
     }
 end
@@ -656,6 +747,13 @@ local function CreateEncounterPoolsPanel()
             {
                 selectors = {"eotwPoolCell", "hover"},
                 brightness = 1.3,
+            },
+            --the Hero Tokens cell when a click opens the spend menu.
+            {
+                selectors = {"eotwPoolCell", "spendable"},
+                border = 1,
+                borderColor = "#e0b84cff",
+                cornerRadius = 6,
             },
             {
                 selectors = {"eotwPoolIcon"},

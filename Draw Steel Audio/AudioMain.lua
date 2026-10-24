@@ -2080,6 +2080,11 @@ end
 
 ---@param args TokenMovingOnPathArgs
 dmhub.TokenMovingOnPath = function(args)
+    --a creature hidden from this viewer makes no footsteps and leaves no tracks.
+    if args.token.hiddenFromLocalViewer then
+        return
+    end
+
     local surface = args.path:GetStepSurfaceType(args.stepIndex) or 0
     local surfaceInfo = AudioSurfaceTypes.surfaces[surface]
 

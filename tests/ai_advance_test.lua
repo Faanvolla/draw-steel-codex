@@ -121,6 +121,8 @@ MonsterAI.AbilitiesLogName = tostring
 MonsterAI.AbilityActionsLogName = tostring
 MonsterAI.ScoringPlanLogName = tostring
 MonsterAI.MoveMatchesMonster = function() return true end
+--no zone holds this actor (the Hold directive's own checks need a map).
+MonsterAI.Holds = function() return false end
 local actor = {valid = true, properties = {minion = false, monster_type = "Test",
     has_key = function() return true end}}
 local selector = setmetatable({token = actor, abilities = {}, moves = {}, try_get = try_get}, {__index = MonsterAI})

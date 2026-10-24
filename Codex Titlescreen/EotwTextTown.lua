@@ -205,6 +205,9 @@ text("eotw.series.part", [[Part {number}]])
 text("eotw.series.part_titled", [[Part {number}: {title}]])
 --The tooltip on a locked part. {part} is the part to win first.
 text("eotw.series.part_locked", [[Win Part {part} to unlock this part.]])
+--The tooltip on a part whose previous part was won, but a respite has been
+--taken since. {part} is the part to win again.
+text("eotw.series.part_closed_by_respite", [[Your heroes have rested since you won Part {part}. Win it again to unlock this part.]])
 --The tooltip on a part already won.
 text("eotw.series.part_won_tooltip", [[Your party has won this part.]])
 
@@ -850,6 +853,14 @@ text("inn.respite.button", [[Take a Respite]])
 text("inn.respite.button_confirm", [[Rest Now? (Victories become XP)]])
 --Shown in red under the button when a respite cannot be taken.
 text("inn.respite.nobody_home", [[None of your heroes are at home to rest.]])
+
+--An encounter in several parts: winning a part opens the next one only until
+--the player's next respite. {series} is the encounter's title, {won} the part
+--they won ("Part 1: Sandy Shore"), {next} the part it opened.
+--Above Take a Respite, one line per part a respite would close.
+text("inn.series.warning", [[If you take a respite you will not be able to take {next} until you are victorious on {won} again.]])
+--Under Take a Respite, after a respite that closed a part.
+text("inn.series.closed", [[Your heroes rested, so {next} of {series} is locked again. Win {won} again to go on.]])
 text("inn.respite.not_connected", [[not connected]])
 
 --The banner after a respite, for a hero with the Secret Twin complication
@@ -1329,3 +1340,42 @@ text("market.shop.hint_done", [[The stalls change after this hero's next encount
 --The button at the bottom, and the tooltip on the X in the corner.
 text("market.shop.close_button", [[Close]])
 text("market.shop.close_tooltip", [[Close]])
+
+----------------------------------------------------------------------------
+-- MODERATION: a warning or ban from the town's moderators
+----------------------------------------------------------------------------
+
+--Above the moderators' own words, in both dialogs. Their message follows
+--as they wrote it.
+text("moderation.message_heading", [[A message from the moderators:]])
+
+--A warning, shown when the player next comes into town (or at once if they
+--are there). It shows until they press the button.
+text("moderation.warning.title", [[A Warning from the Moderators]])
+text("moderation.warning.body", [[Blackbottom is shared with other players, so we ask everyone to play kindly. Please read this message about how you have been playing.]])
+--Under the message. {date} is when it was sent.
+text("moderation.warning.sent_on", [[Sent {date}]])
+--The button that closes it. Short: a button.
+text("moderation.warning.ok_button", [[I Understand]])
+
+--A hero the moderators removed from the town (e.g. for its name). Shown
+--once, like a warning, with the moderators' message under it if they wrote
+--one. {hero} is the hero's name.
+text("moderation.removal.title", [[A Hero Was Removed]])
+text("moderation.removal.body", [[The moderators have removed your hero {hero} from Blackbottom. The hero is gone from your roster, the Graveyard and the Hall of Heroes.]])
+
+--A ban. Shown when it is issued and every time the player tries to come
+--into town while it lasts; then they are back at the title screen.
+text("moderation.ban.title", [[Banned from Blackbottom]])
+--{length} is one of the length lines below, e.g. "for 3 more days".
+text("moderation.ban.body", [[You have been banned from Blackbottom {length}.]])
+text("moderation.ban.length_permanent", [[permanently]])
+text("moderation.ban.length_under_an_hour", [[for less than an hour more]])
+text("moderation.ban.length_hours.one", [[for {count} more hour]])
+text("moderation.ban.length_hours.other", [[for {count} more hours]])
+text("moderation.ban.length_days.one", [[for {count} more day]])
+text("moderation.ban.length_days.other", [[for {count} more days]])
+--Under the message on a ban that ends (not a permanent one).
+text("moderation.ban.come_back_note", [[You are welcome back in town once the ban ends.]])
+--The button that closes it. Short: a button.
+text("moderation.ban.ok_button", [[OK]])

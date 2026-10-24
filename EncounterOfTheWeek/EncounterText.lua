@@ -93,6 +93,18 @@ text("encounter.story.part_named", [[Part {number}: {title}]])
 --{title} is the encounter's name, {part} one of the two lines above.
 text("encounter.story.title_with_part", [[{title} -- {part}]])
 
+--After winning a part of an encounter played in parts: an invitation, on the
+--victory screen, to go straight on to the next part. It stays open only until
+--the player's heroes take a respite. {part} is the next part ("Part 2: Lush
+--Garden").
+text("encounter.series_next.title", [[{part} is open]])
+text("encounter.series_next.body", [[You have access to this encounter until you take a respite]])
+--The button, here and on the Conclusion screen: back to town, where the party
+--for the next part is ready to form.
+text("encounter.series_next.button", [[Continue to {part}]])
+--Above the buttons on the Conclusion screen.
+text("encounter.series_next.story_note", [[{part} is open until your heroes take a respite.]])
+
 ----------------------------------------------------------------------------
 -- FOR ENCOUNTER AUTHORS: testing an encounter (Game menu > Test Encounter)
 ----------------------------------------------------------------------------
@@ -904,6 +916,9 @@ text("hud.pool.herotokens.explanation", [[**Hero Tokens**
 * You can spend a hero token when you fail a saving throw to succeed instead.
 * You can reroll the result of a test. You must use the new result.
 * You can spend 2 hero tokens to regain Stamina equal to your Recovery value without spending a Recovery.]])
+--Under the Hero Tokens explanation while the cell can be clicked (on your
+--hero's turn, when the party can afford a spend). Short.
+text("hud.pool.herotokens.spend_hint", [[Click to spend Hero Tokens.]])
 text("hud.pool.intelligence.explanation", [[**Intelligence**
 
 The amount of awareness you have of what you are up against. It can be used at the start of a fight to control how much you know about the encounter.]])

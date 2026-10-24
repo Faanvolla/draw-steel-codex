@@ -145,6 +145,18 @@ setting{
     storage = "preference",
 }
 
+--Set by the game-side EotW codemod when the player chooses "Continue to Part
+--N" after winning a series part: { [userid] = {key, at} } as JSON. The town
+--opens Form a Party on that part once it is open, then clears it. Same id as
+--the game codemod's declaration.
+setting{
+    id = "eotw:continueSeries",
+    default = "",
+    storage = "preference",
+}
+--How long that choice waits for the part to open (os.time seconds).
+local CONTINUE_SERIES_SECONDS = 600
+
 --Set by the game-side EotW codemod after a finished game while EotW is in
 --beta: the survey invitation this player has waiting, { [userid] = {gameid,
 --encounter, kind, outcome, minutes, players, heroes} } as JSON. The town
@@ -358,8 +370,9 @@ local CITY_LOCATIONS = {
         open = function(ctx) ctx.OpenMarket() end,
     },
     --Where new, untried encounters made by the town's own players are run:
-    --practice, with nothing kept. Opens for good once the account has won an
-    --Encounter of the Week (the city decides; see EotwRoster.DangerRoomsUnlocked).
+    --practice, with nothing kept. Not on the map until the account has won an
+    --Encounter of the Week (the city decides; see EotwRoster.DangerRoomsUnlocked),
+    --then there for good.
     {
         id = "danger",
         label = T("eotw.locations.danger.label"),
@@ -375,6 +388,8 @@ local CITY_LOCATIONS = {
             title = T("eotw.locations.danger.title"),
             tagline = T("eotw.locations.danger.tagline"),
         },
+        --also hidden while the roster is still being listed (nil).
+        hidden = function(ctx) return EotwRoster.DangerRoomsUnlocked() ~= true end,
         locked = function(ctx)
             if EotwRoster.GetHeroes() == nil then
                 return T("eotw.locations.locked.checking_roster")
@@ -793,11 +808,12 @@ function EncounterOfTheWeek.PartName(key)
 end
 
 --May this account form a party for this key? Part 1 of a series (and any
---encounter that is not a series) always; part n once the account has won
---part n-1 ON THE SAME BOARD: at the Town Gate any of its heroes' wins
---(EotwRoster.AccountCompleted), in the Proving Pits its practice wins
---(EotwRoster.PracticeWon). A Proving Pits win does not carry over to the Gate.
---A part marked "Coming soon" stays locked for everyone.
+--encounter that is not a series) always; part n while part n-1 is OPEN on
+--the same board: won by the account since its last respite
+--(EotwRoster.PartOpen; Catching Breath keeps it open). At the Town Gate any
+--of its heroes' wins count, in the Proving Pits its practice wins. A Proving
+--Pits win does not carry over to the Gate. A part marked "Coming soon" stays
+--locked for everyone.
 --Returns true, or false + the reason to show.
 function EncounterOfTheWeek.PartUnlocked(key)
     local seriesKey, part = EncounterOfTheWeek.SplitPartKey(key)
@@ -808,10 +824,30 @@ function EncounterOfTheWeek.PartUnlocked(key)
     if part <= 1 then
         return true
     end
-    if EncounterOfTheWeek.PartWon(EncounterOfTheWeek.PartKey(seriesKey, part - 1)) then
+    local previous = EncounterOfTheWeek.PartKey(seriesKey, part - 1)
+    local won = EncounterOfTheWeek.PartWon(previous)
+    local open = EotwRoster.PartOpen(previous, EncounterOfTheWeek.PartBoard(previous))
+    --a city from before the respite rule sends no open parts: any win counts.
+    if open == nil then
+        open = won
+    end
+    if open then
         return true
     end
+    if won then
+        return false, T("eotw.series.part_closed_by_respite", { part = part - 1 })
+    end
     return false, T("eotw.series.part_locked", { part = part - 1 })
+end
+
+--The board a key is played from, as the city files its open parts: "practice"
+--in the Proving Pits, else "gate".
+function EncounterOfTheWeek.PartBoard(key)
+    local seriesKey = EncounterOfTheWeek.SplitPartKey(key)
+    if EncounterOfTheWeek.IsDangerRoomEncounter(seriesKey) then
+        return "practice"
+    end
+    return "gate"
 end
 
 --Has this account won this part on the board it is played from?
@@ -866,6 +902,39 @@ function EncounterOfTheWeek.NextPartKey(key)
         end
     end
     return last
+end
+
+--The series parts a respite would close (or, given the city's closedParts,
+--did close): for each open part (EotwRoster.OpenParts, or `list` =
+--{ {board, encounter}, ... }) whose series has a playable next part on that
+--board, { series, won, next } -- the series' title and the two part names.
+function EncounterOfTheWeek.PartsHeldOpen(list)
+    if list == nil then
+        list = {}
+        for _, board in ipairs({ "gate", "practice" }) do
+            for _, key in ipairs(EotwRoster.OpenParts(board)) do
+                list[#list+1] = { board = board, encounter = key }
+            end
+        end
+    end
+    local result = {}
+    for _, item in ipairs(list) do
+        local key = type(item) == "table" and item.encounter or nil
+        if type(key) == "string" and EncounterOfTheWeek.PartBoard(key) == item.board then
+            local seriesKey, part = EncounterOfTheWeek.SplitPartKey(key)
+            local nextPart = EncounterOfTheWeek.GetPart(seriesKey, part + 1)
+            if nextPart ~= nil and nextPart.comingSoon == nil then
+                local nextKey = EncounterOfTheWeek.PartKey(seriesKey, part + 1)
+                result[#result+1] = {
+                    series = EncounterOfTheWeek.EncounterTitle(seriesKey),
+                    won = EncounterOfTheWeek.PartName(key),
+                    next = EncounterOfTheWeek.PartName(nextKey),
+                    nextKey = nextKey,
+                }
+            end
+        end
+    end
+    return result
 end
 
 --Author previews: moduleid -> { maps, eotwEncounters }, shown in town in
@@ -1312,6 +1381,8 @@ local function CityRequest(action, args, callback)
         }
     end)
 end
+
+EncounterOfTheWeek.CityRequest = CityRequest
 
 --Admin: make `key` the Encounter of the Week. The current one moves to the
 --past and the week's nominations start over (the city's set-week, which
@@ -2235,6 +2306,12 @@ function EncounterOfTheWeek.ShowScreen()
         return
     end
 
+    --an account seen banned this run is asked about before the town loads
+    --(the ban shows over the titlescreen; the town opens if it has ended).
+    if EotwModeration.HoldEntry(EncounterOfTheWeek.ShowScreen) then
+        return
+    end
+
     local root = rawget(_G, "CodexTitlescreenRoot")
     if root == nil or not root.valid then
         return
@@ -2242,6 +2319,20 @@ function EncounterOfTheWeek.ShowScreen()
 
     m_veil = CreateLoadingVeil(root)
     root:AddChild(m_veil)
+end
+
+--Close the town back to the titlescreen, including an open still behind its
+--loading veil. A screen hidden for a game load is left alone: the player is
+--in a game, and the town is rebuilt when they come back.
+function EncounterOfTheWeek.CloseScreen()
+    if m_veil ~= nil and m_veil.valid then
+        m_veil:DestroySelf()
+    end
+    m_veil = nil
+    if m_screen ~= nil and m_screen.valid and not m_screen:HasClass("hidden") then
+        m_screen:FireEvent("closeEncounterOfTheWeek")
+        m_screen = nil
+    end
 end
 
 --True while the screen is up (not closed, and not hidden for a game load).
@@ -2292,6 +2383,13 @@ function EncounterOfTheWeek.CodexMenuItems()
             icon = "phosphor/trophy-fill.png",
             click = function()
                 EncounterOfTheWeek.ShowWeekDialog()
+            end,
+        },
+        {
+            text = "Moderation...",
+            icon = "phosphor/shield-star-fill.png",
+            click = function()
+                EotwModeration.ShowAdminDialog()
             end,
         },
     }
@@ -5484,6 +5582,22 @@ CreateScreen = function(args)
                 height = "auto",
                 halign = "left",
                 vmargin = 2,
+                --admins: right-click a player's line to warn or ban them
+                --(not lines bridged in from Discord, which have no account here).
+                rightClick = function(element)
+                    if msg.source == "discord" then
+                        return
+                    end
+                    local entries = EotwModeration.ChatLineMenu(msg.userid, msg.name)
+                    if #entries == 0 then
+                        return
+                    end
+                    element.popup = gui.ContextMenu{
+                        width = 260,
+                        entries = entries,
+                        click = function() element.popup = nil end,
+                    }
+                end,
             }
         end
         chatMessagesPanel.children = children
@@ -6619,6 +6733,7 @@ CreateScreen = function(args)
                 args = { encounter = entry.encounter, gameid = entry.gameid },
                 success = function(result)
                     EotwRoster.SetPracticeWins(result.practiceWins)
+                    EotwRoster.SetOpenParts(result.openParts)
                     if RefreshGames ~= nil then
                         RefreshGames()
                     end
@@ -7439,10 +7554,9 @@ CreateScreen = function(args)
             swallowPress = true,
             data = { lockedReason = nil, nextBeckon = 0 },
             thinkTime = 0.5,
+            --loc.hidden is applied by ApplyLocationVisibility, not here: a
+            --collapsed panel gets no think, so a node could never un-hide itself.
             think = function(element)
-                if loc.hidden ~= nil then
-                    element:SetClass("collapsed", loc.hidden(townContext) == true)
-                end
                 local reason = nil
                 if loc.locked ~= nil then
                     reason = loc.locked(townContext)
@@ -7488,6 +7602,9 @@ CreateScreen = function(args)
             end,
             create = function(element)
                 m_nodePanels[loc.id] = element
+                if loc.hidden ~= nil then
+                    element:SetClass("collapsed", loc.hidden(townContext) == true)
+                end
                 element:FireEvent("think")
             end,
             hover = function(element)
@@ -7539,6 +7656,18 @@ CreateScreen = function(args)
     local nodes = {}
     for _,loc in ipairs(CITY_LOCATIONS) do
         nodes[#nodes+1] = LocationNode(loc)
+    end
+
+    --Show or hide each location that has a hidden test (the Proving Pits
+    --while locked, say). Run from the town's watcher think, which never
+    --collapses, so a location hidden at open appears once it unlocks.
+    local ApplyLocationVisibility = function()
+        for _,loc in ipairs(CITY_LOCATIONS) do
+            local node = m_nodePanels[loc.id]
+            if loc.hidden ~= nil and node ~= nil and node.valid then
+                node:SetClass("collapsed", loc.hidden(townContext) == true)
+            end
+        end
     end
 
     local townStyles = {
@@ -8349,10 +8478,8 @@ CreateScreen = function(args)
         if node == nil or not node.valid then
             return
         end
+        --ApplyLocationVisibility puts the node on the map; this only beckons.
         local found = EotwRoster.MarketUnlocked()
-        if found and node:HasClass("collapsed") then
-            node:SetClass("collapsed", false)
-        end
         if EotwRoster.GetHeroes() == nil then
             return
         end
@@ -9527,6 +9654,7 @@ CreateScreen = function(args)
                 TryAcceptInvite()
                 MaybeShowWelcome()
                 MaybePlayInnReveal()
+                ApplyLocationVisibility()
                 RevealFoundLocations()
                 WatchCommunityProjects()
                 RevealHall()
@@ -9546,6 +9674,48 @@ CreateScreen = function(args)
             thinkTime = 3,
             think = function(element)
                 PushSteamJoinTarget()
+            end,
+        },
+
+        --continue a series: the player chose "Continue to Part N" on the
+        --victory screen (eotw:continueSeries, set by the game codemod). Once
+        --the city says that part is open (the win has reached it) and nothing
+        --else is on screen, Form a Party opens on it. A choice older than
+        --CONTINUE_SERIES_SECONDS is dropped: the win never arrived.
+        gui.Panel{
+            floating = true,
+            width = 1,
+            height = 1,
+            interactable = false,
+            thinkTime = 1,
+            think = function(element)
+                local all = {}
+                pcall(function()
+                    local parsed = dmhub.FromJson(dmhub.GetSettingValue("eotw:continueSeries"))
+                    if type(parsed) == "table" and parsed.success and type(parsed.result) == "table" then
+                        all = parsed.result
+                    end
+                end)
+                local pending = all[dmhub.loginUserid]
+                if type(pending) ~= "table" or type(pending.key) ~= "string" then
+                    return
+                end
+                local drop = function()
+                    all[dmhub.loginUserid] = nil
+                    dmhub.SetSettingValue("eotw:continueSeries", dmhub.ToJson(all))
+                end
+                if os.time() - (tonumber(pending.at) or 0) > CONTINUE_SERIES_SECONDS then
+                    printf("EotW: the party for %s was not opened: it never unlocked", pending.key)
+                    drop()
+                    return
+                end
+                if EotwRoster.GetHeroes() == nil or EncounterOfTheWeek.GetEncounter(pending.key) == nil
+                    or m_debriefOpen or (m_modalDialog ~= nil and m_modalDialog.valid)
+                    or not EncounterOfTheWeek.PartUnlocked(pending.key) then
+                    return
+                end
+                drop()
+                ShowCreateDialog(pending.key, true)
             end,
         },
     }
@@ -9568,6 +9738,10 @@ CreateScreen = function(args)
                 EotwRoster.Refresh()
                 MaybeShowDebrief()
                 MaybeShowOfferedOutcomes()
+            elseif path == "/moderation" then
+                --a warning or ban was just issued to (or lifted from) us:
+                --the city pushes this to our own sockets only.
+                EotwModeration.CheckArrival(m_conn)
             elseif string.starts_with(path, "/city/week") then
                 --the week rotated: the boards re-sort the encounters, and
                 --the Proving Pits may have opened (an earlier win of the
@@ -9598,6 +9772,8 @@ CreateScreen = function(args)
             end
             RefreshStatus()
             if status == "connected" then
+                --first, so a banned player is sent back before anything else opens.
+                EotwModeration.CheckArrival(m_conn)
                 RefreshAll()
                 EotwRoster.Refresh()
                 MaybeShowDebrief()

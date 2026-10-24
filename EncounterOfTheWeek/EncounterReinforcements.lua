@@ -150,6 +150,7 @@ local function Arrive(script, section, ordinal, queue, live)
                 copy.spawnmonsters = nil
                 copy.appearances = nil
                 copy.invisibleToPlayers = nil
+                copy.startsHidden = nil
                 anchor = copy.spawnlocs[1]
             end
             local groupid, charids = Encounter.SpawnGroupForReal(copy, numHeroes, anchor)

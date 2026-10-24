@@ -254,6 +254,17 @@ local function FormatTierTextWithOrChoices(rawText, caster, skipValidation, tier
     return text
 end
 
+--Tier text styled the way the power roll table shows it, for surfaces outside
+--the roll dialog (the shared group roll board in DSRequestRollsDialog.lua).
+--caster may be nil; "or" choices show their default alternative.
+--- @param rawText string
+--- @param caster nil|creature
+--- @param tierIndex number
+--- @return string
+function ActivatedAbilityPowerRollBehavior.FormatTierTextForDisplay(rawText, caster, tierIndex)
+    return FormatTierTextWithOrChoices(rawText or "", caster, false, tierIndex, nil, nil)
+end
+
 --Record an "or" choice on rollProperties. The same choice usually appears
 --on every tier row with only its duration differing ("slowed or weakened
 --(save ends)" vs "(EoT)"), and the user cannot know which tier will land

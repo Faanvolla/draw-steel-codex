@@ -544,6 +544,19 @@ local function RestHero(tok, respiteid, victories)
     }
 end
 
+--Drop one hero from a pending respite (they fell or were dismissed since it
+--began) and save it. Returns true if the hero was in it.
+local function DropRespiteHero(pending, heroid)
+    if pending.grants == nil or pending.grants[heroid] == nil then
+        return false
+    end
+    pending.grants[heroid] = nil
+    pending.pushed[heroid] = nil
+    SaveMine("eotw:pendingRespite", pending)
+    printf("EotW town: hero %s is no longer on the roster; left out of the respite", tostring(heroid))
+    return true
+end
+
 --Carry a pending respite forward: rest and push each hero not yet pushed,
 --then credit the Downtime with the City. Safe to call again at any stage.
 local function ContinueRespite(onDone)
@@ -566,14 +579,23 @@ local function ContinueRespite(onDone)
     end
     pending.pushed = pending.pushed or {}
 
+    --a hero who fell or was dismissed since the respite began has nothing to
+    --rest or credit, pushed or not; the City refuses the whole Downtime grant
+    --while one is in it (F32BZRF2). The roster lists living heroes only, but
+    --until it has been listed FindHero misses everyone, so wait for it.
+    if EotwRoster.GetHeroes() ~= nil then
+        for heroid, _ in pairs(pending.grants or {}) do
+            if EotwRoster.FindHero(heroid) == nil then
+                DropRespiteHero(pending, heroid)
+            end
+        end
+    end
+
     --first every hero's record, one push at a time.
     for heroid, amount in pairs(pending.grants or {}) do
         if not pending.pushed[heroid] then
-            if EotwRoster.FindHero(heroid) == nil then
-                --dismissed or fallen meanwhile: nothing to rest or credit.
-                pending.grants[heroid] = nil
-                SaveMine("eotw:pendingRespite", pending)
-            elseif not EotwRoster.IsInStep(heroid) then
+            --not in step also covers a roster not listed yet.
+            if not EotwRoster.IsInStep(heroid) then
                 --an import is in flight; try again shortly.
                 dmhub.Schedule(1, function()
                     if not mod.unloaded then
@@ -639,15 +661,25 @@ local function ContinueRespite(onDone)
                 EotwRoster.SetListedDowntime(heroid, downtime)
             end
             EotwRoster.SetListedLeads(nil, result.carouse)
+            --the respite closed every series part the account had open.
+            EotwRoster.SetOpenParts(result.openParts)
             Bump()
             EotwRoster.Refresh()
             if onDone ~= nil then
-                onDone(true)
+                onDone(true, nil, result.closedParts)
             end
         end,
         error = function(message)
             m_respiteBusy = false
             printf("EotW town: the Downtime from the respite was not credited yet: %s", tostring(message))
+            --a hero our roster still thought was alive: leave them out and
+            --send the rest. Each retry removes a hero, so this cannot loop.
+            local text = tostring(message)
+            local gone = text:match("^hero ([%w_%-]+) has fallen") or text:match("^hero ([%w_%-]+) does not exist")
+            if gone ~= nil and not mod.unloaded and DropRespiteHero(pending, gone) then
+                ContinueRespite(onDone)
+                return
+            end
             if onDone ~= nil then
                 onDone(false, message)
             end
@@ -656,7 +688,8 @@ local function ContinueRespite(onDone)
 end
 
 --Take a respite: every hero at home (not away in a party) rests at once.
---onDone(ok, message) when it has all reached the City.
+--onDone(ok, message, closedParts) when it has all reached the City;
+--closedParts lists the series parts it closed ({board, encounter}).
 function EotwDowntime.TakeRespite(onDone)
     if m_respiteBusy then
         return
@@ -2768,6 +2801,10 @@ function EotwDowntime.InnPanel(host, openLocation)
     local statusLabel = nil
     local afterPanel = nil
     local respiteButton = nil
+    --a series' next part that a respite would close (warning), and the
+    --ones the last respite here did close (note).
+    local seriesWarning = nil
+    local seriesNote = nil
 
     local Rebuild
     Rebuild = function()
@@ -2806,6 +2843,16 @@ function EotwDowntime.InnPanel(host, openLocation)
                     footerLabel.text = TP("inn.footer.rest", resting)
                 end
             end
+        end
+        if seriesWarning ~= nil and seriesWarning.valid then
+            local lines = {}
+            if resting > 0 and wounded > 0 then
+                for _, held in ipairs(EncounterOfTheWeek.PartsHeldOpen()) do
+                    lines[#lines+1] = T("inn.series.warning", held)
+                end
+            end
+            seriesWarning.text = table.concat(lines, "\n")
+            seriesWarning:SetClass("collapsed", #lines == 0)
         end
         if respiteButton ~= nil and respiteButton.valid then
             --on the button itself: opacity is not inherited from this wrapper.
@@ -2956,6 +3003,18 @@ function EotwDowntime.InnPanel(host, openLocation)
             end,
         },
         gui.Label{
+            classes = { "collapsed" },
+            text = "",
+            fontSize = 15,
+            color = AMBER,
+            width = "100%",
+            height = "auto",
+            tmargin = 6,
+            create = function(element)
+                seriesWarning = element
+            end,
+        },
+        gui.Label{
             text = "",
             fontSize = 15,
             color = RED,
@@ -2984,7 +3043,7 @@ function EotwDowntime.InnPanel(host, openLocation)
                     if statusLabel ~= nil and statusLabel.valid then
                         statusLabel.text = ""
                     end
-                    EotwDowntime.TakeRespite(function(ok, message)
+                    EotwDowntime.TakeRespite(function(ok, message, closedParts)
                         if mod.unloaded then
                             return
                         end
@@ -2993,12 +3052,33 @@ function EotwDowntime.InnPanel(host, openLocation)
                         end
                         if ok then
                             ShowPastCatchesUp(host)
+                            if seriesNote ~= nil and seriesNote.valid then
+                                local lines = {}
+                                for _, held in ipairs(EncounterOfTheWeek.PartsHeldOpen(closedParts or {})) do
+                                    lines[#lines+1] = T("inn.series.closed", held)
+                                end
+                                seriesNote.text = table.concat(lines, "\n")
+                                seriesNote:SetClass("collapsed", #lines == 0)
+                            end
                         end
                         Rebuild()
                     end)
                     Rebuild()
                 end),
             },
+        },
+        gui.Label{
+            classes = { "collapsed" },
+            text = "",
+            fontSize = 15,
+            italics = true,
+            color = AMBER,
+            width = "100%",
+            height = "auto",
+            tmargin = 8,
+            create = function(element)
+                seriesNote = element
+            end,
         },
         --after a respite: carouse in the common room for leads, and start
         --the projects those leads open (EotwLeads.lua).

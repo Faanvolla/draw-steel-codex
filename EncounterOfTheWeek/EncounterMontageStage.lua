@@ -7218,6 +7218,9 @@ EncounterMontageStage.CreateScriptStage = CreateScriptStage
 --  script     = the map script the section came from (for its scene art)
 --  onContinue = called once, when the player presses on (or the screen is
 --               closed some other way)
+--  choice     = optional { text, note, onChoose }: a second, first-placed
+--               button (a series' "Continue to Part 2"); onChoose runs before
+--               onContinue. note is a line shown above the buttons.
 function EncounterMontageStage.ShowStoryScreen(args)
     local section = args.section
     local defeat = args.outcome == "defeat"
@@ -7270,6 +7273,55 @@ function EncounterMontageStage.ShowStoryScreen(args)
         end,
     }
 
+    local buttons = button
+    local choice = args.choice
+    if choice ~= nil then
+        local choiceButton = gui.Button{
+            text = choice.text,
+            valign = "top",
+            tmargin = 18,
+            rmargin = 16,
+            width = 320,
+            height = 48,
+            fontSize = 22,
+            click = function(element)
+                if m_continued then
+                    return
+                end
+                audio.FireSoundEvent("Mouse.Click")
+                pcall(choice.onChoose)
+                element:SetClass("disabled", true)
+                Continue()
+            end,
+        }
+        buttons = gui.Panel{
+            width = "auto",
+            height = "auto",
+            flow = "vertical",
+            halign = "center",
+            valign = "top",
+            gui.Label{
+                classes = {cond(choice.note == nil, "collapsed", nil)},
+                text = choice.note or "",
+                fontSize = 18,
+                italics = true,
+                color = "#efe4cc",
+                width = "auto",
+                height = "auto",
+                halign = "center",
+                tmargin = 14,
+            },
+            gui.Panel{
+                width = "auto",
+                height = "auto",
+                flow = "horizontal",
+                halign = "center",
+                choiceButton,
+                button,
+            },
+        }
+    end
+
     local body = gui.Panel{
         width = "100%",
         height = "100%",
@@ -7312,7 +7364,7 @@ function EncounterMontageStage.ShowStoryScreen(args)
                 bmargin = 0,
             },
         },
-        button,
+        buttons,
     }
 
     local screen

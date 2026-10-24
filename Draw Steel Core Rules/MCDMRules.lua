@@ -1498,6 +1498,32 @@ end
 
 local g_hiddenConditionId = "31daf7f6-f77c-4f73-8eab-43e2d0f123c0"
 
+-- "Hidden Creatures are Invisible": using an ability reveals the user as it begins, so
+-- players see who acts. Without the setting, the Hidden condition's own triggers remove
+-- it at the attack or when the ability finishes. Priority 10 lets Turn Rewind
+-- checkpoint the still-hidden board first.
+ActivatedAbility.RegisterCastStartHandler(function(ability, casterToken, options)
+	if casterToken == nil or not casterToken.valid or casterToken.isObject or casterToken.properties == nil then
+		return
+	end
+	if (options ~= nil and options.dismiss) or not creature.HiddenCreaturesInvisible() then
+		return
+	end
+	if not ability:CountsAsRegularAbilityCast() or ability:HasProperty("remainhidden") then
+		return
+	end
+	if casterToken.properties:HasCondition(g_hiddenConditionId) == false then
+		return
+	end
+
+	casterToken:ModifyProperties{
+		description = "Revealed by acting",
+		execute = function()
+			casterToken.properties:LoseHidden()
+		end,
+	}
+end, 10)
+
 function GameSystem.AllowTargeting(casterToken, targetToken, ability)
 	-- Hidden: "While you are hidden from another creature, the creature can't
 	-- target you with abilities that don't have the Area keyword." A creature

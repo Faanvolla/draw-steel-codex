@@ -725,127 +725,178 @@ end
 
 local g_conditionHiddenId = "31daf7f6-f77c-4f73-8eab-43e2d0f123c0"
 
---While a director-controlled creature has the Hidden condition, its token can
---optionally be made invisible to players. Heroes never auto-vanish: their
---enemies are director-run and the director must always see everything, so for
---heroes the Hidden benefit is enforced at targeting time instead.
---(forward-declared: SyncHiddenInvisibility reads it, the setting's onchange
---calls SyncHiddenInvisibility)
-local g_settingHiddenInvisible
-
---charids with a deferred invisibility sync pending, so a burst of refreshes
---only schedules one write.
-local g_hiddenInvisPending = {}
-
---Keeps token.invisibleToPlayers in step with the Hidden condition for
---director-controlled creatures. We only act on TRANSITIONS, recorded in the
---serialized hiddenInvisibilityApplied field: invisibility we did not apply
---(e.g. encounter groups staged invisible by the director) is never touched,
---and a director who manually reveals a still-hidden monster is not fought.
---The write is deferred out of the refresh path to avoid re-entrant uploads.
-local function SyncHiddenInvisibility(token)
-    --Only the hosting client manages this (a player host included: it is
-    --the single writer for director-run creatures).
-    if not IsDMOrPlayerHost() then
-        return
-    end
-
-    local c = token.properties
-    if c == nil then
-        return
-    end
-
-    local shouldHide = g_settingHiddenInvisible:Get() and (not token.playerControlled)
-        and (c:HasCondition(g_conditionHiddenId) ~= false)
-    local applied = c:try_get("hiddenInvisibilityApplied", false)
-    if shouldHide == applied then
-        return
-    end
-
-    local charid = token.charid
-    if g_hiddenInvisPending[charid] then
-        return
-    end
-    g_hiddenInvisPending[charid] = true
-
-    --Vanishing is delayed so the "Hidden" float text and status animation get
-    --time to play over the still-visible token before it disappears; players
-    --need a beat to register what happened. Revealing is near-instant so
-    --players are never late seeing a monster that is no longer hidden.
-    local delay = 0.05
-    if shouldHide then
-        delay = 2.0
-    end
-
-    dmhub.Schedule(delay, function()
-        g_hiddenInvisPending[charid] = nil
-        if mod.unloaded then
-            return
-        end
-
-        local tok = dmhub.GetTokenById(charid)
-        if tok == nil or (not tok.valid) or tok.properties == nil then
-            return
-        end
-
-        local cr = tok.properties
-        local hideNow = g_settingHiddenInvisible:Get() and (not tok.playerControlled)
-            and (cr:HasCondition(g_conditionHiddenId) ~= false)
-        local appliedNow = cr:try_get("hiddenInvisibilityApplied", false)
-        if hideNow == appliedNow then
-            return
-        end
-
-        tok.invisibleToPlayers = hideNow
-        tok:ModifyProperties{
-            description = "Hidden condition visibility",
-            undoable = false,
-            execute = function()
-                cr.hiddenInvisibilityApplied = hideNow
-
-                if not hideNow then
-                    --On reveal, clients that couldn't see the token missed the
-                    --sheet's own local "crossed out Hidden" status float (it
-                    --fires from icon diffing at condition-removal time, while
-                    --the token was still invisible to them). Re-fire the same
-                    --visual through the networked animation channel now that
-                    --the token is visible again.
-                    local conditionsTable = dmhub.GetTable(CharacterCondition.tableName)
-                    local conditionInfo = conditionsTable[g_conditionHiddenId]
-                    if conditionInfo ~= nil then
-                        cr:AddAnimation{
-                            animType = "statusDestroy",
-                            info = {
-                                icon = conditionInfo.iconid,
-                                statusText = (string.gsub(conditionInfo.name, "%s+$", "")),
-                                --floatstatus mutates info.style, so pass a copy.
-                                style = DeepCopy(conditionInfo:try_get("display", {})),
-                            },
-                        }
-                    end
-                end
-            end,
-        }
-    end)
-end
-
-g_settingHiddenInvisible = setting{
+--"Hidden Creatures are Invisible": while a creature the Director runs has the Hidden
+--condition, players (a player host included) do not see it at all. Each client decides
+--for itself in the engine (CharacterToken.hiddenFromLocalViewer), so the token still
+--exists everywhere and the Monster AI can play it. Heroes never vanish: their enemies
+--are Director-run, so for them Hidden is enforced at targeting time instead.
+local g_settingHiddenInvisible = setting{
     id = "strict:hiddeninvisible",
-    description = "Hidden Monsters Invisible to Players",
-    help = "While a creature the director controls has the Hidden condition, its token is invisible to players. Heroes always remain visible.",
+    description = "Hidden Creatures are Invisible",
+    help = "While a creature the director controls has the Hidden condition, players do not see it at all: no token, HUD, auras or targeting. It reappears the moment it stops being Hidden, and acting reveals it as the ability begins. Heroes always remain visible.",
     storage = "game",
     editor = "check",
     default = false,
     section = "GameStrictRules",
     onchange = function()
-        --RefreshToken only runs on game-state changes, so re-evaluate every
-        --token directly when the setting flips (in particular, revealing
-        --monsters when it is toggled off).
+        --RefreshToken only runs on game-state changes, so re-run it for every token on
+        --this client. Other clients catch up at their next token refresh.
         for _, tok in ipairs(dmhub.allTokens) do
-            SyncHiddenInvisibility(tok)
+            tok:InvalidateObjects()
         end
     end,
 }
+
+--- True when "Hidden Creatures are Invisible" is on for this game.
+--- @return boolean
+function creature.HiddenCreaturesInvisible()
+    return g_settingHiddenInvisible:Get() == true
+end
+
+--- Removes the Hidden condition from this creature, keeping the "Hidden This Turn"
+--- edge for the rest of the current turn. Call inside token:ModifyProperties.
+function creature:LoseHidden()
+    if self:HasCondition(g_conditionHiddenId) == false then
+        return
+    end
+
+    --stamp the turn first: the stamp normally comes from a refresh while still hidden.
+    local q = dmhub.initiativeQueue
+    if q ~= nil and not q.hidden then
+        self._tmp_hiddenTurnId = q:GetTurnId()
+    end
+
+    self:InflictCondition(g_conditionHiddenId, {purge = true})
+end
+
+--- True when this creature has the Hidden condition, whatever applied it.
+--- @return boolean
+function creature:IsHidden()
+    return self:HasCondition(g_conditionHiddenId) ~= false
+end
+
+--- Gives this creature the Hidden condition, as the Hide maneuver does. Encounter
+--- spawns use it for monsters banked as starting the encounter hidden. Call it on a
+--- fresh token before its upload, or inside token:ModifyProperties.
+--- @param token CharacterToken this creature's token
+function creature:BecomeHidden(token)
+    self:InflictCondition(g_conditionHiddenId, {duration = "eoe", casterInfo = {tokenid = token.charid}})
+end
+
+--Ambush banner: with "Hidden Creatures are Invisible" on, a creature the Director runs
+--that has been Hidden since before combat began shows a Malice banner the first time it
+--comes out of hiding. Reveals a moment apart (an AI turn revealing a whole group) share
+--one banner, and a round shows at most one, whichever client does the revealing.
+local g_ambushBannerDocId = "hidden_ambush_banner"
+local g_ambushPending = nil --charids revealed in the current collection window.
+
+local function CombatActive()
+    local q = dmhub.initiativeQueue
+    return q ~= nil and not q.hidden
+end
+
+local function ShowAmbushBanner(charids)
+    local q = dmhub.initiativeQueue
+    if q == nil or q.hidden then
+        return
+    end
+
+    local first = nil
+    for _, charid in ipairs(charids) do
+        local tok = dmhub.GetTokenById(charid)
+        if tok ~= nil and tok.valid then
+            first = first or tok
+        end
+    end
+    if first == nil then
+        return
+    end
+
+    --the shared record of the last round that had one keeps it to one per round.
+    local roundKey = string.format("%s:%d", tostring(q.guid), q.round or 0)
+    local doc = mod:GetDocumentSnapshot(g_ambushBannerDocId)
+    if doc.data.roundKey == roundKey then
+        return
+    end
+    doc:BeginChange()
+    doc.data.roundKey = roundKey
+    doc:CompleteChange("Ambush banner", {undoable = false})
+
+    --no monster names: players may not know them yet (Monster Info).
+    local subtitle = "A hidden enemy reveals itself!"
+    if #charids > 1 then
+        subtitle = string.format("%d hidden enemies reveal themselves!", #charids)
+    end
+    DramaticBanner.Show{
+        tokenid = first.charid,
+        text = "Ambush!",
+        subtitle = subtitle,
+        bannerType = "malice",
+    }
+end
+
+--Called as Hidden is purged from a creature hidden since before combat.
+--- @param c creature
+local function NoteAmbushReveal(c)
+    if not g_settingHiddenInvisible:Get() or not CombatActive() then
+        return
+    end
+    local tok = dmhub.LookupToken(c)
+    if tok == nil or tok.playerControlled then
+        return
+    end
+
+    if g_ambushPending ~= nil then
+        g_ambushPending[#g_ambushPending + 1] = tok.charid
+        return
+    end
+    g_ambushPending = {tok.charid}
+    --deferred out of the ModifyProperties that is purging, and to collect a group.
+    dmhub.Schedule(0.4, function()
+        local charids = g_ambushPending or {}
+        g_ambushPending = nil
+        if mod.unloaded then
+            return
+        end
+        ShowAmbushBanner(charids)
+    end)
+end
+
+--Publishes _tmp_hiddenFromPlayers, which the engine reads to hide the token from every
+--client that is not the Director or its controller. Also undoes the old networked
+--version of this setting (invisibleToPlayers) on tokens it left invisible.
+local g_legacyHiddenClearPending = {}
+
+local function RefreshHiddenFromPlayers(c, token)
+    c._tmp_hiddenFromPlayers = g_settingHiddenInvisible:Get() == true and (not token.playerControlled)
+        and (not token.isObject) and c:HasCondition(g_conditionHiddenId) ~= false
+
+    if c:try_get("hiddenInvisibilityApplied", false) and IsDMOrPlayerHost()
+        and not g_legacyHiddenClearPending[token.charid] then
+        local charid = token.charid
+        g_legacyHiddenClearPending[charid] = true
+        --deferred out of the refresh path to avoid re-entrant uploads.
+        dmhub.Schedule(0.05, function()
+            g_legacyHiddenClearPending[charid] = nil
+            if mod.unloaded then
+                return
+            end
+            local tok = dmhub.GetTokenById(charid)
+            if tok == nil or (not tok.valid) or tok.properties == nil
+                or not tok.properties:try_get("hiddenInvisibilityApplied", false) then
+                return
+            end
+            tok.invisibleToPlayers = false
+            tok:ModifyProperties{
+                description = "Clear legacy Hidden visibility",
+                undoable = false,
+                execute = function()
+                    tok.properties.hiddenInvisibilityApplied = nil
+                end,
+            }
+        end)
+    end
+end
 
 function creature:RefreshToken(token)
     if (not mod.unloaded) and self.minion then
@@ -853,7 +904,7 @@ function creature:RefreshToken(token)
     end
 
     if not mod.unloaded then
-        SyncHiddenInvisibility(token)
+        RefreshHiddenFromPlayers(self, token)
     end
 
     if (not mod.unloaded) then
@@ -3374,6 +3425,10 @@ function creature:GetActivatedAbilities(options)
             for _, ability in ipairs(ActivatedAbility.GetGrantedAbilities(dmhub.GetTokenById(charid))) do
                 result[#result + 1] = ability
             end
+            local dropToGround = ActivatedAbility.GetDropToGroundAbility(dmhub.GetTokenById(charid))
+            if dropToGround ~= nil then
+                result[#result + 1] = dropToGround
+            end
         end
     end
 
@@ -4328,6 +4383,11 @@ function creature:InflictCondition(conditionid, args)
     local entry = inflictedConditions[conditionid] or {}
     inflictedConditions[conditionid] = entry
 
+    --remembers a creature lying in wait from before the fight, for the ambush banner.
+    if conditionid == g_conditionHiddenId and not wasActive and not args.purge then
+        entry.hiddenBeforeCombat = (not CombatActive()) or nil
+    end
+
     if entry.duration ~= "eoe" or args.force then
         entry.stacks = 1
         entry.sourceDescription = args.sourceDescription
@@ -4442,6 +4502,9 @@ function creature:InflictCondition(conditionid, args)
         end
         if inflictedConditions[conditionid] ~= nil then
             audio.DispatchSoundEvent(conditionInfo:SoundEvent() .. "_End", { tokenid = dmhub.LookupTokenId(self) })
+        end
+        if conditionid == g_conditionHiddenId and entry ~= nil and entry.hiddenBeforeCombat then
+            NoteAmbushReveal(self)
         end
         inflictedConditions[conditionid] = nil
     end

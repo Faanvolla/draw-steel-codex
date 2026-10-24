@@ -483,8 +483,8 @@ end
 
 --Regroup the flat banked slots into one queue of saved positions PER MONSTER
 --TYPE, so an edit to the roster cannot hand one monster's tile to another.
---Each entry carries the appearance and player-visibility banked with it, since
---those are slot-keyed too and must travel with the position.
+--Each entry carries the appearance, player-visibility and Hidden state banked
+--with it, since those are slot-keyed too and must travel with the position.
 --
 --Positions banked before spawnmonsters existed carry no monsterid stamp; they
 --go into a shared legacy queue any monster may draw from in slot order, which
@@ -498,6 +498,7 @@ local function BankedPositionQueues(group)
             loc = locs[slot],
             appearance = (group.appearances or {})[slot],
             invisible = (group.invisibleToPlayers or {})[slot],
+            hidden = (group.startsHidden or {})[slot],
         }
         local monsterid = (group.spawnmonsters or {})[slot]
         if monsterid == nil or monsterid == false then
@@ -529,7 +530,7 @@ local function TakeBankedPosition(queues, legacy, monsterid)
 end
 
 --Bank one group's staged tokens into the group: positions (spawnlocs),
---player-visibility, and (when the encounter opts in) appearances, all in
+--player-visibility, the Hidden condition, and (when the encounter opts in) appearances, all in
 --spawn-slot order. Also stamps the map the positions belong to -- spawnlocs
 --are map-blind coordinates, so consumers must not use them on another map.
 --Returns the banked tokens; the CALLER decides whether to delete them.
@@ -541,11 +542,14 @@ local function BankGroupPositions(group, saveAppearances)
     group.spawnlocs = {}
     group.appearances = {}
     group.invisibleToPlayers = {}
+    group.startsHidden = {}
     group.spawnmonsters = {}
     group.stagemapid = game.currentMapId
     for slot, token in ipairs(tokens) do
         group.spawnlocs[slot] = token.loc
         group.invisibleToPlayers[slot] = token.invisibleToPlayers or false
+        --a monster staged with the Hidden condition starts every run hidden.
+        group.startsHidden[slot] = token.properties:IsHidden()
         --which monster type held this tile, so a later restage can hand it back
         --to the same one even if the roster changed in between. false (never
         --nil) for tokens spawned before the stamp existed: the list has to stay
@@ -623,6 +627,7 @@ local function ClearGroupStaging(group)
     group.spawnlocs = nil
     group.appearances = nil
     group.invisibleToPlayers = nil
+    group.startsHidden = nil
     group.spawnmonsters = nil
     group.mounts = nil
     group.stagemapid = nil
@@ -723,6 +728,9 @@ local function StageGroupAtSavedLocations(encounter, groupIndex, group, numHeroe
                 end
                 if entry ~= nil and entry.invisible then
                     token.invisibleToPlayers = true
+                end
+                if entry ~= nil and entry.hidden then
+                    token.properties:BecomeHidden(token)
                 end
                 token:UploadToken()
                 tokens[#tokens + 1] = token
@@ -3301,6 +3309,7 @@ local function CreateGroupCard(args)
                         copy.spawnlocs = nil
                         copy.appearances = nil
                         copy.invisibleToPlayers = nil
+                        copy.startsHidden = nil
                         copy.spawnmonsters = nil
                         copy.mounts = nil
                         encounter.groups[#encounter.groups + 1] = copy
@@ -4955,6 +4964,9 @@ function Encounter.SpawnGroupForReal(group, numHeroes, fallbackAnchor)
                 if entry ~= nil and entry.invisible then
                     token.invisibleToPlayers = true
                 end
+                if entry ~= nil and entry.hidden then
+                    token.properties:BecomeHidden(token)
+                end
 
                 local balancing = group.balancing
                 if balancing ~= nil then
@@ -5117,6 +5129,9 @@ function Encounter.SpawnPrepMonsters(group, monsterid, count, numHeroes, existin
             end
             if entry ~= nil and entry.invisible then
                 token.invisibleToPlayers = true
+            end
+            if entry ~= nil and entry.hidden then
+                token.properties:BecomeHidden(token)
             end
             local info = (group.balancing or {})[numHeroes]
             if info ~= nil and type(info.stamina) == "number" then

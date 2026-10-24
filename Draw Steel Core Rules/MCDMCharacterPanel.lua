@@ -4498,6 +4498,25 @@ function TacPanel.RecoveriesBox()
         return recoveryid, recoveryInfo
     end
 
+    -- Under strict rules a player in combat may not spend a Recovery from this box:
+    -- in combat the rules allow it only through the Catch Breath maneuver (or an
+    -- ability). Out of combat Recoveries are spent freely, and the Director is exempt.
+    local function StrictCombatSpend()
+        local q = dmhub.initiativeQueue
+        return StrictActionEconomyEnforced() and q ~= nil and not q.hidden
+    end
+
+    local catchBreathMessage = "Strict rules: in combat, spend a Recovery with the **Catch Breath** maneuver."
+    -- The 2-token Stamina spend lives in the Hero Tokens menu
+    -- (CharacterResource.HeroTokenSpendOptions), which enforces its own strict rules.
+    local heroTokenMenuMessage = "Strict rules: in combat, spend 2 Hero Tokens for Stamina from the **Hero Tokens** menu."
+
+    -- Refuse a click: error sound plus a tooltip saying why.
+    local function Refuse(element, message)
+        audio.FireSoundEvent("UI.Error_Generic")
+        element.tooltip = TacPanel.Tooltip(message)
+    end
+
     -- Build and show the "spend an ally's shared recovery" context menu on the
     -- given element. Returns true if a menu was shown (i.e. there is at least
     -- one bonded ally with a spendable recovery), false otherwise.
@@ -4551,6 +4570,12 @@ function TacPanel.RecoveriesBox()
 
         if #entries == 0 then return false end
 
+        -- An ally's Recovery is still a Recovery: Catch Breath only in combat.
+        if StrictCombatSpend() then
+            Refuse(element, catchBreathMessage)
+            return false
+        end
+
         element.popup = gui.ContextMenu{
             entries = entries,
         }
@@ -4586,9 +4611,14 @@ function TacPanel.RecoveriesBox()
             elseif quantity <= 0 then
                 if token.properties:IsHero() and token.properties:GetHeroTokens() >= 2 then
                     usageNote = "Click to spend 2 hero tokens as a Recovery"
+                    if StrictCombatSpend() then
+                        usageNote = heroTokenMenuMessage
+                    end
                 else
                     usageNote = "No Recoveries left"
                 end
+            elseif StrictCombatSpend() then
+                usageNote = catchBreathMessage
             end
 
             local lines = {usageNote}
@@ -4654,6 +4684,11 @@ function TacPanel.RecoveriesBox()
             end
 
             if token.properties:CurrentHitpoints() >= token.properties:MaxHitpoints() then
+                return
+            end
+
+            if StrictCombatSpend() then
+                Refuse(element, cond(useHeroTokens, heroTokenMenuMessage, catchBreathMessage))
                 return
             end
 

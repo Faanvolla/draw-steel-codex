@@ -423,6 +423,43 @@ function EotwRoster.SetPracticeWins(list)
     Bump()
 end
 
+--Is this encounter open for the account on this board ("gate" or
+--"practice"): won since its last respite? While a series part is open, its
+--next part may be played; a respite closes them all (unlocks.openParts).
+--nil when the city does not send openParts (a server from before the rule).
+function EotwRoster.PartOpen(key, board)
+    local open = m_unlocks ~= nil and m_unlocks.openParts or nil
+    if type(open) ~= "table" then
+        return nil
+    end
+    for _, k in ipairs(type(open[board]) == "table" and open[board] or {}) do
+        if k == key then
+            return true
+        end
+    end
+    return false
+end
+
+--Every open encounter key on a board, oldest win first (see PartOpen).
+function EotwRoster.OpenParts(board)
+    local open = m_unlocks ~= nil and m_unlocks.openParts or nil
+    if type(open) ~= "table" or type(open[board]) ~= "table" then
+        return {}
+    end
+    return open[board]
+end
+
+--The city answers record-practice-win and a respite with the account's
+--open parts ({gate = {...}, practice = {...}}).
+function EotwRoster.SetOpenParts(view)
+    if type(view) ~= "table" then
+        return
+    end
+    m_unlocks = m_unlocks or {}
+    m_unlocks.openParts = view
+    Bump()
+end
+
 --Has this account found the Arcane Market? It is not open to everyone: a
 --lead heard while carousing at the inn starts a project (Find the Arcane
 --Market), and completing it puts the market on the map (EotwLeads.lua).
@@ -2783,6 +2820,19 @@ function EotwRoster.GuildPanel(host)
                     EotwDowntime.ShowStartProjectDialog(host, "expand-guild")
                 end,
             },
+            --admins: search everyone's heroes to remove one or warn/ban
+            --its owner (the Guild otherwise lists only your own).
+            gui.Button{
+                classes = { cond(dmhub.isAdminAccount, nil, "collapsed") },
+                text = "Find Heroes",
+                fontSize = 18,
+                width = 170,
+                height = 46,
+                hmargin = 6,
+                click = function()
+                    EotwModeration.ShowFindHeroesDialog()
+                end,
+            },
         },
 
         --rebuild whenever the roster (or a working copy) changes.
@@ -2958,6 +3008,24 @@ function EotwRoster.ShowGraveyard(host)
                 --a grave opens its Hero's memorial sheet
                 click = function()
                     OpenFallen(g)
+                end,
+                --admins: remove the hero, or warn/ban the player who owned it.
+                rightClick = function(element)
+                    EotwModeration.PopupHeroMenu(element, {
+                        userid = g.userid,
+                        heroid = g.heroid,
+                        heroName = e.name,
+                        ownerName = e.owner,
+                        onScrubbed = function()
+                            for i, other in ipairs(graves) do
+                                if other == g then
+                                    table.remove(graves, i)
+                                    break
+                                end
+                            end
+                            Rebuild()
+                        end,
+                    })
                 end,
                 cornerRadius = 8,
                 pad = 8,

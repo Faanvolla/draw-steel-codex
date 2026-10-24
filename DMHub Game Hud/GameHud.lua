@@ -1845,6 +1845,7 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 			gamehud:CreateReactionBar(dialog, tokenInfo),
             gamehud:CreateAbilityDisplayPanel(),
             gamehud:CreateStandaloneRollHost(),
+            gamehud:CreateGroupRollBoardLayer(),
 			mainDialogPanel,
 			gamehud.shopPanel,
 			gamehud:ModalDialogPanel(),
@@ -2035,6 +2036,12 @@ end
 
 --Stub overridden by Timeline\AbilitySidebar.lua.
 function GameHud:InitStandaloneRollHost(panel)
+end
+
+--The board everyone sees while a group of creatures rolls against one ability
+--(e.g. resistance rolls). Stub overridden by Draw Steel UI\DSRequestRollsDialog.lua.
+function GameHud:CreateGroupRollBoardLayer()
+    return gui.Panel{width = 1, height = 1, interactable = false}
 end
 
 --return the presented dialog doc, if it exists and matches the given dialogid.

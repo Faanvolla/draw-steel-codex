@@ -4459,6 +4459,9 @@ function LiveEncounter:DeployWave(waveid, initiativeQueue)
                         if (group.invisibleToPlayers or {})[slot] then
                             token.invisibleToPlayers = true
                         end
+                        if (group.startsHidden or {})[slot] then
+                            token.properties:BecomeHidden(token)
+                        end
 
                         local balancing = group.balancing
                         if balancing ~= nil then

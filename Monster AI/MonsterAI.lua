@@ -1012,6 +1012,18 @@ local function DrawPlanPreview(data)
     end
 end
 
+--A roll this client must make (a trigger's roll prompted mid-preview, say)
+--mounts in the same ability sidebar as the preview card, so the two would
+--overlap. rawget: CharacterPanel belongs to the codex, not this mod.
+local function RollDialogShown()
+    local characterPanel = rawget(_G, "CharacterPanel")
+    if characterPanel == nil or characterPanel.AnyRollDialogShown == nil then
+        return false
+    end
+    local ok, shown = pcall(characterPanel.AnyRollDialogShown)
+    return ok and shown == true
+end
+
 --Every client, the host included, shows the preview from the document.
 dmhub.Coroutine(function()
     while not mod.unloaded do
@@ -1024,6 +1036,12 @@ dmhub.Coroutine(function()
                     g_previewDrawn.seq = seq
                     DrawPlanPreview(data)
                 end
+            end
+            --the card steps aside while the roll is up and comes back after it;
+            --the arrows stay on the map.
+            local panel = g_previewDrawn.panel
+            if panel ~= nil and panel.valid then
+                panel:SetClass("collapsed", RollDialogShown())
             end
         end)
         if not ok then
@@ -1971,6 +1989,346 @@ function MonsterAI:MovementLocOverlapsCreature(token, loc)
     return false
 end
 
+--Monster AI zone directives (an Environmental Keyword's "Monster AI
+--Directives"): which squares lie in a zone whose type has a given directive.
+--Results are memoised per frame: the AI plans within a frame (see PlanningMemo).
+local g_zoneDirectiveNames = {"avoid", "forceInto", "hold"}
+local g_zoneDirectives = {time = -1}
+
+local function ZoneDirectivesFrame()
+    local now = dmhub.Time()
+    if g_zoneDirectives.time ~= now then
+        --filters: directive -> keyword id -> its entries' creature filters ("" = everyone).
+        --accepts: directive -> charid -> set of keyword ids whose filters accept that creature.
+        --holdSquares: Hold keyword id -> every square of its zones on the map.
+        local frame = {time = now, any = {}, keywordIds = {}, squares = {}, movers = {},
+            filters = {}, accepts = {}, holdSquares = {}}
+        for _,name in ipairs(g_zoneDirectiveNames) do
+            frame.keywordIds[name] = {}
+            frame.filters[name] = {}
+            frame.accepts[name] = {}
+            --square key -> aura instances of this directive's zones there.
+            frame.squares[name] = {}
+        end
+        for id,keyword in unhidden_pairs(dmhub.GetTable(EnvironmentalKeyword.tableName) or {}) do
+            for _,entry in ipairs(keyword:GetAIDirectives()) do
+                local name = entry.directive
+                if frame.keywordIds[name] ~= nil then
+                    frame.keywordIds[name][id] = true
+                    frame.any[name] = true
+                    local filters = frame.filters[name][id] or {}
+                    filters[#filters+1] = trim(entry.filter or "")
+                    frame.filters[name][id] = filters
+                end
+            end
+        end
+        g_zoneDirectives = frame
+    end
+    return g_zoneDirectives
+end
+
+local function DirectiveFootprint(token, loc)
+    local dims = token.creatureDimensions
+    if dims.x <= 1 and dims.y <= 1 then
+        return {loc}
+    end
+    return token:LocsOccupyingWhenAt(loc)
+end
+
+local function DirectiveInstancesAt(frame, directive, loc)
+    local cache = frame.squares[directive]
+    local key = loc.xyfloorOnly.str
+    local result = cache[key]
+    if result == nil then
+        result = {}
+        local keywordIds = frame.keywordIds[directive]
+        for _,instance in ipairs(EnvironmentalKeyword.AuraInstancesCoveringSquare(loc)) do
+            local auraDef = instance:try_get("aura")
+            local keywordid = auraDef ~= nil and auraDef:try_get("environmentalKeywordId") or nil
+            if keywordid ~= nil and keywordIds[keywordid] then
+                result[#result+1] = instance
+            end
+        end
+        cache[key] = result
+    end
+    return result
+end
+
+local function InstanceKeywordId(instance)
+    local auraDef = instance:try_get("aura")
+    return auraDef ~= nil and auraDef:try_get("environmentalKeywordId") or nil
+end
+
+local function DirectiveFilterAccepts(filter, token)
+    if filter == "" then
+        return true
+    end
+    if token.properties == nil then
+        return false
+    end
+    local ok, value = pcall(ExecuteGoblinScript, filter,
+        token.properties:LookupSymbol{}, 0, "Monster AI directive filter")
+    return ok and GoblinScriptTrue(value)
+end
+
+--The keyword ids whose entries for this directive apply to the creature. For
+--Avoid, a mount also takes its riders' entries, since they steer it.
+local function DirectiveKeywordsFor(frame, directive, token)
+    local byChar = frame.accepts[directive]
+    local result = byChar[token.charid]
+    if result == nil then
+        result = {}
+        local subjects = {token}
+        if directive == "avoid" then
+            for _,rider in ipairs(token.riders or {}) do
+                if rider.valid then
+                    subjects[#subjects+1] = rider
+                end
+            end
+        end
+        for keywordid,filters in pairs(frame.filters[directive]) do
+            for _,filter in ipairs(filters) do
+                local accepted = false
+                for _,subject in ipairs(subjects) do
+                    if DirectiveFilterAccepts(filter, subject) then
+                        accepted = true
+                        break
+                    end
+                end
+                if accepted then
+                    result[keywordid] = true
+                    break
+                end
+            end
+        end
+        byChar[token.charid] = result
+    end
+    return result
+end
+
+--- True when any zone type has this directive ("avoid", "forceInto", "hold"),
+--- or, given subject, has one whose filter accepts that creature.
+--- @param directive string
+--- @param subject? CharacterToken
+--- @return boolean
+function MonsterAI.AnyDirectiveZones(directive, subject)
+    local frame = ZoneDirectivesFrame()
+    if frame.any[directive] ~= true then
+        return false
+    end
+    return subject == nil or next(DirectiveKeywordsFor(frame, directive, subject)) ~= nil
+end
+
+--- True when the token, standing at loc (default: where it is), would be in
+--- a zone whose type has the named Monster AI directive for subject.
+--- @param directive string "avoid", "forceInto" or "hold"
+--- @param token CharacterToken whose footprint is placed at loc
+--- @param loc? Loc
+--- @param subject? CharacterToken the AI creature whose directive filters are checked (default token)
+--- @return boolean
+function MonsterAI.InDirectiveZone(directive, token, loc, subject)
+    local frame = ZoneDirectivesFrame()
+    if not frame.any[directive] then
+        return false
+    end
+    local keywords = DirectiveKeywordsFor(frame, directive, subject or token)
+    if next(keywords) == nil then
+        return false
+    end
+    for _,square in ipairs(DirectiveFootprint(token, loc or token.loc)) do
+        for _,instance in ipairs(DirectiveInstancesAt(frame, directive, square)) do
+            if keywords[InstanceKeywordId(instance)] then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+--"Avoid": a creature the AI drives treats every square of an Avoid zone as
+--impassable, except the zones it already stands in, so it can still walk out
+--of one. The block rides the engine's MoveToLocPermitted hook, which every
+--non-forced path search consults (CalculatePathfindingArea, Move, charge
+--routes, jumps), so forced movement can still put the creature there.
+
+--A mount counts as AI-driven when the AI drives it or its rider.
+local function AvoidDrivenByAI(token)
+    if creature.IsTokenAIControlled(token.charid) then
+        return true
+    end
+    for _,rider in ipairs(token.riders or {}) do
+        if rider.valid and creature.IsTokenAIControlled(rider.charid) then
+            return true
+        end
+    end
+    return false
+end
+
+--Whether the AI drives this creature, the Avoid zone types whose filters
+--accept it, and the zones of those it stands in now (re-read when its loc
+--changes, as ExecuteWithTheoreticalMovementLoc does).
+local function AvoidMoverState(frame, c)
+    local state = frame.movers[c]
+    if state == nil then
+        local token = dmhub.LookupToken(c)
+        state = {token = token, active = false, keywords = {}}
+        if token ~= nil and token.valid and AvoidDrivenByAI(token) then
+            state.keywords = DirectiveKeywordsFor(frame, "avoid", token)
+            state.active = next(state.keywords) ~= nil
+        end
+        frame.movers[c] = state
+    end
+    if state.active then
+        --active is only set when the token was found.
+        local token = state.token --[[@as CharacterToken]]
+        local locStr = token.loc.str
+        if state.locStr ~= locStr then
+            state.locStr = locStr
+            state.standingIn = {}
+            for _,square in ipairs(DirectiveFootprint(token, token.loc)) do
+                for _,instance in ipairs(DirectiveInstancesAt(frame, "avoid", square)) do
+                    state.standingIn[instance] = true
+                end
+            end
+        end
+    end
+    return state
+end
+
+--"Hold": a zone type's Hold directive makes its zones a post for the creatures
+--that entry's filter accepts (an empty filter accepts every creature the AI
+--drives). A creature that can reach its post this turn only plans to end its
+--movement there; one that cannot heads back before advancing on anyone.
+
+--The Hold keyword ids whose filter accepts this creature.
+local function HoldKeywordsFor(frame, token)
+    return DirectiveKeywordsFor(frame, "hold", token)
+end
+
+--Every square of the map's zones of one Hold zone type, read from the zone records.
+local function HoldZoneSquares(frame, keywordid)
+    local result = frame.holdSquares[keywordid]
+    if result == nil then
+        result = {}
+        local map = game.currentMap
+        for _,floor in ipairs(map ~= nil and map.floors or {}) do
+            local zones, floorIndex = nil, nil
+            pcall(function()
+                zones = floor.markupZones
+                floorIndex = floor.floorIndex
+            end)
+            if zones ~= nil and floorIndex ~= nil and floorIndex >= 0 then
+                for _,record in pairs(zones) do
+                    --zone records have no category; surfaces and holes do.
+                    if type(record) == "table" and record.category == nil and record.keyword == keywordid then
+                        for _,l in ipairs(record.locs or {}) do
+                            result[#result+1] = core.Loc{x = math.floor(l.x), y = math.floor(l.y), floorIndex = floorIndex}
+                        end
+                    end
+                end
+            end
+        end
+        frame.holdSquares[keywordid] = result
+    end
+    return result
+end
+
+--- Every square of the zones holding this creature: empty when no Hold zone
+--- type accepts it or the map has no zone of one.
+--- @param token CharacterToken
+--- @return Loc[]
+function MonsterAI.HoldSquares(token)
+    local frame = ZoneDirectivesFrame()
+    local result = {}
+    if not frame.any.hold then
+        return result
+    end
+    for keywordid,_ in pairs(HoldKeywordsFor(frame, token)) do
+        for _,loc in ipairs(HoldZoneSquares(frame, keywordid)) do
+            result[#result+1] = loc
+        end
+    end
+    return result
+end
+
+--- True when a Hold zone on this map holds the creature.
+--- @param token CharacterToken
+--- @return boolean
+function MonsterAI.Holds(token)
+    local frame = ZoneDirectivesFrame()
+    if not frame.any.hold then
+        return false
+    end
+    for keywordid,_ in pairs(HoldKeywordsFor(frame, token)) do
+        if #HoldZoneSquares(frame, keywordid) > 0 then
+            return true
+        end
+    end
+    return false
+end
+
+--- True when the creature, standing at loc (default: where it is), would be on
+--- its post: in a zone of a Hold zone type that holds it.
+--- @param token CharacterToken whose Hold filter is checked
+--- @param loc? Loc
+--- @param footprintToken? CharacterToken whose footprint is placed at loc (its mount; default token)
+--- @return boolean
+function MonsterAI.InHoldZone(token, loc, footprintToken)
+    local frame = ZoneDirectivesFrame()
+    if not frame.any.hold then
+        return false
+    end
+    local keywords = HoldKeywordsFor(frame, token)
+    if next(keywords) == nil then
+        return false
+    end
+    footprintToken = footprintToken or token
+    for _,square in ipairs(DirectiveFootprint(footprintToken, loc or footprintToken.loc)) do
+        for _,instance in ipairs(DirectiveInstancesAt(frame, "hold", square)) do
+            if keywords[InstanceKeywordId(instance)] then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+--- For movement planned outside the path search (jumps, shifts, teleports):
+--- false when loc would take a creature off the post it stands on. A creature
+--- already off its post may go anywhere.
+--- @param token CharacterToken
+--- @param loc Loc
+--- @return boolean
+function MonsterAI.HoldPermits(token, loc)
+    if not MonsterAI.InHoldZone(token) then
+        return true
+    end
+    return MonsterAI.InHoldZone(token, loc)
+end
+
+local g_baseMoveToLocPermitted = creature.MoveToLocPermitted
+function creature:MoveToLocPermitted(loc)
+    if not g_baseMoveToLocPermitted(self, loc) then
+        return false
+    end
+    local frame = ZoneDirectivesFrame()
+    if not frame.any.avoid then
+        return true
+    end
+    local state = AvoidMoverState(frame, self)
+    if not state.active then
+        return true
+    end
+    for _,square in ipairs(DirectiveFootprint(state.token, loc)) do
+        for _,instance in ipairs(DirectiveInstancesAt(frame, "avoid", square)) do
+            if not state.standingIn[instance] and state.keywords[InstanceKeywordId(instance)] then
+                return false
+            end
+        end
+    end
+    return true
+end
+
 function MonsterAI:CalculateMovementPaths(token, movementAllowanceDecis, flags)
     local movementToken = self:GetMovementToken(token)
     local prof = ProfBegin("engine: CalculatePathfindingArea")
@@ -1989,6 +2347,47 @@ function MonsterAI:CalculateMovementPaths(token, movementAllowanceDecis, flags)
         paths[key] = nil
     end
     ProfEnd(prof)
+
+    --Never plan to end inside an Avoid zone. The path search already keeps
+    --the AI out of them, but one it stands in stays walkable so it can get
+    --out; drop those squares unless nowhere outside is reachable.
+    local insideKeys = {}
+    local anyOutside = false
+    for key,pathInfo in pairs(paths) do
+        if MonsterAI.InDirectiveZone("avoid", movementToken, pathInfo.loc) then
+            insideKeys[#insideKeys+1] = key
+        else
+            anyOutside = true
+        end
+    end
+    if anyOutside then
+        for _,key in ipairs(insideKeys) do
+            paths[key] = nil
+        end
+        numPaths = numPaths - #insideKeys
+    end
+
+    --Hold: a creature that stands on its post, or can reach it, only plans to
+    --end its movement there.
+    if MonsterAI.Holds(token) then
+        local offPostKeys = {}
+        local onPost = MonsterAI.InHoldZone(token, nil, movementToken)
+        for key,pathInfo in pairs(paths) do
+            if MonsterAI.InHoldZone(token, pathInfo.loc, movementToken) then
+                onPost = true
+            else
+                offPostKeys[#offPostKeys+1] = key
+            end
+        end
+        if onPost then
+            for _,key in ipairs(offPostKeys) do
+                paths[key] = nil
+            end
+            numPaths = numPaths - #offPostKeys
+            self:PlanningMemo().holdActive[token.charid] = true
+        end
+    end
+
     ProfCount("pathfinding areas", 1)
     ProfCount("pathfinding area tiles", numPaths - #rejectedKeys)
     return paths
@@ -2142,6 +2541,19 @@ function MonsterAI:MoveToken(token, loc, options, continueIfActorDies)
     self._tmp_planningMemo = nil
     local movementToken = self:GetMovementToken(token)
     local fromLoc = movementToken ~= nil and movementToken.loc or nil
+    --Plans often keep the creature where it stands (movement-cost 0). Never ask
+    --the engine to move there: it is not a move, and it used to nudge size 2+
+    --creatures a square (NYQSV5BJ). No path is returned, as for a refused move.
+    if self:MovementTokenIsAtLoc(token, loc) then
+        self:LogDecision("MOVEMENT SKIPPED", {
+            actor = self.TokenLogName(token),
+            actorId = token ~= nil and token.charid or nil,
+            to = self.LocLogName(loc),
+            movementToken = movementToken ~= token and self.TokenLogName(movementToken) or nil,
+            reason = "already at the destination",
+        })
+        return nil, true
+    end
     local overlapsCreature, overlappingCreature = self:MovementLocOverlapsCreature(token, loc)
     if overlapsCreature then
         self:LogDecision("MOVEMENT REJECTED", {
@@ -2843,6 +3255,39 @@ local function TurnStillCurrent(initiativeid)
     return q ~= nil and not q.hidden and q:CurrentInitiativeId() == initiativeid
 end
 
+--A monster that sat out a turn hidden is dull to play against, so every hidden monster
+--the AI is about to play reveals itself first and then acts. Hidden This Turn still gives
+--it the edge for the rest of the turn. Hiding again later in the turn works as usual.
+--- @param tokens CharacterToken[]
+function MonsterAI:RevealHiddenActors(tokens)
+    local revealed = {}
+    for _, token in ipairs(tokens) do
+        if self.TokenIsLiveCombatant(token) and not token.playerControlled
+            and token.properties:HasNamedCondition("Hidden") then
+            token:ModifyProperties{
+                description = "Reveal at start of turn",
+                execute = function()
+                    token.properties:LoseHidden()
+                end,
+            }
+            revealed[#revealed+1] = {token = token}
+        end
+    end
+
+    if #revealed > 0 then
+        self:LogDecision("REVEAL HIDDEN", {
+            targets = self.TargetsLogName(revealed),
+        })
+        --give players a beat to see who appeared before anyone moves, and let an
+        --ambush banner (shown 0.4s after a reveal from hiding) play out.
+        MonsterAI.Sleep(0.6)
+        local bannerWait = DramaticBanner.TimeUntilDone()
+        if bannerWait > 0 then
+            MonsterAI.Sleep(bannerWait + 0.2)
+        end
+    end
+end
+
 function MonsterAI:PlayTurnCoroutine(initiativeid)
     local queue = dmhub.initiativeQueue
 	self._tmp_abortTurn = nil
@@ -2866,6 +3311,8 @@ function MonsterAI:PlayTurnCoroutine(initiativeid)
             targets = self.TargetsLogName(turnTargets),
             tokenCount = #tokens,
         })
+
+        self:RevealHiddenActors(tokens)
 
         self:HandleMaliceAbilityStartOfTurn(initiativeid, tokens, queue)
         self:SetLogContext(nil, {
@@ -3971,10 +4418,12 @@ function MonsterAI:ChargeProbe(movementToken, enemy, distance, range)
     --and that has not already failed this turn.
     local best = nil
     local failed = self:try_get("_tmp_failedChargePlans", {})
+    local holdsPost = self:HoldConstrains(movementToken)
     for _,route in ipairs(routes) do
         local dest = route.dest
         local key = movementToken.id .. "|" .. originStr .. "|" .. dest.str
-        if not failed[key] and self:TargetDistanceFromLoc(movementToken, enemy, dest) <= range then
+        if not failed[key] and self:TargetDistanceFromLoc(movementToken, enemy, dest) <= range
+            and (not holdsPost or MonsterAI.InHoldZone(movementToken, dest)) then
             best = {dest = dest, chargeDist = dest:DistanceInTiles(origin), cost = route.cost}
             break
         end
@@ -3998,6 +4447,8 @@ function MonsterAI:PlanningMemo()
             chargeProbes = {},
             --a LuaChargeRouteCache, made when the first charge is probed.
             chargeRoutes = false,
+            --charid -> true once a path search kept that holder on its post.
+            holdActive = {},
         }
     end
     return self._tmp_planningMemo
@@ -4094,6 +4545,99 @@ function MonsterAI:LeapProbe(movementToken, enemy)
     return probe
 end
 
+--The reach a strike has at the end of a charge. Dual melee/ranged strikes
+--must charge into their melee range.
+function MonsterAI.StrikeChargeRange(token, ability, range)
+    if ability.meleeAndRanged then
+        return ability.meleeVariation:GetRange(token.properties)
+    elseif ability:HasKeyword("Melee") and ability:HasKeyword("Ranged") then
+        return ability:try_get("meleeRange", 1)
+    end
+    return range
+end
+
+--A Charge moves the creature once, to one landing square, and every target is
+--struck from there. FindValidTargetsOfStrike plans a landing per target, so
+--two targets of one strike could need two charges (NYQSV5BJ). This returns the
+--candidates one plan can hit together: those in reach without charging, or
+--those in reach of one shared landing (all given that landing as `charge`).
+--The group whose best numTargets score highest wins, ties going to no charge.
+--scoreOf(targetInfo) defaults to 1 + edges*0.1. Members come back best first;
+--candidates that already agree on where to strike from are returned as given.
+function MonsterAI:SelectChargeTargets(token, ability, candidates, numTargets, scoreOf, range)
+    numTargets = numTargets or ability:GetNumTargets(token)
+    if numTargets <= 1 or #candidates <= 1 then
+        return candidates
+    end
+
+    local function LandingKey(target)
+        return target.charge ~= nil and target.charge.str or ""
+    end
+    local firstKey = LandingKey(candidates[1])
+    local agree = true
+    for i=2,#candidates do
+        if LandingKey(candidates[i]) ~= firstKey then
+            agree = false
+            break
+        end
+    end
+    if agree then
+        return candidates
+    end
+
+    scoreOf = scoreOf or function(target) return 1 + (target.edges or 0)*0.1 end
+    range = range or ability:GetRange(token.properties)
+    local chargeRange = MonsterAI.StrikeChargeRange(token, ability, range)
+    local pierceWalls = token.properties:GetPierceWalls()
+
+    --The first group strikes without charging; the rest each share a landing.
+    local groups = {{members = {}}}
+    local groupsByLanding = {}
+    for _,target in ipairs(candidates) do
+        if target.charge == nil then
+            groups[1].members[#groups[1].members+1] = target
+        elseif groupsByLanding[target.charge.str] == nil then
+            local group = {landing = target.charge, members = {}}
+            groupsByLanding[target.charge.str] = group
+            groups[#groups+1] = group
+        end
+    end
+
+    --A target planned from elsewhere joins a landing it can be struck from.
+    for i=2,#groups do
+        local group = groups[i]
+        local landing = group.landing
+        self:ExecuteWithTheoreticalMovementLoc(token, landing, function()
+            for _,target in ipairs(candidates) do
+                if LandingKey(target) == landing.str then
+                    group.members[#group.members+1] = target
+                elseif target.token ~= nil
+                    and MonsterAI.TargetDistance(token, target.token) <= chargeRange
+                    and token:GetLineOfSight(target.token, pierceWalls) > 0 then
+                    local joined = shallow_copy_table(target)
+                    joined.charge = landing
+                    group.members[#group.members+1] = joined
+                end
+            end
+        end)
+    end
+
+    local best, bestScore = nil, nil
+    for _,group in ipairs(groups) do
+        if #group.members > 0 then
+            table.sort(group.members, function(a, b) return scoreOf(a) > scoreOf(b) end)
+            local score = 0
+            for i=1,math.min(numTargets, #group.members) do
+                score = score + scoreOf(group.members[i])
+            end
+            if bestScore == nil or score > bestScore then
+                best, bestScore = group, score
+            end
+        end
+    end
+    return best ~= nil and best.members or {}
+end
+
 function MonsterAI:FindValidTargetsOfStrike(token, ability, loc, range)
 
     local meleeAbility = ability:HasKeyword("Melee")
@@ -4152,12 +4696,7 @@ function MonsterAI:FindValidTargetsOfStrike(token, ability, loc, range)
     ProfCount("strike target evaluations (tile x enemy)", #filteredTokens)
     local hasCharge = ability:HasKeyword("Charge") or ability.name == "Melee Free Strike"
     range = range or ability:GetRange(token.properties)
-    local chargeRange = range
-    if ability.meleeAndRanged then
-        chargeRange = ability.meleeVariation:GetRange(token.properties)
-    elseif meleeAbility and rangedAbility then
-        chargeRange = ability:try_get("meleeRange", 1)
-    end
+    local chargeRange = MonsterAI.StrikeChargeRange(token, ability, range)
     local result = {}
     local movementToken = self:GetMovementToken(token)
     self:ExecuteWithTheoreticalMovementLoc(token, loc, function()
@@ -4813,6 +5352,8 @@ function MonsterAI:FindBestMoveToUseStrike(token, ability, scorefn)
         local destLoc = info.loc
 
         local targets = self:FindValidTargetsOfStrike(token, ability, destLoc, range)
+        targets = self:SelectChargeTargets(token, ability, targets, numTargets,
+            scorefn ~= nil and function(target) return scorefn(target.token, target.edges) end or nil, range)
 
         local score = math.min(numTargets, #targets)
         if scorefn ~= nil then
@@ -4850,6 +5391,13 @@ function MonsterAI:FindBestMoveToUseStrike(token, ability, scorefn)
             --the loop runs zero times when bestTargets is nil.
             ---@cast bestTargets -nil
             selectedTargets[#selectedTargets+1] = bestTargets[i]
+        end
+        --Kept for the plan preview, which must show these targets rather than
+        --guess its own (see FindAndExecuteMove).
+        local strikePlans = self:try_get("_tmp_strikePlans")
+        if strikePlans ~= nil then
+            strikePlans[ability] = strikePlans[ability] or {}
+            strikePlans[ability][bestMove.str] = selectedTargets
         end
         self:LogDecision("TARGET PLAN", {
             ability = ability.name,
@@ -5175,8 +5723,14 @@ function MonsterAI:SynthesizedAbilityPromptsAreHandled(ability, visited)
 end
 
 
-function MonsterAI:GetSynthesizedAbilityProfile(token, ability)
-    if ability:try_get("implementation", gui.ImplementationStatus.Unimplemented) < gui.ImplementationStatus.Gold then
+--- options.ignoreImplementation skips the Gold-automation check, so the
+--- bestiary assessment (MonsterAISupport.lua) can tell when automation is the
+--- only thing keeping an ability from the generic AI.
+--- @param options? {ignoreImplementation: boolean}
+function MonsterAI:GetSynthesizedAbilityProfile(token, ability, options)
+    local ignoreImplementation = options ~= nil and options.ignoreImplementation
+    if not ignoreImplementation
+        and ability:try_get("implementation", gui.ImplementationStatus.Unimplemented) < gui.ImplementationStatus.Gold then
         return nil, "is not fully automated"
     end
     if #ability:try_get("behaviors", {}) == 0 then
@@ -5278,7 +5832,9 @@ function MonsterAI:FindSynthesizedTargetPlan(token, ability)
 
     for _,pathInfo in pairs(self.paths or {}) do
         local candidates = {}
-        for _,targetInfo in ipairs(self:FindValidTargetsOfStrike(token, ability, pathInfo.loc, range)) do
+        local valid = self:FindValidTargetsOfStrike(token, ability, pathInfo.loc, range)
+        valid = self:SelectChargeTargets(token, ability, valid, numTargets, SynthesizedDefaultTargetScore, range)
+        for _,targetInfo in ipairs(valid) do
             candidates[#candidates+1] = {
                 info = targetInfo,
                 score = SynthesizedDefaultTargetScore(targetInfo),
@@ -5642,6 +6198,7 @@ function MonsterAI:ExecuteSynthesizedAbilityPlan(token, plan)
     local moved = MoveForSynthesizedPlan(self, token, plan.loc)
     if plan.profile.targetType == "target" then
         local candidates = self:FindValidTargetsOfStrike(token, ability, token.loc)
+        candidates = self:SelectChargeTargets(token, ability, candidates, nil, SynthesizedDefaultTargetScore)
         table.sort(candidates, function(a, b)
             return SynthesizedDefaultTargetScore(a) > SynthesizedDefaultTargetScore(b)
         end)
@@ -5957,6 +6514,7 @@ function MonsterAI:ExecuteAdvanceFallback(token, previewed)
         --an advance attacks no one, whatever Use Move Action's targeting says.
         local preview = self:BuildPlanPreview(token, {advance}, {loc = plan.loc}, function() return {} end)
         preview.title = string.format("%s advances toward %s", PreviewName(token), PreviewName(plan.enemy))
+        preview.moveOnly = true
         if not self:AwaitPlanPreview(preview) then
             return false
         end
@@ -5994,6 +6552,188 @@ function MonsterAI:ExecuteAdvanceFallback(token, previewed)
     return mover.valid and mover.loc.str ~= origin
 end
 
+--Move to the cheapest reachable square outside every Avoid zone, using the
+--remaining movement. False when there is none.
+function MonsterAI:ExecuteLeaveAvoidZone(token)
+    local mover = self:GetMovementToken(token)
+    local best = nil
+    for _,info in pairs(self:CalculateRemainingMovementPaths(token)) do
+        if info.cost > 0 and (best == nil or info.cost < best.cost)
+            and not MonsterAI.InDirectiveZone("avoid", mover, info.loc) then
+            best = info
+        end
+    end
+    if best == nil then return false end
+
+    if self.PlanPreviewsOn() then
+        local preview = self:BuildPlanPreview(token, {}, {loc = best.loc}, function() return {} end)
+        preview.title = string.format("%s moves out of a zone it avoids", PreviewName(token))
+        preview.moveOnly = true
+        if not self:AwaitPlanPreview(preview) then
+            return false
+        end
+    end
+
+    self:LogDecision("LEAVE AVOIDED ZONE", {
+        actor = self.TokenLogName(token),
+        to = self.LocLogName(best.loc),
+        plan = "use remaining movement",
+    })
+    local origin = mover.loc.str
+    self:MoveToken(token, best.loc, {maxCost = 10000, ignoreFalling = false}, true)
+    self.Sleep(0.5)
+    return mover.valid and mover.loc.str ~= origin
+end
+
+--- True when the creature must stay on its Hold post this turn: it stands on
+--- it, or a path search this frame found it can reach it.
+--- @param token CharacterToken
+--- @return boolean
+function MonsterAI:HoldConstrains(token)
+    if not MonsterAI.Holds(token) then
+        return false
+    end
+    return self:PlanningMemo().holdActive[token.charid] == true
+        or MonsterAI.InHoldZone(token, nil, self:GetMovementToken(token))
+end
+
+--An ability that puts its caster on a chosen empty square (a teleport such as
+--a zone's "step to the basin"): targets an empty space and relocates.
+local function IsSelfRelocation(ability)
+    if ability.targetType ~= "emptyspace" and ability.targetType ~= "anyspace" then
+        return false
+    end
+    for _,behavior in ipairs(ability:try_get("behaviors", {})) do
+        if behavior.typeName == "ActivatedAbilityRelocateCreatureBehavior" then
+            return true
+        end
+    end
+    return false
+end
+
+--A free square of the post within range of a self relocation, nearest an enemy.
+local function FindHoldRelocation(self, token, ability, squares)
+    local range = ability:GetRange(token.properties)
+    local predicate = ability:TargetLocPassesFilterPredicate(token, {}) or function(_) return true end
+    local best = nil
+    for _,loc in ipairs(squares) do
+        if token.loc:DistanceInTiles(loc) <= range and predicate(loc)
+            and not self:MovementLocOverlapsCreature(token, loc)
+            and MonsterAI.InHoldZone(token, loc) then
+            local distance = 999
+            for _,enemy in ipairs(self.enemyTokens) do
+                if self.TokenIsLiveCombatant(enemy) then
+                    distance = math.min(distance, self:TargetDistanceFromLoc(token, enemy, loc))
+                end
+            end
+            if best == nil or distance < best.distance then
+                best = {loc = loc, distance = distance}
+            end
+        end
+    end
+    return best
+end
+
+--Back to the Hold post: walk onto it if it is in reach (the square nearest an
+--enemy), else teleport onto it with an affordable self relocation, else walk
+--as far as the remaining movement goes along the shortest route to it.
+function MonsterAI:ExecuteReturnToHoldZone(token)
+    local mover = self:GetMovementToken(token)
+    local squares = MonsterAI.HoldSquares(token)
+    if #squares == 0 then
+        return false
+    end
+
+    local paths = self:CalculateRemainingMovementPaths(token)
+    local plan = nil
+    for _,info in pairs(paths) do
+        if info.cost > 0 and MonsterAI.InHoldZone(token, info.loc, mover) then
+            local distance = 999
+            for _,enemy in ipairs(self.enemyTokens) do
+                if self.TokenIsLiveCombatant(enemy) then
+                    distance = math.min(distance, self:TargetDistanceFromLoc(token, enemy, info.loc))
+                end
+            end
+            if plan == nil or distance < plan.distance
+                or (distance == plan.distance and info.cost < plan.cost) then
+                plan = {loc = info.loc, distance = distance, cost = info.cost, how = "walk onto post"}
+            end
+        end
+    end
+
+    if plan == nil and mover == token then
+        for _,ability in ipairs(token.properties:GetActivatedAbilities()) do
+            if IsSelfRelocation(ability) and ability:CanAfford(token) then
+                local found = FindHoldRelocation(self, token, ability, squares)
+                if found ~= nil then
+                    plan = {loc = found.loc, ability = ability, how = "relocate with " .. ability.name}
+                    break
+                end
+            end
+        end
+    end
+
+    if plan == nil then
+        --the nearest few squares by straight line, then the cheapest real route.
+        local reachable = {}
+        for _,info in pairs(paths) do
+            reachable[info.loc.xyfloorOnly.str] = info
+        end
+        local byDistance = {}
+        for _,loc in ipairs(squares) do
+            byDistance[#byDistance+1] = {loc = loc, distance = mover.loc:DistanceInTiles(loc)}
+        end
+        table.sort(byDistance, function(a, b) return a.distance < b.distance end)
+        for i=1,math.min(6, #byDistance) do
+            local goal = byDistance[i].loc
+            if not self:MovementLocOverlapsCreature(token, goal) then
+                local preview = mover:MarkMovementArrow(goal, {})
+                ---@type LuaPath?
+                local path = preview ~= nil and preview.path or nil
+                if path ~= nil and path.destination.xyfloorOnly.str == goal.xyfloorOnly.str then
+                    local dest = nil
+                    for _,step in ipairs(path.steps) do
+                        local info = reachable[step.xyfloorOnly.str]
+                        if info ~= nil and info.cost > 0 then dest = info.loc end
+                    end
+                    if dest ~= nil and (plan == nil or path.cost < plan.cost) then
+                        plan = {loc = dest, cost = path.cost, how = "walk toward post"}
+                    end
+                end
+            end
+        end
+        mover:ClearMovementArrow()
+    end
+    if plan == nil then
+        return false
+    end
+
+    if self.PlanPreviewsOn() then
+        local preview = self:BuildPlanPreview(token, plan.ability ~= nil and {plan.ability} or {},
+            {loc = plan.loc}, function() return {} end)
+        preview.title = string.format("%s returns to the zone it holds", PreviewName(token))
+        preview.moveOnly = true
+        if not self:AwaitPlanPreview(preview) then
+            return false
+        end
+    end
+
+    self:LogDecision("RETURN TO HELD ZONE", {
+        actor = self.TokenLogName(token),
+        ability = plan.ability ~= nil and plan.ability.name or nil,
+        to = self.LocLogName(plan.loc),
+        plan = plan.how,
+    })
+    local origin = mover.loc.str
+    if plan.ability ~= nil then
+        self:ExecuteAbility(token, plan.ability, {{loc = plan.loc}}, {sleep = 0.5})
+    else
+        self:MoveToken(token, plan.loc, {maxCost = 10000, ignoreFalling = false}, true)
+        self.Sleep(0.5)
+    end
+    return mover.valid and mover.loc.str ~= origin
+end
+
 --Plan preview, host side --------------------------------------------------
 --Each unit of a turn is described as a preview before it runs, then
 --AwaitPlanPreview shows it to the table (see PREVIEW_DOC) and waits for
@@ -6004,6 +6744,7 @@ end
 --  moves:   {token, to = Loc, via = nil|Loc} movement arrows
 --  attacks: {token, from = Loc, target = token, label} attack arrows
 --  area, areaCenter: an area ability's LuaShape and the square it is aimed at
+--  moveOnly: true when it only moves (an advance), so the ability card alone is not worth a pause
 
 --- Describe one move: the actor goes to plan.loc (unless already there) and
 --- uses the last of `abilities` on the plan's targets. A plan that names no
@@ -6030,6 +6771,14 @@ function MonsterAI:BuildPlanPreview(token, abilities, plan, pickTargets)
         if #targets == 0 then
             targets = PreviewTargets(plan.target)
         end
+        --The targets the strike planner chose from this square while scoring
+        --the move; the move's execute picks them the same way.
+        if #targets == 0 and ability ~= nil and planLoc ~= nil and type(plan.strikePlans) == "table" then
+            local byLoc = plan.strikePlans[ability]
+            if byLoc ~= nil then
+                targets = PreviewTargets(byLoc[planLoc.str])
+            end
+        end
     end
     if #targets == 0 and ability ~= nil then
         local from = planLoc or mover.loc
@@ -6038,6 +6787,7 @@ function MonsterAI:BuildPlanPreview(token, abilities, plan, pickTargets)
             targets = PreviewTargets(picked)
         elseif ability.targetType == "target" then
             local candidates = self:FindValidTargetsOfStrike(token, ability, from)
+            candidates = self:SelectChargeTargets(token, ability, candidates)
             for i=1,math.min(ability:GetNumTargets(token), #candidates) do
                 targets[#targets+1] = {token = candidates[i].token, charge = candidates[i].charge}
             end
@@ -6267,7 +7017,7 @@ function MonsterAI:BuildSquadPreview(plans, advancers, ability)
         preview.actors[#preview.actors+1] = member
         pcall(function()
             local advancePlan = self:FindAdvancePlan(member, self:CalculateRemainingMovementPaths(member))
-            if advancePlan ~= nil then
+            if advancePlan ~= nil and not self:MovementTokenIsAtLoc(member, advancePlan.loc) then
                 preview.moves[#preview.moves+1] = {token = self:GetMovementToken(member) or member, to = advancePlan.loc}
             end
         end)
@@ -6288,6 +7038,7 @@ function MonsterAI:BuildSquadPreview(plans, advancers, ability)
     preview.actorName = type(squadName) == "string" and squadName or (kind .. " squad")
     if #plans == 0 then
         preview.title = string.format("%s squad advances", kind)
+        preview.moveOnly = true
     else
         preview.title = string.format("%s squad: %s", kind, ability.name)
         if #names > 0 then
@@ -6391,6 +7142,28 @@ function MonsterAI:AwaitPlanPreview(preview)
         return true
     end
 
+    --every creature it affects, the caster included (an ability on itself).
+    local targetIds = {}
+    for _,target in ipairs(preview.targets or {}) do
+        if not HiddenFromPlayers(target) then
+            targetIds[#targetIds+1] = target.charid
+        end
+    end
+    local card = preview.ability
+    if actorHidden or preview.moveOnly then
+        card = nil
+    end
+    --Nothing on the board and no card: the card would only say "Movement: None"
+    --(an advance with nowhere to go, a squad with no one to strike).
+    if #moves == 0 and #attacks == 0 and #targetIds == 0 and preview.area == nil
+        and preview.malice == nil and card == nil then
+        self:LogDecision("PLAN PREVIEW SKIPPED", {
+            actor = self.TokenLogName(preview.actor),
+            reason = "nothing to show: no movement, targets or ability",
+        })
+        return true
+    end
+
     local queue = dmhub.initiativeQueue
     local initiativeid = queue ~= nil and queue:CurrentInitiativeId() or nil
     local seq = dmhub.GenerateGuid()
@@ -6405,7 +7178,7 @@ function MonsterAI:AwaitPlanPreview(preview)
     doc.data.actors = actors
     doc.data.attacking = #attacks > 0
     --every client finds the ability on the actor by name to show its card.
-    local card = preview.ability
+    card = preview.ability
     if card ~= nil and not actorHidden then
         doc.data.ability = {charid = preview.actor.charid, name = card.name}
     end
@@ -6413,13 +7186,6 @@ function MonsterAI:AwaitPlanPreview(preview)
     doc.data.attacks = attacks
     if preview.area ~= nil then
         doc.data.area = self:PlanAreaDocument(preview.area, preview.areaCenter, card)
-    end
-    --every creature it affects, the caster included (an ability on itself).
-    local targetIds = {}
-    for _,target in ipairs(preview.targets or {}) do
-        if not HiddenFromPlayers(target) then
-            targetIds[#targetIds+1] = target.charid
-        end
     end
     doc.data.targets = targetIds
     if preview.malice ~= nil then
@@ -6640,9 +7406,14 @@ function MonsterAI:FindAndExecuteMove()
                 result = "all required abilities are present and affordable",
             })
             local scoreProf = ProfBegin("score: " .. tostring(moveid))
+            --Score functions often return only {score, loc}, so the strike
+            --planner's chosen targets are captured here for the preview.
+            local strikePlans = {}
+            self._tmp_strikePlans = strikePlans
             local ok, score, scoringReason = pcall(
                 move.score, move, self, token,
                 usingAbilities[1], usingAbilities[2], usingAbilities[3])
+            self._tmp_strikePlans = nil
             ProfEnd(scoreProf)
             if not ok then
                 failedMoves[moveid] = true
@@ -6674,6 +7445,7 @@ function MonsterAI:FindAndExecuteMove()
             if type(score) == "table" and type(score.score) == "number"
                 and score.score > bestScore.score then
                 score.usingAbilities = usingAbilities
+                score.strikePlans = strikePlans
                 bestScore = score
                 bestMove = move
             end
@@ -6726,6 +7498,7 @@ function MonsterAI:FindAndExecuteMove()
                     end
                     --the targets ExecuteSynthesizedAbilityPlan picks after moving.
                     local candidates = self:FindValidTargetsOfStrike(actor, ability, loc)
+                    candidates = self:SelectChargeTargets(actor, ability, candidates, nil, SynthesizedDefaultTargetScore)
                     table.sort(candidates, function(a, b)
                         return SynthesizedDefaultTargetScore(a) > SynthesizedDefaultTargetScore(b)
                     end)
@@ -6817,6 +7590,24 @@ function MonsterAI:FindAndExecuteMove()
         return g_moveResultExecuted
     end
 
+    --Off the post it holds with nothing better to do: head back before advancing.
+    local returnId = "Return to held zone"
+    if not failedMoves[returnId] and MonsterAI.Holds(token)
+        and not MonsterAI.InHoldZone(token, nil, self:GetMovementToken(token)) then
+        self:SetMoveLogContext(token, {id = returnId, category = "Movement"})
+        local returned = false
+        ProfEnd(chooseProf)
+        local executePhase = ProfPhaseBegin("execute: " .. returnId)
+        local ok, err = RunYieldingFunction(function()
+            returned = self:ExecuteReturnToHoldZone(token)
+        end)
+        ProfPhaseEnd(executePhase)
+        if not ok then
+            return self:HandleMoveExecutionFailure(returnId, "Return to Zone", err)
+        end
+        if returned then return g_moveResultExecuted end
+    end
+
     local advanceId = "Advance toward enemy"
     --A monster that already attacked at range this turn stays back.
     local firedAtRange = (self:try_get("_tmp_rangedStrikers") or {})[token.charid] == true
@@ -6839,6 +7630,22 @@ function MonsterAI:FindAndExecuteMove()
             return self:HandleMoveExecutionFailure(advanceId, "Advance", err)
         end
         if advanced then return g_moveResultExecuted end
+    end
+
+    --Nothing else to do but still standing in an Avoid zone: step out.
+    local leaveId = "Leave avoided zone"
+    if not failedMoves[leaveId] and MonsterAI.InDirectiveZone("avoid", self:GetMovementToken(token)) then
+        self:SetMoveLogContext(token, {id = leaveId, category = "Movement"})
+        local left = false
+        local executePhase = ProfPhaseBegin("execute: " .. leaveId)
+        local ok, err = RunYieldingFunction(function()
+            left = self:ExecuteLeaveAvoidZone(token)
+        end)
+        ProfPhaseEnd(executePhase)
+        if not ok then
+            return self:HandleMoveExecutionFailure(leaveId, "Leave Zone", err)
+        end
+        if left then return g_moveResultExecuted end
     end
 
     self:SetLogContext(token, searchContext)
@@ -6932,12 +7739,31 @@ function MonsterAI:ExecuteAbility(casterToken, ability, targets, options)
         --Placed areas already supply every creature inside the shape. Area
         --abilities report one target, so resizing would discard valid targets.
         local numTargets = ability:GetNumTargets(casterToken)
+        --A charge strikes every target from one landing. When a band's target
+        --list plans different landings, keep the targets one landing reaches,
+        --in the order the caller ranked them.
+        if symbols.targetPairs == nil then
+            local rankById = {}
+            for i,targetInfo in ipairs(targets) do
+                if targetInfo.token ~= nil and rankById[targetInfo.token.charid] == nil then
+                    rankById[targetInfo.token.charid] = i
+                end
+            end
+            targets = self:SelectChargeTargets(casterToken, ability, targets, numTargets, function(targetInfo)
+                local rank = targetInfo.token ~= nil and rankById[targetInfo.token.charid] or #targets
+                return 1 - rank*0.001
+            end)
+        end
         table.resize_array(targets, numTargets)
     end
 
+    --At most one charge per cast: the first landing wins, and any other
+    --target's landing is dropped (the legality check below then decides).
     local chargeAttempted = false
     for _,target in ipairs(targets) do
-        if target.charge ~= nil then
+        if target.charge ~= nil and chargeAttempted then
+            target.charge = nil
+        elseif target.charge ~= nil then
             chargeAttempted = true
             local token = casterToken
             if symbols.targetPairs ~= nil then
@@ -6963,21 +7789,21 @@ function MonsterAI:ExecuteAbility(casterToken, ability, targets, options)
         end
     end
 
-    local function AbilityTargetsAreLegal(candidateAbility)
-        local function PairIsLegal(actor, target)
-            if not self.TokenIsLiveCombatant(actor)
-                or not self.TokenIsLiveCombatant(target) then
-                return false
-            end
-            local candidateRange = candidateAbility:GetRange(actor.properties, symbols)
-            return MonsterAI.TargetDistance(candidateAbility:GetRangeSource(actor), target) <= candidateRange
-                and candidateAbility:TargetPassesFilter(actor, target, symbols)
-                and actor:GetLineOfSight(target, actor.properties:GetPierceWalls()) > 0
+    local function PairIsLegal(candidateAbility, actor, target)
+        if not self.TokenIsLiveCombatant(actor)
+            or not self.TokenIsLiveCombatant(target) then
+            return false
         end
+        local candidateRange = candidateAbility:GetRange(actor.properties, symbols)
+        return MonsterAI.TargetDistance(candidateAbility:GetRangeSource(actor), target) <= candidateRange
+            and candidateAbility:TargetPassesFilter(actor, target, symbols)
+            and actor:GetLineOfSight(target, actor.properties:GetPierceWalls()) > 0
+    end
 
+    local function AbilityTargetsAreLegal(candidateAbility)
         if symbols.targetPairs ~= nil then
             for _,pair in ipairs(symbols.targetPairs) do
-                if not PairIsLegal(dmhub.GetTokenById(pair.a), dmhub.GetTokenById(pair.b)) then
+                if not PairIsLegal(candidateAbility, dmhub.GetTokenById(pair.a), dmhub.GetTokenById(pair.b)) then
                     return false
                 end
             end
@@ -6986,11 +7812,37 @@ function MonsterAI:ExecuteAbility(casterToken, ability, targets, options)
 
         for _,targetInfo in ipairs(targets) do
             if targetInfo.token ~= nil
-                and not PairIsLegal(casterToken, targetInfo.token) then
+                and not PairIsLegal(candidateAbility, casterToken, targetInfo.token) then
                 return false
             end
         end
         return true
+    end
+
+    --After a charge, strike whoever is still in reach rather than nobody: the
+    --landing can differ from the plan, or a band can name a target it misses.
+    if chargeAttempted and not ability.meleeAndRanged and symbols.targetPairs == nil
+        and not AbilityTargetsAreLegal(ability) then
+        local legal = {}
+        local dropped = {}
+        for _,targetInfo in ipairs(targets) do
+            if targetInfo.token == nil or PairIsLegal(ability, casterToken, targetInfo.token) then
+                legal[#legal+1] = targetInfo
+            else
+                dropped[#dropped+1] = targetInfo
+            end
+        end
+        if #legal > 0 then
+            self:LogDecision("ABILITY TARGETS DROPPED", {
+                actor = self.TokenLogName(casterToken),
+                actorId = casterToken ~= nil and casterToken.charid or nil,
+                ability = ability.name,
+                action = self.AbilityActionLogName(ability),
+                targets = self.TargetsLogName(dropped),
+                reason = "out of legal range or line of sight after the charge",
+            })
+            targets = legal
+        end
     end
 
     -- Select the variation from the real post-movement position. A failed
@@ -7496,31 +8348,48 @@ function MonsterAI:SetMoveEnabledForMonster(monsterType, id, enabled)
     end
 end
 
+--"file.lua:line" of the code that called a Register* function below, kept
+--as registeredAt so the bestiary assessment (MonsterAISupport.lua) can point
+--at the hand-written AI. Chunk names look like "Monster AI : MonsterAIGoblins".
+local function RegistrationCallSite()
+    local info = debug.getinfo(3, "Sl")
+    if info == nil then
+        return nil
+    end
+    local file = string.match(info.source or "", ":%s*(.-)%s*$") or info.short_src or "?"
+    return string.format("%s.lua:%d", file, info.currentline or 0)
+end
+
 function MonsterAI:RegisterMove(args)
     if args.category == nil then
         args.category = "Main Actions"
     end
+    args.registeredAt = RegistrationCallSite()
     self.moves[args.id] = args
 end
 
 function MonsterAI:RegisterMaliceAbility(args)
     args.category = "Malice Abilities"
     args.minimumScore = args.minimumScore or self.maliceAbilityMinimumScore
+    args.registeredAt = RegistrationCallSite()
     self.maliceAbilities[args.id] = args
 end
 
 function MonsterAI:RegisterVillainAction(args)
     args.category = "Villain Actions"
+    args.registeredAt = RegistrationCallSite()
     self.villainActions[args.id] = args
 end
 
 function MonsterAI:RegisterPrompt(args)
+    args.registeredAt = RegistrationCallSite()
     for _,prompt in ipairs(args.prompts) do
         self.prompts[prompt] = args
     end
 end
 
 function MonsterAI:RegisterTrigger(args)
+    args.registeredAt = RegistrationCallSite()
     for _,guid in ipairs(args.abilityGuids or {}) do
         self.triggerHandlersByGuid[guid] = args
     end

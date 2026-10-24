@@ -4245,7 +4245,7 @@ local function ShowFilterSightlineRays(ownerElement)
     g_filterSightlines.owner = ownerElement
 end
 
---- @param args nil|{casterToken: nil|CharacterToken, ability: nil|ActivatedAbility, instantCast: nil|boolean, targets: nil|table, cast: nil|table, symbols: nil|table, overviewPress: nil|function}
+--- @param args nil|{casterToken: nil|CharacterToken, ability: nil|ActivatedAbility, instantCast: nil|boolean, targets: nil|table, cast: nil|table, symbols: nil|table, overviewPress: nil|function, synthesized: nil|boolean}
 local function AbilityHeading(args)
     local args = args or {}
 
@@ -4308,6 +4308,11 @@ local function AbilityHeading(args)
     --caster is a participant whose turn it is not.
     local function AbilityIsOffTurn(ability)
         if not AbilityIsTurnBound(ability) then
+            return false
+        end
+        --A choice offered inside an invoked cast (Furious Change -> Aspect of the
+        --Wild's forms) belongs to that cast, which was already allowed off-turn.
+        if args.synthesized and args.symbols ~= nil and args.symbols.invoked then
             return false
         end
         local q = dmhub.initiativeQueue
@@ -10684,6 +10689,11 @@ local function CreateSynthesizedSpellsPanel()
                 if g_currentSymbols ~= nil then
                     cast = g_currentSymbols.cast
                 end
+                --A choice inside an invoked cast (a prayer's Domain Effect) is part of
+                --that cast, so strict rules must not refuse it as a hand-used trigger.
+                if g_currentSymbols ~= nil and g_currentSymbols.invoked and a:try_get("_tmp_temporaryClone", false) then
+                    a._tmp_invokedChoice = true
+                end
 
                 local spellOptions = {
                     synthesized = true,
@@ -11968,6 +11978,15 @@ CreateAbilityController = function()
                 end
             end
 
+            --A target prompt still open (e.g. Prompt When Resolving) is abandoned by
+            --a new cast, as before. Done first: its teardown pops the caster it pushed.
+            do
+                local openPrompt = DrawSteelActionBar._openPrompt
+                if openPrompt ~= nil and openPrompt.valid then
+                    openPrompt:FireEvent("abandon", "a new cast began")
+                end
+            end
+
             if g_invokerInfo ~= nil and g_invokerInfo.oncast ~= nil then
                 g_invokerInfo.oncast()
             end
@@ -12449,6 +12468,13 @@ CreateAbilityController = function()
                 return
             end
 
+            --One prompt at a time: a new one replaces any still open. This used to
+            --happen as a side effect of focus loss (see the chooser's defocus).
+            local openPrompt = DrawSteelActionBar._openPrompt
+            if openPrompt ~= nil and openPrompt.valid then
+                openPrompt:FireEvent("abandon", "replaced by a new prompt")
+            end
+
             if options.sourceToken ~= nil and options.radius ~= nil then
                 print("MovementRadius:: MARK", options.radius)
                 AddRadiusMarker(options.sourceToken.locsOccupying, options.radius)
@@ -12598,9 +12624,23 @@ CreateAbilityController = function()
                 escapePriority = EscapePriority.CANCEL_ACTION_BAR,
                 captureEscape = true,
                 escape = function(element)
+                    print("TARGETPROMPT:: cancelled with Escape:", promptText)
                     element:DestroySelf()
                 end,
+                --Losing focus is NOT a cancel. A trigger card, the roll dialog or a
+                --mandatory trigger can take focus the moment the prompt opens, and
+                --cancelling then dropped every target of a Prompt When Resolving
+                --roll (HAZG563Y). A pick, Escape or "abandon" ends the prompt.
                 defocus = function(element)
+                    if not m_tornDown then
+                        print("TARGETPROMPT:: lost focus, staying open:", promptText)
+                    end
+                end,
+                --Fired when a new cast or prompt takes the bar. Tears down now, not
+                --at end of frame, where it would wipe the newcomer's prompt UI.
+                abandon = function(element, reason)
+                    print("TARGETPROMPT:: abandoned (" .. tostring(reason) .. "):", promptText)
+                    TeardownPrompt()
                     element:DestroySelf()
                 end,
                 destroy = function()

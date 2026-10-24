@@ -229,7 +229,7 @@ end
 --- @field encounterGroupIndex? integer Encounter waves: index of the group within the authored encounter.
 --- @field isDuplicate? boolean Set on tokens created by the Duplicate summon behavior.
 --- @field duplicateSourceId? string Duplicates: charid of the token that was duplicated.
---- @field hiddenInvisibilityApplied? boolean True when invisibleToPlayers was applied by the Hidden condition sync.
+--- @field hiddenInvisibilityApplied? boolean Legacy: true when the old Hidden sync set invisibleToPlayers; cleared (and the token revealed) by the host on refresh.
 --- @field eotwAllyOf? string Encounter of the Week: charid of the hero this ally belongs to.
 --- @field eotwReinforcement? string Encounter of the Week: id of the reinforcements section this monster arrived with.
 --- @field eotwMarket? table|false Encounter of the Week town heroes: the hero's Arcane Market visit since their last encounter (EotwMarket.lua).
@@ -262,6 +262,7 @@ end
 --- @field _tmp_portalForcedMoveDest? string Transient: loc string a forced move is taking this creature to through a portal.
 --- @field _tmp_forcedMovementCast? ActivatedAbilityCast Transient: the cast forcing this creature's current movement.
 --- @field _tmp_squadParticipants? table<string, boolean> Transient: charids of squad members joining the current squad invoke.
+--- @field _tmp_hiddenFromPlayers? boolean Transient: read by the engine; players (not the Director or its controllers) do not see the token (CharacterToken.hiddenFromLocalViewer).
 --- @field _tmp_squadParticipantsTurn? string Transient: turn key _tmp_squadParticipants was stamped on.
 --- @field _tmp_aiReactionOutbox? table<string, string> Transient: AI reaction requests awaiting delivery, id -> JSON.
 --- @field _tmp_runawayStacks? integer Transient: Runaway Expansion growth stacks.
@@ -549,6 +550,11 @@ end
 --- If the creature has a fly speed.
 --- @return boolean
 function creature:CanFly()
+	--Set for the moment of a voluntary drop (Drop to Ground): the engine turns
+	--any fall into flight for a creature that can fly.
+	if self:try_get("_tmp_droppingToGround", false) then
+		return false
+	end
 	return self:GetSpeed("fly") > 0
 end
 
@@ -5089,6 +5095,15 @@ function creature:RefreshToken(token)
     self._tmp_tokenOpacity = self:CalculateAttribute("tokenopacity", 1)
     self._tmp_tokenBrightness = self:CalculateAttribute("tokenbrightness", 1)
 
+    --a summon waiting for its arrival animation stays unseen (see "Summon
+    --arrival animation" in AbilitySummon.lua). Looked up at call time.
+    if self:try_get("summonEmergeHide", false) then
+        local summonBehavior = rawget(_G, "ActivatedAbilitySummonBehavior")
+        if summonBehavior ~= nil then
+            summonBehavior.RefreshEmergeHide(self, token)
+        end
+    end
+
 	--check if any inflicted conditions or ongoing effects no longer sustain.
 	if token.activeControllerId == nil then
         if self:has_key("inflictedConditions") then
@@ -5099,9 +5114,15 @@ function creature:RefreshToken(token)
                 if conditionInfo ~= nil and conditionInfo.sustainFormula ~= "" then
                     --A caster deleted from the game would make ConditionCaster() return
                     --nil, the formula error, and the error default keep the condition
-                    --forever (a grab outliving its grabber). End it instead.
+                    --forever (a grab outliving its grabber). End it instead. A despawned
+                    --caster counts as gone too: a killed squad minion is despawned but
+                    --still found, and its IsDead() reads the squad's pooled Stamina.
                     local casterInfo = v.casterInfo
-                    local casterGone = casterInfo ~= nil and type(casterInfo.tokenid) == "string" and dmhub.GetCharacterById(casterInfo.tokenid) == nil
+                    local casterGone = false
+                    if casterInfo ~= nil and type(casterInfo.tokenid) == "string" then
+                        local casterToken = dmhub.GetCharacterById(casterInfo.tokenid)
+                        casterGone = casterToken == nil or casterToken.despawned == true
+                    end
                     local result = 0
                     if not casterGone then
                         result = ExecuteGoblinScript(conditionInfo.sustainFormula, GenerateSymbols(self), 1, "Test ongoing effect sustains")

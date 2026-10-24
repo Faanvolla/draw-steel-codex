@@ -4454,8 +4454,9 @@ local function CreateBossBarStrip(self, info)
                 return
             end
 
-            --players only see the bar once it has been revealed.
-            if not isDM and not visible then
+            --players only see the bar once it has been revealed. With no Director
+            --(e.g. Encounter of the Week) nobody can press the eye, so show it outright.
+            if not isDM and not visible and not dmhub.directorlessPlay then
                 element:SetClass("collapsed", true)
                 return
             end

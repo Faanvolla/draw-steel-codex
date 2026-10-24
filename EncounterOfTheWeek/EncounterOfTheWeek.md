@@ -83,9 +83,10 @@ Built across the lobby/City server, the town, the game, the montage and the
 core victory screen; server unit tests, parser tests, luac, UIText and the
 typing check pass. The game side was verified live 2026-10-22 through Test
 Encounter on Goblin Ambush (montage restore and x2 paths, +1 consequences,
-5- and 6-hero combat); the town, the per-hero Victory award and the worker
-are NOT run, the worker is NOT deployed, all uncommitted. See "Challenge
-Mode".
+5- and 6-hero combat). SHIPPED 2026-10-23: codex deployed at 0.0.864 (dev +
+beta, deploy b9e743e3, from release/0.0.864 d782ddfb), game server on staging
+and release; a real 4-hero staging game spawned the challenge's extra group.
+The per-hero Victory award is not yet seen. See "Challenge Mode".
 
 ## Committed, deployed, published
 
@@ -118,6 +119,7 @@ Mode".
 
 | Change | Files | State |
 |---|---|---|
+| **Spending Hero Tokens** (2026-10-22, user direction; see "Hero Token spends"): the Hero Tokens pool cell opens a spend menu on the local player's hero's turn (1 token: 2 surges; 2 tokens: Recovery-value Stamina), and the character panel's Hero Token icon opens the same menu in every game | core `Draw Steel Core Rules/DSResources.lua` (`CharacterResource.HeroTokenSpendOptions`, `HeroTokenSpendMenuEntries`), `Draw Steel Core Rules/MCDMCharacterPanel.lua` (`TacPanel.HeroTokenBox` icon press + tooltip line); `EncounterOfTheWeekHud.lua` (`SpendingHero`, `CanSpendHeroTokens`, the cell's `spendable` class, `refreshPools`/`press`, tooltip hint), `EncounterText.lua` (`hud.pool.herotokens.spend_hint`) | luac + typing + `uitext_check` clean. VERIFIED live 2026-10-22 in the Dwarvish Bandits authoring test (`1e3c159e`, player host, strict rules, High Elf Tactician's turn): outline + tooltip hint; the menu hangs under the cell (`popupPositioning = "panel"`, tooltip cleared on press); Gain 2 Surges took 1 token and gave 2 surges; with 1 token only the surge row showed; Regain 11 Stamina took 2 tokens and healed 25 -> 33; at 0 tokens the cell did not open; at full Stamina only the surge row. As Director (strict off) the character panel's token icon listed both, the Stamina row greyed "already at full Stamina", and Gain 2 Surges worked. NOT seen: a turn other than the hero's (the cell should not open), multi-client. The save-side "Succeed Instead" needed no change: VERIFIED live 2026-10-22 in an authoring test (a failed save vs Slowed showed the button under strict rolls; it spent 1 token and ended Slowed). UNCOMMITTED |
 | **Complication trinkets in the builder** (2026-10-21; see "Treasure-granting complications"): Secret Twin / Amnesia's trinket pick now actually gives the trinket (worn while a slot is free), swaps it on a re-pick, and takes it back when the pick or complication changes; also on joining the roster, including titlescreen recruits | `Codex Titlescreen/EotwBuild.lua` (`SyncTreasureGrants`, `Modify`, `Unchoose`, `RowOptions`), `Codex Titlescreen/EotwRoster.lua` (`JoinRoster`, `RecruitTitlescreenHero`), `Draw Steel Modifiers/ModifierGrantTreasure.lua` (`prompt` field) | luac + typing clean; in the git folder; app restarted. VERIFIED over MCP on in-memory heroes: pick / swap / same pick / unpick / switch to Amnesia / Fill / No Complication, and a trinket worn in `trinket1` that the swap replaced. NOT clicked through on the builder screen; the roster join and titlescreen recruit paths NOT run. The later Gold-only trinket filter (`RegisterOptionFilter`, `EnsureGoldTreasureFilter`) is luac + typing clean but NOT run (needs an app RESTART): expect 5 options on Secret Twin (Color Cloak Blue/Yellow/Red, Hellcharger Helm, Gecko Gloves; not Precious Collar). The Secret Twin assassin (respite d10 -> banner -> montage threat -> outcome clears the mark; `EotwDowntime.lua`, `FullscreenDisplay.lua`, `EncounterMontage.lua`, `EncounterScript.lua`, `EncounterOfTheWeek.lua`, `EotwRoster.lua`) is luac + typing clean and the snippet parse was checked with the bundled interpreter (951 parser checks still pass), but NOTHING of it has run in the app. To test: force `math.random` or set `eotwAssassinPending` on a Secret Twin hero; take a respite (banner and portrait); enter a game with a montage (threat card mid-arrival, 4d6 dice for the hero's player, damage lands); come home (mark cleared). UNCOMMITTED |
 | **Auto-equip treasure** (2026-10-19, user direction; see "Treasure goes home"): an equippable treasure a hero gains in a game (montage/narrative reward, delve or map chest, hand-over) is worn at once when there is a free slot, by the EotW hero sheet's rules; treasure arriving home in town is equipped the same way; the haul hand-over can give a worn find | `EncounterOfTheWeek/EncounterOfTheWeek.lua` (`AutoEquipTreasure`, host, from `MapScriptHostThink`; state doc `autoEquip`, cleared by `ClearTestArrival`), `EncounterOfTheWeek/EncounterMontage.lua` (`GrantItem` with a negative quantity goes through `GiveItem`, which unequips; `HeldQuantity` for the hand-over check), `Codex Titlescreen/EotwHeroSheetData.lua` (`EotwHeroSheet.EquipInPlace`), `Codex Titlescreen/EotwRoster.lua` (`ApplyOutcome` equips each treasure) | luac + typing clean; deployed; needs an app RESTART; NOT run. To test: win a trinket in a montage (it shows in a trinket slot on the hero sheet), loot a map chest (equipped within ~0.5s), take one off (it stays off), a hero at the leveled cap of 3 (stays in the bag), hand an equipped find to another hero (it moves and is worn there), and the town roster hero wearing it after the outcome lands |
 | **The town's welcome dialog** (2026-10-19, user direction; see "The welcome dialog"): the first time an account reaches the town map it gets "Welcome to Encounter of the Week" (what EotW is, beta + Feedback, the DMHub Discord, be kind) | `Codex Titlescreen/EncounterOfTheWeek.lua` (preference `eotw:welcomed`, `ShowWelcomeDialog` / `EncounterOfTheWeek.ShowWelcomeDialog`, `MaybeShowWelcome` in the town's watcher think) | luac + typing clean. VERIFIED 2026-10-19 single client after a restart: it opened by itself on first entering the town, was marked seen (`eotw:welcomed`), and Let's Go! closed it; the "DMHub Discord" link was clicked with no error (the browser side not seen). Join the Discord not clicked. Reshow with `dmhub.SetSettingValue("eotw:welcomed", "")`. UNCOMMITTED |
@@ -339,6 +341,15 @@ In a real EotW game with **at least two clients** and the current week:
 
 ---
 
+**Moderation (2026-10-23):** admins warn or ban accounts (1/3/7/30 days or
+permanent); a warning shows once on the player's next arrival in town, a ban
+every time they try to come in, and sends them to the titlescreen. Games
+under way carry on. Admins can also **remove a hero** (offensive names)
+from the Graveyard's or the Guild's Find Heroes right-click menu. Server
+DEPLOYED to staging 2026-10-23 (version `7e3b8af0`; smoke test passes
+there); release NOT deployed. Client written,
+luac/typing/UIText clean, NOT run in the app. Uncommitted. See "Moderation: warnings and bans".
+
 # Where the code lives
 
 | Area | Path |
@@ -366,6 +377,7 @@ In a real EotW game with **at least two clients** and the current week:
 | The schedule, debriefs, nominations and unlocks on the server | `cloudflare-game-server/src/city-core.ts` ("The Encounter of the Week and the Proving Pits"), `src/city.ts` |
 | Weekly assessment + rotation tooling | `tools/eotw_week.py` (admin HTTP), `.claude/skills/eotw-rotate/` (MCP) |
 | Authoring content | `C:\dev\eotw` (git repo, no remote) + the Local authoring game `e96656f3-a11c-477b-89f1-978452983324` |
+| Moderation: the warning/ban dialogs, HoldEntry, the admin Moderation and Warn or Ban dialogs, chat right-click menu | `Codex Titlescreen/EotwModeration.lua` (global `EotwModeration`, registered before `EncounterOfTheWeek.lua`); server `cloudflare-game-server/src/city-core.ts` ("Moderation"), `src/city.ts`, `src/lobby.ts` (`leaveOpenParties`) |
 | All user-facing text (see "User-facing text") | `Codex Titlescreen/EotwTextTown.lua`, `Codex Titlescreen/EotwTextHeroes.lua`, `EncounterOfTheWeek/EncounterText.lua`, `EncounterOfTheWeek/EncounterAuthoringText.lua`; helper `DMHub Utils/UIText.lua`; checker `tests/uitext_check.lua` |
 
 Codemod gotchas that apply to all of it:
@@ -1548,9 +1560,10 @@ first Encounter of the Week; Angry Dwarves is retired.
 - **Location** `danger` (`CITY_LOCATIONS`): "Proving Pits",
   `phosphor/skull-fill.png`, at (0.74, 0.42) on the map, level with the
   Guild (at the first try, (0.6, 0.56), the hero cards along the bottom
-  covered it). Locked with "Defeat the Encounter of the Week to unlock the
-  Proving Pits." until `EotwRoster.DangerRoomsUnlocked()`, and like the Gate
-  it needs a living hero.
+  covered it). Not on the map at all until `EotwRoster.DangerRoomsUnlocked()`
+  (until 2026-10-22 it showed locked, saying "Defeat the Encounter of the
+  Week to unlock the Proving Pits.", which new players read as a dead
+  button), and like the Gate it needs a living hero.
 - **Unlock.** `list-heroes` now returns `unlocks = {dangerRooms}`: true once
   any of the account's heroes has a completion of a scheduled encounter
   (current or past). Completions are never deleted (a dismissed hero keeps
@@ -1745,6 +1758,143 @@ answer or decline ("No thanks", or Escape); both are recorded.
   minute game; the dialog shows in town; Send and No thanks both land in
   `survey-report`; a sub-10-minute game shows nothing (log: "no survey for
   a N second game").
+
+# Moderation: warnings, bans and hero removal (BUILT 2026-10-23; server on staging, client NOT run, UNCOMMITTED)
+
+An admin can give an account a **warning**, a **temporary ban** or a
+**permanent ban**, with a message the player reads word for word (user
+direction 2026-10-23).
+
+**Decisions (2026-10-23, with the user):**
+- **Where admins act:** right-click a player's line in the town chat
+  ("Warn or Ban <name>...", "Copy User Id"), or Codex menu > **Moderation...**
+  (town open): the players in town now, any account by user id, and the
+  recent warnings and bans with Lift / Withdraw on the ones in force. The
+  presence line is one label of names, so "in town now" lives in the dialog
+  rather than as a right-click on the presence list.
+- **Ban lengths:** 1, 3, 7 or 30 days, or permanent (one dropdown with
+  "Warning (no ban)" first). The server accepts any length up to 3650 days.
+- **In town when banned:** kicked out at once (message, then the
+  titlescreen) and taken out of every party still forming -- their own is
+  dropped, any they joined loses them. A party that is entering (`ready`) or
+  playing (`launched`) is left alone.
+- **The server enforces it**, not just the screen: a banned account is
+  refused the town's own actions, while what a game under way needs stays
+  open, so the game finishes and its results count.
+- Taken while building (not asked; easy to change): a warning shows **once**,
+  until the player presses I Understand (`acknowledge-warning`); several show
+  one by one, oldest first. A ban shows every time they try to enter while
+  it lasts. Admins cannot be warned or banned (no lock-out by a slip). A ban
+  needs a second click to confirm. Warnings wait while a ban is in force.
+
+**Removing a hero** (user direction 2026-10-23: some players posted
+offensive character names). Decisions, with the user:
+- **Where:** right-click a grave in the Graveyard, or a result of the
+  Guild's admin-only **Find Heroes** button (the Guild otherwise lists only
+  your own roster). Find Heroes searches every hero, living or fallen, by a
+  name fragment or by the owner's user id. The menu: "Remove <hero> from
+  EotW...", "Warn or Ban <owner>..." (the same dialog as the chat's; not
+  offered on your own heroes), "Copy Owner's User Id".
+- **Removal is total and permanent:** the hero row, its grave, outcomes,
+  completions, offered outcomes, Downtime + grants, its hero projects and
+  rolls; and **every Hall of Heroes entry its party is in is deleted**
+  (user's pick over renaming the hero in the entry). Hall entries record
+  heroes by owner userid + name, not hero id, so they are matched on both
+  (name trimmed, case-insensitive).
+- A party still forming loses the hero (the owner stays with their other
+  heroes); a game it is in carries on, and that hero's result has nowhere to
+  go (the bring-home fails its 3 attempts and stops).
+- **The owner is told**, automatically: a "A Hero Was Removed" notice on
+  their next arrival (or at once if in town), read once like a warning,
+  with the admin's optional message (`moderation.removal.*`).
+
+**Server** (`cloudflare-game-server`; see its CLAUDE.md "Moderation"):
+- Table `city_sanctions(id, userid, name, kind, message, issuedBy,
+  issuedByName, at, until, seenAt, liftedAt, liftedBy)`, never deleted (the
+  history); a `city_*` table, so a city move copies it.
+- Admin actions `moderate`, `list-sanctions`, `lift-sanction`; the player's
+  `moderation-status` -> `{ban, warnings}` (the player's view carries no
+  admin identity; `remainingMs` comes from the server's clock) and
+  `acknowledge-warning`.
+- `BANNED_ACTIONS` (city.ts): chat, create-game, confirm-game, join-game,
+  set-heroes, invite-code, kick-player, blow-horn, start-project,
+  project-roll, carouse, danger-feedback. NOT refused: heartbeat, ready/
+  launch/leave-game, put-hero, record-outcome, offer-outcomes, hall-record,
+  grant-downtime, reads. The lobby's `requestRefusal` hook now takes the
+  userid; the lobby gained `leaveOpenParties(userid, now)`.
+- A change is pushed only to that account's sockets as a `put` at
+  `/moderation` (its status). It is never in the shared document.
+- Hero removal: admin `find-heroes {query}` (2-64 chars; owner userid or
+  `json_extract(summary,'$.name') LIKE`, `%`/`_` escaped; 50 max, newest
+  first) and `scrub-hero {userid, heroid, ownerName?, message?}`
+  (`applyScrubHero` + `CityStore.deleteHeroData`, `listHallMentioning`,
+  `deleteHallEntry`). It bumps the owner's rosterRev (their town drops its
+  working copy on the re-list), the graveyardRev / hallRev when those
+  changed, strips the hero from open parties (`dropHeroFromOpenParties`, via
+  `applySetHeroes`) and writes a sanction of kind `"removal"` whose new
+  `subject` column holds the hero's name (added by `PRAGMA table_info` +
+  `ALTER TABLE` for tables made before it). Removal notices ride
+  `moderation-status.warnings` and `acknowledge-warning`.
+
+**Client** (`Codex Titlescreen/EotwModeration.lua`, text `moderation.*` in
+`EotwTextTown.lua`):
+- The town calls `EotwModeration.CheckArrival(m_conn)` first on every
+  connect and on a `/moderation` push. That covers arriving from a game (the
+  town is rebuilt and reconnects), opening the town, and being in town.
+- A ban: `EncounterOfTheWeek.CloseScreen()` (NEW: closes the town and an
+  open still behind its veil; leaves a town hidden for a game alone), then
+  the ban dialog over the titlescreen root: "banned from Blackbottom for 3
+  more days / permanently", the message, OK.
+- `EncounterOfTheWeek.ShowScreen` asks `EotwModeration.HoldEntry` first:
+  once this run has seen a ban, the next open asks the city
+  (`EncounterOfTheWeek.CityRequest`, now exposed) before building the town,
+  so a re-entry shows the ban without the town flashing up. After a restart
+  the town's own connect check does it (the town loads, then closes).
+- A warning: an overlay over the town (mounted on the titlescreen root, so
+  the town's own dialogs never cover it), deferred until the loading veil
+  is gone.
+- Admin dialogs are plain strings in code (admin-only, as `ShowWeekDialog`).
+
+**Verified:** server unit tests (10 new, 408 total), tsc, and
+`test/city-moderation-smoke.ts` against `wrangler dev` and against staging
+(45 checks: admin only, warning push to the target only, acknowledgement,
+ban push with time left, own party dropped and the joined one left,
+chat/create/join/project refused, reads and record-outcome not, lift; hero
+search with `_`/`%` in names, scrub push + rosterRev push, the party keeping
+the owner's other hero, the hero gone). `city-smoke.ts` and
+`lobby-smoke.ts` still pass. Client: luac, the typing check and the UIText
+checker are clean.
+
+**Not done / to test:**
+1. Staging DEPLOYED 2026-10-23 as `0d437683`, then `7e3b8af0` with hero
+   removal (same base), built from the same server
+   tree as the previous staging deploy 172a5acd (= origin/master, no server
+   commits since) plus this work; the blackbottom doc kept its week, and
+   `city-moderation-smoke.ts` passed against staging (throwaway city id).
+   Release NOT deployed: players are on release by default, so the town
+   there logs "Unknown action: moderation-status" and shows nothing until it
+   is. To test on staging, the admin account picks staging in the EotW
+   card's server dropdown; a second account must be an app admin to reach
+   staging and must NOT be in `CITY_ADMINS` (admins cannot be sanctioned).
+2. Restart the app (new codemod file, registered and Firebase-confirmed).
+3. In town as an admin: right-click a second account's chat line (Debug New
+   Player Window) -> warn: the child sees it at once; reopen the town: not
+   shown again.
+4. Ban the child for 1 day: it is sent to the titlescreen with the message;
+   reopening the town shows the ban without loading the town; its forming
+   party is gone. Lift it from Moderation...: the town opens again.
+5. Ban a player who is in a launched game: the game carries on; on Proceed
+   they land at the titlescreen with the ban, and the game's outcome still
+   reached their heroes (bring-home runs while the dialog is up; one cut
+   short resumes when they are next allowed in).
+6. Hero removal: Guild > Find Heroes as admin, search a test hero of the
+   second account, right-click > Remove: the child's Guild loses it and it
+   sees "A Hero Was Removed"; right-click a grave > Remove: the grave goes
+   from the list. A Hall entry with the hero is deleted (needs a won game).
+7. Not built: banning from Discord, a ban reason category, notifying other
+   admins, Discord-bridge messages from a banned player's Discord account,
+   right-click on the party boards and the Hall of Heroes (the user chose
+   the Guild search instead).
 
 # Steam invites (BUILT 2026-10-20; NEEDS ENGINE BUILD + worker deploy, not run, UNCOMMITTED)
 
@@ -2038,11 +2188,78 @@ keyed "0", "1").
   on `NextPartKey` (the first unlocked part not yet won, else the last
   unlocked); the chips re-open the dialog on another unlocked part; Create
   refuses a locked part. The party record carries the part key.
-- **Unlock rule** (`PartUnlocked`): part 1 always; part n once `PartWon(part
-  n-1)`: at the Gate `EotwRoster.AccountCompleted` (list-heroes'
-  `unlocks.completed`, every key any of the account's heroes has won,
-  dismissed and fallen heroes included); in the Proving Pits
-  `EotwRoster.PracticeWon` (`unlocks.practiceWins`).
+- **Unlock rule** (`PartUnlocked`): part 1 always; part n while part n-1 is
+  **open** on its board (`EotwRoster.PartOpen(key, PartBoard(key))`, from
+  list-heroes' `unlocks.openParts`): won since the account's last respite.
+  See "The respite closes the next part" below. `PartWon` stays permanent
+  (at the Gate `EotwRoster.AccountCompleted`, list-heroes'
+  `unlocks.completed`; in the Proving Pits `EotwRoster.PracticeWon`,
+  `unlocks.practiceWins`) and still drives the part chips' tick and
+  Challenge Mode. A city that sends no `openParts` (older server) falls back
+  to `PartWon`.
+
+### The respite closes the next part (BUILT 2026-10-24; server NOT deployed, nothing run)
+
+User direction (2026-10-24): a series is played straight through. Winning
+part n opens part n+1, but if the player takes a respite (any of their
+heroes; Catch Breath is fine) before setting out for it, it closes and part n
+must be won again. Decisions taken with the user:
+- **Both boards**: a respite closes open parts won at the Gate and in the
+  Proving Pits alike.
+- **The inn warns before and says after**: while a respite would close a
+  part, an amber line above Take a Respite names it (`inn.series.warning`);
+  after a respite that closed one, a line under the button says it is locked
+  again (`inn.series.closed`). The locked chip/dialog reason becomes
+  `eotw.series.part_closed_by_respite` when the earlier part was won but
+  closed.
+- **The invitation is in the game, with a button**: on winning a part whose
+  series has a next part, the victory screen shows a panel above Proceed
+  ("Part 2: Lush Garden is open", `encounter.series_next.*`) with
+  **Continue to Part 2**, which records the choice and presses Proceed. The
+  Conclusion screen offers the same button beside Return to Blackbottom.
+  Back in town, Form a Party opens on that part once the city says it is
+  open.
+
+As built:
+- **City** (`city-core.ts`, `city.ts`): table `city_open_parts(userid, board,
+  encounter, gameid, at)`, PK (userid, board, encounter). `record-outcome`
+  with a completed encounter upserts (`board = gate`; a repeat win re-opens,
+  although the hero's completion is only ever the first);
+  `record-practice-win` upserts `practice` and returns `openParts`. A
+  `grant-downtime` with `respite: true` that is fresh deletes the account's
+  rows and returns `closedParts` and `openParts` (a dev grant and a resend
+  close nothing). `accountUnlocks` returns `openParts = {gate, practice}`.
+  `dev-reset-account` deletes them. Unit test: "keeps a part open until the
+  account's next respite".
+- **Town**: `EotwRoster.PartOpen` / `OpenParts` / `SetOpenParts`;
+  `EncounterOfTheWeek.PartBoard`, `PartsHeldOpen(list)` (open parts whose
+  series has a playable next part on that board -> `{series, won, next}`);
+  the inn (`EotwDowntime.InnPanel`, `seriesWarning` / `seriesNote`;
+  `TakeRespite`'s onDone now gets `closedParts`); the continue handoff
+  (preference `eotw:continueSeries` `{[userid] = {key, at}}`, a 1 s think
+  next to the Steam join one: when the roster and pool are loaded, no
+  debrief or modal is up and `PartUnlocked(key)`, it clears the choice and
+  calls `ShowCreateDialog(key, true)`; dropped after 600 s).
+- **Game** (`EncounterOfTheWeek.lua`, in the `Series` table because of the
+  200-local ceiling): `Series.NextPart()` (the next part from
+  `SeriesParts()` or its part map), `Series.PartLabel`, `Series.SetContinue`;
+  the `eotw-series-next` footer panel (not in tests); the story screen's
+  `choice`. **Core change** (`DSVictoryScreen.lua`):
+  `DSVictoryScreen.RegisterFooterPanel(id, fn(outcome, pressProceed))`,
+  panels above Proceed on a live screen that fade in with it; the Proceed
+  click is now a `press` event the footer can fire.
+  `EncounterMontageStage.ShowStoryScreen` takes `choice = {text, note,
+  onChoose}`.
+- **Not done / to test**: the City is NOT deployed (the staging deploy was
+  refused by the session's permission check; deploy with `npm run deploy`
+  from `cloudflare-game-server`, local master is the newest server code).
+  Nothing has run in the app. Existing open unlocks are not carried over: on
+  deploy every account starts with no open parts, so a Part 2 unlocked
+  before the deploy needs Part 1 won again. To test: win Part 1 (Proving
+  Pits is quickest) -> banner + button; Continue -> back in town after the
+  debrief Form a Party opens on Part 2; inn shows the warning; Catch Breath
+  leaves it open; Take a Respite -> note, Part 2 locked with the respite
+  reason; win Part 1 again -> open.
 - **Proving Pits wins**: `MaybeShowDebrief` sends `record-practice-win
   {encounter = part key, gameid}` for a pending debrief whose result is
   `victory`, before (and whatever happens to) the debrief dialog; the answer's
@@ -2522,7 +2739,7 @@ the app. The City (step 4) and the town (step 5) wait on step 0.
 
 ---
 
-# Challenge Mode (BUILT 2026-10-22; game side verified live, town not run, worker not deployed)
+# Challenge Mode (SHIPPED 2026-10-23 at 0.0.864; server on staging + release)
 
 User direction (2026-10-22): every encounter automatically has a Challenge
 Mode -- no authoring. Decisions taken with the user:
@@ -2631,10 +2848,14 @@ Mode -- no authoring. Decisions taken with the user:
 
 ## Not done / known gaps
 
-- **Not run:** the town (checkbox, party labels, arrival), the per-hero
-  Victory award and the pending outcome, the core victory screen's per-hero
-  drop, the worker. Needs the worker deployed (staging and release; the user
-  deploys).
+- **Shipped 2026-10-23:** codex main 8a8ebc09, release/0.0.864 d782ddfb (a
+  merge of main), codex deploy b9e743e3 at 0.0.864; game server staging
+  172a5acd and release f72c11c4. A real 4-hero staging game (town checkbox ->
+  party -> game) came up in Challenge Mode: 21 goblins (Warriors 3-4 the
+  extra group), Gathering Darkness restored, its consequence 3 Recoveries.
+- **Not yet seen:** the per-hero Victory award and the pending outcome, the
+  core victory screen's per-hero drop, the town's labels and "Already
+  Completed" for a challenge.
 - After a first vanquish of an x2 threat, its status line replaces the card's
   "Drag a hero here" hint.
 - Inside the game nothing says "Challenge Mode" apart from the "x2" card;
@@ -4335,6 +4556,35 @@ When something works for a Director but not for a player host, look for an
   interface, and the authoring test is how to see the EotW one there. See
   "The authoring test".)
 
+## Hero Token spends
+
+Decided 2026-10-22 (user direction): every Hero Token spend is automated, in
+all game modes where it makes sense, and under strict rules only what the
+party can afford is offered.
+
+- **Succeed on a failed save** and **re-roll a test** are roll-dialog re-roll
+  rules (`CharacterResource.HeroTokenSaveSucceedRule` /
+  `HeroTokenTestRerollRule` in `Draw Steel Core Rules/DSResources.lua`). A
+  failed save shows "Succeed Instead" with the Hero Token icon in place of
+  Re-roll, only while the pool holds a token; `strict:rolls` keeps a rule-gated
+  button (only the free Re-roll is withdrawn). The EotW save card runs the same
+  `ActivatedAbilitySaveBehavior:RollSaveInTimeline`, so EotW needed nothing.
+  Lucky's d10 refund applies to these two only, as the complication says.
+- **2 surges (1 token)** and **Recovery-value Stamina (2 tokens)** come from
+  `CharacterResource.HeroTokenSpendOptions(token)`. Under `strict:resources`
+  (forced in EotW) it lists only what the hero can do now: affordable, in
+  combat for surges, below max Stamina, and on the hero's own turn (the rule's
+  "or when you take damage" half has no button). Without it, every spend is
+  listed, unusable ones greyed with the reason in the caption, and the turn is
+  not checked. Surges are gained through `ConsumeSurges(-2)`, so a retainer's
+  mentor or a summoner's shared pool gets them.
+- **Where**: in EotW the Hero Tokens pool cell is outlined gold and clickable
+  while the local player controls the hero whose turn it is and something is
+  affordable; in every game the Hero Token icon in the character panel's Hero
+  Tokens box opens the same menu (not when the panel is read-only, which it
+  always is in EotW).
+- **Not enforced**: "only one hero token benefit per turn or per test".
+
 ## Strict rules and forced settings
 
 The host writes `g_forcedGameSettings` at setup and re-asserts them every
@@ -4348,6 +4598,7 @@ host tick (writing only what differs):
 | `enemystambardisplay` | `"bar"` (from `EncounterPrep.EnemyStaminaDisplay()`: `none`/`bar`/`val` when the week sells it on the preparation screen) | players see bars, not numbers |
 | `hpbarsonlyincombat` | false | bars from arrival |
 | `monsterinfo`, `monsterinfoautolearn` | true | players learn stat blocks with no Director |
+| `strict:hiddeninvisible` | true | "Hidden Creatures are Invisible": players and the player host do not see a Hidden monster at all (engine `CharacterToken.hiddenFromLocalViewer`, per client, so the host still has the token for the Monster AI); acting reveals it as the ability begins, and the AI reveals hidden monsters at the start of their turn |
 
 **Line of effect under `strict:targeting`** (2026-10-03). A single-target
 ability's (`targetType == "target"`) candidate is invalid when the caster
@@ -4368,8 +4619,7 @@ target" prompt used during resolution, which has its own reasons table.
 Wall voxels are not blocked by their own wall: a hero facing a wall's near
 side has line of effect to those voxels (checked live).
 
-`strict:hiddeninvisible` is deliberately not forced. Since all of these gate
-on `isDM`, they bind the player host. `strict:resources` also refuses
+Since all of these gate on `isDM`, they bind the player host. `strict:resources` also refuses
 off-turn use of turn-bound abilities (main action, maneuver, move) in the
 action bar; the drawers still open so players can read them. Arrow-key
 movement honours the same gates as dragging (`token:Move{playerMovement =
@@ -5042,8 +5292,8 @@ The EotW provider (`EncounterOfTheWeekHud.lua`), active in an EotW game
   reader tools (back/forward, zoom), the badge cleared, close and End Test
   both took the window away. UNCOMMITTED.
 - **Right edge**: the **encounter pools strip** (Malice, Hero Tokens, and
-  Intelligence when unlocked; read-only; hovering a cell explains the pool and
-  shows its history) above the **hero roster**: one portrait card per hero
+  Intelligence when unlocked; hovering a cell explains the pool and shows its
+  history; only Hero Tokens can be clicked, see "Hero Token spends" below) above the **hero roster**: one portrait card per hero
   (`dmhub.allTokens` + `IsHero()`, not `Party.GetPlayerCharacters()`, which
   drops blank names), with name and controlling player, a state-tinted stamina
   bar with temporary stamina, the heroic resource, one icon per surge,
@@ -7077,8 +7327,10 @@ boards); [~] C2 lobby + City (`challenge`, both completions,
 `completedNormal`) -- unit-tested, NOT deployed; [~] C3 town checkbox, party
 labels, arrival; [~] C4 game balance, level-up, per-hero Victories; [~] C5
 montage extra threat, "x2", +1 Malice/Recovery -- verified live in Test
-Encounter; [~] C6 the section's "To test": steps 1-2 done 2026-10-22, step 3
-(town, after the deploy) open.
+Encounter; [~] C6 the section's "To test": steps 1-2 done 2026-10-22; step 3
+partly (a real staging game in Challenge Mode, 2026-10-23), the Victory award
+open; [x] C7 shipped 2026-10-23 (0.0.864 deploy b9e743e3, server staging +
+release).
 
 **Launch readiness (not started).** [ ] lobby on the release worker and games on
 release DOs, [ ] non-owner module access verified, [ ] disconnected-player
