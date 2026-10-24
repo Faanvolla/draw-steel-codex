@@ -282,6 +282,7 @@ text("author.montage_builder.outcome.initiative_surprise", [[The heroes surprise
 text("author.montage_builder.outcome.initiative_surprised", [[The heroes begin surprised]])
 --Tooltips of two pickers.
 text("author.montage_builder.outcome.recoveries_tooltip", [[A number, or dice rolled for each hero.]])
+text("author.montage_builder.outcome.stamina_tooltip", [[A number, or dice rolled for each hero.]])
 text("author.montage_builder.outcome.entry_tooltip", [[The montage's (Locked) entries.]])
 --Whether the players see a reward or cost.
 text("author.montage_builder.outcome.shown", [[Shown]])

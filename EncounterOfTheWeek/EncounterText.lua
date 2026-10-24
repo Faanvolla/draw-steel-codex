@@ -719,6 +719,7 @@ text("montage.effect.source_montage", [[Montage]])
 --What each roll is for, shown beside the dice. Short.
 text("montage.dice.damage_label", [[Damage]])
 text("montage.dice.recoveries_label", [[Recoveries lost]])
+text("montage.dice.stamina_label", [[Stamina lost]])
 --The roll's name in the roll log. {hero} is the hero rolling, {label} what
 --it is for (a table's name, or one of the labels above).
 text("montage.dice.roll_description", [[{hero}: {label}]])
@@ -1134,6 +1135,8 @@ text("script.effect.item.self", [[the hero gains {qty} x {item}]])
 text("script.effect.item.party", [[every hero gains {qty} x {item}]])
 text("script.effect.stamina.self", [[the hero loses {qty} stamina]])
 text("script.effect.stamina.party", [[every hero loses {qty} stamina]])
+text("script.effect.stamina_dice.self", [[the hero loses {dice} stamina (rolled for each hero)]])
+text("script.effect.stamina_dice.party", [[every hero loses {dice} stamina (rolled for each hero)]])
 text("script.effect.heal.self", [[the hero heals {qty} stamina]])
 text("script.effect.heal.party", [[every hero heals {qty} stamina]])
 text("script.effect.temp_stamina.self", [[the hero gains {qty} temporary stamina]])

@@ -1994,6 +1994,19 @@ function B.CreateWindow(session, close)
                         Set("dice", id)
                     end
                 end, { width = 66, tooltip = T("author.montage_builder.outcome.recoveries_tooltip") })
+            elseif param == "staminaloss" then
+                local options = Numbers(1, 10, effect.dice == nil and effect.qty or nil)
+                for _, dice in ipairs({ "1d3", "1d6", "2d6" }) do
+                    options[#options + 1] = { id = dice, text = dice }
+                end
+                return PickDropdown(options, effect.dice or tostring(effect.qty or 1), function(id)
+                    if tonumber(id) ~= nil then
+                        effect.dice = nil
+                        Set("qty", tonumber(id))
+                    else
+                        Set("dice", id)
+                    end
+                end, { width = 66, tooltip = T("author.montage_builder.outcome.stamina_tooltip") })
             elseif param == "item" then
                 local resolved = effect.name
                 pcall(function()

@@ -629,16 +629,23 @@ local function ParseClause(clause)
                  name = trim(string.sub(clause, pos)), text = clause }
     end
 
-    --"you lose <n> stamina"
+    --"you lose <n> stamina" / "each party member[s] lose[s] <n> stamina".
+    --Dice ("you lose 1d6 stamina") are rolled for each hero when it
+    --applies; qty is then the most it can take.
     local n = string.match(lc, "^you lose (%S+) stamina$")
-    if n ~= nil and EncounterScript.ParseQuantity(n) ~= nil then
-        return { kind = "stamina", target = "self", qty = EncounterScript.ParseQuantity(n), text = clause }
+    local staminaTarget = "self"
+    if n == nil then
+        n = string.match(lc, "^each party members? loses? (%S+) stamina$")
+        staminaTarget = "party"
     end
-
-    --"each party member[s] lose[s] <n> stamina"
-    n = string.match(lc, "^each party members? loses? (%S+) stamina$")
     if n ~= nil and EncounterScript.ParseQuantity(n) ~= nil then
-        return { kind = "stamina", target = "party", qty = EncounterScript.ParseQuantity(n), text = clause }
+        return { kind = "stamina", target = staminaTarget, qty = EncounterScript.ParseQuantity(n), text = clause }
+    end
+    local staminaDice = n ~= nil and string.match(n, "^(%d*d%d+)$") or nil
+    if staminaDice ~= nil then
+        local count, sides = string.match(staminaDice, "^(%d*)d(%d+)$")
+        return { kind = "stamina", target = staminaTarget, dice = staminaDice,
+            qty = math.max(1, tonumber(count) or 1) * math.max(1, tonumber(sides) or 1), text = clause }
     end
 
     --"+<n> malice" / "<n> malice" / "gain <n> malice"
@@ -5381,6 +5388,10 @@ function EncounterScript.DescribeEffect(effect)
         local args = { qty = qty, item = effect.name }
         return cond(party, T("script.effect.item.party", args), T("script.effect.item.self", args))
     elseif effect.kind == "stamina" then
+        if effect.dice ~= nil then
+            local args = { dice = effect.dice }
+            return cond(party, T("script.effect.stamina_dice.party", args), T("script.effect.stamina_dice.self", args))
+        end
         return cond(party, T("script.effect.stamina.party", { qty = qty }), T("script.effect.stamina.self", { qty = qty }))
     elseif effect.kind == "heal" then
         return cond(party, T("script.effect.heal.party", { qty = qty }), T("script.effect.heal.self", { qty = qty }))
@@ -5524,7 +5535,7 @@ EncounterScript.CLAUSES = {
     { kind = "immunityboon", group = T("author.script.clause_group.reward"), label = T("author.script.clause.immunityboon"), params = { "target", "damageType", "qty" },
         defaults = { target = "self", damageType = "poison", qty = 2 } },
     { kind = "ally", group = T("author.script.clause_group.reward"), label = T("author.script.clause.ally"), params = { "monster" }, defaults = { name = "Wolf" } },
-    { kind = "stamina", group = T("author.script.clause_group.cost"), label = T("author.script.clause.stamina"), params = { "target", "qty" }, defaults = { target = "self", qty = 3 } },
+    { kind = "stamina", group = T("author.script.clause_group.cost"), label = T("author.script.clause.stamina"), params = { "target", "staminaloss" }, defaults = { target = "self", qty = 3 } },
     { kind = "loserecovery", group = T("author.script.clause_group.cost"), label = T("author.script.clause.loserecovery"), params = { "target", "recoveries" }, defaults = { target = "self", qty = 1 } },
     { kind = "loseconsumable", group = T("author.script.clause_group.cost"), label = T("author.script.clause.loseconsumable"), params = { "target", "qty" }, defaults = { target = "self", qty = 1 } },
     { kind = "maxstamina", group = T("author.script.clause_group.cost"), label = T("author.script.clause.maxstamina"), params = { "target", "qty" }, defaults = { target = "self", qty = 5 } },
@@ -5606,6 +5617,9 @@ function EncounterScript.ClauseText(e)
         local name = trim(e.name or "")
         return string.format("%s %s joins you", cond(string.match(lower(name), "^[aeiou]") ~= nil, "An", "A"), name)
     elseif kind == "stamina" then
+        if e.dice ~= nil and e.dice ~= "" then
+            return string.format("%s %s Stamina", Who("lose", "loses"), e.dice)
+        end
         return string.format("%s %d Stamina", Who("lose", "loses"), qty)
     elseif kind == "loserecovery" then
         if e.dice ~= nil and e.dice ~= "" then
