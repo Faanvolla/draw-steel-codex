@@ -11926,13 +11926,17 @@ CreateAbilityController = function()
 
         create = function(element)
             element.data.oldIsCasting = gamehud.actionBarPanel.data.IsCastingSpell
-            gamehud.actionBarPanel.data.IsCastingSpell = function()
+            element.data.isCasting = function()
                 return g_currentAbility
             end
+            gamehud.actionBarPanel.data.IsCastingSpell = element.data.isCasting
         end,
 
         destroy = function(element)
-            if gamehud and gamehud.actionBarPanel and gamehud.actionBarPanel.valid then
+            --A rebuilt bar (Refresh, code reload) installs its own IsCastingSpell before this
+            --old controller is destroyed. Only put the old one back if nobody replaced ours.
+            if gamehud and gamehud.actionBarPanel and gamehud.actionBarPanel.valid
+                and gamehud.actionBarPanel.data.IsCastingSpell == element.data.isCasting then
                 gamehud.actionBarPanel.data.IsCastingSpell = element.data.oldIsCasting
             end
         end,
@@ -12280,6 +12284,19 @@ CreateAbilityController = function()
 
         --- @param opts nil|{norefresh: nil|boolean} norefresh when called from inside the bar's own refresh
         cancelCasting = function(element, opts)
+            --An open target prompt sits inside the controller this is about to hide, where
+            --nobody could answer it. Close it first: its cancel callback releases the waiting
+            --ability, and it removes its own caster token before the cast's one below.
+            --Read both now: the teardown clears them.
+            local openPrompt = DrawSteelActionBar._openPrompt
+            local promptTeardown = DrawSteelActionBar._openPromptTeardown
+            if promptTeardown ~= nil then
+                promptTeardown()
+            end
+            if openPrompt ~= nil and openPrompt.valid then
+                openPrompt:DestroySelf()
+            end
+
             --Director overview (slice (e)): whatever ended this cast, the
             --pending implicit-claim record dies with it.
             g_overviewCastPending = nil
@@ -12514,6 +12531,7 @@ CreateAbilityController = function()
                 m_tornDown = true
                 if DrawSteelActionBar._openPrompt == targetChooser then
                     DrawSteelActionBar._openPrompt = nil
+                    DrawSteelActionBar._openPromptTeardown = nil
                 end
                 if g_castMessage ~= nil then
                     g_castMessage.data.promptText = ''
@@ -12619,6 +12637,8 @@ CreateAbilityController = function()
             g_actionBar:AddChild(targetChooser)
             gui.SetFocus(targetChooser)
             DrawSteelActionBar._openPrompt = targetChooser
+            --Lets cancelCasting close this prompt cleanly instead of stranding it.
+            DrawSteelActionBar._openPromptTeardown = TeardownPrompt
         end,
 
         --- @param invokerInfo nil|{oncast: nil|function, oncancel: nil|function}
