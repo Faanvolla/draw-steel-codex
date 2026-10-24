@@ -393,11 +393,8 @@ TokenHud.RegisterPanel{
                                     element:SetClass("pending", true)
                                     element.interactable = false
 
-                                    local attacker = token.properties:try_get("_tmp_lastattacker")
-                                    --Defensive: a symbols function can end up here; resolve it to the creature.
-                                    if type(attacker) == "function" then
-                                        attacker = attacker("self")
-                                    end
+                                    --Forced movement can store the pusher as an ability-symbols function.
+                                    local attacker = Utils.ResolveGoblinScriptObject(token.properties:try_get("_tmp_lastattacker"))
                                     if attacker ~= nil then
                                         attacker:TriggerEvent("kill", {
                                             victim = token.properties,
