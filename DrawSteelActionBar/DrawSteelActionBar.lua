@@ -9146,6 +9146,35 @@ function DrawSteelActionBar.RangeMeasureOrigin(ability, casterToken, targetToken
     return ResolveArrowOrigin(ability, casterToken, targetToken)
 end
 
+-- Proximity Targeting: once a target is chosen, the next one is measured from
+-- the first target (or, with Proximity Chain, the last target chosen) at the
+-- proximity range, for range and line of effect alike. Returns that token and
+-- range, or nil while targets are still measured from the caster.
+-- Pass a target that is already chosen and you get nil: it keeps the origin it
+-- was picked against. Defined on DrawSteelActionBar rather than as a local
+-- because this file has hit Lua's limit of 200 locals.
+function DrawSteelActionBar.ProximityTargetingOrigin(ability, casterToken, targetToken)
+    if ability == nil or casterToken == nil or not ability.proximityTargeting or g_firstTarget == nil then
+        return nil
+    end
+    if targetToken ~= nil and list_contains(g_targetsChosen, targetToken.id) then
+        return nil
+    end
+
+    local originId = g_firstTarget
+    if ability:try_get("proximityChain") and #g_targetsChosen > 0 then
+        originId = g_targetsChosen[#g_targetsChosen]
+    end
+    local originToken = dmhub.GetTokenById(originId)
+    if originToken == nil then
+        return nil
+    end
+
+    local range = ExecuteGoblinScript(ability.proximityRange, casterToken.properties:LookupSymbol(),
+        dmhub.unitsPerSquare, "Calculate proximity")
+    return originToken, range
+end
+
 -- For arrow greying: returns the smaller of the ability range and any active
 -- per-creature line-of-effect cap on either token (e.g. Dazzled). LoE limits
 -- are stored as a square count, so they're scaled to dmhub units to match
@@ -9243,7 +9272,9 @@ end
 -- casting-origin relay standing in for it. Everything geometric (line of sight,
 -- line of effect, range) measures from there; the modifier list still comes off
 -- sourceToken, since edges and banes belong to the caster either way.
-local function AddModifierLabelsToMarker(markers, sourceToken, targetToken, ability, range, originToken)
+-- Pass skipRelays when measuring from a proximity target. A casting-origin
+-- relay doesn't extend that reach, so it must not hide "Out of Range".
+local function AddModifierLabelsToMarker(markers, sourceToken, targetToken, ability, range, originToken, skipRelays)
     if markers == nil or ability == nil or sourceToken == nil or targetToken == nil then
         return
     end
@@ -9272,7 +9303,7 @@ local function AddModifierLabelsToMarker(markers, sourceToken, targetToken, abil
         local horizDist = targetToken:Distance(originToken)
         local altDiffUnits = math.abs(originToken.altitude - targetToken.altitude) * dmhub.unitsPerSquare
         if math.max(horizDist, altDiffUnits) >= range + dmhub.unitsPerSquare
-            and not CastingOriginCoversTarget(ability, sourceToken, targetToken, range) then
+            and (skipRelays or not CastingOriginCoversTarget(ability, sourceToken, targetToken, range)) then
             markers:AddLabel("Out of Range", "forbidden")
             return
         end
@@ -12707,11 +12738,18 @@ CreateAbilityController = function()
             if rays == nil or not rayCoversTarget then
                 --either no squad rays at all, or the hovered target wasn't
                 --reachable by any squad member -- draw from the caster, or from
-                --a casting-origin relay if one is closer to the target.
+                --a casting-origin relay if one is closer to the target. Proximity
+                --targeting draws from the first target instead (or the last one,
+                --for a chain).
                 local originToken = ResolveArrowOrigin(g_currentAbility, g_token, targetToken)
+                local proximityOrigin, proximityRange = DrawSteelActionBar.ProximityTargetingOrigin(g_currentAbility, g_token, targetToken)
+                if proximityOrigin ~= nil then
+                    originToken = proximityOrigin
+                    range = proximityRange
+                end
                 m_markLineOfSight = dmhub.MarkLineOfSight(originToken, targetToken, originToken.properties:GetPierceWalls(), GetArrowColor(g_currentAbility, g_token, targetToken), EffectiveArrowRange(originToken, targetToken, range, g_currentAbility))
                 if m_markLineOfSight ~= nil then
-                    AddModifierLabelsToMarker(m_markLineOfSight, g_token, targetToken, g_currentAbility, range, originToken)
+                    AddModifierLabelsToMarker(m_markLineOfSight, g_token, targetToken, g_currentAbility, range, originToken, proximityOrigin ~= nil)
                     m_markLineOfSightToken = targetToken
                     m_markLineOfSightSourceToken = originToken
                 end
@@ -14593,6 +14631,8 @@ local function CalculateSpellTargetFocusing(symbols)
             end
         end
 
+        local proximityOrigin, proximityRange = DrawSteelActionBar.ProximityTargetingOrigin(g_currentAbility, g_token)
+
         for _, targetToken in ipairs(allTokens) do
             if targetToken.valid and targetToken.sheet ~= nil then
                 if targetToken.sheet.data.targetInfo ~= nil then
@@ -14708,12 +14748,24 @@ local function CalculateSpellTargetFocusing(symbols)
                 local casterLocOverride = g_currentAbility:try_get("casterLocOverride")
                 local rangeSource = g_currentAbility:GetRangeSource(g_token)
                 local directRangeSource = casterLocOverride or rangeSource
+                --Proximity targeting: once a target is chosen, the rest are measured
+                --from it (or from the last one chosen, for a chain), at the proximity range.
+                local targetRange = range
+                local targetProximityOrigin = nil
+                if proximityOrigin ~= nil and not list_contains(g_targetsChosen, targetToken.id) then
+                    targetProximityOrigin = proximityOrigin
+                    rangeSource = proximityOrigin
+                    directRangeSource = proximityOrigin
+                    targetRange = proximityRange
+                end
                 local checkStrictRange = (not g_token.properties.minion) or rangeSource ~= g_token
 
                 if canTarget then
                     --give us an extra square of range to account for diagonals.
-                    if failReason == nil and spell.targetType ~= "areatemplate" and checkStrictRange and not (range + dmhub.unitsPerSquare > targetToken:Distance(directRangeSource)) then
-                        if not CastingOriginCoversTarget(spell, g_token, targetToken, range) then
+                    --Relays don't help a proximity target, here or in the altitude check
+                    --below: it must be in reach of the earlier target itself.
+                    if failReason == nil and spell.targetType ~= "areatemplate" and checkStrictRange and not (targetRange + dmhub.unitsPerSquare > targetToken:Distance(directRangeSource)) then
+                        if targetProximityOrigin ~= nil or not CastingOriginCoversTarget(spell, g_token, targetToken, targetRange) then
                             failReason = "Out of range"
                         end
                     end
@@ -14728,8 +14780,8 @@ local function CalculateSpellTargetFocusing(symbols)
                         if altDiff > 0 then
                             local horizDist = targetToken:Distance(directRangeSource)
                             local altDiffUnits = altDiff * dmhub.unitsPerSquare
-                            if math.max(horizDist, altDiffUnits) >= range + dmhub.unitsPerSquare
-                                and not CastingOriginCoversTarget(spell, g_token, targetToken, range) then
+                            if math.max(horizDist, altDiffUnits) >= targetRange + dmhub.unitsPerSquare
+                                and (targetProximityOrigin ~= nil or not CastingOriginCoversTarget(spell, g_token, targetToken, targetRange)) then
                                 failReason = string.format("Out of range (altitude difference: %d)", altDiff)
                             end
                         end
@@ -14740,10 +14792,11 @@ local function CalculateSpellTargetFocusing(symbols)
                     --Area abilities already drop such targets in TargetPassesFilter.
                     --Squad strikes draw from each minion (any one may reach), and an
                     --aura's casterLocOverride cast has no caster token to measure from.
-                    if failReason == nil and spell.targetType == "target" and casterLocOverride == nil
+                    --A proximity target always has an origin to measure from, even on an aura cast.
+                    if failReason == nil and spell.targetType == "target" and (casterLocOverride == nil or targetProximityOrigin ~= nil)
                         and targetToken.charid ~= g_token.charid and not SquadStrikeActive() then
                         failReason = DrawSteelActionBar.LineOfEffectFailReason(g_token, targetToken,
-                            DrawSteelActionBar.RangeMeasureOrigin(g_currentAbility, g_token, targetToken))
+                            targetProximityOrigin or DrawSteelActionBar.RangeMeasureOrigin(g_currentAbility, g_token, targetToken))
                     end
 
                     local valid = failReason == nil
@@ -15122,23 +15175,10 @@ CalculateSpellTargeting = function(forceCast, initialSetup)
             elseif (g_currentAbility.targetType ~= 'line' or g_currentAbility.canChooseLowerRange) and g_currentAbility.targetType ~= 'cone' and g_currentAbility.targetType ~= 'self' and g_currentAbility.targetType ~= 'all' and g_currentAbility.targetType ~= 'map' and g_currentAbility.targetType ~= 'areatemplate' then
                 local loc = g_currentAbility:try_get("casterLocOverride")
 
-                if g_currentAbility.proximityTargeting and g_firstTarget ~= nil then
-                    local targetToken = nil
-
-                    if g_currentAbility:try_get("proximityChain") and #g_targetsChosen > 0 then
-                        -- For proximity chain, use the last target
-                        targetToken = dmhub.GetTokenById(g_targetsChosen[#g_targetsChosen])
-                    else
-                        -- For normal proximity, use the first target
-                        targetToken = dmhub.GetTokenById(g_firstTarget)
-                    end
-                    
-                    if targetToken ~= nil then
-                        loc = targetToken.locsOccupying
-                        range = ExecuteGoblinScript(g_currentAbility.proximityRange,
-                            g_token.properties:LookupSymbol(), dmhub.unitsPerSquare,
-                            "Calculate proximity")
-                    end
+                local proximityOrigin, proximityRange = DrawSteelActionBar.ProximityTargetingOrigin(g_currentAbility, g_token)
+                if proximityOrigin ~= nil then
+                    loc = proximityOrigin.locsOccupying
+                    range = proximityRange
                 end
 
                 ClearRadiusMarkers()
