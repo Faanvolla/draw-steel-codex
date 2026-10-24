@@ -152,6 +152,20 @@ lines, and they say **why** the code is there or **what the user sees**, never j
 the line below already says. A comment documenting a new function and its parameters may
 be longer.
 
+Hold comments to the same standard as code. A skim that ends in "these look fine" is not
+a review. Work through them like this:
+
+1. List every comment line the change adds or edits, including comments already in the
+   function that the change made true or false.
+2. Read each one by itself, the way someone new to this code would, with only the lines
+   right below it to go on. If you have to read it twice, untangle a phrase ("the target
+   the next one is measured from"), or know something from another file to follow it,
+   flag it.
+3. When you're unsure, flag it with a rewrite and let the developer decide. A comment
+   finding costs them a few seconds; an unclear comment costs every later reader.
+4. Copying the wording of older code is no excuse. If the new comment repeats jargon
+   from an old one, flag the new one anyway.
+
 Flag a comment when it:
 
 - restates the code below it ("loop over the tokens", "set hidden to true");
@@ -171,7 +185,9 @@ A comment that says what the player used to see is fine and encouraged, for exam
 other players too."
 
 Also flag the opposite: a tricky change (a non-obvious order, a value that looks wrong, a
-deliberate omission) with **no** comment where the next reader will need one.
+deliberate omission) with **no** comment where the next reader will need one. Check every
+new condition that changes behavior: a new `or`/`and` that skips an existing check, or a
+new exception to what an old comment just above it says, needs a comment saying why.
 
 Every comment finding includes a suggested rewrite.
 
@@ -197,6 +213,7 @@ point so they learn the rule, not just the fix.
 
 Checked: <n> files, +<added> / -<removed> lines (<n> of them moved or whitespace only).
 Syntax: OK / <errors>. Types: OK / <n problems> / not run (why). ASCII: OK / <hits>.
+Comments: <n> new or edited comments read, <n> flagged.
 
 ### Must fix
 1. **<short title>** - `File.lua:123`
@@ -245,5 +262,7 @@ yet. Do not change anything until they answer. Then:
 - Make only the changes they picked. Stay inside their change, except where a picked
   item said it reaches existing call sites; then touch only the sites that item listed.
 - Write code changes first, then do the comments in a separate pass against section E.
+  That includes any comment you wrote yourself while making a fix: put it through the
+  same steps as the developer's, and rewrite it before you report back if it fails.
 - Re-run `luac -p` (and the type check if it ran before) on every file you edited.
 - Do not commit. Tell them what changed so they can review it and commit it themselves.
