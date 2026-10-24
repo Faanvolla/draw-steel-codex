@@ -2846,6 +2846,7 @@ end
 function MonsterAI:PlayTurnCoroutine(initiativeid)
     local queue = dmhub.initiativeQueue
 	self._tmp_abortTurn = nil
+    self._tmp_rangedStrikers = {}
 
     self.log.analysis = self:Analysis()
 
@@ -6817,7 +6818,15 @@ function MonsterAI:FindAndExecuteMove()
     end
 
     local advanceId = "Advance toward enemy"
-    if not failedMoves[advanceId] then
+    --A monster that already attacked at range this turn stays back.
+    local firedAtRange = (self:try_get("_tmp_rangedStrikers") or {})[token.charid] == true
+    if firedAtRange then
+        self:LogDecision("MOVE NOT SELECTED", {
+            move = advanceId,
+            reason = "made a ranged strike this turn, so it keeps its distance",
+        })
+    end
+    if not failedMoves[advanceId] and not firedAtRange then
         self:SetMoveLogContext(token, {id = advanceId, category = "Movement"})
         local advanced = false
         ProfEnd(chooseProf)
@@ -7031,6 +7040,18 @@ function MonsterAI:ExecuteAbility(casterToken, ability, targets, options)
         end
     end
 
+    --A strike at a target past melee reach (or one with no melee use) is a
+    --ranged attack. Checked here, before the cast moves anyone.
+    local rangedStrike = false
+    if (ability:HasKeyword("Strike") or ability.name == "Ranged Free Strike") and ability:HasKeyword("Ranged") then
+        local reach = ability:HasKeyword("Melee") and ability:try_get("meleeRange", 1) or 0
+        for _,target in ipairs(targets) do
+            if target.token ~= nil and MonsterAI.TargetDistance(casterToken, target.token) > reach then
+                rangedStrike = true
+            end
+        end
+    end
+
     ability = ability:MakeTemporaryClone()
 
     --Keep multipleModes intact because behavior mode filters depend on it.
@@ -7105,6 +7126,12 @@ function MonsterAI:ExecuteAbility(casterToken, ability, targets, options)
     creature.SetTokenAIActivity(casterToken.charid, previousActivityId)
     if not castOk then
         error(castErr)
+    end
+
+    if rangedStrike then
+        local strikers = self:try_get("_tmp_rangedStrikers") or {}
+        strikers[casterToken.charid] = true
+        self._tmp_rangedStrikers = strikers
     end
 
     self:LogDecision("ABILITY CAST FINISHED", {
