@@ -16,8 +16,8 @@ local function MinionDeathPending(creatureProps)
     return confirmedAt ~= nil and dmhub.Time() - confirmedAt < g_minionDeathPendingTimeout
 end
 
---The creature that last damaged this minion, or nil. Forced movement can store
---the pusher as an ability-symbols function, so resolve it to the creature.
+--The creature that last damaged this minion, or nil. Also accepts an
+--ability-symbols function stored in its place, as a safety net.
 local function MinionLastAttacker(creatureProps)
     return Utils.ResolveGoblinScriptObject(creatureProps:try_get("_tmp_lastattacker"))
 end
