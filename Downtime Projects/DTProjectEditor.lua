@@ -42,6 +42,19 @@ function DTProjectEditor:GetProject()
     return self.project
 end
 
+--- May the current user change this project's goal? Anyone may while the
+--- project has no progress (setting up a new project); after that only those
+--- with the Director's project controls, because lowering the goal to the
+--- progress completes the project and gives its item.
+--- @param project DTProject|nil
+--- @return boolean
+function DTProjectEditor.CanEditGoal(project)
+    if project == nil then
+        return false
+    end
+    return DTCharSheetTab.CanManageProjects() or project:GetProgress() <= 0
+end
+
 --- Creates the project editor form for a downtime project
 --- @return table panel The form panel with input fields
 function DTProjectEditor:_createProjectForm()
@@ -566,17 +579,22 @@ function DTProjectEditor:_createProjectForm()
                 if project and element.text ~= tostring(project:GetProjectGoal()) then
                     element.text = tostring(project:GetProjectGoal())
                 end
+                element.editable = DTProjectEditor.CanEditGoal(project)
             end,
             edit = function(element)
                 element:FireEvent("change")
             end,
             change = function(element)
                 local project = element.data.getProject(element)
+                if project and not DTProjectEditor.CanEditGoal(project) then
+                    element.text = tostring(project:GetProjectGoal())
+                    return
+                end
                 if project and tonumber(element.text) ~= project:GetProjectGoal() then
                     local value = tonumber(element.text) or 1
                     modifyTokenProps{
                         execute = function()
-                            project:SetProjectGoal(math.max(1, math.floor(value)))
+                            project:ChangeProjectGoal(math.max(1, math.floor(value)))
                         end,
                     }
                     dmhub.Schedule(0.1, function()
@@ -698,12 +716,16 @@ function DTProjectEditor:_createProjectForm()
                     classes = {"form", "bold"},
                     width = "auto",
                     valign = "center",
+                    --only true while the project waits on the Director.
                     linger = function(element)
-                        gui.Tooltip{
-                            maxWidth = 300,
-                            fontSize = 16,
-                            text = "Your Director must activate this project by editing this form.",
-                        }(element)
+                        local project = element.parent.data.getProject(element)
+                        if project ~= nil and project:WaitsOnDirector() then
+                            gui.Tooltip{
+                                maxWidth = 300,
+                                fontSize = 16,
+                                text = "Your Director must activate this project by editing this form.",
+                            }(element)
+                        end
                     end,
                     refreshToken = function(element)
                         local project = element.parent.data.getProject(element)
@@ -740,8 +762,7 @@ function DTProjectEditor:_createProjectForm()
             },
             refreshToken = function(element)
                 local project = element.data.getProject(element)
-                local status = project and project:GetStatus()
-                if canManage or status == DTConstants.STATUS.PAUSED.key or status == DTConstants.STATUS.MILESTONE.key then
+                if canManage or (project ~= nil and project:WaitsOnDirector()) then
                     element.text = "Status Reason:"
                 else
                     element.text = ""
@@ -799,9 +820,10 @@ function DTProjectEditor:_createProjectForm()
                     return nil
                 end
             },
+            --the same states the "Status Reason:" header above shows for.
             refreshToken = function(element)
                 local project = element.data.getProject(element)
-                if project and not project:IsActive() then
+                if project and project:WaitsOnDirector() then
                     element.text = project:GetStatusReason()
                 else
                     element.text = ""
@@ -1412,6 +1434,10 @@ function DTProjectEditor:_createAdjustmentsPanel()
                 },
             },
             gui.Panel {
+                --Adjustments move progress, so they can complete a project and
+                --give its item: the Director's control, like deleting them.
+                --Read at build, like the form's other Director controls.
+                classes = {cond(not DTCharSheetTab.CanManageProjects(), "collapsed")},
                 width = "12%",
                 height = "auto",
                 halign = "right",
@@ -1586,7 +1612,7 @@ end
 --- Turns one completed roll into the project's record of it
 --- @param info table The harvested roll
 --- @param roller DTRoller The entity that rolled
---- @param token any The hero whose project this is
+--- @param token any The Hero who paid for the roll, recorded as rolledById (RefundProjectRoll refunds them)
 --- @param attrid string The characteristic rolled
 --- @param isBreakthrough boolean Whether this roll came of a breakthrough
 --- @return DTRoll roll The record
@@ -1737,6 +1763,7 @@ function DTProjectEditor:_createRollButton(options)
             end
 
             element.data.enabled = isEnabled
+            element:SetClass("disabled", not isEnabled)
         end,
 
         linger = function(element)
@@ -1852,8 +1879,15 @@ end
 --- Creates action buttons for owned project panels (delete + share)
 --- @return table buttons Array containing delete button and share button elements
 function DTProjectEditor:_createOwnedProjectButtons()
+    --Only the Hero's own player or the Director deletes a project.
+    --canControlAsUser is true for the Director too.
+    local function canDelete()
+        local token = DTCharSheetTab.GetToken()
+        return token ~= nil and token.canControlAsUser
+    end
+
     local deleteButton = gui.Button {
-        classes = {"deleteButton", "sizeS"},
+        classes = {"deleteButton", "sizeS", cond(not canDelete(), "collapsed")},
         halign = "left",
         valign = "top",
         hmargin = 5,
@@ -1864,17 +1898,23 @@ function DTProjectEditor:_createOwnedProjectButtons()
             if projectController and downtimeController then
                 local project = projectController.data and projectController.data.project
                 if project then
-                    CharacterSheet.instance:AddChild(DTConfirmationDialog.ShowDeleteAsChild("Project: ".. project:GetTitle(), {
+                    local title = project:GetTitle()
+                    if title == nil or title == "" then
+                        title = "this project"
+                    end
+                    CharacterSheet.instance:AddChild(DTConfirmationDialog.CreateAsChild("Delete Confirmation",
+                        string.format("Delete %s? Its history goes with it; rolls spent on it are not returned.", title),
+                        "Delete", "Cancel", {
                         confirm = function()
                             downtimeController:FireEvent("deleteProject", project:GetID())
                         end,
-                        cancel = function()
-                            -- Optional cancel logic
-                        end
                     }))
                 end
             end
-        end
+        end,
+        refreshToken = function(element)
+            element:SetClass("collapsed", not canDelete())
+        end,
     }
 
     local shareButton = gui.Button {
@@ -2148,19 +2188,19 @@ function DTProjectEditor:CreateEditorPanel()
             if downtimeController then
                 local roll = element.data.project:GetRoll(rollId)
                 if roll then
+                    --nil when the roller is gone (a deleted follower); the roll
+                    --still goes, and the refund falls back to its payer or Hero.
                     local roller = DTRoller.CreateNew(roll)
-                    if roller then
-                        modifyTokenProps{
-                            execute = function()
-                                element.data.project:RemoveRoll(rollId)
-                            end,
-                        }
-                        downtimeController:FireEvent("adjustRolls", 1, roller)
-                        dmhub.Schedule(0.1, function()
-                            DTSettings.Touch()
-                            DTShares.Touch()
-                        end)
-                    end
+                    modifyTokenProps{
+                        execute = function()
+                            element.data.project:RemoveRoll(rollId)
+                        end,
+                    }
+                    downtimeController:FireEvent("refundRoll", roll, roller)
+                    dmhub.Schedule(0.1, function()
+                        DTSettings.Touch()
+                        DTShares.Touch()
+                    end)
                 end
             end
         end,
@@ -2615,6 +2655,48 @@ function DTProjectEditor.RecordProjectRolls(args)
         DTShares.Touch()
         AnnounceChange()
     end)
+end
+
+--- Gives back the activity a deleted roll spent: the opposite of the spend in
+--- RecordProjectRolls. The roll names the Hero who paid (rolledById) and the
+--- follower who rolled, if one did; on a shared project that is not the
+--- project's owner. A breakthrough came free with the roll before it, so it
+--- refunds nothing. A roll that names no payer refunds the fallback.
+--- @param roll DTRoll
+--- @param fallbackToken any The Hero to refund when the roll names no payer
+--- @param fallbackKey string|nil The roller id to refund under in that case; nil means the Hero
+function DTProjectEditor.RefundProjectRoll(roll, fallbackToken, fallbackKey)
+    if roll:GetBreakthrough() then
+        return
+    end
+
+    local holder = nil
+    local holderId = roll:GetRolledByID()
+    if holderId ~= nil and holderId ~= "" then
+        holder = dmhub.GetCharacterById(holderId)
+    end
+    local key = roll:GetRolledByFollowerID()
+    if holder == nil then
+        holder = fallbackToken
+        key = fallbackKey
+    end
+    if holder == nil then
+        return
+    end
+
+    --A follower who is gone, or no longer rolls on projects, has no count
+    --anyone can see or spend, so their roll comes back to the Hero instead.
+    if key ~= nil and key ~= "" and key ~= holder.charid then
+        local follower = dmhub.GetCharacterById(key)
+        if follower == nil or not DTFollowers.RollsOnProjects(follower) then
+            key = nil
+        end
+    end
+    if key == nil or key == "" then
+        key = holder.charid
+    end
+
+    DTProjectEditor.AdjustDowntimeRolls(holder, key, 1)
 end
 
 --- Comma-separated display names for a project's test characteristics

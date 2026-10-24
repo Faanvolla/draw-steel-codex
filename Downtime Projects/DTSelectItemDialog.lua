@@ -167,7 +167,13 @@ function DTSelectItemDialog._createPanel(callbacks)
     dlg:AddFooterButton{
         slot = "left",
         text = "Custom",
+        --Custom keeps the project to fill in by hand; closing any other way
+        --cancels it.
         click = function(shell)
+            confirmed = true
+            if callbacks.custom ~= nil then
+                callbacks.custom()
+            end
             shell:Close()
         end,
     }
