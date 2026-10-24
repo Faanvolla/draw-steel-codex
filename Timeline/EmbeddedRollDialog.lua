@@ -1353,6 +1353,16 @@ function GameHud.CreateEmbeddedRollDialog()
 
     local rollDisabledLabel
     local rollDiceButton
+    local rollAllPromptsCheck
+
+    --The roller asked for "Roll all prompts" (see rollAllPromptsCheck): tell
+    --the request listener so its remaining prompts for this request follow suit.
+    local NotifyRollAllPrompts = function()
+        if rollAllPrompts ~= nil and rollAllPromptsCheck ~= nil
+           and rollAllPromptsCheck.value and not rollAllPromptsCheck:HasClass("collapsed") then
+            rollAllPrompts()
+        end
+    end
     local proceedAfterRollButton
     local rollAgainButton
     local m_triggerProgressDice
@@ -4574,6 +4584,7 @@ function GameHud.CreateEmbeddedRollDialog()
         end
         RemoveTargetHints()
         if cancelRoll ~= nil then
+            NotifyRollAllPrompts()
             cancelRoll()
         end
         resultPanel:SetClass('hidden', true)
@@ -4988,6 +4999,19 @@ function GameHud.CreateEmbeddedRollDialog()
         valign = "top",
     }
 
+    --One player asked to roll the same request for several creatures (a
+    --resistance roll hitting four heroes): ticked, rolling or cancelling this
+    --one does the same to the rest. Shown only when options.numPrompts > 1.
+    rollAllPromptsCheck = gui.Check {
+        classes = { "collapsedWhenRolling", "hideWhenAI", "hideWhenMinimized", "collapsed" },
+        text = "Roll all prompts",
+        value = true,
+        halign = "left",
+        valign = "top",
+        tmargin = 4,
+        bmargin = 4,
+    }
+
     --pingButtons: another player clicked a ghost copy of one of these
     --buttons, so the real one pulses in their colour.
     local pingWatcher = gui.Panel {
@@ -5233,6 +5257,7 @@ function GameHud.CreateEmbeddedRollDialog()
             m_rollResults,
             triggersWithTabContainer,
             rollDisabledLabel,
+            rollAllPromptsCheck,
             buttonPanel,
             intelRerollButton,
         }
@@ -6640,6 +6665,14 @@ function GameHud.CreateEmbeddedRollDialog()
                 rollInput:SetClass("manualEdit", false)
 
                 rollAllPrompts = options.rollAllPrompts
+                if options.numPrompts ~= nil and options.numPrompts > 1 and rollAllPrompts ~= nil then
+                    rollAllPromptsCheck.value = true
+                    rollAllPromptsCheck.data.SetText(string.format("Roll all %d prompts", options.numPrompts))
+                    rollAllPromptsCheck:SetClass("collapsed", false)
+                else
+                    rollAllPromptsCheck.value = false
+                    rollAllPromptsCheck:SetClass("collapsed", true)
+                end
                 rollActive = options.rollActive
                 beginRoll = options.beginRoll
                 completeRoll = options.completeRoll
@@ -6923,6 +6956,7 @@ function GameHud.CreateEmbeddedRollDialog()
                                     end
 
                                     m_resolveState.current = t
+                                    UpdateAITriggerHint(nil)
                                     UpdateTriggerReactionPanel(m_resolveState)
                                     dmhub.Schedule(0.2, function()
                                         TryToProceed()
@@ -6939,43 +6973,36 @@ function GameHud.CreateEmbeddedRollDialog()
                                     local t = dmhub.Time()
                                     if m_timerState == nil then
                                         print("AI:: SET TIMER STATE")
-                                        --Encounter of the Week: no countdown. Start already
-                                        --paused (full dice, "Click to dismiss") so the timer
-                                        --never auto-proceeds; a click proceeds. pcall-guarded:
-                                        --the EotW codemod may not be loaded in this game.
+                                        --Shown as a Tip banner notice with a "Dismiss Triggers" button (see
+                                        --UpdateAITriggerHint). Encounter of the Week: no countdown, the roll
+                                        --waits until the heroes act or someone dismisses. Elsewhere the roll
+                                        --proceeds after 5s. pcall-guarded: the EotW codemod may not be loaded.
                                         local eotw = false
                                         pcall(function() eotw = EncounterOfTheWeekGame.IsEotwGame() end)
                                         m_timerState = {
                                             start = t,
-                                            current = t,
                                             expire = t + 5,
                                             paused = eotw or nil,
-                                            text = cond(eotw, "Triggers available. Click to dismiss.", "Triggers available. Click to pause."),
                                             callback = function()
-                                                if m_timerState ~= nil then
-                                                    if m_timerState.paused then
-                                                        UpdateTriggerReactionPanel(nil)
-                                                        if proceedAfterRollButton.valid then
-                                                            proceedAfterRollButton:FireEventTree("press")
-                                                        end
-                                                        return
-                                                    else
-                                                        m_timerState.text = "Triggers available. Click to dismiss."
-                                                        m_timerState.paused = true
-                                                        UpdateTriggerReactionPanel(m_timerState)
-                                                    end
+                                                UpdateAITriggerHint(nil)
+                                                if proceedAfterRollButton.valid then
+                                                    proceedAfterRollButton:FireEventTree("press")
                                                 end
                                             end,
                                         }
                                     end
 
-                                    m_timerState.current = t
-                                    UpdateTriggerReactionPanel(m_timerState)
+                                    local hintText = "Triggers available."
+                                    if not m_timerState.paused then
+                                        hintText = string.format("Triggers available. Proceeding in %ds.", math.max(1, math.ceil(m_timerState.expire - t)))
+                                    end
+                                    UpdateAITriggerHint{ text = hintText, callback = m_timerState.callback }
                                     dmhub.Schedule(0.2, function()
                                         TryToProceed()
                                     end)
                                 else
                                     UpdateTriggerReactionPanel(nil)
+                                    UpdateAITriggerHint(nil)
                                     proceedAfterRollButton:FireEventTree("press")
                                 end
                             end
@@ -6996,6 +7023,8 @@ function GameHud.CreateEmbeddedRollDialog()
                 local dmonly = rollVisibility == "dm"
                 local dicetower = rollVisibility == "dicetower"
                 local instant = false
+
+                NotifyRollAllPrompts()
 
                 --we must save off anything from the surrounding scope since this dialog might be reused after this.
                 local activeRollFn = rollActive

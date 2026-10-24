@@ -5097,7 +5097,15 @@ function creature:RefreshToken(token)
             for k,v in pairs(self.inflictedConditions) do
                 local conditionInfo = conditionsTable[k]
                 if conditionInfo ~= nil and conditionInfo.sustainFormula ~= "" then
-                    local result = ExecuteGoblinScript(conditionInfo.sustainFormula, GenerateSymbols(self), 1, "Test ongoing effect sustains")
+                    --A caster deleted from the game would make ConditionCaster() return
+                    --nil, the formula error, and the error default keep the condition
+                    --forever (a grab outliving its grabber). End it instead.
+                    local casterInfo = v.casterInfo
+                    local casterGone = casterInfo ~= nil and type(casterInfo.tokenid) == "string" and dmhub.GetCharacterById(casterInfo.tokenid) == nil
+                    local result = 0
+                    if not casterGone then
+                        result = ExecuteGoblinScript(conditionInfo.sustainFormula, GenerateSymbols(self), 1, "Test ongoing effect sustains")
+                    end
                     if not GoblinScriptTrue(result) then
                         removes = removes or {}
                         removes[#removes+1] = k
@@ -6749,11 +6757,14 @@ function creature:OnMove(path)
             occupyingLocationMap[#allTokensFiltered] = occupying
             altitudeMap[#allTokensFiltered] = otherTokenAltitude
             tileSizeMap[#allTokensFiltered] = otherTokenTileSize
+            --adj is the creature's cached array (AdjacentLocations): extend a
+            --copy, or every move check grows the cache.
+            local adjAndOccupied = table.shallow_copy(adj)
             for _,loc in ipairs(occupying) do
-                adj[#adj+1] = loc
+                adjAndOccupied[#adjAndOccupied+1] = loc
             end
 
-            adjacentLocationMap[#allTokensFiltered] = adj
+            adjacentLocationMap[#allTokensFiltered] = adjAndOccupied
         end
     end
 
@@ -8562,6 +8573,13 @@ creature.helpSymbols = {
 		examples = {},
 	},
 
+	itemcount = {
+		name = "ItemCount",
+		type = "function",
+		desc = "Given the name of an item, provides how many of it the creature carries, counting equipped copies.",
+		examples = {'ItemCount("Bluepowder Barrel") < Might'},
+	},
+
     casterset = {
         name = "CasterSet",
         type = "function",
@@ -9197,6 +9215,9 @@ creature.lookupSymbols = {
         end
     end,
 
+	--Casters are looked up with GetCharacterById, not GetTokenById: a dead
+	--creature is a despawned corpse, which GetTokenById cannot see, and
+	--formulas like "not Grabber.dead" need the dead caster to be found.
 	conditioncaster = function(c)
 		return function(condname)
 			condname = string.lower(condname)
@@ -9213,7 +9234,7 @@ creature.lookupSymbols = {
 					local cond = conditionsTable[ongoingEffectInfo.condition]
 					if (cond ~= nil and string.lower(cond.name) == condname) or string.lower(ongoingEffectInfo.name) == condname then
 						seqFound = effectInfo.seq
-						local casterTok = dmhub.GetTokenById(effectInfo.casterInfo.tokenid)
+						local casterTok = dmhub.GetCharacterById(effectInfo.casterInfo.tokenid)
 						if casterTok ~= nil then
 							result = GenerateSymbols(casterTok.properties)
 						end
@@ -9228,7 +9249,7 @@ creature.lookupSymbols = {
 			for key,entry in pairs(c:try_get("inflictedConditions") or {}) do
 				local cond = conditionsTable[key]
 				if cond ~= nil and string.lower(cond.name) == condname  and entry.casterInfo ~= nil then
-					local casterTok = dmhub.GetTokenById(entry.casterInfo.tokenid)
+					local casterTok = dmhub.GetCharacterById(entry.casterInfo.tokenid)
 					if casterTok ~= nil then
 						result = GenerateSymbols(casterTok.properties)
 					end
@@ -9343,6 +9364,36 @@ creature.lookupSymbols = {
 			end	
 
 			return 0
+		end
+	end,
+
+	--Counts carried and equipped items whose name matches, ignoring case.
+	itemcount = function(c)
+		return function(name)
+			if type(name) ~= "string" then
+				return 0
+			end
+			name = string.lower(name)
+			local gearTable = GetTableCached(equipment.tableName)
+
+			local itemids = {}
+			for itemid,_ in pairs(c:try_get("inventory", {})) do
+				itemids[itemid] = true
+			end
+			for _,equipid in pairs(c:try_get("equipment", {})) do
+				if type(equipid) == "string" then
+					itemids[equipid] = true
+				end
+			end
+
+			local total = 0
+			for itemid,_ in pairs(itemids) do
+				local item = gearTable[itemid]
+				if item ~= nil and type(item.name) == "string" and string.lower(item.name) == name then
+					total = total + c:GetItemQuantityIncludingEquipment(itemid)
+				end
+			end
+			return total
 		end
 	end,
 
@@ -9770,7 +9821,23 @@ function creature:BeginTurn()
             local auras = self:GetAurasAffecting(token, {includeAdjacentOnly = true})
             if auras ~= nil then
                 for i,auraInfo in ipairs(auras) do
-                    self:EnterAura(auraInfo, creature.AuraTokenOnlyAdjacent(auraInfo, token), true)
+                    local adjacentOnly = creature.AuraTokenOnlyAdjacent(auraInfo, token)
+                    self:EnterAura(auraInfo, adjacentOnly, true)
+
+                    --Move damage that also hits a creature starting its turn inside
+                    --(e.g. Wall of Fire). One instance, credited to the aura's caster.
+                    local auraInstance = auraInfo.auraInstance
+                    if not adjacentOnly and auraInstance.aura:try_get("movedamageStartTurn", false) then
+                        local damageInfo = auraInstance:GetDamageInfo()
+                        if damageInfo ~= nil and damageInfo.damage > 0 then
+                            self:AuraDamage(token, {
+                                type = damageInfo.type,
+                                amount = damageInfo.damage,
+                                instances = 1,
+                                aura = auraInstance,
+                            })
+                        end
+                    end
                 end
             end
         end
@@ -10074,6 +10141,10 @@ function creature:EndTurn(token)
 end
 
 function creature:EndRound(token)
+
+    --"At the end of each round" triggers see the round as it ended, before
+    --round-scoped effects and auras expire below.
+    self:DispatchEvent("endround")
 
     --remove ongoing effects.
 	if self:has_key("ongoingEffects") then

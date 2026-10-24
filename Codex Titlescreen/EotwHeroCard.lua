@@ -9,6 +9,10 @@ local mod = dmhub.GetModLoading()
 --Everything reads the character through dmhub.GetCharacterById, which
 --resolves lobby-game characters as well as map tokens.
 --Design/plan doc: EncounterOfTheWeek/EncounterOfTheWeek.md.
+
+local T = UIText.T
+local TP = UIText.Plural
+
 --- Hero collection ----------------------------------------------------------
 
 --A hero whose player never typed a name still has to label its card with
@@ -18,7 +22,7 @@ local function HeroDisplayName(tok)
     local name = nil
     pcall(function() name = tok.name end)
     if name == nil or name == "" then
-        return "Unnamed Hero"
+        return T("herocard.name.unnamed")
     end
     return name
 end
@@ -37,10 +41,10 @@ local function HeroPlayerName(tok)
     local owner = nil
     pcall(function() owner = tok.ownerId end)
     if owner == nil or owner == "" then
-        return "Unclaimed"
+        return T("herocard.player.unclaimed")
     end
     if owner == "PARTY" then
-        return "The party"
+        return T("herocard.player.party")
     end
     local name = owner
     pcall(function() name = dmhub.GetDisplayName(owner) or owner end)
@@ -133,7 +137,7 @@ local function CollectConditions(c)
             entries[#entries+1] = {
                 icon = info.iconid,
                 display = info.display or {},
-                name = info.name or "Condition",
+                name = info.name or T("herocard.condition.fallback"),
             }
         end
     end
@@ -154,7 +158,7 @@ local function CollectConditions(c)
                 entries[#entries+1] = {
                     icon = icon,
                     display = display or {},
-                    name = info.name or "Effect",
+                    name = info.name or T("herocard.effect.fallback"),
                 }
             end
         end
@@ -818,7 +822,7 @@ local function CreateResourceRow(charid)
             if tok ~= nil and tok.valid and tok.properties ~= nil then
                 local name = nil
                 pcall(function() name = tok.properties:GetHeroicResourceName() end)
-                gui.Tooltip(name or "Heroic Resource")(element)
+                gui.Tooltip(name or T("herocard.heroic_resource.fallback"))(element)
             end
         end,
     }
@@ -890,10 +894,10 @@ local function CreateRecoveriesCircle(charid)
                 recoveryValue = c:RecoveryAmount()
             end)
             local lines = {
-                string.format("<b>Recoveries: %d / %d</b>", current, max),
+                T("herocard.recoveries.tooltip_count", { current = string.format("%d", current), max = string.format("%d", max) }),
             }
             if recoveryValue ~= nil then
-                lines[#lines+1] = string.format("Recovery Value: %d Stamina", recoveryValue)
+                lines[#lines+1] = T("herocard.recoveries.tooltip_value", { value = string.format("%d", recoveryValue) })
             end
             gui.Tooltip(table.concat(lines, "\n"))(element)
         end,
@@ -1007,7 +1011,7 @@ local function CreateIntelligenceBadge(charid, overlayHeight)
         borderColor = "#9cc4ffff",
         data = { count = 0 },
         linger = function(element)
-            gui.Tooltip(string.format("%d Intelligence earned, to spend before the fight", element.data.count))(element)
+            gui.Tooltip(T("herocard.intelligence.tooltip", { count = string.format("%d", element.data.count) }))(element)
         end,
         refreshCard = function(element)
             local count = 0
@@ -1070,7 +1074,7 @@ local function CreateDowntimeBadge(charid)
         borderColor = "#e0a43aff",
         data = { count = 0 },
         linger = function(element)
-            gui.Tooltip(string.format("%d Downtime %s to spend on projects", element.data.count, cond(element.data.count == 1, "Activity", "Activities")))(element)
+            gui.Tooltip(TP("herocard.downtime.tooltip", element.data.count))(element)
         end,
         refreshCard = function(element)
             local count = 0
@@ -1175,11 +1179,10 @@ local function CreateTriggerCorner(charid)
             end
             table.sort(lines)
             local name = HeroDisplayName(tok)
-            local tip = string.format("%s has a trigger available.", name)
+            local tip = T("herocard.trigger.tooltip", { hero = name })
             if #lines > 0 then
-                tip = tip .. "\n\n" .. table.concat(lines, "\n")
+                tip = T("herocard.trigger.tooltip_list", { hero = name, triggers = table.concat(lines, "\n") })
             end
-            tip = tip .. "\n\nClick to jump to " .. name .. "."
             badge.data.tooltipText = tip
             element:SetClass("collapsed", false)
         end,
@@ -1322,17 +1325,73 @@ local function CreateSkillsLine(charid)
     }
 end
 
+--True when an image id is a cloud-asset GUID whose asset record has not
+--loaded. The engine draws such an id as a plain white square until the
+--record arrives -- e.g. for a few seconds after re-entering the lobby, whose
+--asset records load after its characters. Other id kinds never count.
+---@param id any
+---@return boolean
+local function IsUnregisteredAssetId(id)
+    if type(id) ~= "string" then
+        return false
+    end
+    if string.match(id, "^%x+%-%x+%-%x+%-%x+%-%x+$") == nil then
+        return false
+    end
+    local known = false
+    pcall(function() known = assets.allAssets[id] ~= nil end)
+    return not known
+end
+
+local PORTRAIT_RECORD_POLL_SECONDS = 0.25
+
+local ApplyPortrait
+
+--Re-applies a portrait that was waiting on its asset record, once the record
+--has loaded. One chain per panel: element.data.eotwPortraitWait holds the
+--latest request and is cleared by whichever ApplyPortrait call settles it.
+---@param element Panel
+local function SchedulePortraitRetry(element)
+    dmhub.Schedule(PORTRAIT_RECORD_POLL_SECONDS, function()
+        if mod.unloaded or not element.valid then
+            return
+        end
+        local wait = element.data.eotwPortraitWait
+        if wait == nil then
+            return
+        end
+        if IsUnregisteredAssetId(wait.portrait) then
+            SchedulePortraitRetry(element)
+            return
+        end
+        element.data.eotwPortraitWait = nil
+        --pcall: the token may be a detached snapshot copy, or gone by now.
+        pcall(ApplyPortrait, element, wait.tok, wait.aspect)
+    end)
+end
+
 --Paints a hero's portrait as a panel's full-bleed background, cropped to the
 --panel's shape the way the hero card crops it. `aspect` is the panel's
 --width / height. Leaves the panel alone when the hero has no art, so its own
---dark ground shows. Returns true when art was applied.
+--dark ground shows. Returns true when art was applied. Art whose asset
+--record has not loaded yet is treated as no art for now, and applied by
+--itself once the record arrives (rather than showing white meanwhile).
 ---@param element Panel
 ---@param tok CharacterToken
 ---@param aspect number
 ---@return boolean
-local function ApplyPortrait(element, tok, aspect)
+ApplyPortrait = function(element, tok, aspect)
     local portrait = nil
     pcall(function() portrait = tok.offTokenPortrait end)
+    local waiting = element.data.eotwPortraitWait
+    if IsUnregisteredAssetId(portrait) then
+        element.data.eotwPortraitWait = { tok = tok, aspect = aspect, portrait = portrait }
+        if waiting == nil then
+            SchedulePortraitRetry(element)
+        end
+        return false
+    end
+    element.data.eotwPortraitWait = nil
     if portrait == nil or portrait == "" then
         return false
     end
@@ -1657,7 +1716,7 @@ local function CreateHeroCard(entry, opts)
                     scale = 1.15,
                 },
             },
-            hover = gui.Tooltip(opts.dismiss.tooltip or "Dismiss"),
+            hover = gui.Tooltip(opts.dismiss.tooltip or T("herocard.dismiss.tooltip")),
             --on click, not press: a handled click stops here, but an
             --unhandled one bubbles up to the card, whose click opens the
             --hero's sheet. swallowPress covers cards that open on press.
@@ -1666,6 +1725,12 @@ local function CreateHeroCard(entry, opts)
                 opts.dismiss.click(element)
             end,
         }
+    end
+    --PROTOTYPE: the card's back and the hover button that turns the card
+    --over to it (HeroCardBack.lua).
+    local cardBack = rawget(_G, "HeroCardBack")
+    if cardBack ~= nil then
+        cardBack.Decorate(cardArgs, charid, CARD_WIDTH, cardHeight)
     end
     if opts.click ~= nil then
         cardArgs.click = function(element)

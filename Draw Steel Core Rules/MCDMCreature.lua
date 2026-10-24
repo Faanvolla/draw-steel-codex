@@ -1451,29 +1451,44 @@ function character:IsHero()
     return true
 end
 
+--Where a token stands, as a cache key for the location caches below. Moving
+--(walking, forced movement, teleport) does not Invalidate the properties, so
+--these caches are keyed on the square instead: unkeyed, a pushed hero went on
+--provoking opportunity attacks from the squares around her old spot.
+--- @param token CharacterToken
+--- @return string
+local function TokenLocKey(token)
+    local loc = token.loc
+    return string.format("%d,%d,%d,%g,%d", loc.x, loc.y, loc.floor, token.floorAltitude, token.tileSize)
+end
+
+--The returned array is shared by every caller: copy it before changing it.
 --- @return Loc[]
 function creature:OccupiedLocs()
-    if rawget(self, "_tmp_occupiedLocs") == nil then
-        local token = dmhub.LookupToken(self)
-        if token ~= nil then
-            self._tmp_occupiedLocs = token.locsOccupying
-        else
-            self._tmp_occupiedLocs = {}
-        end
+    local token = dmhub.LookupToken(self)
+    if token == nil then
+        return {}
+    end
+    local key = TokenLocKey(token)
+    if rawget(self, "_tmp_occupiedLocs") == nil or rawget(self, "_tmp_occupiedLocsKey") ~= key then
+        self._tmp_occupiedLocs = token.locsOccupying
+        self._tmp_occupiedLocsKey = key
     end
 
     return self._tmp_occupiedLocs
 end
 
+--The returned array is shared by every caller: copy it before changing it.
 --- @return Loc[]
 function creature:AdjacentLocations()
-    if rawget(self, "_tmp_adjacentLocs") == nil then
-        local token = dmhub.LookupToken(self)
-        if token ~= nil then
-            self._tmp_adjacentLocs = MCDMLocUtils.GetTokenAdjacentLocsInOpposingPairs(token)
-        else
-            self._tmp_adjacentLocs = {}
-        end
+    local token = dmhub.LookupToken(self)
+    if token == nil then
+        return {}
+    end
+    local key = TokenLocKey(token)
+    if rawget(self, "_tmp_adjacentLocs") == nil or rawget(self, "_tmp_adjacentLocsKey") ~= key then
+        self._tmp_adjacentLocs = MCDMLocUtils.GetTokenAdjacentLocsInOpposingPairs(token)
+        self._tmp_adjacentLocsKey = key
     end
 
     return self._tmp_adjacentLocs
@@ -2260,100 +2275,53 @@ creature.RegisterSymbol {
 }
 
 
-local function GetEnemyCreaturesAtLoc(token, allowedTokenIds, loc, result)
+local function AddTokenOnce(list, token)
+    for _, existing in ipairs(list) do
+        if existing.charid == token.charid then
+            return
+        end
+    end
+    list[#list + 1] = token
+end
+
+local function GetEnemyCreaturesAtLoc(token, loc, result)
     local tokensAtLoc = dmhub.GetTokensAtLoc(loc)
     if tokensAtLoc ~= nil then
         for _, otherTok in ipairs(tokensAtLoc) do
-            if token.charid ~= otherTok.charid and (allowedTokenIds == nil or allowedTokenIds[otherTok.charid]) and token:IsFriend(otherTok) == false and otherTok:GetLineOfSight(token, otherTok.properties:GetPierceWalls(), "basic") > 0 and (not otherTok.properties:IsDead()) then
-                local alreadyFound = false
-                for _, existing in ipairs(result) do
-                    if existing.charid == otherTok.charid then
-                        alreadyFound = true
-                        break
-                    end
-                end
-
-                if not alreadyFound then
-                    result[#result + 1] = otherTok
-                end
+            if token.charid ~= otherTok.charid and token:IsFriend(otherTok) == false and otherTok:GetLineOfSight(token, otherTok.properties:GetPierceWalls(), "basic") > 0 and (not otherTok.properties:IsDead()) then
+                AddTokenOnce(result, otherTok)
             end
         end
     end
 end
 
-local function GetFlankingCreaturesFromOpposingSides(token, allowedTokenIds, locs_a, locs_b, result)
-    local enemies_a = {}
-    local enemies_b = {}
-    for _, loc in ipairs(locs_a) do
-        GetEnemyCreaturesAtLoc(token, allowedTokenIds, loc, enemies_a)
+--Bounding rectangle of a token's space in grid coordinates, or nil if it occupies no squares.
+local function GetTokenBounds(token)
+    local locs = token.locsOccupying
+    if locs == nil or #locs == 0 then
+        return nil
     end
-
-    if #enemies_a == 0 then
-        return
+    local x1, y1, x2, y2 = locs[1].x, locs[1].y, locs[1].x + 1, locs[1].y + 1
+    for _, loc in ipairs(locs) do
+        x1 = math.min(x1, loc.x)
+        y1 = math.min(y1, loc.y)
+        x2 = math.max(x2, loc.x + 1)
+        y2 = math.max(y2, loc.y + 1)
     end
-
-    for _, loc in ipairs(locs_b) do
-        GetEnemyCreaturesAtLoc(token, allowedTokenIds, loc, enemies_b)
-    end
-
-    if #enemies_b == 0 then
-        return
-    end
-
-    if #enemies_a == 1 and #enemies_b == 1 and enemies_a[1].charid == enemies_b[1].charid then
-        return
-    end
-
-    for _, a in ipairs(enemies_a) do
-        local alreadyFound = false
-        for _, b in ipairs(result) do
-            if a.charid == b.charid then
-                alreadyFound = true
-                break
-            end
-        end
-        if not alreadyFound then
-            result[#result + 1] = a
-        end
-    end
-
-    for _, a in ipairs(enemies_b) do
-        local alreadyFound = false
-        for _, b in ipairs(result) do
-            if a.charid == b.charid then
-                alreadyFound = true
-                break
-            end
-        end
-        if not alreadyFound then
-            result[#result + 1] = a
-        end
-    end
+    return { x1 = x1, y1 = y1, x2 = x2, y2 = y2, anchor = locs[1] }
 end
 
 local function GetLocsAdjacentToToken(token)
-    local locs = token.locsOccupying
-    if locs == nil or #locs == 0 then
+    local bounds = GetTokenBounds(token)
+    if bounds == nil then
         return {}
     end
-    local topLeft = locs[1]
-    local bottomRight = locs[1]
 
-    for _, loc in ipairs(locs) do
-        if loc.x < topLeft.x or loc.y < topLeft.y then
-            topLeft = loc
-        end
+    --start one square up and left of the token's space.
+    local topLeft = bounds.anchor:dir(bounds.x1 - 1 - bounds.anchor.x, bounds.y1 - 1 - bounds.anchor.y)
 
-        if loc.x > bottomRight.x or loc.y > bottomRight.y then
-            bottomRight = loc
-        end
-    end
-
-    topLeft = topLeft:dir(-1, -1)
-    bottomRight = bottomRight:dir(1, 1)
-
-    local w = bottomRight.x - topLeft.x
-    local h = bottomRight.y - topLeft.y
+    local w = bounds.x2 - bounds.x1 + 1
+    local h = bounds.y2 - bounds.y1 + 1
 
     local result = {}
 
@@ -2387,10 +2355,56 @@ local function GetEnemiesAdjacentToToken(token)
     local locs = GetLocsAdjacentToToken(token)
     local result = {}
     for _, loc in ipairs(locs) do
-        GetEnemyCreaturesAtLoc(token, nil, loc, result)
+        GetEnemyCreaturesAtLoc(token, loc, result)
     end
 
     return result
+end
+
+--True if the line between the centers of boxes a and b crosses target from one side/corner to the opposite one.
+local function LineCrossesOppositeSides(a, b, target)
+    local eps = 1e-6
+    local px, py = (a.x1 + a.x2) / 2, (a.y1 + a.y2) / 2
+    local dx, dy = (b.x1 + b.x2) / 2 - px, (b.y1 + b.y2) / 2 - py
+
+    --Clip the segment to the target rectangle (Liang-Barsky).
+    local t0, t1 = 0, 1
+    local p = { -dx, dx, -dy, dy }
+    local q = { px - target.x1, target.x2 - px, py - target.y1, target.y2 - py }
+    for k = 1, 4 do
+        if math.abs(p[k]) < eps then
+            if q[k] < 0 then
+                return false
+            end
+        else
+            local r = q[k] / p[k]
+            if p[k] < 0 then
+                t0 = math.max(t0, r)
+            else
+                t1 = math.min(t1, r)
+            end
+        end
+    end
+    if t1 - t0 < eps then
+        return false
+    end
+
+    --Reject lines that only run along an edge.
+    local tm = (t0 + t1) / 2
+    local mx, my = px + dx * tm, py + dy * tm
+    if mx <= target.x1 + eps or mx >= target.x2 - eps or my <= target.y1 + eps or my >= target.y2 - eps then
+        return false
+    end
+
+    local function sides(t)
+        local x, y = px + dx * t, py + dy * t
+        return {
+            left = math.abs(x - target.x1) < eps, right = math.abs(x - target.x2) < eps,
+            top = math.abs(y - target.y1) < eps, bottom = math.abs(y - target.y2) < eps,
+        }
+    end
+    local s0, s1 = sides(t0), sides(t1)
+    return (s0.left and s1.right) or (s0.right and s1.left) or (s0.top and s1.bottom) or (s0.bottom and s1.top)
 end
 
 function creature:GetFlankingTokens(tokensOverride)
@@ -2403,7 +2417,8 @@ function creature:GetFlankingTokens(tokensOverride)
         return {}
     end
 
-    local adjacentEnemies = tokensOverride or GetEnemiesAdjacentToToken(token)
+    --copy the override so filtering below doesn't change the caller's table.
+    local adjacentEnemies = tokensOverride and { table.unpack(tokensOverride) } or GetEnemiesAdjacentToToken(token)
     if #adjacentEnemies <= 1 then
         return {}
     end
@@ -2455,51 +2470,22 @@ function creature:GetFlankingTokens(tokensOverride)
         end
     end
 
-    local allowedTokenIds = {}
-    for _, enemy in ipairs(adjacentEnemies) do
-        allowedTokenIds[enemy.charid] = true
-    end
-
+    --Two enemies flank if the line between their centers passes through opposite sides of our space.
     local result = {}
-
-    local locs = token.locsOccupying
-    local topLeft = locs[1]
-    local bottomRight = locs[1]
-
-    for _, loc in ipairs(locs) do
-        if loc.x < topLeft.x or loc.y < topLeft.y then
-            topLeft = loc
+    local targetBox = GetTokenBounds(token)
+    local enemyBoxes = {}
+    for i, enemy in ipairs(adjacentEnemies) do
+        enemyBoxes[i] = GetTokenBounds(enemy)
+    end
+    for i = 1, #adjacentEnemies - 1 do
+        for j = i + 1, #adjacentEnemies do
+            local a, b = enemyBoxes[i], enemyBoxes[j]
+            if targetBox ~= nil and a ~= nil and b ~= nil and LineCrossesOppositeSides(a, b, targetBox) then
+                AddTokenOnce(result, adjacentEnemies[i])
+                AddTokenOnce(result, adjacentEnemies[j])
+            end
         end
-
-        if loc.x > bottomRight.x or loc.y > bottomRight.y then
-            bottomRight = loc
-        end
     end
-
-    topLeft = topLeft:dir(-1, -1)
-    bottomRight = bottomRight:dir(1, 1)
-
-    GetFlankingCreaturesFromOpposingSides(token, allowedTokenIds, { topLeft }, { bottomRight }, result)
-    GetFlankingCreaturesFromOpposingSides(token, allowedTokenIds, { topLeft:dir(bottomRight.x - topLeft.x, 0) },
-        { bottomRight:dir(topLeft.x - bottomRight.x, 0) }, result)
-
-    local topLocs = {}
-    local botLocs = {}
-    for i = 1, bottomRight.x - topLeft.x - 1 do
-        topLocs[#topLocs + 1] = topLeft:dir(i, 0)
-        botLocs[#botLocs + 1] = bottomRight:dir(-i, 0)
-    end
-
-    GetFlankingCreaturesFromOpposingSides(token, allowedTokenIds, topLocs, botLocs, result)
-
-    local leftLocs = {}
-    local rightLocs = {}
-    for i = 1, bottomRight.y - topLeft.y - 1 do
-        leftLocs[#leftLocs + 1] = topLeft:dir(0, i)
-        rightLocs[#rightLocs + 1] = bottomRight:dir(0, -i)
-    end
-
-    GetFlankingCreaturesFromOpposingSides(token, allowedTokenIds, leftLocs, rightLocs, result)
 
     for _, enemy in ipairs(grantedFlanking) do
         local found = false
@@ -3868,10 +3854,11 @@ local g_coverFromEnemiesCacheSeconds = 0.5
 --dmhub.GetCoverInfo(enemyToken, selfToken, pierce) is non-nil (nil means no
 --cover); the observing enemy is the attacker, and pierce follows the
 --RuleUtils.HasLineOfEffect idiom of using the attacker's PierceWalls.
-function creature:CalculateCoverFromEnemies()
+--Pass fresh = true to skip the cache, e.g. right after the creature moved.
+function creature:CalculateCoverFromEnemies(fresh)
     local now = dmhub.Time()
     local cached = self:try_get("_tmp_coverFromEnemies")
-    if cached ~= nil and (now - cached.time) < g_coverFromEnemiesCacheSeconds then
+    if (not fresh) and cached ~= nil and (now - cached.time) < g_coverFromEnemiesCacheSeconds then
         return cached
     end
 
@@ -3942,6 +3929,38 @@ creature.RegisterSymbol {
         desc = "True if at least one living enemy has cover to this creature (in combat, only enemies in the initiative queue count; out of combat, all enemy tokens on the map count), or if the creature has the Has Cover custom attribute. False when there are no relevant enemies and the attribute is absent.",
         seealso = {"Cover From All Enemies", "Concealed"},
         examples = {"Concealed or Cover From Any Enemy"},
+    }
+}
+
+--Concealed and CoverFromAllEnemies are cached (per game update / for half a
+--second), so straight after a teleport they can still describe the square the
+--creature left. This answers the same question measured at its current square.
+--Not for modifier filterConditions: IsConcealed reads the modifier list.
+creature.RegisterSymbol {
+    symbol = "canhidehere",
+    lookup = function(c)
+        return c:IsConcealed() or c:CalculateCoverFromEnemies(true).all
+    end,
+    help = {
+        name = "CanHideHere",
+        type = "boolean",
+        desc = "True if the creature has concealment, or cover from every relevant enemy, at the square it stands on right now -- the cover or concealment the Hide maneuver needs. Measured fresh, so it is correct straight after the creature moves or teleports. Use it in ability filters, not in modifier conditions.",
+        seealso = {"Concealed", "Cover From All Enemies", "Automatic Rule Adjudication"},
+        examples = {"AutomaticRuleAdjudication and CanHideHere"},
+    }
+}
+
+creature.RegisterSymbol {
+    symbol = "automaticruleadjudication",
+    lookup = function(c)
+        return AutomaticRuleAdjudication()
+    end,
+    help = {
+        name = "AutomaticRuleAdjudication",
+        type = "boolean",
+        desc = "True when the game's Automatic Rule Adjudication setting is on (always on in Encounter of the Week). Content uses it to decide a rules question automatically instead of prompting the player.",
+        seealso = {"CanHideHere"},
+        examples = {"AutomaticRuleAdjudication and CanHideHere"},
     }
 }
 
@@ -4831,6 +4850,7 @@ creature.RegisterSymbol {
     },
 }
 
+--Creatures whose ability list is being built right now. Building the list runs
 --[==[ DEAD_CODE - overridden by Draw Steel Core Rules\MCDMMonster.lua:24
 function creature:PowerRollBonus()
     return 0
@@ -6914,11 +6934,23 @@ end
 --- @param token CharacterToken
 --- @param info {type: string, amount: number, instances: number, aura: AuraInstance}
 function creature:AuraDamage(token, info)
+    --Credit the damage to the aura's caster (e.g. Wall of Fire's elementalist), so
+    --their "deal damage" triggers and damage stats count it.
+    local attacker = nil
+    local casterid = info.aura:try_get("casterid")
+    local casterToken = casterid ~= nil and dmhub.GetTokenById(casterid) or nil
+    if casterToken ~= nil and casterToken.valid then
+        attacker = casterToken.properties
+    end
+
+    --Keywords of the ability that cast the aura (Fire, Magic, ...), if any.
+    local keywords = info.aura:try_get("keywords") or {}
+
     token:ModifyProperties {
         description = info.aura.aura.name,
         execute = function()
             for i = 1, info.instances do
-                self:InflictDamageInstance(info.amount, info.type, {}, info.aura.aura.name, { damagesound = "Attack.Enviro" })
+                self:InflictDamageInstance(info.amount, info.type, keywords, info.aura.aura.name, { damagesound = "Attack.Enviro", attacker = attacker })
             end
         end,
     }
@@ -7081,7 +7113,7 @@ function creature:PersistentAbilities()
             break
         elseif (q.round or 0) > (a.round or 0) or ((q.round or 0) == (a.round or 0) and (q.turn or 0) > (a.turn or 0)) then
             if a.ability == nil or type(a.ability) ~= "table" or getmetatable(a.ability) == nil then
-                break
+                goto continue
             end
             local ability = a.ability:MakeTemporaryClone()
 
@@ -7089,7 +7121,7 @@ function creature:PersistentAbilities()
             local persistenceMode = persistence.mode
 
             if persistenceMode == "none" then
-                break
+                goto continue
             end
 
             if persistenceMode == "recast_new" and a.ability:try_get("recastNewAbility") then
@@ -7208,6 +7240,8 @@ function creature:PersistentAbilities()
             local customPrompt = persistence.promptText
             if type(customPrompt) == "string" and trim(customPrompt) ~= "" then
                 promptText = string.format("%s: %s; %s", tr("Persistence"), ability.name, customPrompt)
+                --The "!" trigger card shows triggerPrompt as its rules text.
+                newAbility.triggerPrompt = customPrompt
             else
                 promptText = string.format(tr("Persistence: Recast %s"), ability.name)
             end
@@ -7243,6 +7277,7 @@ function creature:PersistentAbilities()
                 result[#result + 1] = mod
             end
         end
+        ::continue::
     end
 
     return result
@@ -7302,7 +7337,11 @@ function creature:EndPersistentAbilityById(guid)
         end
     end
 
-    for _, objref in ipairs(persistentAbilities[persistentIndex]:try_get("objects") or {}) do
+    --No entry with this guid (e.g. already ended): still sweep up auras stamped with it below.
+    local entryObjects = persistentIndex ~= nil and persistentAbilities[persistentIndex]:try_get("objects") or {}
+    local entryObjectIds = {}
+    for _, objref in ipairs(entryObjects) do
+        entryObjectIds[objref.objid] = true
         local obj = game.LookupObject(objref.floorid, objref.objid)
         if obj ~= nil then
             obj:Destroy()
@@ -7313,7 +7352,11 @@ function creature:EndPersistentAbilityById(guid)
     --Persisting"). RemoveAura destroys the aura and drops it from self.auras.
     local linkedAuras = {}
     for _, aura in ipairs(self:try_get("auras", {})) do
-        if aura:try_get("persistenceId") == guid then
+        --Also match by object, for auras saved before they were stamped with
+        --persistenceId. Their object was destroyed above, so otherwise they would
+        --stay as invisible auras that still deal damage.
+        local auraObject = aura:try_get("object")
+        if aura:try_get("persistenceId") == guid or (auraObject ~= nil and entryObjectIds[auraObject.objid]) then
             linkedAuras[#linkedAuras + 1] = aura.guid
         end
     end
@@ -7581,6 +7624,27 @@ creature.RegisterSymbol {
     }
 }
 
+--Below the water's surface (diving), not just in water: the map water level's
+--deep water or painted water. Submerged creatures have cover, and others have
+--cover from them (globalrulemods/cover.yaml).
+creature.RegisterSymbol {
+    symbol = "underwater",
+
+    lookup = function(c)
+        if c:CurrentMoveType() ~= "swim" then
+            return false
+        end
+        local token = dmhub.LookupToken(c)
+        return token ~= nil and token.distanceBelowGround >= 1
+    end,
+    help = {
+        name = "Underwater",
+        type = "boolean",
+        desc = "True if this creature is swimming below the water's surface (at least 1 square under it). A creature floating on the surface is In Water but not Underwater.",
+        seealso = {"InWater", "Distance Below Ground"},
+    }
+}
+
 creature.RegisterSymbol {
     symbol = "onground",
 
@@ -7767,6 +7831,32 @@ creature.RegisterSymbol {
         type = "number",
         desc = "The number of players in the game, not counting followers.",
         seealso = {},
+    }
+}
+
+--"For each hero in the encounter": live heroes on the map, and in initiative when
+--combat is running. Unlike NumberOfPlayers this counts what is actually present.
+creature.RegisterSymbol {
+    symbol = "heroesinencounter",
+    lookup = function(c)
+        local q = dmhub.initiativeQueue
+        local entries = (q ~= nil and not q.hidden) and q.entries or nil
+        local count = 0
+        for _, tok in ipairs(dmhub.allTokens) do
+            local props = tok.properties
+            if tok.valid and props ~= nil and props:IsHero() and not props:IsDead() then
+                if entries == nil or entries[InitiativeQueue.GetInitiativeId(tok)] ~= nil then
+                    count = count + 1
+                end
+            end
+        end
+        return count
+    end,
+    help = {
+        name = "HeroesInEncounter",
+        type = "number",
+        desc = "The number of live heroes on the map; while combat runs, only those in initiative.",
+        seealso = {"NumberOfPlayers"},
     }
 }
 
@@ -8331,6 +8421,48 @@ GameSystem.RegisterGoblinScriptField{
 
         return false
     end,
+}
+
+--Distance in squares from this creature to the nearest live Targetable object whose
+--object keywords include the given keyword, on the same actual floor. Footprint to
+--footprint, like token:Distance. 999 when there is no such object, so a "within N"
+--test simply fails. Topaz Dragon spikes use it: "each enemy within 2 squares of a spike".
+creature.RegisterSymbol {
+    symbol = "distancetoobjectwithkeyword",
+    lookup = function(c)
+        return function(keyword)
+            local token = GetDeployedCreatureToken(c)
+            if token == nil or keyword == nil or keyword == "" then
+                return 999
+            end
+
+            local actualFloor = GetTokenActualFloor(token)
+            local best = 999
+            --GetTargetableObjectsWithKeyword only returns objects on the current map
+            --(object tokens report hasTokenOnThisMap = false, so it can't be used here).
+            for _,other in ipairs(Encounter.GetTargetableObjectsWithKeyword(string.lower(tostring(keyword)))) do
+                if other.charid ~= token.charid and GetTokenActualFloor(other) == actualFloor then
+                    local alive = true
+                    pcall(function()
+                        alive = other.properties:CurrentHitpoints() > 0
+                    end)
+                    if alive then
+                        local distance = tonumber(token:Distance(other)) or 999
+                        if distance < best then
+                            best = distance
+                        end
+                    end
+                end
+            end
+            return best
+        end
+    end,
+    help = {
+        name = "DistanceToObjectWithKeyword",
+        type = "function",
+        desc = "Given an object keyword, the distance in squares to the nearest live targetable object with that keyword on this creature's floor. 999 if there is none.",
+        examples = { 'DistanceToObjectWithKeyword("topaz spike") <= 2' },
+    },
 }
 
 

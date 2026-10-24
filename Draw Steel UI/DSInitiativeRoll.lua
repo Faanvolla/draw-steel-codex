@@ -419,7 +419,7 @@ local function createDrawSteelBanner(options)
                     elseif roll ~= nil then
                         --a caller may hold the start of combat once the winner
                         --is known (Encounter of the Week lets the heroes arrange
-                        --themselves when they win): it gets the result and a
+                        --themselves, whichever side won): it gets the result and a
                         --begin function to call when it is ready.
                         local heroesWin = m_heroesWin
                         local begun = false
@@ -2756,7 +2756,14 @@ Commands.RegisterMacro{
     command = function(str)
     local args = string.split(str or "", " ")
 
-    local tokens = dmhub.selectedTokens
+    --only tokens on this map join its combat, not creatures selected off the
+    --board (a tabletop card's).
+    local tokens = {}
+    for _, tok in ipairs(dmhub.selectedTokens) do
+        if tok.onBoard then
+            tokens[#tokens+1] = tok
+        end
+    end
 
     print("ARGS::", #args)
     if #args == 4 then

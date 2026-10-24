@@ -1,16 +1,14 @@
 local mod = dmhub.GetModLoading()
 
 --The Director's Screen: a see-through dark band down the right side of the
---Director's table. What lies on it is the Director's alone; dragging an item
---off it onto the table shares it with the players, and dragging an item onto
---it stops sharing it (David, 2026-10-16).
+--Director's table. What lies on it is the Director's alone: dragging an item
+--onto it stops sharing it.
 --
---The side an item is on decides its share, as a guarantee (David,
---2026-10-16): on the screen it is never shared, and has no share button; on
---the table it is shared, unless the Director held it back with its share
---button (or unshared it another way, e.g. Map Settings), and then it shows
---faded (groupOpacity) while it is not the focused item, so a held-back item
---never passes for a shared one.
+--Nothing is ever shared except by its share button (David, 2026-10-17): new
+--items start unshared wherever they land, and dragging an item off the
+--screen gives it back its share button without turning it on. On the screen
+--an item is never shared and has no share button (a guarantee, David,
+--2026-10-16).
 --
 --  - The items are the table items that can be shared: map windows (whose
 --    share is the map's Player Viewable), scene windows, NPC cards and
@@ -18,19 +16,17 @@ local mod = dmhub.GetModLoading()
 --    stand for their windows. Tabletop.ScreenItems lists them.
 --  - An item is on the screen when its middle is. It joins or leaves the
 --    screen when the Director drops it (DirectorScreen.ItemDropped from each
---    item's drag): onto the screen unshares it, off it shares it.
+--    item's drag): onto the screen unshares it; off it leaves its share off.
 --  - An item new on the table (a window, card or journal item opened any
---    way) is private if it lies on the open screen and shared with every
---    player anywhere else, including with the screen closed. One lying on
+--    way) is unshared. Lying on the open screen it joins it. One lying on
 --    the screen that is already shared (a Player Viewable map's window) is
 --    moved off it instead: opening a window never unshares a map.
 --  - Something the Director drags onto the table (a map, scene, journal or
 --    character row from a panel, a token out of its map, files from the
 --    desktop) follows the drop's rule: dropped on the open screen it is
---    private, dropped anywhere else it is shared, even if it was held back
---    (DirectorScreen.ItemPlaced).
---  - The items on the table when the layout loads keep their shares: an
---    unshared one is held back (faded), not shared.
+--    private (unshared even if it was shared); anywhere else its share is
+--    left as it was (DirectorScreen.ItemPlaced).
+--  - The items on the table when the layout loads keep their shares.
 --  - Items on the screen are stuck to its edge (Venla, 2026-10-17): when the
 --    edge moves (a resize, or opening and closing it) they move with it by
 --    the same amount, even off the table's right side, like the art on it.
@@ -40,7 +36,7 @@ local mod = dmhub.GetModLoading()
 --    2026-10-17): its picture and name at a fixed size. Double-click it or
 --    its hover button to expand it there, still private; minimizing it again
 --    makes the card. Dragged off the screen, a card grows back into its
---    window at full size where it was dropped, and is shared.
+--    window at full size where it was dropped, still unshared.
 --  - Resizing the screen never shares or unshares: items on it go along with
 --    the edge (above), and items on the table are pushed off it as it
 --    widens. One that cannot get off (the screen is the whole table) goes
@@ -48,27 +44,28 @@ local mod = dmhub.GetModLoading()
 --  - Nothing on it is ever shared: an item on it that gets shared some other
 --    way (Map Settings) is moved off it.
 --  - The screen resizes from its left edge or its tab, from the full width of
---    the table down to just the tab in the bottom-right corner. A click on the
---    tab opens or closes it. Closed, the items on it are hidden (stowed), and
+--    the table down to just the tab in the bottom-right corner; let go near
+--    the right side and it slides shut. A click on the tab slides it open or
+--    shut (Venla, 2026-10-18). Closed, the items on it are hidden (stowed), and
 --    focusing a stowed map window opens the screen again (Reveal).
 --  - Its size and its items are saved with the table layout (per user, per
 --    game). Players have no screen.
 --  - While a maximized map or scene window covers the table, the screen is
 --    gone, as if closed: its band and tab are hidden, so are the items on it,
---    and new items are shared (David, 2026-10-16). Maximizing never changes a
+--    and nothing new can join it (David, 2026-10-16). Maximizing never changes a
 --    window's share, and the maximized window keeps its share button even if
 --    it came from the screen; shared that way, it leaves the screen, and is
 --    moved off it when restored.
 --
---  - The screen is always over everything shared (Venla, 2026-10-17): a
---    window or card on the table that reaches onto it goes under it, and
+--  - The screen is always over everything on the table (Venla, 2026-10-17):
+--    a window or card on the table that reaches onto it goes under it, and
 --    only the items on the screen lie on top. The band lives in the
 --    documents layer, among the windows, and KeepOnTop keeps their order:
---    shared items (with the journal windows and table items, which stack
---    with them by focus), the screen, the icon rails, the screen's own
+--    the table's items (with the journal windows and table items, which
+--    stack with them by focus), the screen, the icon rails, the screen's own
 --    items, then any dialog. A
---    shared minimized button (on the button layer, over every window) cannot
---    go under it, so it is nudged off the screen instead.
+--    minimized button on the table (on the button layer, over every window)
+--    cannot go under it, so it is nudged off the screen instead.
 --
 --GameHud mounts two layers: the band's (CreateLayer; the band itself is
 --moved into the documents layer, see KeepOnTop), and the tab and the drop
@@ -87,10 +84,10 @@ DirectorScreen = {}
 --- @field store TabletopShareStore its share
 --- @field changed fun() call after its share was changed here
 --- @field stow fun(stowed: boolean) hides it (the screen is closed) or shows it
---- @field panel fun(): Panel|nil what the Director sees of it on the table (faded while held back)
+--- @field panel fun(): Panel|nil what the Director sees of it on the table
 --- @field shareButton fun(): Panel|nil its share button (hidden while it is on the screen)
 --- @field showBehind fun(behind: boolean) whether it lies behind the screen (hides its grey not-shared frame)
---- @field maximized nil|boolean a maximized window (never faded; keeps its share button)
+--- @field maximized nil|boolean a maximized window (keeps its share button)
 --- @field card nil|boolean a window shrunk to a card (see Tabletop's g_card)
 --- @field onButtonLayer nil|boolean a minimized window's button or card, drawn over every window (KeepOnTop cannot put it under the screen)
 --- @field shrink nil|fun(x: number, y: number) shrinks a map or scene window (or its button) to a card at (x, y)
@@ -101,11 +98,27 @@ local TAB_WIDTH = 14
 local TAB_HEIGHT = 64
 --between the tab and the bottom of the table.
 local TAB_BOTTOM = 18
-local GRIP_WIDTH = 12
+--the tab's grab area reaches this far past what is drawn, all round, so it
+--is easy to hit (Venla, 2026-10-19).
+local TAB_SLOP = 10
+local GRIP_WIDTH = 16
 --narrower than this past the right rail, the screen closes to its tab.
 local MIN_OPEN = 90
+--an edge dragged closer than this to the table's left side snaps all the way
+--to it: the grab offset otherwise keeps it a few units short of full width.
+local SNAP_FULL = 40
 --how much of the table a screen opened for the first time takes.
 local DEFAULT_FRACTION = 0.22
+--the widest the screen gets, as a fraction of the table: all of it
+--(Venla, 2026-10-19; a 0.7 cap that kept a players' side was dropped).
+local MAX_FRACTION = 1
+--the old cap; a saved size of exactly this is read as full width (Load).
+local STALE_CAP = 0.7
+--let go of the edge closer than this (past the rail) to the table's right
+--side and the screen slides shut.
+local SNAP_CLOSE = 200
+--how long opening or closing the screen slides.
+local SLIDE_SECONDS = 0.22
 --after the Director moves an item across the edge, its share takes a moment
 --to come back from the server; meanwhile the item is not moved off the screen.
 local GRACE_SECONDS = 2.5
@@ -114,8 +127,6 @@ local GRACE_SECONDS = 2.5
 local PLACED_SECONDS = 60
 --a click that moved the tab less than this is a click, not a resize.
 local CLICK_SLOP = 4
---how see-through an item held back on the table is while not focused.
-local HELD_BACK_OPACITY = 0.45
 
 --Covers: art shown on the screen, under its items. The art fills the screen's
 --height and is cropped to its width (never stretched). It sticks to the
@@ -168,22 +179,19 @@ end
 --fraction: of the table's width; 0 while closed.
 --lastFraction: the size it opens to from the tab.
 --members: key -> true for the items on the screen.
---heldBack: key -> true for the items on the table the Director keeps from
---the players (unshared; drawn faded).
---known: key -> true for every item seen since the layout loaded; nil until
---the first look, which only records them (no item is new then).
+--looked: whether a look has run since the layout loaded (the first one puts
+--the screen's items back where it carried them).
 --offsets: key -> how far right of the edge each item on the screen lies (its
 --left edge minus the screen's), so it can follow the edge (FollowEdge).
 --lastEdge: the edge FollowEdge last saw; nil until the first layout.
 --pushed: key -> true for a shared item the last look moved off the screen
 --(if it is still on it, it cannot get off).
---faded: panel -> whether its fade is on (weak keys), so each look writes
---only what changed.
 --grace: key -> time until which the item is left alone (GRACE_SECONDS).
 --placed: key -> time until which a drop's item is awaited (ItemPlaced).
 --drag: {key, centre, seen} while the Director drags an item; key is nil and
 --fresh is true for something new dragged from a panel (NewItemDragging).
---resize: {offset, startX, moved} while the edge or the tab is dragged.
+--resize: {offset, startX, moved, before} while the edge or the tab is dragged.
+--slide: {from, to, start} while the screen slides open or shut (SlideTo).
 --preview: {key, mode, overlay} while a dragged item shows what dropping it
 --would do (SetPreview).
 --passUntil: while a drag reports in (ItemDragging, NewItemDragging), the
@@ -194,14 +202,13 @@ local g = {
     members = {},
     offsets = {},
     lastEdge = nil,
-    heldBack = {},
-    known = nil,
+    looked = false,
     pushed = {},
-    faded = setmetatable({}, {__mode = "k"}),
     grace = {},
     placed = {},
     drag = nil,
     resize = nil,
+    slide = nil,
     preview = nil,
     passUntil = 0,
     passing = false,
@@ -243,8 +250,14 @@ local function TableSize()
     return rect.w, rect.h
 end
 
---How far in from the right the right icon rail reaches (0 with no rail).
+--How far in from the right the right icon rail reaches: 0 with no rail, or
+--when the rail is empty, so the closed tab sits flush to the table's edge
+--(Venla, 2026-10-19).
 local function RailReserve()
+    local occupied = rawget(_G, "RailSideOccupied")
+    if occupied ~= nil and not occupied("right") then
+        return 0
+    end
     local fn = rawget(_G, "RailRightColumnWidth")
     if fn == nil then
         return 0
@@ -253,6 +266,7 @@ local function RailReserve()
 end
 
 --The x of the screen's left edge: the table's width while it is closed.
+--Fully open it reaches the table's left side (Venla, 2026-10-19).
 local function Edge()
     local w = TableSize()
     if not IsOpen() then
@@ -322,10 +336,6 @@ local g_styles = {
         bgcolor = "#ffffffa0",
     },
     {
-        selectors = {"directorScreenEdge", "sharing"},
-        bgcolor = "@share",
-    },
-    {
         selectors = {"directorScreenCaption"},
         color = "#ffffff70",
         fontSize = 13,
@@ -341,19 +351,36 @@ local g_styles = {
     {
         selectors = {"directorScreenTabFace"},
         bgcolor = "@bg",
+        --rounded on the left only: its right side runs into the divider.
+        cornerRadius = {x1 = 6, y1 = 0, x2 = 0, y2 = 6},
     },
     {
         selectors = {"directorScreenTabFace", "lit"},
         bgcolor = "@bgRaised",
     },
     {
+        --flipped: the screen is at full width, so the tab lies on the screen
+        --against its edge, rounded on the right (Venla, 2026-10-19).
+        selectors = {"directorScreenTabFace", "flipped"},
+        cornerRadius = {x1 = 0, y1 = 6, x2 = 6, y2 = 0},
+    },
+    {
+        selectors = {"directorScreenTabX"},
+        bgcolor = "#ffffff90",
+        hidden = 1,
+    },
+    {
+        selectors = {"directorScreenTabX", "parent:flipped"},
+        hidden = 0,
+    },
+    {
+        selectors = {"directorScreenTabX", "parent:lit"},
+        bgcolor = "#ffffffff",
+    },
+    {
         selectors = {"directorScreenHint"},
         bgcolor = "#121316ee",
         borderColor = "#ffffff40",
-    },
-    {
-        selectors = {"directorScreenHint", "sharing"},
-        borderColor = "@share",
     },
     {
         selectors = {"directorScreenHintLabel"},
@@ -396,7 +423,10 @@ local function Layout(force)
     local w, h = TableSize()
     local edge = Edge()
     local reserve = RailReserve()
-    local signature = string.format("%s|%s|%d|%d|%d|%d", tostring(active), tostring(hidden), math.floor(w), math.floor(h), math.floor(edge), math.floor(reserve))
+    --IsOpen is in it: the last frames of a slide shut leave the edge at the
+    --table's side while still open, so the edge alone missed the close and
+    --the band (and its shadow) stayed up.
+    local signature = string.format("%s|%s|%s|%d|%d|%d|%d", tostring(active), tostring(hidden), tostring(IsOpen()), math.floor(w), math.floor(h), math.floor(edge), math.floor(reserve))
     if signature == g.signature and not force then
         return
     end
@@ -430,43 +460,96 @@ local function Layout(force)
 
     --the tab hangs off the screen's edge, and never under the right rail.
     local right = math.min(edge, w - reserve)
-    tab.x = math.max(0, right - TAB_WIDTH)
-    tab.y = math.max(0, h - TAB_BOTTOM - TAB_HEIGHT)
-    face.x = tab.x
-    face.y = tab.y
+    --no room to hang off the edge (full width): it flips onto the screen and
+    --shows an X.
+    local flipped = IsOpen() and right < TAB_WIDTH
+    face:SetClass("flipped", flipped)
+    if flipped then
+        right = right + TAB_WIDTH
+    end
+    face.x = math.max(0, right - TAB_WIDTH)
+    face.y = math.max(0, h - TAB_BOTTOM - TAB_HEIGHT)
+    tab.x = face.x - TAB_SLOP
+    tab.y = face.y - TAB_SLOP
 end
 
 local function SetFraction(fraction)
-    g.fraction = math.max(0, math.min(1, fraction))
+    g.fraction = math.max(0, math.min(MAX_FRACTION, fraction))
     Layout()
+end
+
+--Slides the screen to a size (0 closes it): Slide, each frame, moves it
+--along; the items on it ride along with the edge (FollowEdge).
+--- @param fraction number
+local function SlideTo(fraction)
+    fraction = math.max(0, math.min(MAX_FRACTION, fraction))
+    if fraction == g.fraction then
+        g.slide = nil
+        return
+    end
+    g.slide = {from = g.fraction, to = fraction, start = dmhub.Time()}
+end
+
+--Moves a slide on (ease out cubic); the tab layer's think calls it.
+local function Slide()
+    local slide = g.slide
+    if slide == nil then
+        return
+    end
+    local t = math.min(1, (dmhub.Time() - slide.start) / SLIDE_SECONDS)
+    local e = 1 - (1 - t) ^ 3
+    SetFraction(slide.from + (slide.to - slide.from) * e)
+    if t >= 1 then
+        g.slide = nil
+        SetFraction(slide.to)
+        Tabletop.SaveLayoutSoon()
+    end
+end
+
+--Where the screen is going: a slide's end, or where it is.
+local function Target()
+    if g.slide ~= nil then
+        return g.slide.to
+    end
+    return g.fraction
 end
 
 --Opens the screen to the size it last had.
 local function Open()
-    if IsOpen() then
+    if Target() > 0 then
         return
     end
-    SetFraction(g.lastFraction or DEFAULT_FRACTION)
-    Tabletop.SaveLayoutSoon()
+    SlideTo(g.lastFraction or DEFAULT_FRACTION)
 end
 
 local function Close()
-    if not IsOpen() then
+    if Target() == 0 then
         return
     end
-    g.lastFraction = g.fraction
-    SetFraction(0)
-    Tabletop.SaveLayoutSoon()
+    if g.slide == nil then
+        g.lastFraction = g.fraction
+    end
+    SlideTo(0)
 end
 
 --The edge and the tab resize the screen: the edge follows the mouse. Below
 --MIN_OPEN past the rail it shows closed, and is closed on release.
 local function BeginResize()
+    --a drag takes over from a slide.
+    if g.slide ~= nil then
+        SetFraction(g.slide.to)
+        g.slide = nil
+    end
     local mx = MouseOnTable()
     local w = TableSize()
     --closed, the edge is where the tab is drawn, so a pull starts from there.
     local edge = math.min(Edge(), w - RailReserve())
-    g.resize = {offset = edge - mx, startX = mx, moved = false}
+    --before: the size to open to again if this drag ends by snapping shut.
+    local before = g.lastFraction or DEFAULT_FRACTION
+    if IsOpen() then
+        before = g.fraction
+    end
+    g.resize = {offset = edge - mx, startX = mx, moved = false, before = before}
 end
 
 local function Resizing()
@@ -483,6 +566,9 @@ local function Resizing()
     end
     local w = TableSize()
     local edge = math.max(0, math.min(w, mx + resize.offset))
+    if edge < SNAP_FULL then
+        edge = 0
+    end
     local width = w - edge
     if width < RailReserve() + MIN_OPEN then
         SetFraction(0)
@@ -497,16 +583,35 @@ local function EndResize()
     if resize == nil or not resize.moved then
         return false
     end
-    if IsOpen() then
+    local w = TableSize()
+    if IsOpen() and w * g.fraction < RailReserve() + SNAP_CLOSE then
+        --let go near the right side: it slides shut, and opens again to the
+        --size it had before this drag.
+        g.lastFraction = resize.before
+        SlideTo(0)
+    elseif IsOpen() then
         g.lastFraction = g.fraction
     end
     Tabletop.SaveLayoutSoon()
     return true
 end
 
+--The tab's click: open or shut.
+local function Toggle()
+    if Target() > 0 then
+        Close()
+    else
+        Open()
+    end
+end
+
 --The drag events the edge and the tab share. dragMove is off, so the panel
 --stays put and Layout moves it.
-local function ResizeEvents(args)
+--onTab: a press that wobbles past the engine's drag threshold without moving
+--sideways counts as a click. The engine starts a drag after a few pixels in
+--any direction and then swallows the click, so without this a slightly
+--sloppy click on the tab did nothing.
+local function ResizeEvents(args, onTab)
     args.draggable = true
     args.dragMove = false
     args.beginDrag = function(element)
@@ -516,7 +621,9 @@ local function ResizeEvents(args)
         Resizing()
     end
     args.drag = function(element)
-        EndResize()
+        if not EndResize() and onTab then
+            Toggle()
+        end
     end
     return args
 end
@@ -641,6 +748,8 @@ local function BuildBand()
                         valign = "center",
                         interactable = false,
                     },
+                    --add dice behind the screen (TableDice.lua).
+                    rawget(_G, "TableDice") ~= nil and TableDice.CreateScreenButton() or nil,
                 },
             },
         },
@@ -686,16 +795,29 @@ function DirectorScreen.CreateTabLayer()
         width = TAB_WIDTH,
         height = TAB_HEIGHT,
         bgimage = "panels/square.png",
-        --rounded on the left only: its right side runs into the divider.
-        cornerRadius = {x1 = 6, y1 = 0, x2 = 0, y2 = 6},
         interactable = false,
+        flow = "none",
+        children = {
+            --shown while the tab is flipped (Layout): a click there shuts
+            --the screen.
+            gui.Panel{
+                classes = {"directorScreenTabX"},
+                bgimage = "phosphor/x-bold.png",
+                halign = "center",
+                valign = "center",
+                width = 10,
+                height = 10,
+                interactable = false,
+            },
+        },
     }
-    g.tab = gui.Panel(ResizeEvents{
+    --the grab area is bigger than the face by TAB_SLOP all round (Layout).
+    g.tab = gui.Panel(ResizeEvents({
         classes = {"directorScreenTab", "collapsed"},
         halign = "left",
         valign = "top",
-        width = TAB_WIDTH,
-        height = TAB_HEIGHT,
+        width = TAB_WIDTH + TAB_SLOP * 2,
+        height = TAB_HEIGHT + TAB_SLOP * 2,
         bgimage = "panels/square.png",
         swallowPress = true,
         hoverCursor = "horizontal-expand",
@@ -710,13 +832,9 @@ function DirectorScreen.CreateTabLayer()
             SetLit(false)
         end,
         click = function(element)
-            if IsOpen() then
-                Close()
-            else
-                Open()
-            end
+            Toggle()
         end,
-    })
+    }, true))
     g.hintLabel = gui.Label{
         classes = {"directorScreenHintLabel"},
         text = "",
@@ -760,44 +878,37 @@ function DirectorScreen.CreateTabLayer()
         create = function(element)
             Layout(true)
         end,
+        --every frame: a slide in progress moves on (Slide).
+        thinkTime = 0.01,
+        think = function(element)
+            Slide()
+        end,
     }
     return g.tabLayer
 end
 
 --While the Director drags an item: the band lights when the drop would put
---it behind the screen, the edge turns the share colour when the drop would
---share it, and a note by the mouse says which.
+--it behind the screen, and a note by the mouse says so. Coming off the
+--screen shares nothing, so it has no note.
 ----------------------------------------------------------------------
 --What a drag will do, and what a drop did (Venla, 2026-10-17). While an item
---is dragged across the edge it shows its fate: a glow in the share colour
---(the players will see it) or darkened (going behind the screen). The look
---stops the moment it is released; a line saying what happened then shows on
---it for a moment and fades. Both
---are a panel laid over the item's own panel (a child, so it moves with it),
---never the item's own styles: Present fades held-back items through those.
+--is dragged onto the screen it shows its fate, darkened (going behind the
+--screen). The look stops the moment it is released; a line saying what
+--happened then shows on it for a moment and fades. Both are a panel laid
+--over the item's own panel (a child, so it moves with it).
 
 --how long a drop's flash holds before it fades, and how long the fade takes.
 local FLASH_HOLD = 0.6
 local FLASH_FADE = 0.5
 
---The share colour, with an alpha (two hex digits) on the end.
---- @param alpha string
---- @return string
-local function ShareColor(alpha)
-    return ThemeEngine.ResolveTokens("@share") .. alpha
-end
-
---A panel to lay over an item's panel. mode "share": a glow in the share
---colour; "hide": darkened. label: a line in its middle, or nil. bare: no
---glow or darkening, just the label (a drop's flash: the glow stops on
---release).
---- @param mode string
+--A panel to lay over an item's panel: darkened, with a pale outline so it
+--still reads on a dark map. label: a line in its middle, or nil. bare: no
+--darkening, just the label (a drop's flash: the darkening stops on release).
 --- @param label nil|string
 --- @param think nil|fun(element: Panel)
 --- @param bare nil|boolean
 --- @return Panel
-local function Overlay(mode, label, think, bare)
-    local share = mode == "share"
+local function Overlay(label, think, bare)
     local children = {}
     if label ~= nil then
         children[1] = gui.Label{
@@ -814,7 +925,7 @@ local function Overlay(mode, label, think, bare)
             cornerRadius = 6,
             fontSize = 16,
             bold = true,
-            color = cond(share, ShareColor("ff"), "#ffffffe0"),
+            color = "#ffffffe0",
             interactable = false,
         }
     end
@@ -826,12 +937,9 @@ local function Overlay(mode, label, think, bare)
         height = "100%",
         flow = "none",
         bgimage = "panels/square.png",
-        --share: a faint wash under the glow; hide: dimmed, with a pale outline
-        --so it still reads on a dark map.
-        bgcolor = cond(bare, "clear", cond(share, ShareColor("22"), "#08090cc8")),
+        bgcolor = cond(bare, "clear", "#08090cc8"),
         borderWidth = cond(bare, 0, 2),
-        borderColor = cond(share, ShareColor("ff"), "#ffffff40"),
-        boxShadow = cond(share and not bare, {blur = 12, spread = 0, color = ShareColor("ff")}, false),
+        borderColor = "#ffffff40",
         interactable = false,
         thinkTime = cond(think ~= nil, 0.05, nil),
         think = think,
@@ -848,17 +956,16 @@ local function ClearPreview()
     end
 end
 
---Shows on the dragged item what dropping it now would do: mode "share",
---"hide", or nil for nothing (it would stay on its side).
+--Darkens the dragged item while dropping it now would put it behind the
+--screen; nil for nothing.
 --- @param key nil|string
---- @param mode nil|string
-local function SetPreview(key, mode)
+local function SetPreview(key)
     local preview = g.preview
-    if preview ~= nil and preview.key == key and preview.mode == mode and preview.overlay.valid then
+    if preview ~= nil and preview.key == key and preview.overlay.valid then
         return
     end
     ClearPreview()
-    if key == nil or mode == nil then
+    if key == nil then
         return
     end
     local item = FindItem(key)
@@ -869,23 +976,22 @@ local function SetPreview(key, mode)
     if panel == nil or not panel.valid then
         return
     end
-    local overlay = Overlay(mode, nil, nil)
+    local overlay = Overlay(nil, nil)
     panel:AddChild(overlay)
-    g.preview = {key = key, mode = mode, overlay = overlay}
+    g.preview = {key = key, overlay = overlay}
 end
 
---Says on a dropped item what the drop did, in a line that fades out.
+--Says on an item dropped behind the screen that it is hidden, in a line
+--that fades out.
 --- @param item DirectorScreenItem
---- @param shared boolean
-local function Flash(item, shared)
+local function Flash(item)
     local panel = item.panel()
     if panel == nil or not panel.valid then
         return
     end
     local start = dmhub.Time()
     local fading = false
-    local label = cond(shared, "Shared with the players", "Hidden from the players")
-    local overlay = Overlay(cond(shared, "share", "hide"), label, function(element)
+    local overlay = Overlay("Hidden from the players", function(element)
         local t = dmhub.Time() - start
         if t > FLASH_HOLD + FLASH_FADE + 0.1 then
             element:DestroySelf()
@@ -905,29 +1011,17 @@ local function UpdateDropHint()
     end
     local drag = g.drag
     local text = nil
-    local sharing = false
-    local over = false
-    --with the screen closed (or gone under a maximized window), only
-    --something new is shown: it will be shared.
-    if drag ~= nil and Active() and (Shown() or drag.fresh) then
+    --only a drop onto the open screen does anything to a share.
+    if drag ~= nil and Active() and Shown() and drag.centre >= Edge() then
         local member = drag.key ~= nil and g.members[drag.key] == true
-        over = Shown() and drag.centre >= Edge()
         if drag.fresh then
-            if over then
-                text = "Release to keep it behind the screen"
-            else
-                text = "Release to share it with the players"
-                sharing = true
-            end
-        elseif over and not member then
+            text = "Release to keep it behind the screen"
+        elseif not member then
             if drag.shared then
                 text = "Release to hide it from the players"
             else
                 text = "Release to keep it behind the screen"
             end
-        elseif member and not over then
-            text = "Release to share it with the players"
-            sharing = true
         end
     end
 
@@ -937,15 +1031,14 @@ local function UpdateDropHint()
     if drag ~= nil and not drag.fresh and text ~= nil then
         previewKey = drag.key
     end
-    SetPreview(previewKey, cond(sharing, "share", "hide"))
+    SetPreview(previewKey)
 
     local band = g.band
     if band ~= nil and band.valid then
-        band:SetClass("dropTarget", text ~= nil and not sharing)
+        band:SetClass("dropTarget", text ~= nil)
         for _, child in ipairs(band.children) do
             if child:HasClass("directorScreenEdge") then
-                child:SetClass("dropTarget", text ~= nil and not sharing)
-                child:SetClass("sharing", sharing)
+                child:SetClass("dropTarget", text ~= nil)
             end
         end
     end
@@ -953,12 +1046,6 @@ local function UpdateDropHint()
     hint:SetClass("collapsed", text == nil)
     if text == nil then
         return
-    end
-    hint:SetClass("sharing", sharing)
-    for _, child in ipairs(hint.children) do
-        if child:HasClass("directorScreenHintIcon") then
-            child.bgimage = cond(sharing, "phosphor/share-network.png", "phosphor/eye-slash.png")
-        end
     end
     if g.hintLabel ~= nil and g.hintLabel.valid then
         g.hintLabel.text = text
@@ -994,14 +1081,93 @@ end
 ----------------------------------------------------------------------
 --The items.
 
+--Snapping (Venla, 2026-10-19): an item dragged on the screen close to
+--another item on it jumps into line with it, a neat gap beside, above or
+--below it with their edges lined up. Live, through the engine's dragSnap.
+--Only on the open screen; the players' side is left free.
+--wider than Tabletop's SNAP (14), so a window's own edge snap on release
+--(SnapWindow) does not pull it flush against its neighbour.
+local SNAP_GAP = 16
+--how close (in either direction) a spot must be for the item to jump to it.
+local SNAP_DISTANCE = 28
+
+--Where an item of size w x h at (x, y) snaps to on the screen, or nil.
+--- @param key string the dragged item (never snapped to itself)
+--- @return number|nil x
+--- @return number|nil y
+local function SnapSpot(key, x, y, w, h)
+    if not Shown() or not OnScreen({x = x, y = y, w = w, h = h}) then
+        return nil, nil
+    end
+    local best = SNAP_DISTANCE
+    local bestX, bestY = nil, nil
+    for _, other in ipairs(Tabletop.ScreenItems()) do
+        local o = other.rect
+        if other.key ~= key and g.members[other.key] and o ~= nil then
+            local spots = {
+                {o.x + o.w + SNAP_GAP, o.y},
+                {o.x - w - SNAP_GAP, o.y},
+                {o.x, o.y + o.h + SNAP_GAP},
+                {o.x, o.y - h - SNAP_GAP},
+            }
+            for _, spot in ipairs(spots) do
+                local d = math.max(math.abs(spot[1] - x), math.abs(spot[2] - y))
+                if d < best then
+                    best = d
+                    bestX, bestY = spot[1], spot[2]
+                end
+            end
+        end
+    end
+    return bestX, bestY
+end
+
+--Sets the engine's dragSnap. An engine older than it reads it as nil (and
+--would log an error on every write), so snapping is then left off.
+--- @param element Panel
+--- @param offset nil|{x: number, y: number}
+local function SetDragSnap(element, offset)
+    if element.dragSnap == nil then
+        return
+    end
+    element.dragSnap = offset
+end
+
+--Snaps the panel being dragged (or lets it follow the mouse again).
+--- @param key string
+--- @param element Panel
+local function SnapDrag(key, element)
+    local item = FindItem(key)
+    local x, y = element.xdrag, element.ydrag
+    local snapX, snapY = nil, nil
+    if item ~= nil and item.rect ~= nil then
+        snapX, snapY = SnapSpot(key, x, y, item.rect.w, item.rect.h)
+    end
+    if snapX ~= nil and snapY ~= nil then
+        SetDragSnap(element, {x = snapX - x, y = snapY - y})
+    else
+        SetDragSnap(element, nil)
+    end
+end
+
 --- Called from an item's dragging event each frame: x is where its left
 --- edge would land and width its width (documents-layer units). A nil key
 --- (the drag is going somewhere other than the table) clears the hint.
+--- element, the panel being dragged, lets the item snap into line with
+--- others on the screen (SnapDrag).
 --- @param key string|nil
 --- @param x number
 --- @param width number
-function DirectorScreen.ItemDragging(key, x, width)
+--- @param element? Panel
+function DirectorScreen.ItemDragging(key, x, width, element)
     LetDragsThrough()
+    if element ~= nil and element.valid then
+        if key ~= nil and Active() then
+            SnapDrag(key, element)
+        else
+            SetDragSnap(element, nil)
+        end
+    end
     if key == nil or not Active() then
         if g.drag ~= nil then
             g.drag = nil
@@ -1041,14 +1207,13 @@ function DirectorScreen.NewItemDragging(x, width)
     UpdateDropHint()
 end
 
---Puts an item behind the screen (private) or out on the table (shared with
---every player, even one held back), changing its share to match.
+--Puts an item behind the screen, unsharing it, or out on the table. Out on
+--the table its share stays off: only its share button shares it.
 --- @param item DirectorScreenItem
 --- @param behind boolean
 local function SetBehind(item, behind)
     local key = item.key
     g.grace[key] = dmhub.Time() + GRACE_SECONDS
-    g.heldBack[key] = nil
     if behind then
         g.members[key] = true
         if item.store.state() ~= nil then
@@ -1057,17 +1222,13 @@ local function SetBehind(item, behind)
         end
     else
         g.members[key] = nil
-        if item.store.state() == nil then
-            item.store.share()
-            item.changed()
-        end
     end
     Tabletop.SaveLayoutSoon()
 end
 
---Shrinks a window dropped on the screen to a card, or grows a card dropped
---off it back into its window, then says what the drop did once the window
---or card has appeared (after Tabletop's collapse animation).
+--Shrinks a window dropped on the screen to a card and says it is hidden once
+--the card has appeared (after Tabletop's collapse animation), or grows a
+--card dropped off it back into its window.
 --- @param item DirectorScreenItem
 --- @param onScreen boolean
 local function ReshapeAndFlash(item, onScreen)
@@ -1080,8 +1241,11 @@ local function ReshapeAndFlash(item, onScreen)
         reshaped = item.card == true
         item.grow(rect.x, rect.y)
     end
+    if not onScreen then
+        return
+    end
     if not reshaped then
-        Flash(item, not onScreen)
+        Flash(item)
         return
     end
     local key = item.key
@@ -1091,14 +1255,15 @@ local function ReshapeAndFlash(item, onScreen)
         end
         local now = FindItem(key)
         if now ~= nil then
-            Flash(now, not onScreen)
+            Flash(now)
         end
     end)
 end
 
 --- Called when the Director drops an item on the table, after its new spot
 --- is recorded. Moving it onto the screen stops sharing it; moving it off
---- shares it with every player. A nil key just ends the drag's hint.
+--- leaves it unshared, with its share button back. A nil key just ends the
+--- drag's hint.
 --- @param key string|nil
 function DirectorScreen.ItemDropped(key)
     SetPassing(false)
@@ -1113,8 +1278,6 @@ function DirectorScreen.ItemDropped(key)
     if item == nil or item.rect == nil then
         return
     end
-    g.known = g.known or {}
-    g.known[key] = true
     local onScreen = OnScreen(item.rect)
     if onScreen == (g.members[key] == true) then
         return
@@ -1124,13 +1287,11 @@ function DirectorScreen.ItemDropped(key)
 end
 
 --The rule for an item a drop made or moved (ItemPlaced), once it is on the
---table: on the screen it is private, anywhere else (or with the screen
---closed) it is shared.
+--table: on the screen it is private; anywhere else (or with the screen
+--closed) its share is left as it is.
 --- @param item DirectorScreenItem
 local function SettlePlaced(item)
     g.placed[item.key] = nil
-    g.known = g.known or {}
-    g.known[item.key] = true
     if item.rect == nil then
         return
     end
@@ -1142,10 +1303,10 @@ end
 --- Called when the Director drops something onto the table that makes an
 --- item there or moves one (a map, scene or journal row, a character or
 --- bestiary row, a token out of its map, files from the desktop). Dropped on
---- the screen it is private; dropped anywhere else it is shared with every
---- player. The item may appear later (a creature's card waits for the new
---- character), so the screen waits a while for it. With the screen closed
---- every such drop is shared.
+--- the screen it is private (unshared); dropped anywhere else its share is
+--- left as it is, so a new item starts unshared. The item may appear later
+--- (a creature's card waits for the new character), so the screen waits a
+--- while for it.
 --- @param key string|nil
 function DirectorScreen.ItemPlaced(key)
     SetPassing(false)
@@ -1227,6 +1388,45 @@ function DirectorScreen.Members()
     return SortedKeys(g.members)
 end
 
+--- Whether the screen hides a panel at the mouse: it is showing, the mouse
+--- is over it, and the panel lies behind the band (a shared window running
+--- under it). The band takes no mouse, so what is under it still answers to
+--- a pointer: a drop there must not reach what the Director cannot see.
+--- @param panel Panel
+--- @return boolean
+function DirectorScreen.Hides(panel)
+    local band = g.band
+    if not Shown() or band == nil or not band.valid or panel == nil or not panel.valid then
+        return false
+    end
+    local x = MouseOnTable()
+    if x < Edge() then
+        return false
+    end
+    local docs = band.parent
+    if docs == nil then
+        return false
+    end
+    --the panel's ancestor among the band's siblings: behind the band if it
+    --comes before it.
+    local top = panel
+    while top ~= nil and top.parent ~= docs do
+        top = top.parent
+    end
+    if top == nil then
+        return false
+    end
+    for _, child in ipairs(docs.children) do
+        if child == band then
+            return false
+        end
+        if child == top then
+            return true
+        end
+    end
+    return false
+end
+
 --- Where the screen's edge is (documents-layer units), or nil while it is
 --- closed or gone.
 --- @return number|nil
@@ -1237,61 +1437,28 @@ function DirectorScreen.EdgeX()
     return Edge()
 end
 
---- The keys of the items held back on the table (unshared, faded), for tests.
---- @return string[]
-function DirectorScreen.HeldBack()
-    return SortedKeys(g.heldBack)
-end
-
---Shows an item as its side says: no share button on the screen, and faded
---while held back on the table and not focused. A maximized window is on
---neither side: it keeps its share button and is never faded.
+--Shows an item as its side says: no share button on the screen. A maximized
+--window is on neither side: it keeps its share button.
 --- @param item DirectorScreenItem
---- @param faded boolean
-local function Present(item, faded)
+local function Present(item)
     local behind = g.members[item.key] == true and Shown() and not item.maximized
-    faded = faded and not item.maximized
     local button = item.shareButton()
     if button ~= nil and button.valid and button:HasClass("collapsed") ~= behind then
         button:SetClass("collapsed", behind)
     end
     item.showBehind(behind)
-    local panel = item.panel()
-    if panel ~= nil and panel.valid and g.faded[panel] ~= faded then
-        g.faded[panel] = faded
-        panel.selfStyle.groupOpacity = cond(faded, HELD_BACK_OPACITY, 1)
-    end
 end
 
---The focused item: the one the Director pressed or raised last (the
---engine's activationOrder, as the Ctrl+Tab switcher uses).
---- @param items DirectorScreenItem[]
---- @return string|nil
-local function FocusedKey(items)
-    local best, bestOrder = nil, 0
-    for _, item in ipairs(items) do
-        local panel = item.panel()
-        if panel ~= nil and panel.valid and panel.activationOrder > bestOrder then
-            best, bestOrder = item.key, panel.activationOrder
-        end
-    end
-    return best
-end
-
---Applies the side rule to one item (see the top of the file). first: the
---look right after the layout loaded, when nothing is new.
+--Applies the side rule to one item (see the top of the file).
 --- @param item DirectorScreenItem
---- @param first boolean
 --- @return boolean changed whether the saved layout changed
-local function KeepToItsSide(item, first)
+local function KeepToItsSide(item)
     local key = item.key
     local rect = item.rect
     local open = Shown()
     local edge = Edge()
     local w = TableSize()
     local state = item.store.state()
-    local isNew = not g.known[key] and not first
-    g.known[key] = true
 
     if g.members[key] then
         if state ~= nil then
@@ -1322,7 +1489,6 @@ local function KeepToItsSide(item, first)
         if state == nil then
             --lying on the screen, unshared (opened there): it is behind it.
             g.members[key] = true
-            g.heldBack[key] = nil
             g.pushed[key] = nil
             return true
         end
@@ -1341,26 +1507,10 @@ local function KeepToItsSide(item, first)
     end
     g.pushed[key] = nil
 
-    --a shared button or card reaching onto the open screen: it is drawn over
+    --a table button or card reaching onto the open screen: it is drawn over
     --every window, so it cannot go under the screen (KeepOnTop). Off it goes.
     if open and item.onButtonLayer and rect ~= nil and rect.x + rect.w > edge then
         item.move(edge - rect.w - 8)
-        return true
-    end
-
-    if isNew then
-        --new on the table: shared, unless it is one the saved layout held back.
-        if state == nil and not g.heldBack[key] then
-            SetBehind(item, false)
-            return true
-        end
-        return false
-    end
-    --on the table, its share is the Director's: unshared any way (its share
-    --button, Map Settings) it is held back; shared again, it is not.
-    local held = state == nil
-    if (g.heldBack[key] == true) ~= held then
-        g.heldBack[key] = held or nil
         return true
     end
     return false
@@ -1372,10 +1522,8 @@ local function LookOverItems()
     local items = Tabletop.ScreenItems()
     local now = dmhub.Time()
     local open = Shown()
-    local first = g.known == nil
-    if first then
-        g.known = {}
-    end
+    local first = not g.looked
+    g.looked = true
     local present = {}
     local changed = false
     for key, deadline in pairs(g.placed) do
@@ -1397,12 +1545,12 @@ local function LookOverItems()
             item.move(Edge() + offset, true)
             item.rect.x = Edge() + offset
         end
-        --left alone while dragged, and while a share it was just given is on
-        --its way back from the server.
+        --left alone while dragged, and while a share change it was just given
+        --is on its way back from the server.
         local dragged = g.drag ~= nil and g.drag.key == key
         local moved = false
         if not dragged and (g.grace[key] or 0) < now then
-            moved = KeepToItsSide(item, first)
+            moved = KeepToItsSide(item)
             changed = changed or moved
         end
         --how far right of the edge it lies, for FollowEdge (not when this look
@@ -1416,16 +1564,13 @@ local function LookOverItems()
         end
         item.stow(g.members[key] == true and not open)
     end
-    local focused = FocusedKey(items)
     for _, item in ipairs(items) do
-        Present(item, g.heldBack[item.key] == true and item.key ~= focused)
+        Present(item)
     end
-    for _, set in ipairs({g.members, g.heldBack}) do
-        for key, _ in pairs(set) do
-            if not present[key] then
-                set[key] = nil
-                changed = true
-            end
+    for key, _ in pairs(g.members) do
+        if not present[key] then
+            g.members[key] = nil
+            changed = true
         end
     end
     for key, _ in pairs(g.offsets) do
@@ -1583,7 +1728,6 @@ function DirectorScreen.Save()
         lastFraction = g.lastFraction,
         members = DirectorScreen.Members(),
         offsets = g.offsets,
-        heldBack = DirectorScreen.HeldBack(),
     }
 end
 
@@ -1593,25 +1737,30 @@ function DirectorScreen.Load(saved)
     g.members = {}
     g.offsets = {}
     g.lastEdge = nil
-    g.heldBack = {}
-    g.known = nil
+    g.looked = false
     g.pushed = {}
     g.grace = {}
     g.placed = {}
     g.drag = nil
     g.resize = nil
+    g.slide = nil
     g.fraction = DEFAULT_FRACTION
     g.lastFraction = DEFAULT_FRACTION
     if type(saved) == "table" then
-        g.fraction = math.max(0, math.min(1, tonumber(saved.fraction) or DEFAULT_FRACTION))
-        g.lastFraction = math.max(0.05, math.min(1, tonumber(saved.lastFraction) or DEFAULT_FRACTION))
-        for _, field in ipairs({"members", "heldBack"}) do
-            local list = saved[field]
-            if type(list) == "table" then
-                for _, key in ipairs(list) do
-                    if type(key) == "string" then
-                        g[field][key] = true
-                    end
+        g.fraction = math.max(0, math.min(MAX_FRACTION, tonumber(saved.fraction) or DEFAULT_FRACTION))
+        g.lastFraction = math.max(0.05, math.min(MAX_FRACTION, tonumber(saved.lastFraction) or DEFAULT_FRACTION))
+        --exactly 0.7 is the cap the screen had for a day (2026-10-18): a size
+        --saved then was pinned there, so it was really "as wide as it goes".
+        if g.fraction == STALE_CAP then
+            g.fraction = MAX_FRACTION
+        end
+        if g.lastFraction == STALE_CAP then
+            g.lastFraction = MAX_FRACTION
+        end
+        if type(saved.members) == "table" then
+            for _, key in ipairs(saved.members) do
+                if type(key) == "string" then
+                    g.members[key] = true
                 end
             end
         end

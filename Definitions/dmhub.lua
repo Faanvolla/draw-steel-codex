@@ -100,6 +100,7 @@
 --- @field ObjectPanelOpen fun(): boolean A function that returns whether the Objects panel is currently open and on screen, regardless of whether it holds UI focus. This drives the object wiring overlay (the trigger/action plug icons drawn on the map); ObjectEditingEnabled, which is focus-derived, still governs object editing mode itself.
 --- @field GetAuraLabelTooltip fun(aura: AuraInstance, token: CharacterToken|nil): string|nil A function that can be set to supply the tooltip shown when the mouse hovers an aura's in-world name label on the map. Receives the AuraInstance the label belongs to and, for token-emitted auras, the emitting token (nil for object-emitted auras). Return the tooltip text (rich text allowed), or nil for no tooltip.
 --- @field FileDragGameTarget fun(info: nil|{paths: string[], target: "token"|"map", token: nil|CharacterToken}): nil Called while files dragged from the operating system move over the map with no UI panel taking them, so Lua can preview the drop. target "token": releasing sets the files' image as the token's avatar (token is that token). target "map": releasing places the files on the map as objects (Director only). Called again with nil when that ends: the drag leaves, moves to a panel or another target, or drops. Called on changes only, not every frame; dmhub.mouseScreenPosition follows the drag meanwhile.
+--- @field DeleteSelectionPressed fun(): boolean Called when the Director presses Delete with no text input focused and something selected (dmhub.selectedTokens is not empty). Return true to say Lua handled it -- the tabletop removes the selected creature cards when the selection was made from them -- and the engine then does not delete the selected map tokens.
 --- @field supportsObjectEditingFilter boolean True when this engine build honors the dmhub.GetObjectEditingFilter callback (markup-prop keyword filtering of object visibility, selection and dragging). Callers must gate on this: on older builds the callback is accepted but never polled, so filtered props would be placed but stay invisible and unselectable.
 --- @field supportsMarkupHoles boolean True when this engine build supports markup Hole zones: map auras whose AuraInstance reports GetHole() cut a real hole in the map (tile rules, fall-through map geometry, and the excavation visual). Callers must gate hole painting on this; on older builds the aura registers but no hole appears.
 --- @field tokensLoggedInAs nil|string[] If the GM is forcibly logged in as a token or set of tokens so they can view through their eyes, this returns a list of the token ids that the GM is logged in as.
@@ -180,9 +181,10 @@
 --- @field allTokens CharacterToken[] (Read-only) A list of all tokens active and deployed on the map.
 --- @field allTokensIncludingObjects CharacterToken[] (Read-only) A list of all tokens active and deployed on the map, including object tokens.
 --- @field allObjectTokens CharacterToken[] (Read-only) A list of all object tokens active and deployed on the map.
---- @field selectedTokens CharacterToken[] The list of currently selected tokens. Can be set to change the selection.
---- @field currentToken nil|CharacterToken (Read-only) the token the player is assumed to be currently controlling -- the token they have control of and is selected, or their primary character. May return nil, though it won't if the player has a PC assigned to them.
---- @field selectedOrPrimaryTokens CharacterToken[] (Read-only) a list consisting of the tokens selected, or the 'primary' token of the player if there is one. This can be used to get the token the player is presumably acting as if they perform an action. May return an empty list but does not return nil.
+--- @field selectedTokens CharacterToken[] The list of currently selected tokens. Can be set to change the selection. Besides tokens on the live map it can hold characters with no token there (a tabletop card's creature that is off every map, or on a map in another window): those come last, are the wrappers dmhub.GetCharacterById returns (no board presence; check dmhub.GetTokenById(tok.charid) when it matters), and move to the board selection when the creature arrives on the live map.
+--- @field selectedTokensSeq integer (Read-only) A number that changes whenever the selection (dmhub.selectedTokens) changes, so a poller can tell cheaply when to re-read it.
+--- @field currentToken nil|CharacterToken (Read-only) the token the player is assumed to be currently controlling -- the token they have control of and is selected, or their primary character. May return nil, though it won't if the player has a PC assigned to them. When the current token is a selected character with no token on the live map (see dmhub.selectedTokens), this is its off-board wrapper.
+--- @field selectedOrPrimaryTokens CharacterToken[] (Read-only) a list consisting of the tokens selected, or the 'primary' token of the player if there is one. This can be used to get the token the player is presumably acting as if they perform an action. May return an empty list but does not return nil. Includes selected characters with no token on the live map (see dmhub.selectedTokens).
 --- @field primaryCharacter CharacterToken|nil (Read-only) the primary character for the current player. This can be an off-map token.
 --- @field tokenHovered nil|CharacterToken (Read-only) Gets the currently hovered token, or nil if there is none.
 --- @field modMergeInfo nil|{numFiles: number, conflicts: nil|string[]} (Undocumented: engine-internal, not part of the modding API.)
@@ -206,6 +208,9 @@
 --- @field infoBubbles table<string, InfoBubbleHudLua> (Read-only) The info bubbles available on the current map.
 --- @field initiativeQueue nil|InitiativeQueue The initiative queue. Note: check to make sure it's not nil and that the hidden member isn't set to check if initiative is active.
 --- @field tabletopMode boolean Tabletop mode: the screen shows a table and the map is shown only inside map window panels, which display it with the bgimage "#MapView" (a panel showing it sees just the part of the map under it, and becomes the area the map takes input in, centres on and clamps to). With no such panel the map is hidden and takes no input. While on, leaving a map freezes its window into "#MapSnapshot:<mapid>" and remembers its view, floor and zoom, which entering the map again restores. Off restores the full-screen map. Client-only.
+--- @field mapTransitionMapId nil|string (read-only) Tabletop mode: the map a map change shown inside the map windows is heading to, from the moment Travel() starts it until the window has been uncovered; nil otherwise. A change that falls back to the full-screen loading screen clears it. Before the map is current, the window waiting for it can show that it is loading; once it is current, see mapTransitionCovered.
+--- @field mapTransitionCovered boolean (read-only) Tabletop mode: true while the window that has just taken the map named by mapTransitionMapId should stay covered by what it showed before (its snapshot), because the new map is still building or loading its images. When it turns false the window's cover should fade out over about 0.3 seconds; mapTransitionMapId clears when that is done.
+--- @field mapWindowPictureVisit boolean (read-only) Tabletop mode: true while the engine is visiting maps behind a cover to take their windows' pictures (SetTabletopWindowMaps). A map change seen meanwhile is not the user's: the tabletop must not bring windows forward, flash or refocus them.
 --- @field mapViewportActive boolean (read-only) Tabletop mode: true while a map window panel is showing the live map ("#MapView").
 --- @field tabletopSurface string Tabletop mode: the table's surface. One of "leather" (the playmat with the debossed wordmark, the default), "felt" (green card-table felt with the logo burnt into it), "stars" (Sea of Stars: a slowly drifting nebula and twinkling stars with the logo glowing in it), "marble" (polished white marble with the logo chiselled into it), "darkmarble" (the same in polished black marble), "llianar" (white marble veined with gold, the logo gilded, a glint sweeping across it now and then), "soulkiller" (spectral mist: teal fog drifting, souls rising, the logo as a ghost), "terransteel" (etched Damascus gunmetal, the logo engraved and heating to a forge glow now and then), "zodiakol" (molten obsidian: cracked black glass with heat glowing in the cracks and the logo as molten metal) or "custom" (the image in dmhub.tabletopSurfaceImage, scaled to cover the screen). Any other value means "leather". Takes effect at once, frosted panels included. Client-only; not saved.
 --- @field tabletopSurfaceImage nil|string Tabletop mode: the image the "custom" table surface shows, by image id (a cloud asset id, an "md5:" id or a built-in image path), or nil. Drawn to cover the screen: scaled to fill it with its aspect kept, centred and cropped. Until it has loaded, or if it can't be loaded (or is a video), the leather table is drawn. Client-only; not saved.
@@ -213,9 +218,6 @@
 --- @field tabletopDragSurface nil|string (read-only) Tabletop mode: what a drag released now would land on. "map" while the placement preview (the ghost of a character or creature dragged from a panel or a table card) is showing in the live map window; "table" over the bare table: outside the live map window, with no UI panel under the mouse (the panel being dragged doesn't count), where a drop fires 'tabletopCreatureDropped'. nil otherwise: over a UI panel, inside the window with no preview showing, or with the view off.
 --- @field tabletopTokenDrag nil|string[] (read-only) Tabletop mode: while tokens dragged off the live map window are over the bare table, their charids (the grabbed token first). A release now cancels the move and fires 'tabletopTokenDropped' with these ids, so this is where to show the cards that drop would make; the map shows no move preview meanwhile. nil whenever no token drag is over the table, including over a UI panel, where a release does nothing.
 --- @field tokenDropTargetUnderMouse nil|Panel (read-only) The token drop target panel (a panel with tokenDropTarget = true) that a map token dragged and released at the mouse now would be dropped onto, or nil. Answers whether or not a drag is in progress. During a panel drag the dragged panel is looked past, so it also says which drop target a dragged panel is over (read it from the dragging event).
---- @field mapTransitionMapId nil|string (read-only) Tabletop mode: the map a map change shown inside the map windows is heading to, from the moment Travel() starts it until the window has been uncovered; nil otherwise. A change that falls back to the full-screen loading screen clears it. Before the map is current, the window waiting for it can show that it is loading; once it is current, see mapTransitionCovered.
---- @field mapWindowPictureVisit boolean (read-only) Tabletop mode: true while the engine is visiting maps behind a cover to take their windows' pictures (SetTabletopWindowMaps). A map change seen meanwhile is not the user's: the tabletop must not bring windows forward, flash or refocus them.
---- @field mapTransitionCovered boolean (read-only) Tabletop mode: true while the window that has just taken the map named by mapTransitionMapId should stay covered by what it showed before (its snapshot), because the new map is still building or loading its images. When it turns false the window's cover should fade out over about 0.3 seconds; mapTransitionMapId clears when that is done.
 --- @field panelDropSurface nil|string (read-only) Where a panel being dragged (a journal row, say) would land if released now. "map" over the visible map: anywhere off the UI normally, or inside the live map window in tabletop mode. "table" over the bare table in tabletop mode. nil over any UI panel (the panel being dragged doesn't count), or when no game is showing. Unlike tabletopDragSurface it needs no placement preview, so it suits drags that are not creatures; read it from the drag's dragging/drag events.
 --- @field panelDropPanel nil|Panel (read-only) The UI panel a panel being dragged would be released onto: the frontmost panel under the mouse, the one that makes panelDropSurface nil (the panel being dragged doesn't count). nil whenever panelDropSurface is not nil, when a popup is up, or when no game is showing. Walk its parents to ask which window a drop is over; read it from the drag's dragging/drag events.
 --- @field mouseScreenPosition Vector2 (read-only) The mouse position in screen pixels from the top-left corner of the screen: the same measure as the screenx/screeny of the tabletop drop events.
@@ -496,8 +498,8 @@ function dmhub.IsLocDifficultTerrain(loc, token) end
 --- @return boolean
 function dmhub.IsLocInVision(loc) end
 
---- Scans the current map's visible floors for built-in terrain rules granted by the terrain tiles themselves - EXCLUDING additive aura contributions such as markup zones - and returns which of the four rule types are present anywhere. Non-DM viewers only scan tiles currently inside their vision. Used by the map overlay menu to list built-in terrain types distinct from the defined zone types.
---- @return {water: boolean, difficultTerrain: boolean, concealment: boolean, climbable: boolean}
+--- Scans the current map's visible floors for built-in terrain rules granted by the terrain tiles themselves - EXCLUDING additive aura contributions such as markup zones - and returns which of the four rule types are present anywhere. shallowWater: the map water level makes some tile shallow water (difficult terrain for creatures without a swim speed); its deep water counts as water. Non-DM viewers only scan tiles currently inside their vision. Used by the map overlay menu to list built-in terrain types distinct from the defined zone types.
+--- @return {water: boolean, difficultTerrain: boolean, concealment: boolean, climbable: boolean, shallowWater: boolean}
 function dmhub.GetBuiltinTerrainTypesOnMap() end
 
 --- The tiles on the given floor that climbable WALLS make climbable: CalculateClimbableFromWalls stamps both tiles adjacent to every wall segment whose asset is climbable (and a climbable Solid object component stamps its outline the same way), and creatures standing on them may climb. These tiles are derived from the walls rather than painted, and do not show in GetTileRulesAtLoc. Grouped by the wall's climbable mode; each list may be empty. Returns nil when the floor is not currently visible (the logical map only covers visible floors). Changes whenever dmhub.tileRulesSeq changes.
@@ -623,10 +625,6 @@ function dmhub.AddImageToLibraryLocally(libraryName, imageid) end
 --- @param libraryName? string
 --- @param imageid? string
 function dmhub.AddAndUploadImageToLibrary(libraryName, imageid) end
-
---- Admin only, for testing: feeds the main window an operating-system file drag step as if files were dragged in from the desktop. x and y are screen pixels from the top-left (the measure of dmhub.mouseScreenPosition). Send "over" steps while moving, then "drop" or "leave"; the drop runs exactly as a real one would (uploads included).
---- @param args {paths: string[], x: number, y: number, phase: "over"|"leave"|"drop"}
-function dmhub.SimulateFileDrag(args) end
 
 --- Searches available images for entries matching the given search string. If libraryName is provided, only that library is searched. Returns a list of matching image asset ids.
 --- @param searchString string The string to search for.
@@ -1294,12 +1292,13 @@ function dmhub.UploadPlayerInfo(userid) end
 --- @param callback function
 function dmhub.RegisterRemoteEvent(eventid, callback) end
 
---- This broadcasts an event to connected computers using the peer-to-peer mechanism. By default delivery is best-effort UDP -- good for transient information like mouse positions or highlights where a dropped packet doesn't matter. If multiple messages using the same sessionid arrive out of order, the old messages will be discarded and not processed. Pass reliable = true to route via the game server's WebSocket when the event drives a state change that must not be lost.
+--- This broadcasts an event to connected computers using the peer-to-peer mechanism. By default delivery is best-effort UDP -- good for transient information like mouse positions or highlights where a dropped packet doesn't matter. If multiple messages using the same sessionid arrive out of order, the old messages will be discarded and not processed. Pass reliable = true to route via the game server's WebSocket when the event drives a state change that must not be lost. Only computers on the sender's current map receive the event unless allMaps is true.
 --- @param eventid string A unique eventid identifying the event.
 --- @param sessionid string A unique id identifying a 'session' which can receive multiple messages. If you want to broadcast multiple events concerning the same topic, use the same sessionid.
 --- @param args any
 --- @param reliable nil|boolean Optional. If true, route the message through the game server (TCP) so it can't be dropped by UDP. Requires a Durable Objects or Local game; silently ignored on Firebase-backed games (falls back to UDP). Defaults to false.
-function dmhub.BroadcastRemoteEvent(eventid, sessionid, args, reliable) end
+--- @param allMaps nil|boolean Optional. If true, the event reaches every connected computer whatever map it is on. By default it only reaches computers on the sender's current map.
+function dmhub.BroadcastRemoteEvent(eventid, sessionid, args, reliable, allMaps) end
 
 --- Registers a named priority for escape listening. The named key is associated with the given priority level.
 --- @param key? string
@@ -1364,6 +1363,27 @@ function dmhub.IsSteamOverlayRunning() end
 --- Opens the Steam overlay's 'invite a friend' dialog so a Steam friend can be invited to join the given game. The friend sees a 'Join Game' button that drops them into the game (handled by SteamJoinHandler). No-op when not running under Steam (e.g. dev builds).
 --- @param gameid? string
 function dmhub.InviteToGameViaSteam(gameid) end
+
+--- Opens the Steam overlay's 'invite a friend' dialog with an invite that Lua handles rather than a game to enter. kind names the feature that owns it (lowercase letters/digits, e.g. 'eotw'); payload is its data (letters, digits, '-', '_', ':'). A friend who accepts gets it from dmhub.TakeSteamInvite() at their titlescreen. Returns false when it could not be sent: not running under Steam, the overlay is unavailable, or kind/payload are invalid.
+--- @param kind? string
+--- @param payload? string
+--- @return boolean
+function dmhub.InviteViaSteam(kind, payload) end
+
+--- Advertises an invite (same kind/payload rules as InviteViaSteam) as this player's Steam 'Join Game' target, so friends can join from the friends list without an explicit invite. group/groupSize show friends 'In a group of N' (groupSize 0 = no group). Lasts 10 seconds after the last call, so re-push from a think handler; pass nil to clear it. While set it replaces the in-game join target.
+--- @param kind? string
+--- @param payload? string
+--- @param group? string
+--- @param groupSize? integer
+function dmhub.SetSteamJoinTarget(kind, payload, group, groupSize) end
+
+--- Takes (and clears) the Steam invite this player accepted, or returns nil. Set when a friend's InviteViaSteam / SetSteamJoinTarget invite is accepted, including one that launched the app; an invite accepted inside a game is held until the player has left it. Poll it at the titlescreen.
+--- @return nil|{kind: string, payload: string}
+function dmhub.TakeSteamInvite() end
+
+--- Testing aid: handle a Steam connect string exactly as if a friend's 'Join Game' or invite had just been accepted ('dshub1:{gameid}' enters a game; 'dshub2:{kind}:{payload}' queues an invite for TakeSteamInvite). Works without Steam, so dev builds can exercise the receiving side.
+--- @param connect? string
+function dmhub.SimulateSteamJoin(connect) end
 
 --- True if this account has a Patreon entitlement to the given creator organization. Honors the creator's persist-on-lapse policy.
 --- @param orgid string The id of the creator organization.
@@ -1676,13 +1696,17 @@ function dmhub.CenterOnLoc(args) end
 --- @param args nil|{x1: nil|number, y1: nil|number, x2: nil|number, y2: nil|number, world: nil|{x1: number, y1: number, x2: number, y2: number}, margin: nil|number}
 function dmhub.FrameMapArea(args) end
 
---- Select the token with the given id, clearing selection of other tokens. The token is only selected if the user controls it in their own right (see CharacterToken.canControlAsUser); the selection is cleared regardless.
+--- Select the token with the given id, clearing selection of other tokens. The token is only selected if the user controls it in their own right (see CharacterToken.canControlAsUser); the selection is cleared regardless. A character with no token on the live map is selected off the board (see dmhub.selectedTokens).
 --- @param charid? string
 function dmhub.SelectToken(charid) end
 
---- Add the token with the given id to the selection. Does nothing unless the user controls the token in their own right (see CharacterToken.canControlAsUser).
+--- Add the token with the given id to the selection. Does nothing unless the user controls the token in their own right (see CharacterToken.canControlAsUser). A character with no token on the live map is selected off the board (see dmhub.selectedTokens).
 --- @param tokenid? string
 function dmhub.AddTokenToSelection(tokenid) end
+
+--- Removes the token or character with the given id from the selection, if it is selected.
+--- @param tokenid? string
+function dmhub.RemoveTokenFromSelection(tokenid) end
 
 --- Momentarily highlights the token with the given id.
 --- @param tokenid? string
@@ -1698,6 +1722,24 @@ function dmhub.GetMapInitiativeQueue(mapid) end
 --- @return boolean
 function dmhub.HasMapSnapshot(mapid) end
 
+--- Lets this client view a map opened from a chat link: until the app closes, the map counts as Player Viewable for this player while they have no token of their own on it. Not saved and not sent to anyone; the map's own Player Viewable setting is not touched.
+--- @param mapid? string
+function dmhub.GrantLinkedMapView(mapid) end
+
+--- Whether dmhub.GrantLinkedMapView was called for this map since the app started.
+--- @param mapid? string
+--- @return boolean
+function dmhub.HasLinkedMapView(mapid) end
+
+--- Diagnostic, tabletop mode: for the given number of seconds, every 0.1 s, logs (MAPTRACE lines) the live map window's mean brightness and what a map change is still waiting to load. Start it just before switching maps to see when the new map actually appears.
+--- @param seconds? number
+function dmhub.TraceMapLoad(seconds) end
+
+--- Diagnostic, tabletop mode: saves each of the next count frames (at most 300) of the screen as drawn to a new folder under persistentDataPath/frame-capture, and returns that folder (nil outside tabletop mode). Start it just before a map switch to see a flicker frame by frame. The capture slows those frames down.
+--- @param count integer
+--- @return nil|string
+function dmhub.RecordScreenFrames(count) end
+
 --- Tabletop mode: what the map's frozen snapshot ("#MapSnapshot:<mapid>") shows, or nil if it has none. x1/y1/x2/y2 is the world rectangle it covers (x1,y1 its bottom-left corner), floor the floor index it shows. tokens, keyed by charid, are the tokens drawn in it (the ones this client could see) and where they were, in the same terms as GetMapTokens. hasTokenFree is true when "#MapSnapshotBase:<mapid>" exists: the same view with no tokens drawn, for drawing the map's tokens over where they are now.
 --- @param mapid string
 --- @return nil|{x1: number, y1: number, x2: number, y2: number, floor: integer, floorid: nil|string, hasTokenFree: boolean, tokens: table<string, {charid: string, x: number, y: number, floor: integer, scale: number}>}
@@ -1708,26 +1750,9 @@ function dmhub.GetMapSnapshotInfo(mapid) end
 --- @return {charid: string, x: number, y: number, floor: integer, scale: number, playerControlled: boolean}[]
 function dmhub.GetMapTokens(mapid) end
 
---- Tabletop mode: the maps open in map windows on this table, minimized ones included. Leaving one of these maps keeps it loaded but hidden (up to three maps), so switching back to its window is quick; they are also kept synced first. needPictures lists the maps of shown, not-live windows that have no snapshot yet (never shown on this machine): the engine visits them behind a cover -- the loading screen at startup, else a brief freeze-frame of the screen -- so their windows get pictures, then returns to the current map. Each map is visited once a session. Call whenever the windows change.
---- @param mapids string[]
---- @param needPictures nil|string[]
-function dmhub.SetTabletopWindowMaps(mapids, needPictures) end
-
---- Diagnostic, tabletop mode: for the given number of seconds, every 0.1 s, logs (MAPTRACE lines) the live map window's mean brightness and what a map change is still waiting to load. Start it just before switching maps to see when the new map actually appears.
---- @param seconds number
-function dmhub.TraceMapLoad(seconds) end
-
---- Lets this client view a map opened from a chat link: until the app closes, the map counts as Player Viewable for this player while they have no token of their own on it. Not saved and not sent to anyone; the map's own Player Viewable setting is not touched.
---- @param mapid string
-function dmhub.GrantLinkedMapView(mapid) end
-
---- Whether dmhub.GrantLinkedMapView was called for this map since the app started.
---- @param mapid string
---- @return boolean
-function dmhub.HasLinkedMapView(mapid) end
-
 --- Tabletop mode: refreshes the current map's frozen snapshot ("#MapSnapshot:<mapid>") from what its live window shows right now. Does nothing when no window shows the map. Used before a live window is minimized, so its button's preview and the collapse animation show the map as it was left.
 function dmhub.CaptureMapSnapshot() end
+
 --- Tabletop mode: shows one movement arrow drawn across the whole screen, over the table, the HUD and every map window (the map's own arrows only show inside the live window). It is the map's arrow (same look, at the map's zoom), arcing like a jump arrow. It runs from the token charid as drawn on the live map, or from the screen point fromx, fromy when charid is nil or not on the map, to the screen point tox, toy (pixels from the top-left, as dmhub.mouseScreenPosition). arc is how high it rises, as a fraction of its length (default 0.3; 0 is straight). image is the arrow's colour (default 'purple', the teleport arrow). Calling it again moves the arrow; call it every frame while it follows the mouse, as it hides itself if not called for half a second. Hide it with dmhub.HideTabletopArrow.
 --- @param args {tox: number, toy: number, charid: nil|string, fromx: nil|number, fromy: nil|number, arc: nil|number, image: nil|'purple'|'red'|'blue'|'grey'|'normal'}
 function dmhub.ShowTabletopArrow(args) end
@@ -1739,6 +1764,15 @@ function dmhub.HideTabletopArrow(seconds) end
 --- Diagnostic: describes tabletop mode -- the map window viewport, every rendering camera with its target and culling layers, and the layers the off-screen token indicators render on.
 --- @return string
 function dmhub.DescribeTabletop() end
+
+--- Tabletop mode: the maps open in map windows on this table, minimized ones included. Leaving one of these maps keeps it loaded but hidden (up to three maps), so switching back to its window is quick; they are also kept synced first. needPictures lists the maps of shown, not-live windows that have no snapshot yet (never shown on this machine): the engine visits them behind a cover -- the loading screen at startup, else a brief freeze-frame of the screen -- so their windows get pictures, then returns to the current map. Each map is visited once a session. Call whenever the windows change.
+--- @param mapids string[]
+--- @param needPictures nil|string[]
+function dmhub.SetTabletopWindowMaps(mapids, needPictures) end
+
+--- Admin only, for testing: feeds the main window an operating-system file drag step as if files were dragged in from the desktop. x and y are screen pixels from the top-left (the measure of dmhub.mouseScreenPosition). Send "over" steps while moving, then "drop" or "leave"; the drop runs exactly as a real one would (uploads included).
+--- @param args {paths: string[], x: number, y: number, phase: "over"|"leave"|"drop"}
+function dmhub:SimulateFileDrag(args) end
 
 --- Tranmit changes to the initiative queue to the cloud.
 function dmhub:UploadInitiativeQueue() end
@@ -1937,14 +1971,15 @@ function dmhub.GetMouseWorldPoint() end
 --- @return LuaTargetingMarkers
 function dmhub.HighlightLine(options) end
 
---- Mark the line of sight between the attacker and target on the map. Call Destroy() on the returned reference to clear the marker. Optionally pass pierceSurfaces to ignore thin walls. arrowColor sets the arrow color: 'red' (enemies), 'green' (allies), 'black' (mixed). maxRange greys out the portion of the arrow past the range boundary (in tile units).
+--- Mark the line of sight between the attacker and target on the map. Call Destroy() on the returned reference to clear the marker. Optionally pass pierceSurfaces to ignore thin walls. arrowColor sets the arrow color: 'red' (enemies), 'green' (allies), 'black' (mixed), 'orange' (planned attacks). maxRange greys out the portion of the arrow past the range boundary (in tile units). fromLoc previews an attack from a square the attacker has not reached yet (the Monster AI's plan preview): that arrow is local to this client and not attached to the attacker.
 --- @param attacker CharacterToken
 --- @param target CharacterToken
 --- @param pierceSurfaces number? Optional number of thin wall surfaces (thickness <= 1 square) to ignore.
---- @param arrowColor string? Arrow color: 'red' (default), 'green', or 'black'.
+--- @param arrowColor string? Arrow color: 'red' (default), 'green', 'black', or 'orange'.
 --- @param maxRange number? Optional max range in tile units. If the target is beyond this distance, the portion of the arrow past the range boundary is greyed out.
+--- @param fromLoc Loc? Optional square the attacker will attack from. The arrow starts there instead of at the attacker, is drawn on this client only, and stays put if the attacker moves.
 --- @return LuaTargetingMarkers
-function dmhub.MarkLineOfSight(attacker, target, pierceSurfaces, arrowColor, maxRange) end
+function dmhub.MarkLineOfSight(attacker, target, pierceSurfaces, arrowColor, maxRange, fromLoc) end
 
 --- Applies the given easing function to t and returns the result. Useful for animation interpolation.
 --- @param t number A value between 0 and 1.

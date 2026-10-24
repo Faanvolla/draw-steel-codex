@@ -128,7 +128,7 @@ function assets:UploadAudioAsset(options) end
 --- @return nil|string The GUID of the uploaded clipboard asset, or nil on failure.
 function assets:UploadClipboardAsset(options) end
 
---- Uploads a generic image asset. Options include path, description, parentFolder, imageType, ord, error, and upload callbacks. Pass core=true to force the upload into the global Core asset store regardless of the current game; ignored for non-admin users.
+--- Uploads a generic image asset. Options include path, description, parentFolder, imageType, ord, error, and upload callbacks. Pass core=true to force the upload into the global Core asset store regardless of the current game; ignored for non-admin users. An imageType of 'AvatarPopout' on an image with no real transparency is stored as 'Avatar' instead; read assets.imagesTable[guid].imageType in the upload callback for the type actually used.
 --- @param options table Upload options.
 --- @return nil|string The GUID of the uploaded image, or nil on failure.
 function assets:UploadImageAsset(options) end

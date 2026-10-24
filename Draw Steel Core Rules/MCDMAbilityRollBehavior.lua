@@ -2929,6 +2929,14 @@ TierSymbols.lookupSymbols = {
         local match = regex.MatchGroups(c.tier, "slide +(?<value>[0-9]+)")
         return (match ~= nil and tonumber(match.value)) or 0
     end,
+
+    --The damage types this tier deals ("untyped" for plain damage), e.g.
+    --Tier.DamageTypes has "cold". Lets a power-roll trigger react to the type
+    --of the damage it answered (Topaz Dragon's Absorption).
+    damagetypes = function(c)
+        local strings = RollPropertiesPowerTable.new{tiers = {c.tier}}:GetDamageTypes() or {}
+        return StringSet.new{strings = strings}
+    end,
 }
 
 function RollPropertiesPowerTable:GetSymbols(rollInfo, targetCreature)
@@ -3862,11 +3870,16 @@ RollCheck.RegisterCustom{
         end
         return result
     end,
-	ShowDialog = function(check, dialogOptions)
+    --Fills in the power table. Split out of ShowDialog so the roll request can
+    --hand the same options to the Timeline roller instead (DSRequestRollsDialog).
+    PrepareDialog = function(check, dialogOptions)
         dialogOptions.rollProperties = RollPropertiesPowerTable.new{
             tiers = DeepCopy(check.info.tiers)
         }
         dialogOptions.PopulateCustom = ActivatedAbilityPowerRollBehavior.GetPowerTablePopulateCustom(dialogOptions.rollProperties, dialogOptions.creature)
+    end,
+	ShowDialog = function(check, dialogOptions)
+        RollCheck.customChecks.resistance_power_roll.PrepareDialog(check, dialogOptions)
         return GameHud.instance.rollDialog.data.ShowDialog(dialogOptions)
     end,
 }
@@ -3974,6 +3987,10 @@ function ActivatedAbilityPowerRollBehavior:CastResistance(ability, casterToken, 
         dc_options = {
             behaviorModifiers = behaviorModifiers,
             ability = testAbility,
+            --Display only: the Timeline roller puts this card up above the
+            --target's resistance roll. Kept out of `ability`, which feeds the
+            --roller's modifier filters.
+            cardAbility = cond(isTest, nil, ability),
         },
     })
 

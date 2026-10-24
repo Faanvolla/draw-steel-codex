@@ -233,286 +233,47 @@ function Encounter.GetTargetableObjectsWithKeyword(keyword)
     return result
 end
 
---Id (environmentalKeywords key) of the zone type with this name, ignoring case, or nil.
-local function ZoneTypeIdByName(name)
-    local lower = string.lower(name)
-    for k, kw in unhidden_pairs(dmhub.GetTable("environmentalKeywords") or {}) do
-        if string.lower(kw.name or "") == lower then
-            return k
-        end
+--- The map water level (WATER_LEVEL_REFERENCE.md), for encounter and map scripts:
+--- ground lower than the level by 1 square or more is deep water (creatures float
+--- on it and can dive), by less is shallow water (difficult terrain without a swim
+--- speed). The engine moves creatures with the water and draws it. Sets the current
+--- map's level (a multiple of 0.5; nil removes the water). options.floor picks the
+--- floor. Runs with host rights, so a directorless game's player host can use it.
+--- Returns true, or false and a reason.
+--- @param level number|nil
+--- @param options nil|{floor: nil|string}
+--- @return boolean, string|nil
+function Encounter.SetWaterLevel(level, options)
+    local map = game.currentMap
+    if map == nil then
+        return false, "no current map"
     end
-    return nil
-end
 
---Every square of the Floodplain zones on a floor, each with its ground height,
---plus the lowest ground among them (nil when there are none) and a set of the
---squares keyed "x,y".
---- @return {x: integer, y: integer, ground: number}[], number|nil, table<string, boolean>
-local function FloodplainSquares(floor, floodId)
-    local squares = {}
-    local inFloodplain = {}
-    local lowest = nil
-    for _, record in pairs(floor.markupZones or {}) do
-        if record.keyword == floodId then
-            for _, loc in ipairs(record.locs or {}) do
-                local key = string.format("%d,%d", loc.x, loc.y)
-                if not inFloodplain[key] then
-                    inFloodplain[key] = true
-                    local ground = floor:GetAltitudeAtLoc(core.Loc{x = loc.x, y = loc.y}) or 0
-                    squares[#squares + 1] = {x = loc.x, y = loc.y, ground = ground}
-                    if lowest == nil or ground < lowest then
-                        lowest = ground
-                    end
-                end
-            end
-        end
-    end
-    return squares, lowest, inFloodplain
-end
-
---Rising Waters draws the flood on a translucent layer over the map art, named
---this, painted with Water terrain. A layer is only a picture: tokens stand on
---the primary floor, so the terrain's own water rules never reach them -- the
---Knee-Deep / Deep Water zones carry the rules.
-Encounter.risingWaterLayerName = "Rising Water"
-Encounter.risingWaterOpacity = 55 --percent
---the "Water" terrain; any terrain with the water rule stands in when it is missing.
-Encounter.risingWaterTileId = "fa021543-8a84-4856-8645-47dcb516abe3"
-
---{parent, before, time} while a CreateFloor for the water layer is in flight.
-local g_risingWaterLayerRequest = nil
-
-local function RisingWaterTileId()
-    local tiles = assets.tilesheets
-    if tiles[Encounter.risingWaterTileId] ~= nil then
-        return Encounter.risingWaterTileId
-    end
-    for k, tile in pairs(tiles) do
-        local water = false
-        pcall(function() water = tile.isterrain and tile.rules.water end)
-        if water then
-            return k
-        end
-    end
-    return nil
-end
-
---Runs f with host rights, which a directorless game's player host needs to edit the map.
-local function WithHostPermissions(f)
     local elevate = rawget(_G, "ElevateToHostPermissions")
     local drop = rawget(_G, "DropHostPermissions")
     if elevate ~= nil then
         elevate()
     end
-    local ok, err = pcall(f)
+    local ok, err = pcall(function()
+        map:SetWaterLevel(level, options)
+    end)
     if drop ~= nil then
         drop()
     end
-    return ok, err
-end
-
---- The current floor's Rising Water layer, or nil when it does not exist yet.
---- With create set, a missing layer is requested; creating a floor is not
---- immediate, so keep calling until it is returned.
---- @param create boolean
---- @return nil|MapFloorLua
-function Encounter.GetRisingWaterLayer(create)
-    local map = game.currentMap
-    local floor = game.currentFloor
-    if map == nil or floor == nil then
-        return nil
-    end
-    local parentid = floor.floorid
-
-    for _, f in ipairs(map.floors) do
-        if f.parentFloor == parentid and f.layerDescription == Encounter.risingWaterLayerName then
-            return f
-        end
-    end
-
-    --a layer we asked for has arrived: it comes unnamed, so name and fade it.
-    local req = g_risingWaterLayerRequest
-    if req ~= nil and req.parent == parentid then
-        for _, f in ipairs(map.floors) do
-            if f.parentFloor == parentid and not req.before[f.floorid] then
-                g_risingWaterLayerRequest = nil
-                WithHostPermissions(function()
-                    f.layerDescription = Encounter.risingWaterLayerName
-                    f.description = floor.description
-                    f.opacity = Encounter.risingWaterOpacity
-                end)
-                return f
-            end
-        end
-        if dmhub.Time() - req.time < 10 then
-            return nil
-        end
-    end
-
-    if create then
-        local before = {}
-        for _, f in ipairs(map.floors) do
-            before[f.floorid] = true
-        end
-        g_risingWaterLayerRequest = {parent = parentid, before = before, time = dmhub.Time()}
-        --a new layer goes just under its floor, so it draws over the Map Layer.
-        WithHostPermissions(function()
-            map:CreateFloor{parentFloor = parentid}
-        end)
-    end
-    return nil
-end
-
---- Draws the water for a Rising Waters level on the Rising Water layer: every
---- floodplain square under or at the water line that was dry at level 0 (the
---- starting water is already in the map art). Level 0 clears the layer.
---- Returns true when the layer shows `level`; false while the layer is still
---- being created (call again later), or nil and a reason on failure.
---- @param level number
---- @return boolean|nil, string|nil
-function Encounter.DrawRisingWater(level)
-    local floor = game.currentFloor
-    local floodId = ZoneTypeIdByName("Floodplain")
-    if floor == nil or floodId == nil then
-        return nil, "no Floodplain zone type"
-    end
-    local tileid = RisingWaterTileId()
-    if tileid == nil then
-        return nil, "no Water terrain"
-    end
-
-    local squares, lowest = FloodplainSquares(floor, floodId)
-    if lowest == nil then
-        return nil, "no Floodplain zones on the current floor"
-    end
-
-    local layer = Encounter.GetRisingWaterLayer(true)
-    if layer == nil then
-        --a fresh layer is already clear.
-        return level <= 0 and true or false
-    end
-
-    --one square path per newly flooded square; the bounds cover the whole
-    --floodplain plus a margin so clearing also takes the soft edges.
-    local waterLine = lowest + level
-    local paths = {}
-    local x1, y1, x2, y2 = math.huge, math.huge, -math.huge, -math.huge
-    for _, sq in ipairs(squares) do
-        x1, y1 = math.min(x1, sq.x), math.min(y1, sq.y)
-        x2, y2 = math.max(x2, sq.x), math.max(y2, sq.y)
-        if sq.ground >= lowest + 0.5 and sq.ground < waterLine + 0.5 then
-            paths[#paths + 1] = {sq.x - 0.5, sq.y - 0.5, sq.x + 0.5, sq.y - 0.5, sq.x + 0.5, sq.y + 0.5, sq.x - 0.5, sq.y + 0.5}
-        end
-    end
-    x1, y1, x2, y2 = x1 - 2, y1 - 2, x2 + 2, y2 + 2
-
-    local ok, err = WithHostPermissions(function()
-        layer:ExecutePolygonOperation{
-            points = {{x1, y1, x2, y1, x2, y2, x1, y2}},
-            tileid = tileid,
-            terrain = true,
-            erase = true,
-            fade = 0,
-        }
-        if #paths > 0 then
-            layer:ExecutePolygonOperation{
-                points = paths,
-                tileid = tileid,
-                terrain = true,
-                fade = 0.3,
-            }
-        end
-    end)
     if not ok then
-        return nil, tostring(err)
+        return false, tostring(err)
     end
     return true
 end
 
---- Rising Waters: re-zones the Floodplain zones on the current floor for a water
---- line `level` squares above the lowest ground in the floodplain. Squares whose
---- ground is below the line become Deep Water, squares at the line Knee-Deep
---- Water, and higher squares stay dry. Knee-Deep and Deep Water zones touching
---- the floodplain are replaced. Level 0 is the starting water (knee-deep at the
---- lowest ground). Returns the deep and knee-deep square counts, or nil and a
---- reason when the map is not set up for it.
---- @param level number
---- @return integer|nil, integer|string|nil
-function Encounter.FloodFloodplains(level)
-    local floor = game.currentFloor
-    local MM = rawget(_G, "MapMarkupImpl")
-    if floor == nil or MM == nil then
-        return nil, "no current floor"
+--- The current map's water level in squares, or nil when it has none.
+--- @return number|nil
+function Encounter.GetWaterLevel()
+    local map = game.currentMap
+    if map == nil then
+        return nil
     end
-
-    local floodId = ZoneTypeIdByName("Floodplain")
-    local kneeId = ZoneTypeIdByName("Knee-Deep Water")
-    local deepId = ZoneTypeIdByName("Deep Water")
-    if floodId == nil or kneeId == nil or deepId == nil then
-        return nil, "the Floodplain, Knee-Deep Water and Deep Water zone types must all exist"
-    end
-
-    local function Key(x, y)
-        return string.format("%d,%d", x, y)
-    end
-
-    local zones = floor.markupZones or {}
-    local squares, lowest, inFloodplain = FloodplainSquares(floor, floodId)
-    if lowest == nil then
-        return nil, "no Floodplain zones on the current floor"
-    end
-
-    local waterLine = lowest + level
-    local deep = {}
-    local knee = {}
-    for _, sq in ipairs(squares) do
-        if sq.ground <= waterLine - 0.5 then
-            deep[#deep + 1] = {x = sq.x, y = sq.y}
-        elseif sq.ground < waterLine + 0.5 then
-            knee[#knee + 1] = {x = sq.x, y = sq.y}
-        end
-    end
-
-    --water zones that reach into the floodplain belong to the flood: replace them.
-    local stale = {}
-    for zoneid, record in pairs(zones) do
-        if record.keyword == kneeId or record.keyword == deepId then
-            for _, loc in ipairs(record.locs or {}) do
-                if inFloodplain[Key(loc.x, loc.y)] then
-                    stale[#stale + 1] = zoneid
-                    break
-                end
-            end
-        end
-    end
-
-    --a directorless game's player host needs host rights to write map zones.
-    local elevate = rawget(_G, "ElevateToHostPermissions")
-    local drop = rawget(_G, "DropHostPermissions")
-    if elevate ~= nil then
-        elevate()
-    end
-    dmhub.BeginTransaction()
-    local ok, err = pcall(function()
-        for _, zoneid in ipairs(stale) do
-            floor:RemoveMarkupZone(zoneid)
-        end
-        if #deep > 0 then
-            MM.CreateZone(deepId, deep)
-        end
-        if #knee > 0 then
-            MM.CreateZone(kneeId, knee)
-        end
-    end)
-    dmhub.EndTransaction()
-    if drop ~= nil then
-        drop()
-    end
-    if not ok then
-        return nil, tostring(err)
-    end
-
-    return #deep, #knee
+    return map:GetWaterLevel()
 end
 
 --Returns the display name to show for a boss-bar token. Object tokens carry their renamed
@@ -2459,10 +2220,17 @@ function LiveEncounter:GetMonsterGroups()
     end
 
     if q ~= nil then
+        --sorted: q.entries is a hash whose order differs between clients, and
+        --victory role ties are broken by group order.
+        local extraids = {}
         for initiativeid, _ in pairs(q.entries) do
             if not seenGroups[initiativeid] and q:IsEntryPlayer(initiativeid) == false then
-                AddGroup(initiativeid, nil, nil)
+                extraids[#extraids+1] = initiativeid
             end
+        end
+        table.sort(extraids)
+        for _, initiativeid in ipairs(extraids) do
+            AddGroup(initiativeid, nil, nil)
         end
     end
 
@@ -2478,7 +2246,7 @@ end
 -- anywhere in the game; their stats and role history key off charid as normal.
 -- Heroes appear as long as combat is live even when the onset snapshot was
 -- never captured (the snapshot only adds the removed ones back). Returns a
--- list of tokens.
+-- list of tokens sorted by charid, the same on every client.
 function LiveEncounter:GetBattleHeroTokens()
     local q = dmhub.initiativeQueue
     local result = {}
@@ -2510,6 +2278,9 @@ function LiveEncounter:GetBattleHeroTokens()
             end
         end
     end
+    --q.entries is a hash whose iteration order differs between clients; sort so
+    --every client sees the same order (victory role ties are broken by it).
+    table.sort(result, function(a, b) return a.charid < b.charid end)
     return result
 end
 
@@ -5332,7 +5103,55 @@ end
 --map's own journal folder -- where the encounter lives -- is not in their
 --accessible roots; setup code that must find the encounter to run it passes
 --this. Director-facing UI does not.
+
+--Does the document store any RichEncounter annotation at all? Parsing a
+--document (GetReferencedAnnotations) is expensive -- it runs every `???`
+--query line -- and only RichEncounter annotations can contribute, so a
+--document without one is skipped unparsed. Most journals hold ~100 such docs.
+local function HasEncounterAnnotation(markdownDoc)
+    local annotations = markdownDoc:try_get("annotations")
+    if annotations == nil then
+        return false
+    end
+    for _, annotation in pairs(annotations) do
+        if type(annotation) == "table" and annotation.typeName == "RichEncounter" then
+            return true
+        end
+    end
+    return false
+end
+
+--DIAG (HarvestBurst): GetEncountersOnCurrentMap walks the whole journal, so a
+--caller running it every frame or two made the map stutter during the Draw
+--Steel banner (2026-10-18 playtest, caller never identified). Logs who calls it
+--when it runs more than HARVEST_BURST_CALLS times in HARVEST_BURST_WINDOW
+--seconds, at most once per HARVEST_BURST_LOG_GAP seconds.
+local HARVEST_BURST_CALLS = 4
+local HARVEST_BURST_WINDOW = 2
+local HARVEST_BURST_LOG_GAP = 10
+local g_harvestCallTimes = {}
+local g_harvestLastBurstLog = -1000
+
+local function NoteHarvestCall(elapsedMs, parsedDocs)
+    local now = dmhub.Time()
+    local recent = {}
+    for _, t in ipairs(g_harvestCallTimes) do
+        if now - t < HARVEST_BURST_WINDOW then
+            recent[#recent + 1] = t
+        end
+    end
+    recent[#recent + 1] = now
+    g_harvestCallTimes = recent
+    if #recent > HARVEST_BURST_CALLS and now - g_harvestLastBurstLog > HARVEST_BURST_LOG_GAP then
+        g_harvestLastBurstLog = now
+        printf("PERF:: Encounter.GetEncountersOnCurrentMap called %d times in %ds (last %.1f ms, %d docs parsed); caller:\n%s",
+            #recent, HARVEST_BURST_WINDOW, elapsedMs, parsedDocs, debug.traceback("", 3))
+    end
+end
+
 function Encounter.GetEncountersOnCurrentMap(hostAccess)
+    local startTime = os.clock()
+    local parsedDocs = 0
     local result = {}
     local seenDocs = {}
 
@@ -5347,6 +5166,11 @@ function Encounter.GetEncountersOnCurrentMap(hostAccess)
             end
             seenDocs[docid] = true
         end
+
+        if not HasEncounterAnnotation(markdownDoc) then
+            return
+        end
+        parsedDocs = parsedDocs + 1
 
         for _, ref in ipairs(markdownDoc:GetReferencedAnnotations()) do
             local annotation = ref.annotation
@@ -5406,6 +5230,7 @@ function Encounter.GetEncountersOnCurrentMap(hostAccess)
         end
     end
 
+    NoteHarvestCall((os.clock() - startTime)*1000, parsedDocs)
     return result
 end
 
@@ -5436,6 +5261,7 @@ end
 --       onRound = function(ctx) end,  -- once per round (including round 1)
 --       think   = function(ctx) end,  -- every ~0.7s while combat is live
 --       onEnd   = function(ctx) end,  -- once, when combat ends
+--       onReset = function(ctx) end,  -- an authoring test reset: undo what the script changed on the map
 --   }
 --
 -- victory replaces the encounter's built-in victory-condition dropdown; defeat
@@ -5521,7 +5347,11 @@ EncounterScript.starterTemplate = [==[
 --
 -- ctx methods (call with ':'):
 --   ctx:Announce(text)      send a chat message
---   ctx:Banner(text, subtitle)  show everyone a full-screen dramatic banner
+--   ctx:Banner(text, subtitle, bannerType)  show everyone a full-screen dramatic
+--                               banner; bannerType "malice" for the lighter one
+--   ctx:SetWaterLevel(level)    set the map water level (multiples of 0.5; nil
+--                               removes it); creatures float up/settle with it
+--   ctx:GetWaterLevel()     the map water level, or nil
 --   ctx:DeployWave(waveid)  deploy one of the encounter's reinforcement waves
 --   ctx:EnsureButton{...}   add a custom button to the Encounter Actions strip
 --   ctx:DismissButton(id)   remove a custom button
@@ -5729,7 +5559,7 @@ local function NormalizeDefinition(def)
         norm.defeat = { check = def.defeat.check, text = text }
     end
 
-    for _, handler in ipairs({ "onPrepare", "onStart", "onRound", "think", "onEnd" }) do
+    for _, handler in ipairs({ "onPrepare", "onStart", "onRound", "think", "onEnd", "onReset" }) do
         local fn = def[handler]
         if fn ~= nil and type(fn) ~= "function" then
             return nil, handler .. " must be a function"
@@ -5806,7 +5636,7 @@ function EncounterScript.DescribeDefinition(def)
         parts[#parts + 1] = "custom defeat condition"
     end
     local handlers = {}
-    for _, handler in ipairs({ "onPrepare", "onStart", "onRound", "think", "onEnd" }) do
+    for _, handler in ipairs({ "onPrepare", "onStart", "onRound", "think", "onEnd", "onReset" }) do
         if def[handler] ~= nil then
             handlers[#handlers + 1] = handler
         end
@@ -6208,6 +6038,8 @@ local function MakeReadContext(liveEncounter, instance, def)
         return false
     end
     ctx.Announce = NotAllowed
+    ctx.SetWaterLevel = NotAllowed
+    ctx.GetWaterLevel = function(_) return Encounter.GetWaterLevel() end
     ctx.DeployWave = NotAllowed
     ctx.EnsureButton = NotAllowed
     ctx.DismissButton = NotAllowed
@@ -6325,15 +6157,30 @@ local function MakeHostContext(instance)
     end
 
     --the full-screen DramaticBanner; it is a shared document, so everyone sees it.
-    ctx.Banner = function(_, text, subtitle)
+    --bannerType is a DramaticBanner.types id ("heroic" swords, the default, or "malice").
+    ctx.Banner = function(_, text, subtitle, bannerType)
         local banner = rawget(_G, "DramaticBanner")
         if banner ~= nil then
-            pcall(function() banner.Show{ text = tostring(text), subtitle = subtitle } end)
+            pcall(function() banner.Show{ text = tostring(text), subtitle = subtitle, bannerType = bannerType } end)
         end
     end
 
     ctx.Log = function(_, text)
         print(string.format("EncounterScript '%s': %s", instance:try_get("name", "script"), tostring(text)))
+    end
+
+    --The map water level: creatures float up with rising water and settle with
+    --falling water on their own (the engine moves them). nil removes the water.
+    ctx.SetWaterLevel = function(_, level, options)
+        local ok, err = Encounter.SetWaterLevel(level, options)
+        if not ok then
+            print(string.format("EncounterScript '%s': SetWaterLevel: %s", instance:try_get("name", "script"), tostring(err)))
+        end
+        return ok
+    end
+
+    ctx.GetWaterLevel = function(_)
+        return Encounter.GetWaterLevel()
     end
 
     --Deploy one of the encounter's authored reinforcement waves right now.
@@ -6445,6 +6292,35 @@ function EncounterScript.PrepareEncounter(encounter, runHandlers)
         result[#result + 1] = entry
     end
     return result
+end
+
+--- Runs every onReset handler of an encounter's scripts: an authoring test
+--- reset (EncounterMontage.ResetTest) asks each script to put back what it
+--- changed on the map, since the next combat's onStart may be a while off.
+--- Called outside combat, so ctx.queue is nil and ctx.state is a fresh table.
+--- @param encounter Encounter
+function EncounterScript.ResetEncounter(encounter)
+    for _, instance in ipairs(encounter:try_get("scripts", {})) do
+        local def = instance:GetDefinition()
+        if def ~= nil and def.onReset ~= nil then
+            local name = def.name or instance:try_get("name", "Encounter Script")
+            local ctx = {
+                params = instance:ResolveParams(def),
+                state = {},
+                round = 0,
+                queue = nil,
+                encounter = encounter,
+                isHost = true,
+            }
+            ctx.Log = function(_, text)
+                print(string.format("EncounterScript '%s': %s", name, tostring(text)))
+            end
+            local ok, err = pcall(def.onReset, ctx)
+            if not ok then
+                PrintScriptError(instance, tostring(err))
+            end
+        end
+    end
 end
 
 --Run one script instance for one heartbeat. Returns true when its persisted
@@ -7226,48 +7102,38 @@ return {
 EncounterScript.RegisterBuiltin{
     id = "builtin:rising-waters",
     name = "Rising Waters",
-    description = "Every few turns the water in the map's Floodplain zones rises by 1 square, turning lower ground into Deep Water and the new shoreline into Knee-Deep Water.",
+    description = "Every few turns the map's water level rises, flooding lower ground: creatures float up with it, deep water is swum, and the new shoreline becomes shallow water.",
     code = [==[
 return {
     name = "Rising Waters",
-    description = "Every few turns the water in the map's Floodplain zones rises by 1 square. Paint a Floodplain zone over every square the water can reach: squares below the water line become Deep Water and squares at it become Knee-Deep Water, by their ground height. Combat starts with knee-deep water on the floodplain's lowest ground. Flooded squares are painted with translucent water on a Rising Water layer over the map.",
+    description = "Every few turns the map's water level rises. Combat starts with the water at the Starting Level; each rise lifts it by Rise Amount squares. Ground 1 square or more under the water is deep water (swimming), less is shallow water (difficult terrain for creatures without a swim speed). Creatures float up with the water. Set how the water looks in Map Settings > Water.",
 
     params = {
+        { id = "startLevel", name = "Starting Level", type = "number", default = 0, min = -20, max = 20 },
+        { id = "riseAmount", name = "Rise Amount (squares)", type = "number", default = 1, min = 0.5, max = 5 },
         { id = "turnsPerRise", name = "Turns Between Rises", type = "number", default = 3, min = 1, max = 20 },
         { id = "rises", name = "Number of Rises", type = "number", default = 2, min = 1, max = 10 },
         { id = "announce", name = "Announce in Chat", type = "boolean", default = true },
         { id = "banner", name = "Show a Banner", type = "boolean", default = true },
     },
 
-    --reset the water, so a replayed encounter does not start already flooded.
+    --start at the starting level, so a replayed encounter does not start already flooded.
     onStart = function(ctx)
-        ctx.state.level = 0
-        ctx.state.drawnLevel = nil
-        ctx.state.drawFailed = nil
-        local deep, err = Encounter.FloodFloodplains(0)
-        if deep == nil then
-            ctx:Log("Rising Waters: " .. tostring(err))
-        end
+        ctx.state.rises = 0
+        ctx:SetWaterLevel(ctx.params.startLevel)
+    end,
+
+    --a test reset drains the water back to its starting level.
+    onReset = function(ctx)
+        ctx:SetWaterLevel(ctx.params.startLevel)
     end,
 
     --counts turns (not rounds) by watching the current turn's id change; the
     --water rises as the turn after every turnsPerRise-th completed turn begins.
     think = function(ctx)
         local st = ctx.state
-        st.level = st.level or 0
-
-        --the water picture follows the level; retried while its layer is being created.
-        if st.drawnLevel ~= st.level and not st.drawFailed then
-            local drawn, err = Encounter.DrawRisingWater(st.level)
-            if drawn then
-                st.drawnLevel = st.level
-            elseif drawn == nil then
-                st.drawFailed = true
-                ctx:Log("Rising Waters: " .. tostring(err))
-            end
-        end
-
-        if st.level >= ctx.params.rises or ctx.queue == nil then
+        st.rises = st.rises or 0
+        if st.rises >= ctx.params.rises or ctx.queue == nil then
             return
         end
         if ctx.queue:CurrentInitiativeId() == nil then
@@ -7281,22 +7147,21 @@ return {
         st.turnsStarted = (st.turnsStarted or 0) + 1
 
         local completed = st.turnsStarted - 1
-        local level = math.min(ctx.params.rises, math.floor(completed / ctx.params.turnsPerRise))
-        if level <= st.level then
+        local rises = math.min(ctx.params.rises, math.floor(completed / ctx.params.turnsPerRise))
+        if rises <= st.rises then
             return
         end
-        st.level = level
+        st.rises = rises
 
-        local deep, err = Encounter.FloodFloodplains(level)
-        if deep == nil then
-            ctx:Log("Rising Waters: " .. tostring(err))
-            return
-        end
+        ctx:SetWaterLevel(ctx.params.startLevel + rises * ctx.params.riseAmount)
+
+        local amount = ctx.params.riseAmount
+        local squares = (amount == 1) and "1 square" or string.format("%g squares", amount)
         if ctx.params.announce then
-            ctx:Announce(string.format("The water rises by 1 square! (%d of %d)", level, ctx.params.rises))
+            ctx:Announce(string.format("The water rises by %s! (%d of %d)", squares, rises, ctx.params.rises))
         end
         if ctx.params.banner then
-            ctx:Banner("Rising Waters", "The waters have risen by one square!")
+            ctx:Banner("Rising Waters", string.format("The waters have risen by %s!", squares), "malice")
         end
     end,
 }

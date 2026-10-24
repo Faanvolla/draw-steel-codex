@@ -4287,14 +4287,18 @@ function CustomDocument:CreateInterface(args)
         end
     end
 
+    --presentationAllowClose: a presentation-mode window (no editing chrome)
+    --the reader may still close themselves -- e.g. the Encounter of the Week
+    --rules reader -- as opposed to one the Director holds open.
+    local m_presentationLocked = args.presentationMode and not args.presentationAllowClose
     local m_closeButton = gui.Button {
-        classes = { "closeButton", "sizeXs", cond(args.suppressCloseButton or args.presentationMode or (args.dialog == nil and args.close == nil), "collapsed") },
+        classes = { "closeButton", "sizeXs", cond(args.suppressCloseButton or m_presentationLocked or (args.dialog == nil and args.close == nil), "collapsed") },
         hmargin = 4,
         closedocuments = function(element)
             --a presented document is held open by the Director; the
             --/closedocuments macro (fired tree-wide, so it reaches this
             --button even collapsed) must not dismiss it.
-            if args.presentationMode then
+            if m_presentationLocked then
                 return
             end
             element:FireEvent("press")
@@ -8691,8 +8695,9 @@ end
 -- lighting, measuring) live on the MAP RAIL instead of the user's icon
 -- rails: a column down the left edge of the live map window, appended to
 -- the left rail when that window is maximized. A second column on the
--- window's right edge holds buttons a particular map or encounter
--- provides (MapButtons). The map rail is hard-wired: these panels never
+-- window's right edge holds Map Settings (MapRail.RIGHT_SIDE) above the
+-- buttons a particular map or encounter provides (MapButtons). The map
+-- rail is hard-wired: these panels never
 -- go on the user's rails, and their folders below are fixed in code
 -- rather than read from "iconrailtabs". A GLOBAL table: the main chunk
 -- sits on the 200-locals ceiling.
@@ -8707,6 +8712,12 @@ MapRail.FOLDERS = {
     { "floors & layers", "time of day/lighting", "elevation editor", "weather" },
     { "map settings" },
     { "measuring tool", "whiteboard" },
+}
+
+--Map panels that sit at the top of the RIGHT column (above the map's own
+--buttons) instead of in the left one. Keys are lower-case panel names.
+MapRail.RIGHT_SIDE = {
+    ["map settings"] = true,
 }
 
 MapRail.isMapPanel = {}
@@ -15631,6 +15642,20 @@ function RailRightColumnWidth()
         end
     end
     return result
+end
+
+--Whether a rail side ("left" or "right") shows anything: panel buttons, or
+--a custom-interface widget (assumed present whenever one is active). An
+--empty rail still has a wrapper with a width, so RailRightColumnWidth alone
+--cannot tell.
+--- @param side string
+--- @return boolean
+function RailSideOccupied(side)
+    if GameHud.CustomInterface() ~= nil then
+        return true
+    end
+    local sides = RailLayout()
+    return #(sides[side] or {}) > 0
 end
 
 --Whether a registered panel currently has a rail button.
@@ -26147,8 +26172,8 @@ end)
 --While the rail mode is on in a game with the table up, the map rail
 --replaces the MapButtons bar:
 --  * the live map window, windowed: a fixed rail column inside each of
---    its edges -- map panels on the left, the map's own buttons
---    (MapButtons: map scripts, encounter controls) on the right. Built by
+--    its edges -- map panels on the left, Map Settings and the map's own
+--    buttons (MapButtons: map scripts, encounter controls) on the right. Built by
 --    PanelDocument.CreateMapRails; Tabletop.lua hosts and rebuilds them.
 --  * the live map window, maximized: the same buttons appended to the
 --    screen rails below a divider (MapRail.AppendMerged, from
@@ -26212,14 +26237,16 @@ RailEntryTypes.mapbutton = {
 
 --- The map panels' rail entries for this user, in rail order: folder
 --- owners and any panel no folder of theirs holds. Slots are unassigned.
+--- @param side? "left"|"right" only that column's panels (MapRail.RIGHT_SIDE); nil for both
 --- @return table[]
-function MapRail.PanelEntries()
+function MapRail.PanelEntries(side)
     local list = {}
     local owners = PanelDocument.GroupOwners()
     for _, folder in ipairs(MapRail.FOLDERS) do
         for _, key in ipairs(folder) do
             local reg = DockablePanel.GetRegistration(key)
-            if reg ~= nil and owners[key] == nil and MapRail.PanelAvailable(key) and PanelDocument.Get(key) ~= nil then
+            local onSide = side == nil or (MapRail.RIGHT_SIDE[folder[1]] == true) == (side == "right")
+            if onSide and reg ~= nil and owners[key] == nil and MapRail.PanelAvailable(key) and PanelDocument.Get(key) ~= nil then
                 list[#list + 1] = { key = key, name = reg.name, span = 1, ord = #list, mapRail = true }
             end
         end
@@ -26322,8 +26349,20 @@ function MapRail.AppendMerged(sides)
     end
     local panelSide = cond(PanelDocument.RailSideHidden("left"), "right", "left")
     local buttonSide = cond(PanelDocument.RailSideHidden("right"), "left", "right")
-    MapRail.AppendSection(sides[panelSide], MapRail.PanelEntries())
-    MapRail.AppendSection(sides[buttonSide], MapRail.ButtonEntries())
+    MapRail.AppendSection(sides[panelSide], MapRail.PanelEntries("left"))
+    MapRail.AppendSection(sides[buttonSide], MapRail.RightEntries())
+end
+
+--- The right column's entries: right-side map panels (Map Settings) on
+--- top, then the map's own buttons.
+--- @return table[]
+function MapRail.RightEntries()
+    local list = MapRail.PanelEntries("right")
+    for _, e in ipairs(MapRail.ButtonEntries()) do
+        e.ord = #list
+        list[#list + 1] = e
+    end
+    return list
 end
 
 --Polled by a screen rail's think: rebuild the rails when the merged
@@ -26343,9 +26382,10 @@ function MapRail.CheckMerged()
     end)
 end
 
---- The live map window's rail columns (left: map panels, right: the map's
---- own buttons), for Tabletop.lua to mount inside the window. Each needs
---- setRailScale fired once attached. Empty when the map rail is off.
+--- The live map window's rail columns (left: map panels, right: Map
+--- Settings and the map's own buttons), for Tabletop.lua to mount inside
+--- the window. Each needs setRailScale fired once attached. Empty when the
+--- map rail is off.
 --- @return Panel[]
 function PanelDocument.CreateMapRails()
     local result = {}
@@ -26353,8 +26393,8 @@ function PanelDocument.CreateMapRails()
         return result
     end
     local columns = {
-        { side = "left", entries = MapRail.PanelEntries() },
-        { side = "right", entries = MapRail.ButtonEntries() },
+        { side = "left", entries = MapRail.PanelEntries("left") },
+        { side = "right", entries = MapRail.RightEntries() },
     }
     for _, column in ipairs(columns) do
         if #column.entries > 0 then

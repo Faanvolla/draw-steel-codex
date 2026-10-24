@@ -117,13 +117,14 @@ local function DoesNotProvoke(token)
 end
 
 --Clamped: temporary Stamina can push current Stamina above the maximum.
+--MaxHitpoints(), not the max_hitpoints field: on a hero that field is a stale 10.
 local function StaminaFraction(token)
-    local fraction = token.properties:CurrentHitpoints() / math.max(1, token.properties.max_hitpoints)
+    local fraction = token.properties:CurrentHitpoints() / math.max(1, token.properties:MaxHitpoints())
     return math.max(0, math.min(1, fraction))
 end
 
 local function MissingStamina(token)
-    return math.max(0, token.properties.max_hitpoints - token.properties:CurrentHitpoints())
+    return math.max(0, token.properties:MaxHitpoints() - token.properties:CurrentHitpoints())
 end
 
 local function RemainingMovement(token)
@@ -245,14 +246,6 @@ local function StrikeTargetScore(target, edges)
         return 0.1 + (edges or 0)*0.1
     end
     return 1 + (edges or 0)*0.1 + MonsterAI.TargetStaminaBias(target)
-end
-
---Slippery angulotl captains harass low-Stamina heroes in the backline.
-local function HarassTargetScore(target, edges)
-    if target.isObject then
-        return 0.1 + (edges or 0)*0.1
-    end
-    return 1 + (edges or 0)*0.1 + (1 - StaminaFraction(target))*0.35
 end
 
 local function SortedStrikeTargets(ai, token, ability, loc, scorefn)
@@ -700,9 +693,9 @@ MonsterAI:RegisterMove{
     category = "Main Actions",
     monsters = {"Angulotl Needler"},
     abilities = {"Blowgun"},
-    description = "Snipe from long range, focusing the lowest-Stamina enemy in reach.",
-    score = StrikeScore(1.05, HarassTargetScore),
-    execute = StrikeExecute(HarassTargetScore),
+    description = "Snipe from long range, spreading damage toward healthier enemies.",
+    score = StrikeScore(1.05, StrikeTargetScore),
+    execute = StrikeExecute(StrikeTargetScore),
 }
 
 --Illuminated creatures give every strike against them an edge, so spread the
@@ -729,9 +722,9 @@ MonsterAI:RegisterMove{
     category = "Main Actions",
     monsters = {"Angulotl Slink"},
     abilities = {"Tonguelash"},
-    description = "Lash a low-Stamina enemy from up to 6 squares away and pull them in.",
-    score = StrikeScore(1.1, HarassTargetScore),
-    execute = StrikeExecute(HarassTargetScore),
+    description = "Lash an enemy from up to 6 squares away and pull them in.",
+    score = StrikeScore(1.1, StrikeTargetScore),
+    execute = StrikeExecute(StrikeTargetScore),
 }
 
 --Slinks drag heroes into the toxic plants (and a Noxious Bubble pops on
