@@ -5060,8 +5060,8 @@ function GameHud.CreateEmbeddedRollDialog()
     --It rides the same "shownWhenPending" gate as the native Re-roll button,
     --and additionally hides itself whenever the party has no Intel to spend --
     --so in campaigns that do not use Intel (pool always 0) it never appears.
-    --The whole feature is experimental and lives behind the per-user
-    --"dev:trackintel" flag (declared in CampaignTrackerPanel.lua).
+    --It shows only where IntelTracker.Enabled() (CampaignTrackerPanel.lua): the
+    --campaign has switched the tracker on, or the "dev:trackintel" flag is set.
     --On press it spends 1 Intel, then drives the existing reroll path.
     local intelRerollButton = gui.PrettyButton {
         text = "Re-roll for 1 Intel",
@@ -5086,10 +5086,10 @@ function GameHud.CreateEmbeddedRollDialog()
         refreshIntel = function(element)
             local it = rawget(_G, "IntelTracker")
             local pool = (it ~= nil) and it.Pool() or 0
-            --hide entirely when the dev:trackintel flag is off or there is no
-            --Intel to spend (also the "not this campaign" case). The
+            --hide entirely when the tracker is off in this campaign or there is
+            --no Intel to spend (also the "not this campaign" case). The
             --shownWhenPending style handles the rest.
-            local enabled = dmhub.GetSettingValue("dev:trackintel") and true or false
+            local enabled = (it ~= nil and it.Enabled ~= nil and it.Enabled()) and true or false
             element:SetClass("collapsed", (not enabled) or pool < 1)
         end,
         press = function(element)

@@ -1770,8 +1770,8 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 		},
 
 		children = {
-			--bottom of the stack: a maximized tabletop map window sits here,
-			--under everything else, as a full-screen map does (Tabletop.lua).
+			--bottom of the stack: the table, and a maximized tabletop scene
+			--shown under the UI (Tabletop.lua).
 			Tabletop.CreateLayer(),
 
             gamehud:CreateAdventureDocumentsManager(),
@@ -1854,8 +1854,6 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 			gamehud.rollDialog,
 
 			FullscreenDisplay.Create{belowui = false},
-			--a maximized tabletop scene on show over the UI (Tabletop.lua).
-			Tabletop.CreateTopLayer(),
 			--a maximized map or scene window's strip under the app title bar:
 			--chrome, so it is over everything the windows can be under.
 			Tabletop.CreateChromeLayer(),

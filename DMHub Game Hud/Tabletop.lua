@@ -133,8 +133,6 @@ local g_lastMapId = nil
 local g_gameid = nil
 
 local g_layer = nil
---Over the whole hud: a maximized scene on show over the UI (Tabletop.CreateTopLayer).
-local g_topLayer = nil
 --The strip under the app title bar that a maximized map or scene window's
 --titlebar moves into (see "The maximized window's strip" below): {layer,
 --strip, leadSlot, controlsSlot, owner}. A table, not locals: this file is at
@@ -1203,11 +1201,11 @@ end
 --hung from the right of the app title bar, which fades out to the left over
 --the map (David, 2026-10-15). It is chrome, like the title bar: it sits in
 --its own layer over the whole hud (Tabletop.CreateChromeLayer), so it stays
---reachable over docks, dialogs and a scene shown over the UI, and while the
+--reachable over docks, dialogs and the full-screen display, and while the
 --Director's scene shown to the Players alone is hidden here.
 
 --- The layer for the maximized window's strip. GameHud puts it straight
---- after the top layer.
+--- after the over-the-UI full-screen display.
 --- @return Panel
 function Tabletop.CreateChromeLayer()
     g_chrome.leadSlot = gui.Panel{
@@ -2160,10 +2158,10 @@ local function BuildWindow(rec)
     rec.shownState = nil
 end
 
---Puts a built window in its layer: the documents layer, mixed in with
---journals and panel windows, or the bottom tabletop layer when maximized,
---so the docks and the rest of the hud sit over it as they do over a
---full-screen map.
+--Puts a built window in the documents layer, mixed in with journals and
+--panel windows. Maximized it stays there and covers the hud's lower layers
+--(docks, Director's Screen), stacking with the other windows by click order,
+--but always under the icon rails and pinned panel windows (David, 2026-10-24).
 local function PlaceWindow(rec)
     local panel = rec.panel
     if panel == nil or not panel.valid then
@@ -2171,9 +2169,6 @@ local function PlaceWindow(rec)
     end
 
     local target = DocumentsLayer()
-    if rec.maximized then
-        target = g_layer
-    end
     if target == nil or not target.valid then
         return
     end
@@ -2184,6 +2179,15 @@ local function PlaceWindow(rec)
         end
         target:AddChild(panel)
     end
+
+    --the engine lifts these back over the window every time it is raised.
+    panel.raiseBelowClasses = cond(rec.maximized, PanelDocument.ABOVE_MAXIMIZED_MAP, nil)
+    --maximizing brings the window up once (rails and pinned windows still
+    --over it); after that only a click or focus raises it.
+    if rec.maximized and rec.maximizedPanel ~= panel then
+        panel:SetAsLastSibling()
+    end
+    rec.maximizedPanel = cond(rec.maximized, panel, nil)
 
     if rec.maximized then
         panel.x = 0
@@ -2238,9 +2242,8 @@ end
 --stays built so restoring it is instant (Refresh re-applies this to every
 --window). A maximized map window covers the other map windows, so they are
 --hidden under it (David, 2026-10-15); every other window -- scenes,
---journals, panel windows, cards -- still floats over it, as does every
---window over a maximized scene or a scene shown under the UI (David,
---2026-10-14).
+--journals, panel windows, cards -- stays open and stacks with it by click
+--order (PlaceWindow).
 function Tabletop.ApplyCollapsed(rec)
     local panel = rec.panel
     if panel == nil or not panel.valid then
@@ -9090,9 +9093,9 @@ local function DefineSceneWindows()
 
     --A minimized scene window (or one still growing back out of its button)
     --is hidden, and so is the Director's maximized scene shown to the Players
-    --alone. A scene window is never hidden by a maximized window: the
-    --maximized one sits under it (map windows, unlike scenes, are hidden
-    --under a maximized map; ApplyCollapsed).
+    --alone. A scene window is never hidden by a maximized window: they stack
+    --by click order (map windows, unlike scenes, are hidden under a
+    --maximized map; ApplyCollapsed).
     local function ApplySceneCollapsed(rec)
         local panel = rec.panel
         if panel == nil or not panel.valid then
@@ -9132,26 +9135,21 @@ local function DefineSceneWindows()
         end
     end
 
-    --A maximized scene goes over everything (the top layer, over the whole
-    --hud) while it is on show and the title bar's Below UI is off -- the way
-    --the players see it (David, 2026-10-14). Otherwise it sits at the bottom
-    --like a maximized map, and a player's own maximized scene that is not
-    --on show always does.
-    local function SceneOnTop(rec)
-        return rec.maximized == true and Scenes.ShowState(rec.sceneid) ~= false and not Scenes.IsBelowUI()
+    --A maximized scene on show with the title bar's Below UI on is the
+    --table's background: it sits in the bottom layer, under everything.
+    --Any other maximized scene behaves as a maximized map does (David,
+    --2026-10-24).
+    local function SceneUnderUI(rec)
+        return rec.maximized == true and Scenes.ShowState(rec.sceneid) ~= false and Scenes.IsBelowUI()
     end
 
-    --The layer a scene window belongs in: among the windows and journals;
-    --maximized, the bottom tabletop layer (under the docks, as a maximized
-    --map is) or the top layer (SceneOnTop).
+    --The layer a scene window belongs in: among the windows and journals,
+    --or the bottom tabletop layer (SceneUnderUI).
     local function SceneLayer(rec)
-        if not rec.maximized then
-            return DocumentsLayer()
+        if SceneUnderUI(rec) then
+            return g_layer
         end
-        if SceneOnTop(rec) then
-            return g_topLayer
-        end
-        return g_layer
+        return DocumentsLayer()
     end
 
     --Puts a built scene window in its layer (SceneLayer). Maximized it fills,
@@ -9171,6 +9169,13 @@ local function DefineSceneWindows()
             end
             target:AddChild(panel)
         end
+        --maximized among the windows: stacked as a maximized map is (PlaceWindow).
+        local stacked = rec.maximized == true and target ~= g_layer
+        panel.raiseBelowClasses = cond(stacked, PanelDocument.ABOVE_MAXIMIZED_MAP, nil)
+        if stacked and rec.maximizedPanel ~= panel then
+            panel:SetAsLastSibling()
+        end
+        rec.maximizedPanel = cond(stacked, panel, nil)
         if rec.maximized then
             panel.x = 0
             panel.y = 0
@@ -9696,7 +9701,7 @@ local function DefineSceneWindows()
     --stays hidden; the time runs out on its own if the animation is lost.
     RestoreScene = function(rec)
         if not rec.minimized then
-            if not rec.maximized and rec.panel ~= nil and rec.panel.valid then
+            if rec.panel ~= nil and rec.panel.valid and rec.panel.parent ~= g_layer then
                 rec.panel:SetAsLastSibling()
             end
             return
@@ -9715,7 +9720,7 @@ local function DefineSceneWindows()
             end
             rec.showAllOnRestore = nil
             PlaceSceneWindow(rec)
-            if not rec.maximized and rec.panel ~= nil and rec.panel.valid then
+            if rec.panel ~= nil and rec.panel.valid and rec.panel.parent ~= g_layer then
                 rec.panel:SetAsLastSibling()
             end
             Refresh()
@@ -9909,7 +9914,7 @@ local function DefineSceneWindows()
             SaveSoon()
             return
         end
-        if not rec.maximized and rec.panel ~= nil and rec.panel.valid then
+        if rec.panel ~= nil and rec.panel.valid and rec.panel.parent ~= g_layer then
             rec.panel:SetAsLastSibling()
         end
         Highlight(rec)
@@ -11686,8 +11691,9 @@ local function ShowTableMenu()
     anchor.popup = menu
 end
 
---The bottom layer of the GameHud: maximized windows live here, under the
---docks and the rest of the hud, and its think drives the tabletop. It is
+--The bottom layer of the GameHud: a maximized scene on show under the UI
+--lives here, under the docks and the rest of the hud, and its think drives
+--the tabletop. It is
 --the table itself (a clear image, so it takes the right-click), and it
 --never blocks the map's own input.
 function Tabletop.CreateLayer()
@@ -11789,20 +11795,6 @@ function Tabletop.CreateLayer()
         end,
     }
     return g_layer
-end
-
---The layer over the whole hud: a maximized scene window on show with Below
---UI off sits here, over the docks, rails and dialogs, as the players see it
---(SceneOnTop). GameHud puts it straight after the over-the-UI fullscreen
---display. It has no image, so when empty it takes no mouse.
-function Tabletop.CreateTopLayer()
-    g_topLayer = gui.Panel{
-        id = "tabletopTopLayer",
-        width = "100%",
-        height = "100%",
-        interactable = false,
-    }
-    return g_topLayer
 end
 
 --The layer over the map windows and journals: minimized windows' floating

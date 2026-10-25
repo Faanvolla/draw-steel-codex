@@ -8654,6 +8654,16 @@ local g_onPanelPinnedChanged
 --adds a badge to one button and takes another off the rail entirely.
 local g_onPanelGroupChanged
 
+--The documents-layer panels a maximized tabletop map stays under (its
+--raiseBelowClasses, Tabletop.lua): the rails and what they float on the
+--layer, the chat preview bubble, and pinned panel windows (David,
+--2026-10-24). Every other window stacks with the map by click order.
+PanelDocument.ABOVE_MAXIMIZED_MAP = {
+    "iconRail", "iconRailGhost", "iconRailGhostLine", "iconRailCardGhost", "iconRailTrash",
+    "iconRailViewChip", "iconRailViewToast", "iconRailToolkitStrip", "chatSpeechBubble",
+    "panelDocumentPinned",
+}
+
 function PanelDocument.IsPinned(key)
     if key == nil then
         return false
@@ -10128,6 +10138,8 @@ function PanelDocument:CreateInterface(args)
         --swallowed by a no-op.
         if resultPanel ~= nil and resultPanel.valid then
             resultPanel.captureEscape = tabbed and not pinned
+            --a maximized map stays under pinned windows (PanelDocument.ABOVE_MAXIMIZED_MAP).
+            resultPanel:SetClass("panelDocumentPinned", pinned)
         end
     end
 
