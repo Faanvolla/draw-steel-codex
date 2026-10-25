@@ -4404,6 +4404,114 @@ function ActivatedAbility:GetTargetingRays(casterToken, range, symbols, targets)
     return nil
 end
 
+--A creature with this modifier who aims a single-target ability at a creature
+--carrying the named effect it applied, while at least minCount creatures carry
+--that effect from it, targets every one of them instead. Added in PrepareTargets,
+--so the extra targets need neither range nor line of effect.
+CharacterModifier.RegisterType("expandsingletarget", "Expand Single Target")
+
+CharacterModifier.TypeInfo.expandsingletarget = {
+    init = function(modifier)
+        modifier.effectName = ""
+        modifier.minCount = 3
+    end,
+
+    createEditor = function(modifier, element)
+        element.children = {
+            gui.Panel{
+                classes = {"formPanel"},
+                gui.Label{
+                    classes = {"formLabel"},
+                    text = "Effect Name:",
+                },
+                gui.Input{
+                    classes = {"formInput"},
+                    text = modifier:try_get("effectName", ""),
+                    change = function(input)
+                        modifier.effectName = input.text
+                    end,
+                },
+            },
+            gui.Panel{
+                classes = {"formPanel"},
+                gui.Label{
+                    classes = {"formLabel"},
+                    text = "Minimum Carrying:",
+                },
+                gui.Input{
+                    classes = {"formInput"},
+                    text = tostring(modifier:try_get("minCount", 3)),
+                    change = function(input)
+                        modifier.minCount = tonumber(input.text) or 3
+                        input.text = tostring(modifier.minCount)
+                    end,
+                },
+            },
+        }
+    end,
+}
+
+--- Does token carry the named ongoing effect, applied by casterToken? Names match the way ConditionCaster matches them.
+--- @param token CharacterToken
+--- @param effectName string lowercased
+--- @param casterToken CharacterToken
+--- @return boolean
+local function CarriesEffectFrom(token, effectName, casterToken)
+    if token == nil or not token.valid or token.properties == nil then
+        return false
+    end
+
+    local effectsTable = GetTableCached("characterOngoingEffects")
+    for _, instance in ipairs(token.properties:ActiveOngoingEffects()) do
+        local casterInfo = instance:try_get("casterInfo")
+        if casterInfo ~= nil and casterInfo.tokenid == casterToken.charid then
+            local effect = effectsTable[instance.ongoingEffectid]
+            if effect ~= nil and string.lower(effect.name) == effectName then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+--- Applies the caster's Expand Single Target modifiers to a chosen target list.
+--- @param ability ActivatedAbility
+--- @param casterToken CharacterToken
+--- @param symbols table
+--- @param targets table[]
+--- @return table[]
+local function ExpandSingleTarget(ability, casterToken, symbols, targets)
+    if casterToken == nil or casterToken.properties == nil or ability.targetType ~= "target" or #targets ~= 1 then
+        return targets
+    end
+
+    local sole = targets[1].token
+    if sole == nil or not sole.valid or sole.properties == nil then
+        return targets
+    end
+
+    for _, entry in ipairs(casterToken.properties:GetActiveModifiers()) do
+        local modifier = entry.mod
+        if modifier.behavior == "expandsingletarget" then
+            local effectName = string.lower(modifier:try_get("effectName", ""))
+            if effectName ~= "" and ability:GetNumTargets(casterToken, symbols) == 1
+                    and CarriesEffectFrom(sole, effectName, casterToken) then
+                local carriers = {}
+                for _, token in ipairs(dmhub.allTokens) do
+                    if CarriesEffectFrom(token, effectName, casterToken) then
+                        carriers[#carriers + 1] = { loc = token.loc, token = token }
+                    end
+                end
+                if #carriers >= (tonumber(modifier:try_get("minCount", 3)) or 3) then
+                    return carriers
+                end
+            end
+        end
+    end
+
+    return targets
+end
+
 function ActivatedAbility:PrepareTargets(casterToken, symbols, targets)
     if self:UsesSquadStrike(casterToken) then
         --minion squad signature abilities collapse multiple strikes against the
@@ -4430,7 +4538,7 @@ function ActivatedAbility:PrepareTargets(casterToken, symbols, targets)
         return result
     end
 
-    return targets
+    return ExpandSingleTarget(self, casterToken, symbols, targets)
 end
 
 local g_customTargetShapeFunction = ActivatedAbility.CustomTargetShape
