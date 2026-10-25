@@ -96,6 +96,7 @@
 --- @field swallowPress boolean (Default: false) If true, if this panel receives the 'press' event its parent panel will not receive the press event. By default, a panel, and its parents, all the way up the hierarchy receive the press event.
 --- @field raiseOnPress boolean (Default: false) If true, a mouse press anywhere inside this panel -- on the panel itself or on any descendant, even one that swallows the press or takes it for the map -- first makes this panel the last child of its parent, so it draws above its siblings. Used by floating windows for click-to-front.
 --- @field raiseBelowClasses string|string[]|nil (Default: nil) For a raiseOnPress window: a class name, or a list of them. Whenever this window is raised (a press in it, or SetAsLastSibling), any sibling carrying one of these classes is lifted back above it, keeping their order. A maximized tabletop map uses it to stay under the icon rails and pinned panel windows while stacking freely with every other window.
+--- @field raiseUnderNonWindows boolean (Default: false) For a raiseOnPress window: when it is raised (a press in it, or SetAsLastSibling), it passes only the other raiseOnPress windows. Siblings that are not windows (dialogs, toasts, layers) and were above it stay above it. A maximized tabletop map uses it so a click on the map does not bury dialogs that were over it.
 --- @field activationOrder integer (read-only) For a raiseOnPress window: when it was last activated, as an ever-increasing count shared by all panels (0 if never). A window is activated when it is made raiseOnPress, when a press lands anywhere in it (also the live tabletop map's press), and when Lua calls SetAsLastSibling on it. Sorting windows by it, highest first, gives most-recently-used order, as the Ctrl+Tab window switcher does.
 --- @field hoverCursor MouseCursor|nil The style of mouse cursor that will be displayed when this panel is hovered.
 --- @field clip boolean (Default: false) If set to true, this panel's bgimage will be used to clip its children. By default child panels can appear outside the bounds of their parent. With this set to true, the child panels will instead be clipped.
@@ -141,6 +142,10 @@ function Panel:SetAsFirstSibling() end
 
 --- Makes this panel the last child of its parent. Its siblings are shuffled forward and maintain their order.
 function Panel:SetAsLastSibling() end
+
+--- Moves this panel to just above otherPanel in the draw order (otherPanel must have the same parent); the other siblings keep their order. A raiseOnPress window counts as activated, as with SetAsLastSibling. A maximized tabletop map uses it to take the place of the map it replaces.
+--- @param otherPanel Panel A sibling of this panel.
+function Panel:SetAsSiblingAbove(otherPanel) end
 
 --- Adds childPanel as a child of this panel. It will be added as the last child.
 --- @param childPanel Panel The child panel to add.
@@ -410,6 +415,7 @@ function Panel:HaltEventPropagation() end
 --- @field swallowPress? boolean (Default: false) If true, if this panel receives the 'press' event its parent panel will not receive the press event. By default, a panel, and its parents, all the way up the hierarchy receive the press event.
 --- @field raiseOnPress? boolean (Default: false) If true, a mouse press anywhere inside this panel -- on the panel itself or on any descendant, even one that swallows the press or takes it for the map -- first makes this panel the last child of its parent, so it draws above its siblings. Used by floating windows for click-to-front.
 --- @field raiseBelowClasses? string|string[]|nil (Default: nil) For a raiseOnPress window: a class name, or a list of them. Whenever this window is raised (a press in it, or SetAsLastSibling), any sibling carrying one of these classes is lifted back above it, keeping their order. A maximized tabletop map uses it to stay under the icon rails and pinned panel windows while stacking freely with every other window.
+--- @field raiseUnderNonWindows? boolean (Default: false) For a raiseOnPress window: when it is raised (a press in it, or SetAsLastSibling), it passes only the other raiseOnPress windows. Siblings that are not windows (dialogs, toasts, layers) and were above it stay above it. A maximized tabletop map uses it so a click on the map does not bury dialogs that were over it.
 --- @field hoverCursor? MouseCursor|nil The style of mouse cursor that will be displayed when this panel is hovered.
 --- @field clip? boolean (Default: false) If set to true, this panel's bgimage will be used to clip its children. By default child panels can appear outside the bounds of their parent. With this set to true, the child panels will instead be clipped.
 --- @field clipHidden? boolean (Default: false) This is relevant only if @see clip is set. If set to true, this panel won't have its bgimage drawn. The bgimage will be used only for the purpose of clipping the child panels.

@@ -644,7 +644,13 @@ local function BuildFloorControl(rec)
     }
 end
 
+--A maximized window keeps its place: focusing it from the Maps panel, a
+--journal link or a map change must not bury the window being used (David,
+--2026-10-25). g_chrome.StackMaximized says what does raise it.
 local function BringToFront(rec)
+    if rec.maximized then
+        return
+    end
     if rec.panel ~= nil and rec.panel.valid then
         rec.panel:SetAsLastSibling()
     end
@@ -1317,6 +1323,19 @@ function g_chrome.Owner()
         end
     end
     return nil
+end
+
+--- The maximized map or scene window's panel while it is on show among the
+--- windows (not a scene under the UI at the bottom), else nil. It covers the
+--- table, so the chat bubble treats it as a full-screen stage
+--- (PanelDocument.FullscreenStage).
+--- @return Panel|nil
+function Tabletop.MaximizedWindowPanel()
+    local rec = g_chrome.Owner()
+    if rec == nil or rec.panel.parent ~= DocumentsLayer() or rec.panel:HasClass("collapsed") then
+        return nil
+    end
+    return rec.panel
 end
 
 --A window leaving the strip: its rows go home to its titlebar, or are
@@ -2128,7 +2147,11 @@ local function BuildWindow(rec)
             if ClicksGuarded() then
                 return
             end
-            Focus(rec)
+            --the press already raised it (raiseOnPress). Raising again here buried
+            --a window the press had just opened from inside it: a map rail button
+            --opens its panel on press and has no click handler, so the click
+            --bubbles up to here (2026-10-25).
+            Focus(rec, nil, true)
         end,
         children = {
             titlebar,
@@ -2180,14 +2203,7 @@ local function PlaceWindow(rec)
         target:AddChild(panel)
     end
 
-    --the engine lifts these back over the window every time it is raised.
-    panel.raiseBelowClasses = cond(rec.maximized, PanelDocument.ABOVE_MAXIMIZED_MAP, nil)
-    --maximizing brings the window up once (rails and pinned windows still
-    --over it); after that only a click or focus raises it.
-    if rec.maximized and rec.maximizedPanel ~= panel then
-        panel:SetAsLastSibling()
-    end
-    rec.maximizedPanel = cond(rec.maximized, panel, nil)
+    g_chrome.StackMaximized(rec, rec.maximized == true)
 
     if rec.maximized then
         panel.x = 0
@@ -2212,6 +2228,30 @@ local function PlaceWindow(rec)
     rec.overlay.selfStyle.height = cond(rec.maximized, string.format("100%%-%d", TITLE_HEIGHT), "100%")
     Tabletop.ApplyCollapsed(rec)
     g_chrome.Sync()
+end
+
+--How a map or scene window stacks while maximized among the windows
+--(stacked; false windowed or under the UI). The engine keeps the rails,
+--pinned windows and any dialog over it whenever it is raised (David,
+--2026-10-24/25). Maximizing brings it up once: to the top, or, taking the
+--maximize over from rec.stackAbove (the window it replaces), into that
+--window's place, so the windows over the old map stay over it. After that
+--only a click on it, Ctrl+Tab or restoring it raises it (BringToFront
+--leaves a maximized window where it is).
+function g_chrome.StackMaximized(rec, stacked)
+    local panel = rec.panel
+    panel.raiseBelowClasses = cond(stacked, PanelDocument.ABOVE_MAXIMIZED_MAP, nil)
+    panel.raiseUnderNonWindows = stacked
+    local above = rec.stackAbove
+    rec.stackAbove = nil
+    if stacked and rec.maximizedPanel ~= panel then
+        if above ~= nil and above.valid and above.parent == panel.parent then
+            panel:SetAsSiblingAbove(above)
+        else
+            panel:SetAsLastSibling()
+        end
+    end
+    rec.maximizedPanel = cond(stacked, panel, nil)
 end
 
 --The maximized map window on show (built, not minimized), or nil.
@@ -2853,11 +2893,17 @@ RestoreWindow = function(rec)
     Travel(rec.mapid)
     AnimateGhost(rec, from, to, function()
         if IsOpen(rec) and not rec.minimized then
+            local takesOver = g_chrome.CoveringMap(rec) ~= nil
             PlaceWindow(rec)
             if rec.maximized then
                 Tabletop.SetForced(rec.mapid, true)
             end
             Focus(rec)
+            --a maximized window restored from its button comes up (BringToFront
+            --leaves it); one taking the maximize over keeps the old one's place.
+            if rec.maximized and not takesOver and rec.panel ~= nil and rec.panel.valid then
+                rec.panel:SetAsLastSibling()
+            end
         end
     end)
     SaveSoon()
@@ -3358,7 +3404,9 @@ local function EnsureBuilt(rec)
 end
 
 --fromPress: the button of a press on the window's frozen map (see Travel).
-Focus = function(rec, fromPress)
+--keepPlace: focus it without raising it (the window's own click: the press
+--already raised it).
+Focus = function(rec, fromPress, keepPlace)
     --a click on a window's close button also reaches the window itself.
     if not IsOpen(rec) then
         return
@@ -3376,7 +3424,9 @@ Focus = function(rec, fromPress)
         ToggleMaximize(rec)
         return
     end
-    BringToFront(rec)
+    if not keepPlace then
+        BringToFront(rec)
+    end
     if g_focusedId ~= rec.id then
         g_focusedId = rec.id
         SaveSoon()
@@ -3446,6 +3496,8 @@ ToggleMaximize = function(rec)
         UnmaximizeScenes()
         for _,other in ipairs(g_windows) do
             if other ~= rec and other.maximized then
+                --taking the maximize over: this one goes into its place.
+                rec.stackAbove = other.panel
                 other.maximized = false
                 PlaceWindow(other)
                 Tabletop.SetForced(other.mapid, false)
@@ -3555,6 +3607,10 @@ function Tabletop.SwitcherMapWindows()
             combat = Tabletop.MapInCombat(rec.mapid),
             activate = function()
                 Focus(rec)
+                --picked by name: a maximized window comes up too (BringToFront leaves it).
+                if rec.maximized and not rec.minimized and rec.panel ~= nil and rec.panel.valid then
+                    rec.panel:SetAsLastSibling()
+                end
             end,
         }
     end
@@ -4626,6 +4682,8 @@ local function ApplyForced(forced)
                 UpdateTableButton(rec)
                 for _, other in ipairs(g_windows) do
                     if other ~= rec and other.maximized and not other.forced then
+                        --into the place of the map it replaces; with none it comes to the top.
+                        rec.stackAbove = other.panel
                         other.maximized = false
                         PlaceWindow(other)
                     end
@@ -9169,13 +9227,8 @@ local function DefineSceneWindows()
             end
             target:AddChild(panel)
         end
-        --maximized among the windows: stacked as a maximized map is (PlaceWindow).
-        local stacked = rec.maximized == true and target ~= g_layer
-        panel.raiseBelowClasses = cond(stacked, PanelDocument.ABOVE_MAXIMIZED_MAP, nil)
-        if stacked and rec.maximizedPanel ~= panel then
-            panel:SetAsLastSibling()
-        end
-        rec.maximizedPanel = cond(stacked, panel, nil)
+        --maximized among the windows: stacked as a maximized map is.
+        g_chrome.StackMaximized(rec, rec.maximized == true and target ~= g_layer)
         if rec.maximized then
             panel.x = 0
             panel.y = 0
@@ -9460,11 +9513,10 @@ local function DefineSceneWindows()
                 --it, the players get it (DirectorScreen.lua).
                 DirectorScreen.ItemDropped(g_sharing.ScreenKey(rec))
             end,
-            click = function(element)
-                if ClicksGuarded() or rec.maximized then
-                    return
-                end
-                element:SetAsLastSibling()
+            --kept to swallow the click. It no longer raises: the press already did
+            --(raiseOnPress), and raising again on the click buried a window a press
+            --inside it had just opened, as on a map window (2026-10-25).
+            click = function()
             end,
             children = {
                 titlebar,
@@ -9914,7 +9966,8 @@ local function DefineSceneWindows()
             SaveSoon()
             return
         end
-        if rec.panel ~= nil and rec.panel.valid and rec.panel.parent ~= g_layer then
+        --a maximized one keeps its place, as a maximized map does (BringToFront).
+        if not rec.maximized and rec.panel ~= nil and rec.panel.valid then
             rec.panel:SetAsLastSibling()
         end
         Highlight(rec)

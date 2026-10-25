@@ -8378,6 +8378,9 @@ function CustomDocument:PresentDocument(args)
         --same event.
         refreshPanelPinned = function(element)
             element.dragMove = not DialogPinned()
+            --a maximized map stays under pinned windows; the engine looks for
+            --this on the window root (PanelDocument.ABOVE_MAXIMIZED_MAP).
+            element:SetClass("panelDocumentPinned", DialogPinned())
             local resize = element.data.resizePanel
             if resize ~= nil and resize.valid then
                 resize:SetClass("collapsed", DialogPinned())
@@ -10138,8 +10141,6 @@ function PanelDocument:CreateInterface(args)
         --swallowed by a no-op.
         if resultPanel ~= nil and resultPanel.valid then
             resultPanel.captureEscape = tabbed and not pinned
-            --a maximized map stays under pinned windows (PanelDocument.ABOVE_MAXIMIZED_MAP).
-            resultPanel:SetClass("panelDocumentPinned", pinned)
         end
     end
 
@@ -16591,8 +16592,20 @@ end
 --it as an ordinary child of the documents layer -- the same layer the
 --rails, the windows and this bubble live on -- so it buries everything
 --built before it. Nothing presented, or a small centred dialog that
---leaves the rail corners alone, reads as no stage.
+--leaves the rail corners alone, reads as no stage. A maximized tabletop
+--window stacked with the windows is a stage too, when it is the higher.
 function PanelDocument.FullscreenStage()
+    local stage, depth = PanelDocument.PresentedStage()
+    local maximized = Tabletop.MaximizedWindowPanel()
+    local maximizedDepth = maximized ~= nil and PanelDocument.LayerDepth(maximized) or nil
+    if maximizedDepth ~= nil and (depth == nil or maximizedDepth > depth) then
+        return maximized, maximizedDepth
+    end
+    return stage, depth
+end
+
+--The presented dialog alone, when it is a full-screen stage (FullscreenStage).
+function PanelDocument.PresentedStage()
     local hud = GameHud and GameHud.instance
     if not hud then
         return nil

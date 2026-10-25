@@ -2031,42 +2031,74 @@ local function DaybringerCanStillUseItIsDay(token)
     return false
 end
 
+--Rainfall only soaks creatures exposed to the sky (not under a ceiling or a
+--Tree Canopy zone). Unreadable symbol = assume exposed, as most maps are open.
+local function ExposedToSky(token)
+    local exposed = true
+    pcall(function()
+        exposed = creature.lookupSymbols["exposedtosky"](token.properties) == true
+    end)
+    return exposed
+end
+
+--The Malice Rainfall costs this caster right now. Encounter rules and zones
+--discount it (Aixco Hollow: 5 while a wave lives, 3 at the ritual basin).
+local function MaliceCost(token, ability)
+    local cost = 7
+    pcall(function()
+        local details = ability:GetCost(token).details
+        local quantity = details ~= nil and details[1] ~= nil and tonumber(details[1].quantity) or nil
+        if quantity ~= nil then
+            cost = quantity
+        end
+    end)
+    return cost
+end
+
 MonsterAI:RegisterMaliceAbility{
     id = "Angulotl Malice: Rainfall",
     monsterGroups = angulotlGroup,
     abilities = {"Rainfall"},
-    description = "Spend 7 Malice to soak the encounter when several enemies are dry, especially alongside clawfish or a daybringer saving It Is Day.",
+    description = "Spend Malice to soak the encounter when dry enemies and dry angulotls are under open sky, especially alongside clawfish, a daybringer saving It Is Day, or when an encounter makes it cheaper.",
     score = function(self, ai, token, ability, context)
-        --Rainfall only soaks creatures exposed to the sky (not under a ceiling
-        --or a Tree Canopy zone), so only those count.
+        --Wet enemies slip prone when they end a turn with no movement left (and
+        --clawfish shock them); wet angulotls move without provoking opportunity
+        --attacks. Both sides get soaked, so both count.
         local dryEnemies = 0
         for _,enemy in ipairs(context.enemyTokens or {}) do
-            if LiveCreature(enemy) and not IsWet(enemy) then
-                local exposed = true
-                pcall(function()
-                    exposed = creature.lookupSymbols["exposedtosky"](enemy.properties) == true
-                end)
-                if exposed then
-                    dryEnemies = dryEnemies + 1
-                end
+            if LiveCreature(enemy) and not IsWet(enemy) and ExposedToSky(enemy) then
+                dryEnemies = dryEnemies + 1
             end
         end
-        if dryEnemies < 3 then
-            return nil, "fewer than three dry enemies are exposed to the sky"
-        end
 
+        local dryAllies = 0
         local clawfish = 0
         for _,ally in ipairs(FriendlyAngulotls(token)) do
             if MonsterType(ally) == "Clawfish" then
                 clawfish = clawfish + 1
             end
+            if not IsWet(ally) and ExposedToSky(ally) then
+                dryAllies = dryAllies + 1
+            end
         end
+
+        if dryEnemies == 0 then
+            return nil, "no dry enemy is exposed to the sky"
+        end
+        if dryEnemies < 2 and dryAllies < 4 then
+            return nil, "too few dry creatures are exposed to the sky"
+        end
+
+        local cost = MaliceCost(token, ability)
+        local discount = math.max(0, 7 - cost)
         local itIsDay = DaybringerCanStillUseItIsDay(token)
         return {
-            score = math.min(0.95, 0.56 + dryEnemies*0.04 + math.min(4, clawfish)*0.04
-                + cond(itIsDay, 0.12, 0)),
+            score = math.min(0.95, 0.5 + math.min(5, dryEnemies)*0.05 + math.min(6, dryAllies)*0.02
+                + math.min(4, clawfish)*0.04 + cond(itIsDay, 0.12, 0) + discount*0.02),
             dryEnemies = dryEnemies,
+            dryAllies = dryAllies,
             clawfish = clawfish,
+            cost = cost,
         }
     end,
     execute = function(self, ai, token, scoringInfo, ability, context)

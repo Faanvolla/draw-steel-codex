@@ -455,6 +455,14 @@ local function FrostSupported()
     return m_frostSupported == true
 end
 
+--Frost draws junk (green streaks on Macs) while the screen renders below full
+--resolution, i.e. with High Definition / Retina Display off, and the engine
+--turns it off then; the plates use blurBackground instead. (AVKPBDDE)
+---@return boolean
+local function FullResolution()
+    return dmhub.GetSettingValue("hidef") ~= false
+end
+
 --The characteristic tiles' names while a Hero loads (a loaded Hero's come from the rules).
 local CHARACTERISTICS = {
     T("herosheet.stats.might"),
@@ -5568,7 +5576,7 @@ function EotwHeroSheet.Show(args)
         end
     end
 
-    ctx.frost = ctx.transparent and FrostSupported()
+    ctx.frost = ctx.transparent and FrostSupported() and FullResolution()
     m_fontScale = ctx.fontScale
 
     local host = FindHost(ctx)

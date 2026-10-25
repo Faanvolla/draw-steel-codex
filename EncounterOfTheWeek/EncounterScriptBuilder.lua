@@ -84,6 +84,8 @@ local function BeatKindName(kind)
         return T("author.script_builder.outline.kind_montage")
     elseif kind == "encounter" then
         return T("author.script_builder.outline.kind_encounter")
+    elseif kind == "unknown" then
+        return T("author.script_builder.outline.kind_unknown")
     end
     return kind
 end
@@ -131,6 +133,8 @@ function S.BeatSummary(beat)
             parts[#parts + 1] = TP("author.script_builder.beat.reinforcement_groups", #beat.reinforcements)
         end
         return table.concat(parts, ", ")
+    elseif beat.kind == "unknown" then
+        return T("author.script_builder.beat.summary_unknown")
     end
     return ""
 end
@@ -1354,6 +1358,21 @@ function S.EncounterEditor(ctx, beat, index)
     return children
 end
 
+--A top-level heading the parser does not know ("# Notes"): the game skips
+--it, so all the builder offers is why and a way to delete it.
+function S.UnknownBeatEditor(ctx, beat, index)
+    local children = {
+        ctx.Label(beat.title or T("author.script_builder.beat.label_other"), { "mbHeading" }),
+        ctx.Label(T("author.script_builder.unknown.help", { title = beat.title or "" }), { "mbSub" }),
+    }
+    if (beat.line or 0) > 0 then
+        children[#children + 1] = ctx.Row({
+            ctx.ConfirmButton(T("author.script_builder.unknown.delete_button"), function() ctx.Do(function() S.DeleteBeat(ctx, index) end) end),
+        }, { fit = true, tmargin = 8 })
+    end
+    return children
+end
+
 --- the editor for what is picked ---------------------------------------------------------
 
 function S.Editor(ctx)
@@ -1375,6 +1394,8 @@ function S.Editor(ctx)
                     return { ctx.Label(T("author.script_builder.encounter.implicit"), { "mbSub" }) }
                 end
                 return S.EncounterEditor(ctx, beat, sel.index)
+            elseif beat.kind == "unknown" then
+                return S.UnknownBeatEditor(ctx, beat, sel.index)
             end
         end
     end

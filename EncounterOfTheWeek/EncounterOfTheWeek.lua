@@ -4046,6 +4046,46 @@ local function MoveStrayHeroesIntoPlay()
     DropHostPermissions()
 end
 
+--Put the companion of each beastheart this client just placed onto the free
+--Start-zone tile nearest its hero, so it starts the encounter with the party
+--(and inside the arrangement confinement). Runs once the heroes have
+--settled (after UnstackPlacedHeroes), and only for fresh placements, so a
+--resume never brings back a companion that died. The summon copies the
+--hero's owner, so wait for ClaimPastedHero to have made the hero ours.
+--Yields; runs inside the arrival coroutine. A table field, not a local:
+--this file is at Lua's 200-local limit.
+function EncounterOfTheWeekGame.DeployMyCompanions(charids)
+    for _, charid in ipairs(charids or {}) do
+        local token = nil
+        for _ = 1, 50 do
+            if mod.unloaded then
+                return
+            end
+            token = dmhub.GetCharacterById(charid)
+            if token ~= nil and token.ownerId == dmhub.loginUserid then
+                break
+            end
+            coroutine.yield(0.1)
+        end
+        if token ~= nil and token.valid and token.properties ~= nil
+                and token.properties:GetCompanionType() ~= nil then
+            local existing = token.properties:GetCompanionToken()
+            if existing == nil or not existing.loc.isOnMap then
+                --nil (no Start zone, or it is full) summons beside the hero.
+                local dest = EncounterOfTheWeekGame.FreeStartTileNear(token.loc)
+                local ok, result = pcall(function()
+                    return token.properties:SummonCompanionAt(token, dest)
+                end)
+                if not ok or result == nil then
+                    printf("EotW: could not deploy the companion of %s: %s", charid, tostring(result))
+                else
+                    printf("EotW: deployed the companion of %s at %s", charid, tostring(result.loc))
+                end
+            end
+        end
+    end
+end
+
 --Place the local player's claimed heroes into the Start zone.
 --  heroes:       full claim list, {kind, id, name} each, in claim order.
 --  clipboardIds: ids of the "lobby" heroes copied to the token clipboard at
@@ -5878,7 +5918,14 @@ function EncounterOfTheWeekGame.SetupOnArrival(args)
         if IsDMOrPlayerHost() then
             --stamp the game and record who the encounter waits for, BEFORE
             --any hero placement, so every later joiner sees an EotW game.
-            RecordExpectedUsers(args.members)
+            --A resume brings no roster; a game that never recorded one waits
+            --for the host alone rather than for nobody, forever (MZXR5BYM).
+            local members = args.members
+            local recorded = mod:GetDocumentSnapshot(STATE_DOC_ID).data.expectedUsers
+            if (type(members) ~= "table" or #members == 0) and type(recorded) ~= "table" then
+                members = { dmhub.loginUserid }
+            end
+            RecordExpectedUsers(members)
 
             --NOTE: nothing here switches on player-host mode. The game was
             --created directorless, so the engine already had it on before this
@@ -6005,6 +6052,9 @@ function EncounterOfTheWeekGame.SetupOnArrival(args)
         --the map while it moves anyone.
         UnstackPlacedHeroes(myPasted, anchor)
         EotwProf("unstack done")
+
+        --a beastheart brings their companion.
+        EncounterOfTheWeekGame.DeployMyCompanions(myPasted)
 
         --the loading screen stays up until the whole party is in. With an
         --opening stage, the stage releases it once the beat has opened
@@ -6430,6 +6480,7 @@ local function TestArrival(pending)
     if #placed == 0 then
         error("none of the chosen heroes could be placed")
     end
+    EncounterOfTheWeekGame.DeployMyCompanions(placed)
 
     --what a real EotW host writes at setup.
     local numHeroes = math.max(3, math.min(7, #placed))
@@ -6607,6 +6658,12 @@ local function TestTeardown()
     end
     for _, charid in pairs(GetPlacedHeroes(dmhub.loginUserid)) do
         AddCopy(charid)
+    end
+    --and the companions DeployMyCompanions summoned for them.
+    for _, tok in ipairs(dmhub.allTokens) do
+        if tok.valid and seen[tok.summonerid] and tok.properties ~= nil and tok.properties:IsCompanion() then
+            AddCopy(tok.charid)
+        end
     end
 
     ElevateToHostPermissions()

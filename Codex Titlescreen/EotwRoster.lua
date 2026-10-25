@@ -2738,10 +2738,12 @@ function EotwRoster.GuildPanel(host)
             flow = "horizontal",
             gui.Button{
                 text = T("guild.create_button"),
-                fontSize = 20,
-                width = 230,
-                height = 46,
-                hmargin = 6,
+                fontSize = 18,
+                width = "auto",
+                minWidth = 140,
+                hpad = 16,
+                height = 42,
+                hmargin = 4,
                 create = function(element)
                     createButton = element
                 end,
@@ -2756,10 +2758,12 @@ function EotwRoster.GuildPanel(host)
             },
             gui.Button{
                 text = T("guild.discard_button"),
-                fontSize = 20,
-                width = 200,
-                height = 46,
-                hmargin = 6,
+                fontSize = 18,
+                width = "auto",
+                minWidth = 140,
+                hpad = 16,
+                height = 42,
+                hmargin = 4,
                 classes = { "collapsed" },
                 create = function(element)
                     discardButton = element
@@ -2785,10 +2789,12 @@ function EotwRoster.GuildPanel(host)
             },
             gui.Button{
                 text = T("guild.recruit_button"),
-                fontSize = 20,
-                width = 230,
-                height = 46,
-                hmargin = 6,
+                fontSize = 18,
+                width = "auto",
+                minWidth = 140,
+                hpad = 16,
+                height = 42,
+                hmargin = 4,
                 create = function(element)
                     recruitButton = element
                 end,
@@ -2805,9 +2811,11 @@ function EotwRoster.GuildPanel(host)
                 classes = { "collapsed" },
                 text = T("guild.project_button"),
                 fontSize = 18,
-                width = 250,
-                height = 46,
-                hmargin = 6,
+                width = "auto",
+                minWidth = 140,
+                hpad = 16,
+                height = 42,
+                hmargin = 4,
                 create = function(element)
                     projectButton = element
                 end,
@@ -2826,9 +2834,11 @@ function EotwRoster.GuildPanel(host)
                 classes = { cond(dmhub.isAdminAccount, nil, "collapsed") },
                 text = "Find Heroes",
                 fontSize = 18,
-                width = 170,
-                height = 46,
-                hmargin = 6,
+                width = "auto",
+                minWidth = 140,
+                hpad = 16,
+                height = 42,
+                hmargin = 4,
                 click = function()
                     EotwModeration.ShowFindHeroesDialog()
                 end,

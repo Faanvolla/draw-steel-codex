@@ -60,6 +60,22 @@ text("author.montage_builder.window.close", [[Close]])
 --A button that deletes something reads this after the first click.
 text("author.montage_builder.confirm_again", [[Click again to confirm]])
 
+--A series: one script document per part, filed under this map. The dropdown
+--of its parts. {number} is a part's number, {title} its title.
+text("author.encounter_builder.part.option", [[Part {number}]])
+text("author.encounter_builder.part.option_titled", [[Part {number}: {title}]])
+--The button that adds the next part. Short: a button.
+text("author.encounter_builder.part.add", [[+ Part]])
+--Its tooltip. {number} is the new part's number.
+text("author.encounter_builder.part.add_tooltip", [[Add Part {number}: a new script document filed under this map, unlocked by winning the part before it.]])
+--Its tooltip when the map is not a series yet.
+text("author.encounter_builder.part.add_tooltip_first", [[Make this encounter a series: this script becomes Part 1, and a new script document filed under this map becomes Part 2, unlocked by winning Part 1.]])
+--The new part's document name. {number} is its part number.
+text("author.encounter_builder.part.document_name", [[Encounter Script (Part {number})]])
+--The status lines. {number} is the part, {document} the new document's name.
+text("author.encounter_builder.part.made_part_one", [[Made this script Part 1 of a series.]])
+text("author.encounter_builder.part.created", [[Added Part {number}: the script document '{document}' under this map.]])
+
 --The footer, after the status line: how many problems the script has.
 --{count} is that number.
 text("author.montage_builder.footer.no_problems", [[No problems in the script.]])
@@ -311,6 +327,8 @@ text("author.montage_builder.outcome.help_knowstamina", [[The party learns the S
 text("author.montage_builder.table.title", [[Dice table]])
 text("author.montage_builder.table.row_placeholder", [[What this row gives]])
 text("author.montage_builder.table.add_row", [[+ Row]])
+--Deletes the whole table (also on its right-click menu). Short: a button.
+text("author.montage_builder.table.delete", [[Delete table]])
 
 ----------------------------------------------------------------------------
 -- THE MONTAGE BUILDER: a scene (one line per step: narration, speech, an
@@ -532,6 +550,8 @@ text("author.montage_builder.status.changed_table_dice", [[Changed a table's dic
 text("author.montage_builder.status.edited_table_row", [[Edited a table row.]])
 text("author.montage_builder.status.added_table_row", [[Added a table row.]])
 text("author.montage_builder.status.removed_table_row", [[Removed a table row.]])
+--{name} is the table's name.
+text("author.montage_builder.status.deleted_table", [[Deleted the dice table '{name}'.]])
 --Scenes and branches. {old} and {new} are a character's names before and
 --after.
 text("author.montage_builder.status.edited_scene_line", [[Edited a scene line.]])
@@ -592,6 +612,8 @@ text("author.script_builder.outline.add_story", [[+ {title} text]])
 text("author.script_builder.outline.kind_narrative", [[Narrative]])
 text("author.script_builder.outline.kind_montage", [[Montage]])
 text("author.script_builder.outline.kind_encounter", [[Encounter]])
+--A top-level heading the script does not know, which the game skips.
+text("author.script_builder.outline.kind_unknown", [[Ignored]])
 --Tooltips of the small up and down arrows on a beat's card.
 text("author.script_builder.outline.move_earlier_tooltip", [[Play this earlier]])
 text("author.script_builder.outline.move_later_tooltip", [[Play this later]])
@@ -613,6 +635,8 @@ text("author.script_builder.beat.label_montage", [[Montage]])
 text("author.script_builder.beat.label_encounter", [[Encounter]])
 --A beat of a kind the builder does not know, with no title of its own.
 text("author.script_builder.beat.label_other", [[Beat]])
+--The card summary for a heading the script does not know.
+text("author.script_builder.beat.summary_unknown", [[Not a script heading: skipped when played.]])
 
 --The one-line summary on a beat's card.
 --A narrative: {scenes} and {choices} are the two counts below.
@@ -764,6 +788,11 @@ text("author.script_builder.encounter.implicit", [[The encounter comes from the 
 --Buttons. Short.
 text("author.script_builder.encounter.add_reinforcements", [[+ Reinforcements]])
 text("author.script_builder.encounter.delete_button", [[Delete the encounter]])
+
+--The editor for a top-level heading the script does not know. {title} is
+--the heading's text.
+text("author.script_builder.unknown.help", [[The game skips this part of the script: '# {title}' is not a heading it knows. Rename it in the journal document to Narrative, Montage, Encounter, Delve: <name>, Town Gate, Conclusion or Defeat, or delete it.]])
+text("author.script_builder.unknown.delete_button", [[Delete this heading and its text]])
 
 --The setup lines, each a sentence of words and pickers. A placeobjects line
 --reads "<label> Place <number> <object> objects in <zone> zones".

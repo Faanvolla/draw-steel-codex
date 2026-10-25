@@ -957,6 +957,18 @@ local function ActivePart()
 end
 EncounterMontage.ActivePart = ActivePart
 
+--Whether a parsed document has a beat the game plays. Headings it does not
+--know ("# The Story So Far" in an adventure's notes) parse as "unknown" beats
+--and must not make an ordinary journal document the map's script.
+local function HasPlayableBeat(parse)
+    for _, beat in ipairs(parse.beats or {}) do
+        if beat.kind ~= "unknown" then
+            return true
+        end
+    end
+    return false
+end
+
 --Parse every candidate and pick the map's script: the first (by name) that
 --declares beats and is not part of another, preferring an explicit one.
 --A map whose scripts say "# Part N" is a SERIES: each part is its own
@@ -991,7 +1003,7 @@ local function ChooseMapScript(candidates, mapid, part)
         end)
         local best = nil
         for _, script in ipairs(parts) do
-            if script.parse.part.number == part and #script.parse.beats > 0 then
+            if script.parse.part.number == part and HasPlayableBeat(script.parse) then
                 best = script
                 break
             end
@@ -1001,7 +1013,7 @@ local function ChooseMapScript(candidates, mapid, part)
 
     local best = nil
     for _, script in ipairs(loaded) do
-        if script ~= nil and not allIncluded[script.docid] and #script.parse.beats > 0 then
+        if script ~= nil and not allIncluded[script.docid] and HasPlayableBeat(script.parse) then
             if best == nil or (script.explicit and not best.explicit) then
                 best = script
                 if script.explicit then

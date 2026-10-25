@@ -1426,7 +1426,7 @@ function EotwBuilder.Open(args)
             linger = function(element)
                 gui.Tooltip(T("builder.appearance.preview_tooltip"))(element)
             end,
-            --The wheel drives the Zoom slider: each notch moves it 5%, and a
+            --The wheel drives the Zoom slider: each notch moves it 0.5%, and a
             --whole spin settles into one upload rather than one per notch.
             wheel = function(element, delta)
                 local t = Tok()
@@ -1434,7 +1434,7 @@ function EotwBuilder.Open(args)
                     return true
                 end
                 local current = zoomSlider.value or 1
-                local newZoom = current + 0.05 * delta
+                local newZoom = current + 0.005 * delta
                 --clamp to the slider's range, but never snap a typed-in value
                 --that already lies outside it back inside.
                 if delta > 0 then

@@ -306,9 +306,15 @@ part's result and every track change are printed in the console
 ## Phase 8 -- publish
 
 1. Run the Full check once more; fix every error.
-2. Open the publish dialog: "Create Module..." (the module sharing command), or
-   run `Commands.sharecontent()` over MCP to open it for the author. Choose
-   "Create a New Module" (or the existing one to publish an update).
+2. Open the publish dialog. Quickest for a first publish: **Codex menu ->
+   Publish Encounter Update** (`Commands.quickpublishencounters()` over MCP).
+   With no Encounter of the Week module in this game yet it offers **Create
+   Encounter Module...**, which sets the type to Encounter of the Week and
+   Listing Status to Unlisted, ticks the encounter maps and their script
+   documents, and stops on page 2 (go to step 4; still do step 3's prose-name
+   check with Back). Otherwise use "Create Module..." (the module sharing
+   command), or `Commands.sharecontent()` over MCP, and choose "Create a New
+   Module" (or the existing one to publish an update).
 3. Page 1: **Module Type -> Encounter of the Week**. Tick the encounter map(s).
    The script documents tick themselves; dependencies (monsters, art, objects)
    follow automatically. Read the type's messages:

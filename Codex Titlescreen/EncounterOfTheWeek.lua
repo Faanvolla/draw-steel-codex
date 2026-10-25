@@ -186,6 +186,38 @@ setting{
     storage = "preference",
 }
 
+--Whether the account's EotW slot game ever set out, as { gameid, launched }.
+--The slot is filled when a party is formed or joined, long before Begin, so
+--a player who quits during hero selection comes back to a game that was
+--never set up; resuming it waits for the party forever (MZXR5BYM). Account
+--storage, so it follows the player to another machine.
+local g_slotLaunchSetting = setting{
+    id = "eotw:slotlaunch",
+    default = {},
+    storage = "account",
+}
+
+--Record the slot game: launched = false when the party is formed or joined,
+--true once we enter it from a launched party.
+---@param gameid string
+---@param launched boolean
+local function MarkSlotGame(gameid, launched)
+    g_slotLaunchSetting:Set({ gameid = gameid, launched = launched })
+end
+
+--True only for a game we formed or joined that never launched. A game with
+--no entry (from before this was recorded) counts as launched, so a game
+--already under way stays resumable.
+---@param gameid string|nil
+---@return boolean
+local function SlotGameNeverLaunched(gameid)
+    if gameid == nil then
+        return false
+    end
+    local stored = g_slotLaunchSetting:Get()
+    return type(stored) == "table" and stored.gameid == gameid and stored.launched == false
+end
+
 --The town's city (see EotwRoster.lua). Its server is EotwRoster.CityOptions(),
 --read at each connect.
 local LOBBY_ID = EotwRoster.CITY_ID
@@ -3404,6 +3436,7 @@ CreateScreen = function(args)
                 })
                 local prev = EotwSlotGameid()
                 EngineJoinEotw(gameid)
+                MarkSlotGame(gameid, false)
                 if prev ~= nil and prev ~= gameid then
                     DestroyPreviousGame(prev, { abandon = true })
                 end
@@ -3531,6 +3564,11 @@ CreateScreen = function(args)
         --the game.
         local encounterMap = nil
         if record ~= nil then
+            --entering from a launched party: from now on the slot game is
+            --one Resume can set up again.
+            if record.status ~= "open" then
+                MarkSlotGame(gameid, true)
+            end
             myHeroes = MyHeroesCopy(record)
             slotsFilled = record.slotsFilled or 0
             if type(record.encounter) == "string" and record.encounter ~= "" then
@@ -4857,6 +4895,13 @@ CreateScreen = function(args)
             name = m_resumeInfo.description
         end
         local resumeGameid = m_resumeGameid
+        --a party left during hero selection was never set up, so there is
+        --nothing to resume: the row offers only Abandon.
+        local neverLaunched = SlotGameNeverLaunched(resumeGameid)
+        local resumeButton = RowButton(T("eotw.resume.resume_button"), function()
+            EnterWorld(resumeGameid)
+        end)
+        resumeButton:SetClass("collapsed", neverLaunched)
         --forward-declared so the Abandon click can remove the row itself
         --(RefreshGames is declared later in the file and not in scope here).
         local rowPanel
@@ -4879,7 +4924,7 @@ CreateScreen = function(args)
                 valign = "center",
                 flow = "vertical",
                 gui.Label{
-                    text = T("eotw.resume.heading"),
+                    text = cond(neverLaunched, T("eotw.resume.unlaunched_heading"), T("eotw.resume.heading")),
                     fontSize = 16,
                     color = Styles.textColor,
                     opacity = 0.7,
@@ -4894,11 +4939,19 @@ CreateScreen = function(args)
                     width = "100%",
                     height = "auto",
                 },
+                gui.Label{
+                    classes = { cond(neverLaunched, nil, "collapsed") },
+                    text = T("eotw.resume.unlaunched_note"),
+                    fontSize = 16,
+                    color = Styles.textColor,
+                    opacity = 0.7,
+                    width = "100%",
+                    height = "auto",
+                    textWrap = true,
+                },
             },
 
-            RowButton(T("eotw.resume.resume_button"), function()
-                EnterWorld(resumeGameid)
-            end),
+            resumeButton,
 
             --Abandon gives up the in-progress game: it is deleted (storage
             --released) only when nobody else still holds it (AbandonGame);
@@ -5959,6 +6012,7 @@ CreateScreen = function(args)
                         --in-game Director-UI filter.
                         directorless = true,
                         create = function(gameid)
+                            MarkSlotGame(gameid, false)
                             if prev ~= nil and prev ~= gameid then
                                 DestroyPreviousGame(prev, { abandon = true })
                             end
@@ -9688,6 +9742,7 @@ CreateScreen = function(args)
             height = 1,
             interactable = false,
             thinkTime = 1,
+            data = {},
             think = function(element)
                 local all = {}
                 pcall(function()
@@ -9708,6 +9763,15 @@ CreateScreen = function(args)
                     printf("EotW: the party for %s was not opened: it never unlocked", pending.key)
                     drop()
                     return
+                end
+                --the player went straight on, so they come home to the part's
+                --board (the Proving Pits or the Gate), not the town map: the
+                --debrief, Form a Party and the party itself all happen there.
+                --Once per choice, so backing out to the town is not undone.
+                if element.data.locationFor ~= pending.at and EncounterOfTheWeek.GetEncounter(pending.key) ~= nil
+                    and resultPanel ~= nil and resultPanel.valid and not resultPanel:HasClass("hidden") then
+                    element.data.locationFor = pending.at
+                    OpenLocation(cond(EncounterOfTheWeek.PartBoard(pending.key) == "practice", "danger", "gate"))
                 end
                 if EotwRoster.GetHeroes() == nil or EncounterOfTheWeek.GetEncounter(pending.key) == nil
                     or m_debriefOpen or (m_modalDialog ~= nil and m_modalDialog.valid)

@@ -2994,7 +2994,7 @@ function GameHud:_TipFindNotice()
 end
 
 --Notice half of the driver tick. Returns true when a notice owns the
---banner this tick (shown, dismissed, or blocked by a dialog), in which case
+--banner this tick (shown or dismissed), in which case
 --the tip half must not run.
 function GameHud:_TipDriverNoticeTick()
 	local notice, noticeText, noticeControls = self:_TipFindNotice()
@@ -3013,10 +3013,13 @@ function GameHud:_TipDriverNoticeTick()
 		self._tipLastScan = nil
 	end
 
+	--Unlike tips, an open dialog does not hold a notice back: it is live game
+	--status ("Waiting for Shadow's ..."), and an open character window (a
+	--journalViewer, often covered by the maximized map) once hid it.
 	local dismissed = self:try_get("_noticeDismissed")
 	local isDismissed = dismissed ~= nil and dismissed.id == notice.id
 		and dismissed.text == noticeText
-	if isDismissed or self:_TipIsBlockedByDialog() then
+	if isDismissed then
 		if activeNotice ~= nil then
 			self:_HideNoticeBanner()
 		end

@@ -63,6 +63,7 @@ end
 --  selected,                      -- see SelectedEntry
 --  beatIndex,                     -- which montage beat the board shows
 --  status,                        -- the last thing that happened, for the footer
+--  knownParts = { { docid, number, title } }, -- series parts written by "+ Part", not back from the server yet
 --}
 
 local function Resolver(session)
@@ -1160,8 +1161,42 @@ end
 
 --- the window -----------------------------------------------------------------------
 
+--A new script's text: the `heading` lines, then a narrative, a montage, the
+--encounter and the three story screens, each a starting point to edit.
+local function StarterScriptText(heading)
+    local lines = {}
+    for _, l in ipairs(heading) do
+        lines[#lines + 1] = l
+    end
+    for _, block in ipairs({ E.NarrativeBeatBlock(), E.MontageBeatBlock(), E.EncounterBeatBlock(),
+        E.StoryBlock("Town Gate", "Why the heroes have come here."),
+        E.StoryBlock("Conclusion", "What the heroes' victory means."),
+        E.StoryBlock("Defeat", "What the heroes' defeat means.") }) do
+        for _, l in ipairs(block) do
+            lines[#lines + 1] = l
+        end
+        lines[#lines + 1] = ""
+    end
+    return table.concat(lines, "\n")
+end
+
+--The part a part map holds ("Encounter: The Crypt (Part 2)" -> 2), else nil.
+--A copy of Series.SplitPartMapName (EncounterOfTheWeek.lua); keep them the same.
+local function PartOfMapName(name)
+    local base, number = string.match(name or "", "^(.-) %(Part (%d+)%)$")
+    if base == nil or base == "" then
+        return nil
+    end
+    return tonumber(number)
+end
+
+local ShowWindow
+
 function B.CreateWindow(session, close)
     local boardPanel, editorPanel, boardBody, editorBody, statusLabel, titleLabel, beatDropdown
+    local partDropdown, addPartButton
+    --the series' parts on this map (see ReadSeriesParts), and whether this is a part map.
+    local seriesParts, onPartMap = {}, false
     local Refresh
 
     --Run an edit and redraw. fn() returns what to show in the status line,
@@ -1177,6 +1212,23 @@ function B.CreateWindow(session, close)
     --opts.keepTags: whole blocks move or go, so [[tag]] data follows its tags.
     local function Commit(what, patches, why, opts)
         Do(function() B.Commit(session, what, patches, why, opts) end)
+    end
+
+    --Delete a board card: an opportunity or threat (B.DeleteEntry also hides
+    --a sub-document that held only it), a delve obstacle, or a delve section.
+    --Returns the delete button's / menu item's words and the action.
+    local function CardDeletion(entry)
+        if entry.kind == "obstacle" or entry.kind == "delvesection" then
+            local isSection = entry.kind == "delvesection"
+            return cond(isSection, T("author.montage_builder.section.delete"), T("author.montage_builder.entry.delete_obstacle")), function()
+                session.selected = nil
+                Commit(cond(isSection, T("author.montage_builder.status.deleted_section"), T("author.montage_builder.status.deleted_obstacle")),
+                    E.DeleteElement(session.parse, session.texts, entry.line, 2))
+            end
+        end
+        return T("author.montage_builder.entry.delete"), function()
+            Do(function() B.DeleteEntry(session, entry) end)
+        end
     end
 
     --- scene lines ---
@@ -2146,6 +2198,10 @@ function B.CreateWindow(session, close)
     local function TableEditor(t, title, entry)
         local parse = session.parse
         local children = {}
+        --the whole table: its "|Name: dice" line through its last row.
+        local function DeleteTable()
+            Commit(T("author.montage_builder.status.deleted_table", { name = tostring(t.name) }), One(E.PatchExpanded(parse, t.line, t.lastLine or t.line, {})))
+        end
         children[#children + 1] = Row({
             gui.Label{ classes = { "mbFieldLabel" }, width = "auto", height = "auto", valign = "center", rmargin = 8, text = title or T("author.montage_builder.table.title") },
             TextBox(t.name, function(text)
@@ -2154,6 +2210,8 @@ function B.CreateWindow(session, close)
             TextBox(t.dice, function(text)
                 Commit(T("author.montage_builder.status.changed_table_dice"), E.SetLine(parse, t.line, string.format("|%s: %s", t.name, E.LineText(text))))
             end, { width = 70, height = 24 }),
+            gui.Panel{ width = 8, height = 1 },
+            ConfirmButton(T("author.montage_builder.table.delete"), DeleteTable),
         }, { fit = true })
         for _, row in ipairs(t.rows or {}) do
             local r = row
@@ -2184,7 +2242,20 @@ function B.CreateWindow(session, close)
                 Commit(T("author.montage_builder.status.added_table_row"), One(E.PatchAfter(parse, after, { string.format("|%d: +1 hero token", hi + 1) })))
             end),
         }, { fit = true })
-        return gui.Panel{ classes = { "mbSection" }, children = children }
+        return gui.Panel{
+            classes = { "mbSection" },
+            children = children,
+            rightClick = function(element)
+                element.popup = gui.ContextMenu{
+                    entries = {
+                        { text = T("author.montage_builder.table.delete"), click = function()
+                            element.popup = nil
+                            DeleteTable()
+                        end },
+                    },
+                }
+            end,
+        }
     end
 
     --- the rules of an option or knack version: its test, or its no-roll rules, and riders ---
@@ -2636,10 +2707,7 @@ function B.CreateWindow(session, close)
             local textEditor = TextEditorPanel(entry.line, 2, T("author.montage_builder.section.text_editor_note"))
             children[#children + 1] = Row({
                 SmallButton(T("author.montage_builder.section.edit_as_text"), function() textEditor:SetClass("collapsed", not textEditor:HasClass("collapsed")) end),
-                ConfirmButton(T("author.montage_builder.section.delete"), function()
-                    session.selected = nil
-                    Commit(T("author.montage_builder.status.deleted_section"), E.DeleteElement(parse, session.texts, entry.line, 2))
-                end),
+                ConfirmButton(CardDeletion(entry)),
             }, { fit = true, tmargin = 8 })
             children[#children + 1] = textEditor
             return children
@@ -2840,15 +2908,8 @@ function B.CreateWindow(session, close)
                     end,
                 }
             end
-            tools[#tools + 1] = ConfirmButton(T("author.montage_builder.entry.delete"), function()
-                Do(function() B.DeleteEntry(session, entry) end)
-            end)
-        else
-            tools[#tools + 1] = ConfirmButton(T("author.montage_builder.entry.delete_obstacle"), function()
-                session.selected = nil
-                Commit(T("author.montage_builder.status.deleted_obstacle"), E.DeleteElement(parse, session.texts, entry.line, 2))
-            end)
         end
+        tools[#tools + 1] = ConfirmButton(CardDeletion(entry))
         children[#children + 1] = Row(tools, { fit = true, tmargin = 10 })
         children[#children + 1] = textEditor
 
@@ -2986,6 +3047,17 @@ function B.CreateWindow(session, close)
                 if editorPanel ~= nil and editorPanel.valid then
                     editorPanel.vscrollPosition = 1
                 end
+            end,
+            rightClick = function(element)
+                local text, deleteCard = CardDeletion(entry)
+                element.popup = gui.ContextMenu{
+                    entries = {
+                        { text = text, click = function()
+                            element.popup = nil
+                            deleteCard()
+                        end },
+                    },
+                }
             end,
             Row({
                 gui.Label{ fontSize = 11, bold = true, color = color, width = "auto", height = "auto", valign = "center", rmargin = 6,
@@ -3293,6 +3365,36 @@ function B.CreateWindow(session, close)
             beatDropdown.idChosen = tostring(session.beatIndex)
             beatDropdown:SetClass("collapsed", scriptView or #options < 2)
         end
+        if partDropdown ~= nil and partDropdown.valid then
+            --this script's own heading is read live, so a renamed part shows at once.
+            local options, hasRoot = {}, false
+            local function Option(docid, number, title)
+                local text = T("author.encounter_builder.part.option", { number = number })
+                if title ~= nil then
+                    text = T("author.encounter_builder.part.option_titled", { number = number, title = title })
+                end
+                options[#options + 1] = { id = docid, text = text }
+            end
+            local rootPart = session.parse.part
+            for _, p in ipairs(seriesParts) do
+                if p.docid == session.rootId then
+                    hasRoot = true
+                    if rootPart ~= nil then
+                        Option(p.docid, rootPart.number, rootPart.title)
+                    else
+                        Option(p.docid, p.number, p.title)
+                    end
+                else
+                    Option(p.docid, p.number, p.title)
+                end
+            end
+            if not hasRoot and rootPart ~= nil then
+                Option(session.rootId, rootPart.number, rootPart.title)
+            end
+            partDropdown.options = options
+            partDropdown.idChosen = session.rootId
+            partDropdown:SetClass("collapsed", onPartMap or #options < 2)
+        end
         if backButton ~= nil and backButton.valid then
             backButton:SetClass("collapsed", scriptView)
         end
@@ -3317,6 +3419,120 @@ function B.CreateWindow(session, close)
             Refresh()
         end,
     }
+    --A series: one script document per part, filed under this map. The
+    --dropdown reopens the builder on another part; "+ Part" writes the next.
+    --A part map holds only its own part, so it gets neither.
+    local function ReadSeriesParts()
+        local list, seen = {}, {}
+        local function Add(docid, number, title)
+            if docid ~= nil and not seen[docid] then
+                seen[docid] = true
+                list[#list + 1] = { docid = docid, number = number, title = title }
+            end
+        end
+        local scripts = {}
+        pcall(function() scripts = EncounterMontage.ScriptForMap(session.mapid).parts or {} end)
+        for _, script in ipairs(scripts) do
+            Add(script.docid, script.parse.part.number, script.parse.part.title)
+        end
+        for _, p in ipairs(session.knownParts or {}) do
+            Add(p.docid, p.number, p.title)
+        end
+        table.sort(list, function(a, b)
+            if a.number ~= b.number then
+                return a.number < b.number
+            end
+            return a.docid < b.docid
+        end)
+        return list
+    end
+    seriesParts = ReadSeriesParts()
+    pcall(function() onPartMap = PartOfMapName(game.currentMap.description) ~= nil end)
+
+    local function NextPartNumber()
+        local highest = 1
+        for _, p in ipairs(seriesParts) do
+            highest = math.max(highest, p.number)
+        end
+        if session.parse.part ~= nil then
+            highest = math.max(highest, session.parse.part.number)
+        end
+        return highest + 1
+    end
+
+    --Write the next part's script document and reopen the builder on it. A
+    --map that is not a series yet first gets "# Part 1" on this script: once
+    --any document says "# Part N", documents without a part heading are notes.
+    local function AddPart()
+        local number = NextPartNumber()
+        local known = {}
+        for _, p in ipairs(seriesParts) do
+            known[#known + 1] = p
+        end
+        local name = T("author.encounter_builder.part.document_name", { number = number })
+        local id = dmhub.GenerateGuid()
+        local doc = MarkdownDocument.new{
+            id = id,
+            description = name,
+            parentFolder = session.mapid,
+            annotations = {},
+        }
+        doc:SetTextContent(StarterScriptText({ "# Part " .. number, "" }))
+        doc:Upload()
+        if session.parse.part == nil then
+            B.Commit(session, T("author.encounter_builder.part.made_part_one"), { E.Patch(session.rootId, 1, 0, { "# Part 1", "" }) })
+            known[#known + 1] = { docid = session.rootId, number = 1 }
+        end
+        known[#known + 1] = { docid = id, number = number }
+        close()
+        local newSession = B.Load(id, doc)
+        if newSession ~= nil then
+            newSession.knownParts = known
+            newSession.status = T("author.encounter_builder.part.created", { number = number, document = name })
+            ShowWindow(newSession, "script")
+        end
+    end
+
+    partDropdown = gui.Dropdown{
+        classes = { "sizeXs", "collapsed" },
+        width = 220,
+        height = 26,
+        valign = "center",
+        lmargin = 12,
+        options = {},
+        change = function(element)
+            ---@cast element Dropdown
+            local docid = element.idChosen
+            if docid == nil or docid == session.rootId then
+                return
+            end
+            local view = session.view
+            close()
+            B.Open(docid, view)
+        end,
+    }
+    addPartButton = gui.Button{
+        classes = { "sizeXs", cond(onPartMap, "collapsed", nil) },
+        width = "auto",
+        minWidth = 60,
+        hpad = 8,
+        borderBox = true,
+        height = 24,
+        valign = "center",
+        lmargin = 8,
+        text = T("author.encounter_builder.part.add"),
+        click = function()
+            Do(AddPart)
+        end,
+        hover = function(element)
+            local tip = T("author.encounter_builder.part.add_tooltip_first")
+            if session.parse.part ~= nil then
+                tip = T("author.encounter_builder.part.add_tooltip", { number = NextPartNumber() })
+            end
+            gui.Tooltip(tip)(element)
+        end,
+    }
+
     backButton = SmallButton(T("author.montage_builder.window.back_to_script"), function()
         session.view = "script"
         Refresh()
@@ -3390,6 +3606,8 @@ function B.CreateWindow(session, close)
                 height = 34,
                 flow = "horizontal",
                 titleLabel,
+                partDropdown,
+                addPartButton,
                 beatDropdown,
                 gui.Panel{
                     width = "auto",
@@ -3432,7 +3650,7 @@ end
 
 --Show the builder for `session` ("script": the whole script; "montage":
 --the montage board).
-local function ShowWindow(session, view)
+ShowWindow = function(session, view)
     local gamehud = GameHud.instance
     if not gamehud then
         return
@@ -3478,16 +3696,6 @@ local function OfferNewScript()
             Row({
                 SmallButton(T("author.encounter_builder.new_script.create"), function()
                     gamehud:CloseModal()
-                    local lines = { "Encounter script for this map." , "" }
-                    for _, block in ipairs({ E.NarrativeBeatBlock(), E.MontageBeatBlock(), E.EncounterBeatBlock(),
-                        E.StoryBlock("Town Gate", "Why the heroes have come here."),
-                        E.StoryBlock("Conclusion", "What the heroes' victory means."),
-                        E.StoryBlock("Defeat", "What the heroes' defeat means.") }) do
-                        for _, l in ipairs(block) do
-                            lines[#lines + 1] = l
-                        end
-                        lines[#lines + 1] = ""
-                    end
                     local id = dmhub.GenerateGuid()
                     local doc = MarkdownDocument.new{
                         id = id,
@@ -3495,7 +3703,7 @@ local function OfferNewScript()
                         parentFolder = game.currentMapId,
                         annotations = {},
                     }
-                    doc:SetTextContent(table.concat(lines, "\n"))
+                    doc:SetTextContent(StarterScriptText({ "Encounter script for this map.", "" }))
                     doc:Upload()
                     local session = B.Load(id, doc)
                     if session ~= nil then

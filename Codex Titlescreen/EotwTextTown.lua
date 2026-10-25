@@ -257,6 +257,11 @@ text("eotw.resume.resume_button", [[Resume]])
 text("eotw.resume.abandon_button", [[Abandon]])
 --The Abandon button after one click: click again to confirm.
 text("eotw.resume.abandon_confirm", [[Really?]])
+--In place of the heading when the player left that party while it was still
+--choosing heroes, so it never set out and cannot be resumed.
+text("eotw.resume.unlaunched_heading", [[Your party never set out]])
+--Under its name in that case. The row then shows only the Abandon button.
+text("eotw.resume.unlaunched_note", [[You left while it was still choosing heroes. Abandon it to form a new party.]])
 
 ----------------------------------------------------------------------------
 -- A PARTY'S VIEW: the party the player is in

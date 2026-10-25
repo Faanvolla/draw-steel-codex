@@ -119,6 +119,7 @@ The per-hero Victory award is not yet seen. See "Challenge Mode".
 
 | Change | Files | State |
 |---|---|---|
+| **Beastheart companions deploy at the start** (2026-10-24, user direction; see "Beastheart companions" under "Start-zone confinement"): a beastheart's companion is summoned onto the free Start-zone tile nearest its hero when the hero is placed | core `Draw Steel Beastheart/DSBeastheart.lua` (new `creature:SummonCompanionAt(beastheartToken, destination)`; the Call button's `CallCompanion` now calls it), `EncounterOfTheWeek.lua` (`EncounterOfTheWeekGame.DeployMyCompanions` -- a table field because the file is at the 200-local limit; called after `UnstackPlacedHeroes` in `SetupOnArrival` and after `PlaceMyHeroes` in `TestArrival`; End Test also deletes companions summoned by the hero copies) | luac + typing clean. NOT run in the app (needs a RESTART; no Beastheart in the authoring game yet). Check: an authoring test with a Beastheart puts the companion in the Start zone, owned by the player and sharing the hero's initiative entry; it can move inside the confinement; End Test removes it; a resume does not re-summon a dead companion; a Large companion fits. UNCOMMITTED |
 | **Spending Hero Tokens** (2026-10-22, user direction; see "Hero Token spends"): the Hero Tokens pool cell opens a spend menu on the local player's hero's turn (1 token: 2 surges; 2 tokens: Recovery-value Stamina), and the character panel's Hero Token icon opens the same menu in every game | core `Draw Steel Core Rules/DSResources.lua` (`CharacterResource.HeroTokenSpendOptions`, `HeroTokenSpendMenuEntries`), `Draw Steel Core Rules/MCDMCharacterPanel.lua` (`TacPanel.HeroTokenBox` icon press + tooltip line); `EncounterOfTheWeekHud.lua` (`SpendingHero`, `CanSpendHeroTokens`, the cell's `spendable` class, `refreshPools`/`press`, tooltip hint), `EncounterText.lua` (`hud.pool.herotokens.spend_hint`) | luac + typing + `uitext_check` clean. VERIFIED live 2026-10-22 in the Dwarvish Bandits authoring test (`1e3c159e`, player host, strict rules, High Elf Tactician's turn): outline + tooltip hint; the menu hangs under the cell (`popupPositioning = "panel"`, tooltip cleared on press); Gain 2 Surges took 1 token and gave 2 surges; with 1 token only the surge row showed; Regain 11 Stamina took 2 tokens and healed 25 -> 33; at 0 tokens the cell did not open; at full Stamina only the surge row. As Director (strict off) the character panel's token icon listed both, the Stamina row greyed "already at full Stamina", and Gain 2 Surges worked. NOT seen: a turn other than the hero's (the cell should not open), multi-client. The save-side "Succeed Instead" needed no change: VERIFIED live 2026-10-22 in an authoring test (a failed save vs Slowed showed the button under strict rolls; it spent 1 token and ended Slowed). UNCOMMITTED |
 | **Complication trinkets in the builder** (2026-10-21; see "Treasure-granting complications"): Secret Twin / Amnesia's trinket pick now actually gives the trinket (worn while a slot is free), swaps it on a re-pick, and takes it back when the pick or complication changes; also on joining the roster, including titlescreen recruits | `Codex Titlescreen/EotwBuild.lua` (`SyncTreasureGrants`, `Modify`, `Unchoose`, `RowOptions`), `Codex Titlescreen/EotwRoster.lua` (`JoinRoster`, `RecruitTitlescreenHero`), `Draw Steel Modifiers/ModifierGrantTreasure.lua` (`prompt` field) | luac + typing clean; in the git folder; app restarted. VERIFIED over MCP on in-memory heroes: pick / swap / same pick / unpick / switch to Amnesia / Fill / No Complication, and a trinket worn in `trinket1` that the swap replaced. NOT clicked through on the builder screen; the roster join and titlescreen recruit paths NOT run. The later Gold-only trinket filter (`RegisterOptionFilter`, `EnsureGoldTreasureFilter`) is luac + typing clean but NOT run (needs an app RESTART): expect 5 options on Secret Twin (Color Cloak Blue/Yellow/Red, Hellcharger Helm, Gecko Gloves; not Precious Collar). The Secret Twin assassin (respite d10 -> banner -> montage threat -> outcome clears the mark; `EotwDowntime.lua`, `FullscreenDisplay.lua`, `EncounterMontage.lua`, `EncounterScript.lua`, `EncounterOfTheWeek.lua`, `EotwRoster.lua`) is luac + typing clean and the snippet parse was checked with the bundled interpreter (951 parser checks still pass), but NOTHING of it has run in the app. To test: force `math.random` or set `eotwAssassinPending` on a Secret Twin hero; take a respite (banner and portrait); enter a game with a montage (threat card mid-arrival, 4d6 dice for the hero's player, damage lands); come home (mark cleared). UNCOMMITTED |
 | **Auto-equip treasure** (2026-10-19, user direction; see "Treasure goes home"): an equippable treasure a hero gains in a game (montage/narrative reward, delve or map chest, hand-over) is worn at once when there is a free slot, by the EotW hero sheet's rules; treasure arriving home in town is equipped the same way; the haul hand-over can give a worn find | `EncounterOfTheWeek/EncounterOfTheWeek.lua` (`AutoEquipTreasure`, host, from `MapScriptHostThink`; state doc `autoEquip`, cleared by `ClearTestArrival`), `EncounterOfTheWeek/EncounterMontage.lua` (`GrantItem` with a negative quantity goes through `GiveItem`, which unequips; `HeldQuantity` for the hand-over check), `Codex Titlescreen/EotwHeroSheetData.lua` (`EotwHeroSheet.EquipInPlace`), `Codex Titlescreen/EotwRoster.lua` (`ApplyOutcome` equips each treasure) | luac + typing clean; deployed; needs an app RESTART; NOT run. To test: win a trinket in a montage (it shows in a trinket slot on the hero sheet), loot a map chest (equipped within ~0.5s), take one off (it stays off), a hero at the leveled cap of 3 (stays in the bag), hand an equipped find to another hero (it moves and is worn there), and the town roster hero wearing it after the outcome lands |
@@ -2219,6 +2220,14 @@ must be won again. Decisions taken with the user:
   Conclusion screen offers the same button beside Return to Blackbottom.
   Back in town, Form a Party opens on that part once the city says it is
   open.
+- **Continuing stays on the part's board** (user direction 2026-10-25,
+  after the first Aixco Hollow run came home to the town map, formed the
+  party there and only showed it on walking into the Proving Pits): a player
+  who chose Continue comes home straight into the Proving Pits (or the Gate,
+  for a Gate part). The debrief, Form a Party and the formed party all
+  happen there. The continue watcher opens that location once per choice,
+  as soon as the pool names the key, so backing out to the town afterwards
+  is not undone. Live-tested: NO (needs an app restart).
 
 As built:
 - **City** (`city-core.ts`, `city.ts`): table `city_open_parts(userid, board,
@@ -2237,7 +2246,10 @@ As built:
   the inn (`EotwDowntime.InnPanel`, `seriesWarning` / `seriesNote`;
   `TakeRespite`'s onDone now gets `closedParts`); the continue handoff
   (preference `eotw:continueSeries` `{[userid] = {key, at}}`, a 1 s think
-  next to the Steam join one: when the roster and pool are loaded, no
+  next to the Steam join one: first, once the pool has the key and the
+  screen is not hidden, `OpenLocation` on the key's `PartBoard` ("danger"
+  for practice, else "gate"; `element.data.locationFor = at`); then, when
+  the roster and pool are loaded, no
   debrief or modal is up and `PartUnlocked(key)`, it clears the choice and
   calls `ShowCreateDialog(key, true)`; dropped after 600 s).
 - **Game** (`EncounterOfTheWeek.lua`, in the `Series` table because of the
@@ -4816,6 +4828,19 @@ confinement and its outline grow (the cache key includes the unlocked list);
 Heroes are placed long before the montage, so the extra area matters in the
 arrangement phase (below), when a winning party may move into it.
 
+**Beastheart companions (BUILT 2026-10-24, untested).** A beastheart starts the
+encounter with their companion on the map (user direction). Once a client's
+freshly placed heroes have settled (after `UnstackPlacedHeroes`), it summons
+each one's companion onto the free Start-zone tile nearest the hero
+(`FreeStartTileNear`), through the same core path as the character panel's
+Call button (`creature:SummonCompanionAt`), so it is owned by the player,
+grouped with the hero in initiative and stood on the ground. It waits for the
+hero's claim first, since the summon copies the hero's owner. Only fresh
+placements get one: a resume never brings back a companion that died. With no
+Start zone, or a full one, the companion lands beside the hero (possibly
+outside the confinement). The authoring test does the same, and End Test
+removes the companions with the hero copies.
+
 **Arranging the heroes (BUILT 2026-10-04, untested).** The phase only
 happens when there is **no initiative roll**: a montage outcome hands the
 heroes the initiative ("you win initiative", "you surprise the enemy"). When
@@ -6982,6 +7007,21 @@ ordinary in-app publish dialog. Publishing it adds its encounters to the
   Unlisted, all three parts' Town Gate texts unchanged. NOT seen: the
   error-stop path, the several-modules chooser, a newly added script
   document or encounter map being picked up.
+- **First publish from Publish Encounter Update** (2026-10-24, user
+  direction: the first publish should be easy from the same menu row). The
+  no-module notice now offers **Create Encounter Module...**, which opens the
+  publish dialog for a new module with `moduleType = "eotw"`, `listing =
+  "eotwunlisted"` and `autoPublish = { firstPublish = true }`. The same
+  select/settle steps tick the encounter maps and script documents; with no
+  errors it moves to page 2 and stops there, where the author fills in the
+  module id, display name and terms. An author with no saved author name gets
+  the dialog's usual Author Name box and "choose carefully" note (members of
+  an organization also get Publish As). Errors stop on page 1 as for updates.
+  "Choose Another Module..." keeps the old route into the generic Share
+  dialog. `showShareModuleDialog` gained `options.moduleType` /
+  `options.listing` (new modules only) and a `SetListing` helper shared with
+  the Listing Status dropdown. luac + typing clean; NOT run in the app (MCP
+  was down); uncommitted.
 
 **The pool** (`Codex Titlescreen/EncounterOfTheWeek.lua`, "the encounter
 pool" section):

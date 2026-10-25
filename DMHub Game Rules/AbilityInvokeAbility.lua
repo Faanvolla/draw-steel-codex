@@ -1677,6 +1677,16 @@ function ActivatedAbilityInvokeAbilityBehavior.ExecuteInvoke(invokerToken, abili
             installCastCallbacks(abilityClone)
         end
 
+        --The caster can be despawned while an AI prompt handler yields (Swordplay's
+        --granted free strike killed the struck minion, BR9S67PR). Cast would set
+        --casting and then no-op inside ModifyProperties, hanging the invoke until the
+        --timeout, so end the invoke as cancelled instead.
+        if casterToken == nil or not casterToken.valid or casterToken.properties == nil then
+            printf("INVOKEDIAG:: caster of %s is gone before cast -- treating the invoke as cancelled", tostring(abilityClone.name))
+            canceled = true
+            break
+        end
+
         if targeting == "prompt" or targeting == "prompt_inherit" then
             print("INVOKE:: PROMPT CAST FOR", abilityClone.name, coroutine.running())
             abilityClone.countsAsCast = true

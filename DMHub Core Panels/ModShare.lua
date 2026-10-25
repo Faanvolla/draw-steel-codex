@@ -2202,8 +2202,13 @@ local showShareModuleDialog = function(options)
 	--and the module type's checks settle, then publish straight through. If
 	--the checks fail it stops on the content page so the author can fix it.
 	--{ excludeAssets = {guid -> true} maps it must not tick, phase, thinks }.
+	--A new module only runs it with firstPublish = true: the content is ticked
+	--the same way, then it stops on the publishing page, because the module
+	--id, author name and terms are the author's to fill in.
+	--options.moduleType and options.listing preset a new module's Module Type
+	--and Listing Status (a ListingOptions id).
 	local m_autoPublish = options.autoPublish
-	if isNewModule then
+	if isNewModule and (m_autoPublish == nil or not m_autoPublish.firstPublish) then
 		m_autoPublish = nil
 	end
 
@@ -2258,6 +2263,9 @@ local showShareModuleDialog = function(options)
 
 	--resolve the type through the known list so a brand new module records
 	--"general" explicitly and an unknown id from a newer build falls back.
+	if isNewModule and options.moduleType ~= nil then
+		moduleInstance.moduleType = options.moduleType
+	end
 	moduleInstance.moduleType = GetModuleType(moduleInstance.moduleType).id
 
 	--The Listing Status choices. "Unlisted" exists only for an Encounter of the
@@ -2301,6 +2309,20 @@ local showShareModuleDialog = function(options)
 			return cond(unlisted and instance.moduleType == "eotw", "eotwunlisted", "public")
 		end
 		return "unlisted"
+	end
+
+	--Applies a Listing Status choice to the module record. "eotwunlisted"
+	--(Encounter of the Week only) is published -- in the module index, so the
+	--encounter pool sees it -- but flagged so the module browser leaves it out.
+	local SetListing = function(id)
+		moduleInstance.published = id == "public" or id == "eotwunlisted"
+		moduleInstance.premium = id == "premium"
+		moduleInstance.deleted = id == "deleted"
+		moduleInstance.publishingProperties.eotwUnlisted = cond(id == "eotwunlisted", true, nil)
+	end
+
+	if isNewModule and options.listing ~= nil then
+		SetListing(options.listing)
 	end
 
 	if moduleInstance.publishingProperties.includedAssets ~= nil then
@@ -3263,13 +3285,7 @@ local showShareModuleDialog = function(options)
 				events = {
 					change = function(element)
 						---@cast element Dropdown
-						--"eotwunlisted" (Encounter of the Week only) is published --
-						--in the module index, so the encounter pool sees it -- but
-						--flagged so the module browser leaves it out.
-						moduleInstance.published = element.idChosen == "public" or element.idChosen == "eotwunlisted"
-						moduleInstance.premium = element.idChosen == "premium"
-						moduleInstance.deleted = element.idChosen == "deleted"
-						moduleInstance.publishingProperties.eotwUnlisted = cond(element.idChosen == "eotwunlisted", true, nil)
+						SetListing(element.idChosen)
 						dialogPanel:FireEventTree("refreshModule")
 					end,
 					--the module type changed (page 1): offer Unlisted only for
@@ -3690,6 +3706,17 @@ local showShareModuleDialog = function(options)
 			footerPanel:SetClass("hidden", false)
 			backButton:SetClass("hidden", false)
 			shareButton:FireEvent("refreshModule")
+			return
+		end
+
+		--a first publish: show the publishing page for the module id, author
+		--name and terms. Proceed stays hidden until those are filled in.
+		if auto.firstPublish then
+			statusLabel:SetClass("hidden", true)
+			contentPanel:SetClass("hidden", false)
+			footerPanel:SetClass("hidden", false)
+			backButton:SetClass("hidden", false)
+			shareButton:FireEvent("click")
 			return
 		end
 
@@ -7021,8 +7048,10 @@ end
 --Encounter of the Week module published from this game and runs the publish
 --dialog in its autoPublish mode: every encounter map, the script documents
 --and everything they need are ticked, and a new version goes up with the
---module's existing listing, cover and author. A module's first publish goes
---through Create Module..., where its id and listing are chosen.
+--module's existing listing, cover and author. With no such module yet it
+--offers a first publish: the same content selection on a new Unlisted
+--Encounter of the Week module, stopping on the page where the author picks
+--its id and (if they have none yet) their author name.
 
 --A small modal for the steps before the publish dialog takes over. Returns
 --setText(text) and setButtons({ {text, click}, ... }); valid() is false once
@@ -7109,10 +7138,21 @@ mod.shared.QuickPublishEncounters = function()
 	notice.setText("Looking for this game's Encounter of the Week module...")
 
 	local ShowNoModule = function()
-		notice.setText("No Encounter of the Week module has been published from this game yet. Publish it once with Create Module... (Module Type: Encounter of the Week, Listing Status: Unlisted or Public). After that, Publish Encounter Update republishes it in one step.")
+		notice.setText("No Encounter of the Week module has been published from this game yet. Create one now: its encounter maps and script documents are selected for you, then you choose its module ID (and an author name, if you don't have one yet). After that, Publish Encounter Update republishes it in one step.")
 		notice.setButtons{
 			{
-				text = "Create Module...",
+				text = "Create Encounter Module...",
+				click = function()
+					gui.CloseModal()
+					showShareModuleDialog{
+						moduleType = "eotw",
+						listing = "eotwunlisted",
+						autoPublish = { firstPublish = true },
+					}
+				end,
+			},
+			{
+				text = "Choose Another Module...",
 				click = function()
 					gui.CloseModal()
 					mod.shared.ShowShareDialog()
