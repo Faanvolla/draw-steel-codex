@@ -1990,7 +1990,7 @@ MonsterAI:RegisterMaliceAbility{
     id = "Angulotl Malice: Resonating Croak",
     monsterGroups = angulotlGroup,
     abilities = {"Resonating Croak"},
-    description = "Spend 5 Malice when at least two enemies are next to an angulotl and no non-angulotl ally would be caught.",
+    description = "Spend 5 Malice when at least two enemies are next to an angulotl; each non-angulotl ally it would catch lowers the score.",
     score = function(self, ai, token, ability, context)
         local enemies, allies = 0, 0
         for _,target in ipairs(dmhub.allTokens) do
