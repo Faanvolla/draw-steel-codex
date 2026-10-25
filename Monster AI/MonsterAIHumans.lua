@@ -396,8 +396,8 @@ local function CountHostile(casterToken, targets)
 end
 
 --The cube centred on an enemy that catches the most enemies. The caster needs
---line of effect to the centre; TargetPassesFilter then drops anyone inside the
---cube the centre cannot see, as it does for a hand cast.
+--line of effect to that enemy (token to token, like a strike; partial cover counts);
+--TargetPassesFilter then drops anyone inside the cube the centre cannot see.
 local function FindBestCubePlan(token, ability, enemies)
     local best = nil
     local checked = {}
@@ -405,7 +405,7 @@ local function FindBestCubePlan(token, ability, enemies)
     for _,enemy in ipairs(enemies) do
         if LiveCreature(enemy) and token:Distance(enemy) <= ability:GetRange(token.properties)
             and not checked[enemy.loc.str]
-            and token:GetLineOfSight(enemy.loc, pierceWalls) > 0 then
+            and token:GetLineOfSight(enemy, pierceWalls) > 0 then
             checked[enemy.loc.str] = true
             local area = BuildCubeArea(token, ability, enemy.loc)
             local count = CountHostile(token, TokensInArea(token, ability, area))
