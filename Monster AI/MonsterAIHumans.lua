@@ -1,9 +1,5 @@
 local mod = dmhub.GetModLoading()
 
---Monster AI for the Human band: the Death Cultist and its Death Acolytes, plus
---the Human group Malice features any human can call on. Other human stat
---blocks fall back to generic AI for their own abilities.
-
 local humanGroup = {"Human"}
 local deathCultistMonster = {"Human Death Cultist"}
 
@@ -15,11 +11,10 @@ local speechLines = {
     drainingScythe = {"Your life is mine!"},
 }
 
---Death Scythe's "2 Malice: regain half the damage dealt" is its second mode.
 local deathScytheDrainMode = 2
 local deathScytheDrainCost = 2
---Only drain when the cultist is missing at least this much Stamina, so the
---heal (half of 6-12 damage) is not wasted.
+--The drain heals half the damage dealt (3-6), so it is only worth it once the
+--cultist is missing at least this much Stamina.
 local deathScytheDrainMinimumMissing = 5
 
 local riseMyMinionsRange = 5
@@ -29,8 +24,7 @@ local function LiveCreature(token)
         and not token.properties:IsDead()
 end
 
---TokensAreFriendly is the allegiance test the AI core uses. IsFriend also
---counts any creature the Director controls, so it calls an unowned hero a friend.
+--Not IsFriend: it counts every Director-controlled creature, so it calls an unowned hero a friend.
 local function IsHostile(token, other)
     return not dmhub.TokensAreFriendly(token, other)
 end
@@ -43,8 +37,7 @@ local function FindAbility(token, name)
     end
 end
 
---Group Malice features only, so a human's own ability of the same name is
---never picked up instead.
+--A human's own ability can share a Malice feature's name; only the Malice one counts.
 local function FindMaliceAbility(token, name)
     for _,ability in ipairs(token.properties:GetActivatedAbilities()) do
         if ability.name == name and ability.categorization == "Malice" then
@@ -95,7 +88,6 @@ local function NearestDistance(token, enemies)
     return result
 end
 
---How far a human strikes: its signature ability's range, else melee 1.
 local function StrikeReach(token)
     for _,ability in ipairs(token.properties:GetActivatedAbilities()) do
         if ability:try_get("categorization") == "Signature Ability" then
@@ -122,18 +114,13 @@ local function DefaultTargetScore(target, edges)
     return 1 + (edges or 0)*0.1 + MonsterAI.TargetStaminaBias(target)
 end
 
---------------------------------------------------------------------------------
--- Death Cultist: Death Scythe and Rise, My Minions.
---------------------------------------------------------------------------------
-
 local function WantsDrain(token)
     return CurrentMalice() >= deathScytheDrainCost
         and MissingStamina(token) >= deathScytheDrainMinimumMissing
 end
 
---The cultist is support, so it plans from the ranged variation: ranged strikes
---made next to an enemy lose an edge, which keeps it standing back. Cast through
---the full ability, which picks melee if it ends up adjacent anyway.
+--Death Scythe is melee or ranged: planning with the ranged version keeps the
+--cultist at a distance, and casting the full ability still picks melee if adjacent.
 MonsterAI:RegisterMove{
     id = "Human Death Cultist: Death Scythe",
     category = "Main Actions",
@@ -164,16 +151,12 @@ MonsterAI:RegisterMove{
     end,
 }
 
---The cultist is ranged support, but would otherwise spend its spare maneuver
---walking into melee for the generic Knockback, Grab or Aid Attack. Off by
---default for it; the Monster AI panel can still turn them back on.
+--The cultist fights at range, so these generic melee maneuvers are off for it;
+--the Monster AI panel can turn them back on.
 for _,moveid in ipairs({"Knockback", "Grab", "Aid Attack"}) do
     MonsterAI:SetMoveEnabledForMonster("Human Death Cultist", moveid, false)
 end
 
---Once the cultist has struck, nothing else scores and the framework's
---fallback walks it toward the nearest enemy. Holding scores just above
---nothing while an enemy is already in Death Scythe's range keeps it back.
 MonsterAI:RegisterMove{
     id = "Human Death Cultist: Hold Range",
     category = "Maneuvers",
@@ -196,10 +179,8 @@ MonsterAI:RegisterMove{
     end,
 }
 
---Rise, My Minions only raises creatures who died during this encounter. Its
---first step drops any corpse whose creature's initiative entry is not in the
---current combat (it died before the fight), so the AI must skip those too or it
---pays Malice and its maneuver to raise nothing.
+--Rise only raises creatures that died this encounter (its first step drops the
+--rest), so the AI skips them too instead of paying Malice to raise nobody.
 local function DiedThisEncounter(corpse)
     local q = dmhub.initiativeQueue
     if q == nil or q.hidden or corpse.objectInstance == nil then
@@ -214,8 +195,6 @@ local function DiedThisEncounter(corpse)
     return initiativeid ~= nil and q.entries[initiativeid] ~= nil
 end
 
---Corpse objects of creatures who died this encounter. None of this depends on
---where the cultist stands, so build it once per decision.
 local function EligibleCorpses()
     local result = {}
     for _,corpse in ipairs(dmhub.allObjectTokens) do
@@ -226,9 +205,8 @@ local function EligibleCorpses()
     return result
 end
 
---The eligible corpses within reach of a square, nearest first. The ability's
---target filter (dead minions, line of effect from the caster) runs from that
---square, so a corpse behind a wall from here can still count from there.
+--The ability's target filter checks line of effect, so it runs from each
+--planned square rather than once in EligibleCorpses.
 local function RaisableCorpses(ai, token, ability, loc, eligible)
     local result = {}
     ai:ExecuteWithTheoreticalMovementLoc(token, loc, function()
@@ -273,14 +251,12 @@ MonsterAI:RegisterMove{
     end,
     execute = function(self, ai, token, scoringInfo, ability)
         MoveCinematically(ai, token, scoringInfo.loc)
-        --Pay for no more corpses than there is Malice for (1 each).
         local corpses = RaisableCorpses(ai, token, ability, token.loc, EligibleCorpses())
         local targets = {}
         for i=1,math.min(#corpses, CurrentMalice()) do
             local corpse = corpses[i].token
-            --ExecuteAbility silently drops targets it does not see as live
-            --combatants; a cast left with no corpses would still apply its
-            --other behaviors, so refuse rather than misspend.
+            --ExecuteAbility silently drops non-combatant targets and an empty cast still
+            --runs its other behaviors, so refuse the whole cast rather than misspend.
             if not MonsterAI.TokenIsLiveCombatant(corpse) then
                 ai:LogDecision("ABILITY CAST REJECTED", {
                     ability = ability.name,
@@ -294,8 +270,7 @@ MonsterAI:RegisterMove{
             return
         end
         ai:Speech(token, speechLines.riseMyMinions)
-        --The burst is passed as an area so ExecuteAbility keeps every corpse;
-        --it trims an explicit target list to the ability's single target otherwise.
+        --Without an area, ExecuteAbility trims the target list to the ability's single target.
         local area = dmhub.CalculateShape{
             shape = "RadiusFromCreature",
             token = token,
@@ -310,12 +285,7 @@ MonsterAI:RegisterMove{
     end,
 }
 
---------------------------------------------------------------------------------
--- Death Acolyte: Necrotic Bolt's heal.
---------------------------------------------------------------------------------
-
---Necrotic Bolt lets one creature within 5 regain 1 Stamina. Give it to the
---most hurt non-minion ally (usually the cultist); skip it if nobody is hurt.
+--Heals the most hurt non-minion ally (usually the cultist), or no one if nobody is hurt.
 MonsterAI:RegisterPrompt{
     id = "Human Death Acolyte: Regain Stamina",
     prompts = {"Human Death Acolyte:Regain Stamina"},
@@ -338,10 +308,6 @@ MonsterAI:RegisterPrompt{
         return {targets = {{token = best.token}}}
     end,
 }
-
---------------------------------------------------------------------------------
--- Human group Malice features (start of a human's turn).
---------------------------------------------------------------------------------
 
 local function BuildCubeArea(token, ability, center)
     return dmhub.CalculateShape{
@@ -366,8 +332,6 @@ local function TokensInArea(casterToken, ability, area)
     return result
 end
 
---Map-wide Malice features are cast over a map area with an explicit target
---list. keep(target) narrows the list; nil keeps everything the filter allows.
 local function ExecuteMapAbility(ai, token, ability, keep)
     local area = dmhub.CalculateShape{shape = "map", token = token}
     local targets = {}
@@ -395,17 +359,14 @@ local function CountHostile(casterToken, targets)
     return result
 end
 
---The cube centred on an enemy that catches the most enemies. The caster needs
---line of effect to that enemy (token to token, like a strike; partial cover counts);
---TargetPassesFilter then drops anyone inside the cube the centre cannot see.
+--HasLineOfEffect, not GetLineOfSight: it also applies the Dazzled range limit, as player targeting does.
 local function FindBestCubePlan(token, ability, enemies)
     local best = nil
     local checked = {}
-    local pierceWalls = token.properties:GetPierceWalls()
     for _,enemy in ipairs(enemies) do
         if LiveCreature(enemy) and token:Distance(enemy) <= ability:GetRange(token.properties)
             and not checked[enemy.loc.str]
-            and token:GetLineOfSight(enemy, pierceWalls) > 0 then
+            and RuleUtils.HasLineOfEffect(token, enemy, ability) then
             checked[enemy.loc.str] = true
             local area = BuildCubeArea(token, ability, enemy.loc)
             local count = CountHostile(token, TokensInArea(token, ability, area))
@@ -417,7 +378,6 @@ local function FindBestCubePlan(token, ability, enemies)
     return best
 end
 
---A Death Cultist with minions to raise should keep its maneuver for that.
 local function SavingManeuverToRaise(ai, actor)
     if actor.properties.monster_type ~= "Human Death Cultist" then
         return false
@@ -470,8 +430,7 @@ MonsterAI:RegisterMaliceAbility{
     end,
 }
 
---A condition is either inflicted directly (inflictedConditions is keyed by
---condition id, so # is always 0) or comes from an ongoing effect that names one.
+--inflictedConditions is keyed by id (# is always 0), and ongoing effects can carry a condition too.
 local function HasAnyCondition(token)
     if next(token.properties:try_get("inflictedConditions", {})) ~= nil then
         return true
@@ -486,8 +445,6 @@ local function HasAnyCondition(token)
     return false
 end
 
---Exploit Opening is worth 5 Malice when several humans act this turn with an
---enemy in reach; conditioned enemies (double edge) make it better still.
 MonsterAI:RegisterMaliceAbility{
     id = "Human Malice: Exploit Opening",
     monsterGroups = humanGroup,
@@ -495,8 +452,7 @@ MonsterAI:RegisterMaliceAbility{
     description = "Spend 5 Malice to give the acting humans an edge when their combined strikes make it worth it (minions count for a quarter).",
     score = function(self, ai, token, ability, context)
         local enemies = context.enemyTokens or {}
-        --Minion strikes deal 1-3 damage, so an edge on one is worth far less
-        --than on a non-minion. A lone squad of four does not qualify.
+        --Minions count a quarter: 1-3 damage gains little from an edge, so one squad of four never qualifies.
         local strikingPower = 0
         for _,actor in ipairs(context.actingTokens or {}) do
             if IsHuman(actor) then
@@ -530,9 +486,7 @@ MonsterAI:RegisterMaliceAbility{
     end,
 }
 
---Staying Power heals each non-minion human in the encounter 5 x level; only
---worth 7 Malice when someone is badly hurt and the healing would not be wasted.
---allyTokens holds only combatants, so humans elsewhere on the map are ignored.
+--allyTokens, not dmhub.allTokens: the book heals only humans in the encounter.
 local function StayingPowerHumans(context)
     local result = {}
     for _,other in ipairs(context.allyTokens or {}) do
