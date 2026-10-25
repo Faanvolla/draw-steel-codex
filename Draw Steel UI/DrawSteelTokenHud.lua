@@ -52,6 +52,29 @@ local function ConfirmMinionDeath(token, attacker)
     return true
 end
 
+--How many deaths the squad's damage owes (capped at its live minions), and how
+--many of those are already confirmed and waiting on removal.
+--- @return integer owed
+--- @return integer pending
+local function SquadDeathsOwed(squad)
+    local healthSingle = squad.health_single or 0
+    if healthSingle <= 0 then
+        return 0, 0
+    end
+
+    local liveTokens = 0
+    local pending = 0
+    for _, tok in ipairs(squad.tokens or {}) do
+        if tok.valid and not tok.properties.minionDead then
+            liveTokens = liveTokens + 1
+            if MinionDeathPending(tok.properties) then
+                pending = pending + 1
+            end
+        end
+    end
+    return math.min(liveTokens, math.floor((squad.damage_taken or 0) / healthSingle)), pending
+end
+
 --Whether this minion should show a red death skull: its squad's damage owes a
 --death it may take. Returns eligible, isDirectTarget, squadHasDirectTargets.
 --Shared by the token HUD (which only runs for tokens this client can see) and
@@ -87,6 +110,16 @@ local function MinionSkullState(token)
     --suppress the skull while a death trigger is being offered so it does not cover the trigger icon.
     if props:GetAvailableTriggers(true) ~= nil then
         return false, false, false
+    end
+
+    --Clicking a skull doesn't remove the minion right away (its death trigger or
+    --an open prompt can hold it), so the squad still counts that death as owed.
+    --Once enough skulls are clicked to cover it, hide the rest; clicked ones stay.
+    if not MinionDeathPending(props) then
+        local owed, pending = SquadDeathsOwed(squad)
+        if owed - pending <= 0 then
+            return false, false, false
+        end
     end
 
     return true, isDirectTarget, squad.num_recently_damaged > 0
@@ -147,22 +180,12 @@ end
 --direct targets first, then nearest to the attacker (the Monster AI's order).
 local function ChooseSquadDeaths(group)
     local squad = group.squad
-    local healthSingle = squad.health_single or 0
-    if healthSingle <= 0 or squad.damage_time_pending then
+    if squad.damage_time_pending then
         return
     end
 
-    local liveTokens = 0
-    local pending = 0
-    for _, tok in ipairs(squad.tokens or {}) do
-        if tok.valid and not tok.properties.minionDead then
-            liveTokens = liveTokens + 1
-            if MinionDeathPending(tok.properties) then
-                pending = pending + 1
-            end
-        end
-    end
-    local owed = math.min(liveTokens, math.floor((squad.damage_taken or 0) / healthSingle)) - pending
+    local owedTotal, pending = SquadDeathsOwed(squad)
+    local owed = owedTotal - pending
     if owed <= 0 then
         return
     end
