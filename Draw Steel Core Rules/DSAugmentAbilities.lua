@@ -102,6 +102,10 @@ function ActivatedAbilityAugmentedAbilityBehavior:SynthesizeAbilities(ability, c
                 end
             end
 
+			--Remember the strike's own action type before the augment's cost replaces it below.
+			--A main-action strike made this way (e.g. Gunshot as a free strike) can still crit.
+			synth.baseActionResourceId = synth:ActionResource()
+
 			--we copy some casting time and resource usage aspects of the synthesizer into the synthesized
 			--ability. Note that we must take care to make sure that it's still a valid instance of
 			--the target type.

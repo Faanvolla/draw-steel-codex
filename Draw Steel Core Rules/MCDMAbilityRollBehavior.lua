@@ -837,7 +837,7 @@ ActivatedAbilityPowerRollBehavior.GetPowerTablePopulateCustom = function(rollPro
 
                     local critEligible = false
                     if options ~= nil and options.ability ~= nil then
-                        critEligible = options.ability:HasKeyword("Strike") or options.ability:IsAction()
+                        critEligible = options.ability:CanCriticalHit()
                     end
 
                     local eventName = string.format("UI.PowerRoll_Tier%d", tier)

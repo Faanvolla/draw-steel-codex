@@ -813,6 +813,14 @@ local function IsMainActionAbility(c)
     return actionid == "d19658a2-4d7b-4504-af9e-1a5410fb17fd" --id of action
 end
 
+--- True if a natural roll at or above the Critical Threshold on this ability is a Critical Hit.
+--- Only main action abilities can crit, but they still can when used off-turn or as a
+--- granted free strike that pays a different cost (e.g. Gunshot through Make Free Strike).
+--- @return boolean
+function ActivatedAbility:CanCriticalHit()
+    return IsMainActionAbility(self) or self:try_get("baseActionResourceId") == CharacterResource.actionResourceId
+end
+
 RegisterGoblinScriptSymbol(ActivatedAbility, {
     name = "action",
     type = "boolean",
@@ -830,6 +838,17 @@ RegisterGoblinScriptSymbol(ActivatedAbility, {
     seealso = { "action" },
     calculate = function(c)
         return IsMainActionAbility(c)
+    end,
+
+})
+
+RegisterGoblinScriptSymbol(ActivatedAbility, {
+    name = "can critical hit",
+    type = "boolean",
+    desc = "Returns true if this ability can score a Critical Hit. True for main action abilities.",
+    seealso = { "main action" },
+    calculate = function(ability)
+        return ability:CanCriticalHit()
     end,
 
 })
