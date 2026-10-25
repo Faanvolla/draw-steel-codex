@@ -214,27 +214,27 @@ local function DiedThisEncounter(corpse)
     return initiativeid ~= nil and q.entries[initiativeid] ~= nil
 end
 
---Corpse objects the cultist could raise from anywhere: dead minions (the
---ability's own target filter checks that) who died this encounter. None of
---this depends on where the cultist stands, so build it once per decision.
-local function EligibleCorpses(token, ability)
+--Corpse objects of creatures who died this encounter. None of this depends on
+--where the cultist stands, so build it once per decision.
+local function EligibleCorpses()
     local result = {}
     for _,corpse in ipairs(dmhub.allObjectTokens) do
-        if corpse.valid and corpse.isCorpse and DiedThisEncounter(corpse)
-            and ability:TargetPassesFilter(token, corpse, {}) then
+        if corpse.valid and corpse.isCorpse and DiedThisEncounter(corpse) then
             result[#result+1] = corpse
         end
     end
     return result
 end
 
---The eligible corpses within reach of a square, nearest first.
-local function RaisableCorpses(ai, token, loc, eligible)
+--The eligible corpses within reach of a square, nearest first. The ability's
+--target filter (dead minions, line of effect from the caster) runs from that
+--square, so a corpse behind a wall from here can still count from there.
+local function RaisableCorpses(ai, token, ability, loc, eligible)
     local result = {}
     ai:ExecuteWithTheoreticalMovementLoc(token, loc, function()
         for _,corpse in ipairs(eligible) do
             local distance = token:Distance(corpse)
-            if distance <= riseMyMinionsRange then
+            if distance <= riseMyMinionsRange and ability:TargetPassesFilter(token, corpse, {}) then
                 result[#result+1] = {token = corpse, distance = distance}
             end
         end
@@ -254,13 +254,13 @@ MonsterAI:RegisterMove{
         if malice < 2 then
             return nil, "not enough Malice to raise two minions"
         end
-        local eligible = EligibleCorpses(token, ability)
+        local eligible = EligibleCorpses()
         if #eligible < 2 then
-            return nil, "fewer than two dead minions to raise"
+            return nil, "fewer than two corpses from this encounter"
         end
         local best = nil
         for _,info in pairs(ai.paths or {}) do
-            local count = math.min(malice, #RaisableCorpses(ai, token, info.loc, eligible))
+            local count = math.min(malice, #RaisableCorpses(ai, token, ability, info.loc, eligible))
             local value = count - (info.cost or 0)*0.001
             if count >= 2 and (best == nil or value > best.value) then
                 best = {loc = info.loc, count = count, value = value}
@@ -274,7 +274,7 @@ MonsterAI:RegisterMove{
     execute = function(self, ai, token, scoringInfo, ability)
         MoveCinematically(ai, token, scoringInfo.loc)
         --Pay for no more corpses than there is Malice for (1 each).
-        local corpses = RaisableCorpses(ai, token, token.loc, EligibleCorpses(token, ability))
+        local corpses = RaisableCorpses(ai, token, ability, token.loc, EligibleCorpses())
         local targets = {}
         for i=1,math.min(#corpses, CurrentMalice()) do
             local corpse = corpses[i].token
@@ -395,13 +395,17 @@ local function CountHostile(casterToken, targets)
     return result
 end
 
---The cube centred on an enemy that catches the most enemies.
+--The cube centred on an enemy that catches the most enemies. The caster needs
+--line of effect to the centre; TargetPassesFilter then drops anyone inside the
+--cube the centre cannot see, as it does for a hand cast.
 local function FindBestCubePlan(token, ability, enemies)
     local best = nil
     local checked = {}
+    local pierceWalls = token.properties:GetPierceWalls()
     for _,enemy in ipairs(enemies) do
         if LiveCreature(enemy) and token:Distance(enemy) <= ability:GetRange(token.properties)
-            and not checked[enemy.loc.str] then
+            and not checked[enemy.loc.str]
+            and token:GetLineOfSight(enemy.loc, pierceWalls) > 0 then
             checked[enemy.loc.str] = true
             local area = BuildCubeArea(token, ability, enemy.loc)
             local count = CountHostile(token, TokensInArea(token, ability, area))
@@ -420,7 +424,7 @@ local function SavingManeuverToRaise(ai, actor)
     end
     local rise = FindAbility(actor, "Rise, My Minions")
     return rise ~= nil and CurrentMalice() >= 2
-        and #RaisableCorpses(ai, actor, actor.loc, EligibleCorpses(actor, rise)) >= 2
+        and #RaisableCorpses(ai, actor, rise, actor.loc, EligibleCorpses()) >= 2
 end
 
 MonsterAI:RegisterMaliceAbility{
