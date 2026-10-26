@@ -4249,6 +4249,23 @@ local function CreateMapPickerPopup(encounter, choose)
 
     Populate("")
 
+    --the map open right now, first and in bold: usually the one the Director
+    --is building the encounter for.
+    local currentMap = game.currentMap
+    local currentOption = nil
+    if currentMap ~= nil and currentMap.valid then
+        local currentId = game.currentMapId
+        currentOption = gui.Label {
+            classes = { "encounterMapOption", cond(currentId == encounter.mapid, "selected") },
+            bold = true,
+            bmargin = 8,
+            text = string.format("Current Map: %s", currentMap.description),
+            press = function(element)
+                choose(currentId)
+            end,
+        }
+    end
+
     return gui.Panel {
         classes = { "bordered", "bg" },
         width = 300,
@@ -4257,6 +4274,8 @@ local function CreateMapPickerPopup(encounter, choose)
         hpad = 10,
         vpad = 10,
         borderBox = true,
+
+        currentOption,
 
         gui.Button {
             classes = { "sizeS" },
@@ -4373,6 +4392,19 @@ local function CreateEncounterMapCard(encounter, refresh)
         else
             ReconcileStagingWithMap(encounter)
         end
+
+        --the open map with no thumbnail, or one out of date: capture now, as
+        --arriving on it would (a capture only works on the map on screen).
+        --The card redraws by itself when the thumbnail lands in /mapManifests.
+        local map = (mapid ~= "" and mapid == game.currentMapId) and game.GetMap(mapid) or nil
+        if map ~= nil and ((map.thumbnailImage or "") == "" or map.thumbnailStale) then
+            MapThumbnail.Refresh(map, {
+                error = function(message)
+                    print("Encounter map thumbnail capture failed:", message)
+                end,
+            })
+        end
+
         Refresh()
         refresh()
     end
