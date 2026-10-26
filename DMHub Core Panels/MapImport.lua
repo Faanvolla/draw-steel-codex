@@ -581,6 +581,46 @@ mod.shared.ImportMapDialog = function(paths, options)
 
     local tileType = options.tileType or "squares"
 
+    -- Map Type for the new map, as in Map Settings > Map Type: a Battlemap, or a
+    -- World Map whose tiles are miles across. Until the user picks, a hex grid
+    -- means World Map. A World Map starts at the game's default scale (6 miles a
+    -- tile unless the Director set another). A floor shares its map's type, so
+    -- floor imports don't offer it.
+    local chosenMapType = nil
+    local worldAmount = tonumber(dmhub.GetSettingValue("worldmap:defaulttilesize")) or 6
+    local worldUnit = dmhub.GetSettingValue("worldmap:defaultunit") or "miles"
+    local worldUnitName = dmhub.GetSettingValue("worldmap:defaultunitname") or ""
+
+    local function MapType()
+        if chosenMapType ~= nil then
+            return chosenMapType
+        end
+        return cond(tileType == "squares", "battlemap", "world")
+    end
+
+    --- @type Panel|nil
+    local mapTypePanel = nil
+
+    -- Call when tileType or the choice changes: the default type follows the grid.
+    local function RefreshMapType()
+        if mapTypePanel ~= nil then
+            mapTypePanel:FireEventTree("refreshMapType")
+        end
+    end
+
+    -- Puts a World Map choice into the settings FinishMapImport applies to the new map.
+    local function AddMapTypeSettings(info)
+        if options.floorImport or MapType() ~= "world" then
+            return
+        end
+        local settings = info.mapSettings or {}
+        settings["map:maptype"] = "world"
+        settings["map:worldtilesize"] = worldAmount
+        settings["map:worldunit"] = worldUnit
+        settings["map:worldunitname"] = worldUnitName
+        info.mapSettings = settings
+    end
+
     -- Automatic grid: the 140 PPS perfect fit, or the grid MapGridDetection finds.
     -- perfectFitActive: the auto panel is showing (until "Set Grid by Hand...").
     local perfectFitChecked = false
@@ -630,6 +670,7 @@ mod.shared.ImportMapDialog = function(paths, options)
                             info.matchCalibration = capturedMatchCalibration
                             printf("FLOOR_ALIGN_DIAG:: Attached matchCalibration to info: %s", json(capturedMatchCalibration))
                         end
+                        AddMapTypeSettings(info)
                         options.finish(info)
                     end
                     return
@@ -842,6 +883,159 @@ mod.shared.ImportMapDialog = function(paths, options)
         end
     end
 
+    -- The Map Type control; its state is set up next to tileType.
+    if not options.floorImport then
+        local unitOptions = {}
+        for _,unit in ipairs(MeasurementSystem.worldUnits) do
+            unitOptions[#unitOptions+1] = { id = unit.id, text = unit.text }
+        end
+
+        local function ValidAmount(text)
+            local n = tonumber(text)
+            if n == nil or n ~= math.floor(n) or n < 1 or n > 99999 then
+                return nil
+            end
+            return math.tointeger(n)
+        end
+
+        mapTypePanel = gui.Panel{
+            flow = "vertical",
+            width = 400,
+            height = "auto",
+            halign = "left",
+            vmargin = 8,
+
+            gui.Label{
+                width = 400,
+                height = "auto",
+                fontSize = 16,
+                text = "Map Type:",
+            },
+
+            gui.EnumeratedSliderControl{
+                options = {
+                    {id = "battlemap", text = "Battlemap"},
+                    {id = "world", text = "World Map"},
+                },
+                width = 400,
+                value = MapType(),
+                hover = gui.Tooltip("Battlemap: a tactical map, each tile a few feet across. World Map: a region or world map, each tile miles across. The measuring tool reports distances in the map's units. You can change this later in Map Settings."),
+                change = function(element)
+                    if element.value == MapType() then
+                        return
+                    end
+                    chosenMapType = element.value
+                    RefreshMapType()
+                end,
+                refreshMapType = function(element)
+                    if element.value ~= MapType() then
+                        element.value = MapType()
+                    end
+                end,
+            },
+
+            -- The world scale: "Each hex is: [6] [Miles]".
+            gui.Panel{
+                classes = {cond(MapType() ~= "world", "collapsed")},
+                flow = "horizontal",
+                width = 400,
+                height = 30,
+                tmargin = 6,
+                refreshMapType = function(element)
+                    element:SetClass("collapsed", MapType() ~= "world")
+                end,
+
+                gui.Label{
+                    width = "auto",
+                    height = "auto",
+                    fontSize = 16,
+                    valign = "center",
+                    rmargin = 8,
+                    text = cond(tileType == "squares", "Each tile is:", "Each hex is:"),
+                    refreshMapType = function(element)
+                        element.text = cond(tileType == "squares", "Each tile is:", "Each hex is:")
+                    end,
+                },
+
+                gui.Input{
+                    fontSize = 16,
+                    width = 60,
+                    height = 24,
+                    valign = "center",
+                    characterLimit = 5,
+                    text = MeasurementSystem.ToString(worldAmount),
+                    hover = gui.Tooltip("How many units one tile spans, as a whole number."),
+                    edit = function(element)
+                        local n = ValidAmount(element.text)
+                        if n ~= nil then
+                            worldAmount = n
+                        end
+                    end,
+                    change = function(element)
+                        local n = ValidAmount(element.text)
+                        if n == nil then
+                            element.textNoNotify = MeasurementSystem.ToString(worldAmount)
+                            return
+                        end
+                        worldAmount = n
+                    end,
+                },
+
+                gui.Dropdown{
+                    width = 150,
+                    height = 24,
+                    fontSize = 16,
+                    valign = "center",
+                    lmargin = 8,
+                    options = unitOptions,
+                    idChosen = worldUnit,
+                    change = function(element)
+                        ---@cast element Dropdown
+                        worldUnit = element.idChosen
+                        RefreshMapType()
+                    end,
+                },
+            },
+
+            -- The unit's name, only for a custom unit.
+            gui.Panel{
+                classes = {cond(MapType() ~= "world" or worldUnit ~= "custom", "collapsed")},
+                flow = "horizontal",
+                width = 400,
+                height = 30,
+                tmargin = 4,
+                refreshMapType = function(element)
+                    element:SetClass("collapsed", MapType() ~= "world" or worldUnit ~= "custom")
+                end,
+
+                gui.Label{
+                    width = "auto",
+                    height = "auto",
+                    fontSize = 16,
+                    valign = "center",
+                    rmargin = 8,
+                    text = "Unit Name:",
+                },
+
+                gui.Input{
+                    fontSize = 16,
+                    width = 200,
+                    height = 24,
+                    valign = "center",
+                    characterLimit = 24,
+                    placeholderText = "e.g. days",
+                    text = worldUnitName,
+                    edit = function(element)
+                        worldUnitName = string.match(element.text, "^%s*(.-)%s*$")
+                    end,
+                    change = function(element)
+                        worldUnitName = string.match(element.text, "^%s*(.-)%s*$")
+                    end,
+                },
+            },
+        }
+    end
+
     -- Squares or hexes, for sizing by hand. Changing it starts the sizing over.
     -- A floor must match its map, so floor imports don't offer it.
     local tileTypeChoice = gui.EnumeratedSliderControl{
@@ -860,6 +1054,7 @@ mod.shared.ImportMapDialog = function(paths, options)
             tileType = element.value
             importPanel.tileType = element.value
             gridlessChoice.value = true
+            RefreshMapType()
         end,
         vmargin = 8,
     }
@@ -897,7 +1092,7 @@ mod.shared.ImportMapDialog = function(paths, options)
     -- with Accept and Set Grid by Hand.
     local perfectFitPanel
     perfectFitPanel = gui.Panel{
-        classes = {"hidden"},
+        classes = {"collapsed"},
         flow = "vertical",
         width = 400,
         height = "auto",
@@ -959,6 +1154,7 @@ mod.shared.ImportMapDialog = function(paths, options)
                             info.paths = paths
                             info.imageWidth = imgW
                             info.imageHeight = imgH
+                            AddMapTypeSettings(info)
                             options.finish(info)
                         end
                         return
@@ -976,8 +1172,8 @@ mod.shared.ImportMapDialog = function(paths, options)
             click = function(element)
                 perfectFitActive = false
                 userChoseManual = true
-                perfectFitPanel:SetClass("hidden", true)
-                instructionsPanel:SetClass("hidden", false)
+                perfectFitPanel:SetClass("collapsed", true)
+                instructionsPanel:SetClass("collapsed", false)
                 detectStatusLabel:SetClass("hidden", true)
                 --ResetCalibration, not ClearMarkers: a detected grid marks every
                 --sizing step done, and sizing by hand must start from the first.
@@ -1018,14 +1214,15 @@ mod.shared.ImportMapDialog = function(paths, options)
         autoChoice = choice
         perfectFitActive = true
         tileTypeChoice.value = tileType
+        RefreshMapType()
 
         local words = MapGridDetection.Describe(choice, imgW, imgH)
         perfectFitPanel:Get("perfectFitTitle").text = words.title
         perfectFitPanel:Get("perfectFitDescription").text = words.text
         perfectFitPanel:Get("perfectFitDimensions").text = string.format("%d x %d %s",
             choice.tilesW, choice.tilesH, cond(choice.hex, "hexes", "tiles"))
-        perfectFitPanel:SetClass("hidden", false)
-        instructionsPanel:SetClass("hidden", true)
+        perfectFitPanel:SetClass("collapsed", false)
+        instructionsPanel:SetClass("collapsed", true)
         return true
     end
 
@@ -1676,8 +1873,18 @@ mod.shared.ImportMapDialog = function(paths, options)
         layersPagingPanel,
         importPanel,
         buttonsPanel,
-        instructionsPanel,
-        perfectFitPanel,
+        -- The left column: the sizing instructions or the automatic grid
+        -- (one at a time), then the Map Type choice under either.
+        gui.Panel{
+            flow = "vertical",
+            width = 400,
+            height = "auto",
+            halign = "left",
+            valign = "top",
+            instructionsPanel,
+            perfectFitPanel,
+            mapTypePanel,
+        },
         statusPanel,
     }
 
