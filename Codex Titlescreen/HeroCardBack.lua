@@ -1205,10 +1205,8 @@ local function AnimateFlip(card, cardHeight, fromScale, toScale, onMidpoint)
         card.data.heroCardBaseY = card.selfStyle.y or 0
     end
     local baseY = card.data.heroCardBaseY
-    --an enlarged card is pulled back inside the screen and drawn over its
-    --host's other panels.
+    --the engine pulls an enlarged card back inside the screen.
     card.constrainToScreen = true
-    card.renderOnTop = true
     local function Lift(size)
         local grown = (size - 1) / (TURNED_SCALE - 1)
         return baseY - (size - 1) * cardHeight / 2 - grown * TURNED_RISE * cardHeight
@@ -1229,7 +1227,6 @@ local function AnimateFlip(card, cardHeight, fromScale, toScale, onMidpoint)
             card.selfStyle.scale = toScale
             card.selfStyle.y = Lift(toScale)
             card.constrainToScreen = toScale ~= 1
-            card.renderOnTop = toScale ~= 1
             card.data.heroCardFlipping = false
             return
         end
