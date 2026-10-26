@@ -2183,8 +2183,9 @@ end
 
 --Puts a built window in the documents layer, mixed in with journals and
 --panel windows. Maximized it stays there and covers the hud's lower layers
---(docks, Director's Screen), stacking with the other windows by click order,
---but always under the icon rails and pinned panel windows (David, 2026-10-24).
+--(docks, Director's Screen). Windowed or maximized it stacks with the other
+--windows by click order, but always under the icon rails and rail panel
+--windows (David, 2026-10-24/25).
 local function PlaceWindow(rec)
     local panel = rec.panel
     if panel == nil or not panel.valid then
@@ -2196,17 +2197,19 @@ local function PlaceWindow(rec)
         return
     end
 
+    local appended = false
     if panel.parent ~= target then
         if panel.parent ~= nil then
             panel:Unparent()
         end
         target:AddChild(panel)
         --appended over everything: stack it again, so what must stay above
-        --a maximized map (a presented stage) is lifted back over it.
+        --a map window (rail panels, a presented stage) is lifted back over it.
         rec.maximizedPanel = nil
+        appended = true
     end
 
-    g_chrome.StackMaximized(rec, rec.maximized == true)
+    g_chrome.StackMaximized(rec, rec.maximized == true, appended)
 
     if rec.maximized then
         panel.x = 0
@@ -2233,17 +2236,18 @@ local function PlaceWindow(rec)
     g_chrome.Sync()
 end
 
---How a map or scene window stacks while maximized among the windows
---(stacked; false windowed or under the UI). The engine keeps the rails,
---pinned windows and any dialog over it whenever it is raised (David,
---2026-10-24/25). Maximizing brings it up once: to the top, or, taking the
---maximize over from rec.stackAbove (the window it replaces), into that
---window's place, so the windows over the old map stay over it. After that
---only a click on it, Ctrl+Tab or restoring it raises it (BringToFront
---leaves a maximized window where it is).
-function g_chrome.StackMaximized(rec, stacked)
+--How a map or scene window stacks. Windowed or maximized, the engine keeps
+--the rails and rail panel windows over it whenever it is raised; maximized
+--among the windows (stacked; false windowed or under the UI) it keeps any
+--dialog over it too (David, 2026-10-24/25). Maximizing brings it up once:
+--to the top, or, taking the maximize over from rec.stackAbove (the window
+--it replaces), into that window's place, so the windows over the old map
+--stay over it. After that only a click on it, Ctrl+Tab or restoring it
+--raises it (BringToFront leaves a maximized window where it is).
+--appended: it was just added to the layer, over everything.
+function g_chrome.StackMaximized(rec, stacked, appended)
     local panel = rec.panel
-    panel.raiseBelowClasses = cond(stacked, PanelDocument.ABOVE_MAXIMIZED_MAP, nil)
+    panel.raiseBelowClasses = PanelDocument.ABOVE_MAP_WINDOWS
     panel.raiseUnderNonWindows = stacked
     local above = rec.stackAbove
     rec.stackAbove = nil
@@ -2253,6 +2257,9 @@ function g_chrome.StackMaximized(rec, stacked)
         else
             panel:SetAsLastSibling()
         end
+    elseif appended and not stacked then
+        --already on top; the raise lifts the rails and rail panels back over it.
+        panel:SetAsLastSibling()
     end
     rec.maximizedPanel = cond(stacked, panel, nil)
 end
@@ -9039,7 +9046,7 @@ DefineTableItems()
 --until shared, which then shows it; David, 2026-10-16); the title bar's
 --Players / All control
 --(FullscreenDisplay.UpdatePresentationBar) can narrow it to the players,
---with Below UI beside it, and closing the window stops showing it. Scenes
+--with Above UI beside it, and closing the window stops showing it. Scenes
 --are per user like the rest of the table, and minimize to a button on the
 --table or the icon rail as map windows do. A function rather than a do
 --block: this file is at Lua's 200-local limit, and a function's locals
@@ -9169,12 +9176,6 @@ local function DefineSceneWindows()
         if panel:HasClass("collapsed") ~= covered then
             panel:SetClass("collapsed", covered)
         end
-        --maximized under the UI it is the table's background: its cards'
-        --layer lets the mouse through, and the table passes it the drops
-        --(SceneElements.DropOnBackground).
-        if rec.view ~= nil and rec.view.valid then
-            rec.view:FireEvent("setBackground", rec.maximized == true and not covered and panel.parent == g_layer)
-        end
     end
 
     g_sharing.screenKinds[#g_sharing.screenKinds+1] = function(list)
@@ -9196,43 +9197,30 @@ local function DefineSceneWindows()
         end
     end
 
-    --A maximized scene on show with the title bar's Below UI on is the
-    --table's background: it sits in the bottom layer, under everything.
-    --Any other maximized scene behaves as a maximized map does (David,
-    --2026-10-24).
-    local function SceneUnderUI(rec)
-        return rec.maximized == true and Scenes.ShowState(rec.sceneid) ~= false and Scenes.IsBelowUI()
-    end
-
-    --The layer a scene window belongs in: among the windows and journals,
-    --or the bottom tabletop layer (SceneUnderUI).
-    local function SceneLayer(rec)
-        if SceneUnderUI(rec) then
-            return g_layer
-        end
-        return DocumentsLayer()
-    end
-
-    --Puts a built scene window in its layer (SceneLayer). Maximized it fills,
-    --cropping; in a window it shows the whole picture.
+    --Puts a built scene window among the windows and journals. Maximized it
+    --fills, cropping, and stacks as a maximized map does, whether or not it
+    --is on show (David, 2026-10-25: there is no under-the-UI scene window any
+    --more; Above UI puts the players' display over all the UI). In a window
+    --it shows the whole picture.
     local function PlaceSceneWindow(rec)
         local panel = rec.panel
         if panel == nil or not panel.valid then
             return
         end
-        local target = SceneLayer(rec)
+        local target = DocumentsLayer()
         if target == nil or not target.valid then
             return
         end
+        local appended = false
         if panel.parent ~= target then
             if panel.parent ~= nil then
                 panel:Unparent()
             end
             target:AddChild(panel)
             rec.maximizedPanel = nil
+            appended = true
         end
-        --maximized among the windows: stacked as a maximized map is.
-        g_chrome.StackMaximized(rec, rec.maximized == true and target ~= g_layer)
+        g_chrome.StackMaximized(rec, rec.maximized == true, appended)
         if rec.maximized then
             panel.x = 0
             panel.y = 0
@@ -9249,10 +9237,6 @@ local function DefineSceneWindows()
         rec.view:FireEvent("setFit", cond(rec.maximized, "cover", "contain"))
         rec.maximizeButton:FireEventTree("setIcon", cond(rec.maximized, "window-chrome/chrome-restore.png", "window-chrome/chrome-maximize.png"))
         panel.draggable = rec.maximized ~= true
-        --maximized under the UI it is the table's background: the mouse goes
-        --through to the table layer, so drops, file drops and the right-click
-        --menu work there as on the bare table (David, 2026-10-16).
-        panel.interactable = target ~= g_layer
         panel:SetClass("tabletopMaximized", rec.maximized == true)
         ApplySceneCollapsed(rec)
         if rec.presentation ~= nil then
@@ -9279,7 +9263,7 @@ local function DefineSceneWindows()
         local nameLabel = g_chrome.NameLabel(Scenes.Name(rec.sceneid))
 
         --The Director's maximized scene: who it is shown to (Players / All;
-        --closing the window hides it) and whether it sits under the UI. It
+        --closing the window hides it) and whether it shows over all the UI. It
         --used to be the app title bar's presentation control
         --(FullscreenDisplay.UpdatePresentationBar), which now leaves a
         --maximized scene to this. Rebuilt only when what it shows changes.
@@ -9303,8 +9287,8 @@ local function DefineSceneWindows()
                         return
                     end
                     local state = Scenes.ShowState(rec.sceneid)
-                    local belowui = Scenes.IsBelowUI()
-                    local signature = string.format("%s|%s", tostring(state), tostring(belowui))
+                    local aboveui = Scenes.IsAboveUI()
+                    local signature = string.format("%s|%s", tostring(state), tostring(aboveui))
                     if signature == element.data.signature then
                         return
                     end
@@ -9327,12 +9311,12 @@ local function DefineSceneWindows()
                             valign = "center",
                             lmargin = 12,
                             rmargin = 4,
-                            text = "Below UI",
+                            text = "Above UI",
                             fontSize = 14,
-                            value = belowui,
-                            hover = gui.Tooltip("Show the scene under the game's panels, rather than over everything"),
+                            value = aboveui,
+                            hover = gui.Tooltip("Show the scene over everything, rather than among the windows under the icon rails and their panels"),
                             change = function(check)
-                                Scenes.SetBelowUI(check.value)
+                                Scenes.SetAboveUI(check.value)
                             end,
                         },
                     }
@@ -9601,10 +9585,12 @@ local function DefineSceneWindows()
             end
             --the Director maximizing a shared scene shows it to everyone; the
             --title bar then narrows it to the Players, and the share button
-            --stops it. One already on show keeps its audience. Maximizing
-            --never shares (David, 2026-10-16): an unshared scene stays the
-            --Director's, and its share button shows it (share's changed).
-            if dmhub.isDM and not Scenes.ShowState(rec.sceneid) and ShareState(SceneItemId(rec.sceneid)) ~= nil then
+            --stops it. That includes one already on show to the Players alone
+            --(restoring narrows it to them): left there, the window would be
+            --maximized but not drawn here. Maximizing never shares (David,
+            --2026-10-16): an unshared scene stays the Director's, and its
+            --share button shows it (share's changed).
+            if dmhub.isDM and Scenes.ShowState(rec.sceneid) ~= "all" and ShareState(SceneItemId(rec.sceneid)) ~= nil then
                 Scenes.Present(rec.sceneid, "all")
             end
         elseif dmhub.isDM and Scenes.ShowState(rec.sceneid) == "all" then
@@ -9757,7 +9743,7 @@ local function DefineSceneWindows()
     --stays hidden; the time runs out on its own if the animation is lost.
     RestoreScene = function(rec)
         if not rec.minimized then
-            if rec.panel ~= nil and rec.panel.valid and rec.panel.parent ~= g_layer then
+            if rec.panel ~= nil and rec.panel.valid then
                 rec.panel:SetAsLastSibling()
             end
             return
@@ -9776,7 +9762,7 @@ local function DefineSceneWindows()
             end
             rec.showAllOnRestore = nil
             PlaceSceneWindow(rec)
-            if rec.panel ~= nil and rec.panel.valid and rec.panel.parent ~= g_layer then
+            if rec.panel ~= nil and rec.panel.valid then
                 rec.panel:SetAsLastSibling()
             end
             Refresh()
@@ -10178,8 +10164,7 @@ local function DefineSceneWindows()
         for _, rec in ipairs(g_sceneWindows) do
             if rec.panel == nil or not rec.panel.valid then
                 EnsureSceneBuilt(rec)
-            elseif rec.panel.parent ~= SceneLayer(rec) then
-                --Below UI flipped, or the scene went on or off show.
+            elseif rec.panel.parent ~= DocumentsLayer() then
                 PlaceSceneWindow(rec)
             else
                 ApplySceneCollapsed(rec)
@@ -11748,9 +11733,8 @@ local function ShowTableMenu()
     anchor.popup = menu
 end
 
---The bottom layer of the GameHud: a maximized scene on show under the UI
---lives here, under the docks and the rest of the hud, and its think drives
---the tabletop. It is
+--The bottom layer of the GameHud, under the docks and the rest of the hud;
+--its think drives the tabletop. It is
 --the table itself (a clear image, so it takes the right-click), and it
 --never blocks the map's own input.
 function Tabletop.CreateLayer()

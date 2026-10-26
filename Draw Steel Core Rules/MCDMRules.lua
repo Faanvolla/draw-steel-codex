@@ -1535,10 +1535,13 @@ function GameSystem.AllowTargeting(casterToken, targetToken, ability)
 	-- area effects that carry no keywords in their stat block, so the Area
 	-- keyword alone does not recognise them. They affect everyone on the map
 	-- and target no one in particular, so Hidden must not exempt a creature.
+	-- Exception: a creature melded against a wall (Shadowmeld's "Wall Meld Angle") can
+	-- still be seen, and so targeted, by creatures standing in front of that wall.
 	local isAreaAbility = ability:HasKeyword("Area") or ability.targetType == "map"
 	if (not targetToken.isObject) and (not isAreaAbility)
 		and (not casterToken:IsFriend(targetToken))
-		and targetToken.properties:HasCondition(g_hiddenConditionId) ~= false then
+		and targetToken.properties:HasCondition(g_hiddenConditionId) ~= false
+		and not RuleUtils.WallMeldSeesTarget(casterToken, targetToken) then
 		return false
 	end
 

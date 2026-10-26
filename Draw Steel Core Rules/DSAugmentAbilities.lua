@@ -185,6 +185,15 @@ function ActivatedAbilityAugmentedAbilityBehavior:SynthesizeAbilities(ability, c
 
 			synth.usesSpellSlots = ability.usesSpellSlots
 
+			--The routed ability uses up the augmenter's consumables, as the base synthesizer does.
+			if ability:has_key("consumables") then
+				local consumables = synth:try_get("consumables") or {}
+				for k,v in pairs(ability.consumables) do
+					consumables[k] = v
+				end
+				synth.consumables = consumables
+			end
+
             if self:try_get("filterAbilityTargets", "") ~= "" then
                 local filter = self:try_get("filterAbilityTargets", "")
                 local customFilters = synth:get_or_add("customTargetFilters", {})

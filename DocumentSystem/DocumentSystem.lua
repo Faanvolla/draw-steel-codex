@@ -8378,8 +8378,8 @@ function CustomDocument:PresentDocument(args)
         --same event.
         refreshPanelPinned = function(element)
             element.dragMove = not DialogPinned()
-            --a maximized map stays under pinned windows; the engine looks for
-            --this on the window root (PanelDocument.ABOVE_MAXIMIZED_MAP).
+            --map windows stay under pinned windows; the engine looks for
+            --this on the window root (PanelDocument.ABOVE_MAP_WINDOWS).
             element:SetClass("panelDocumentPinned", DialogPinned())
             local resize = element.data.resizePanel
             if resize ~= nil and resize.valid then
@@ -8657,17 +8657,18 @@ local g_onPanelPinnedChanged
 --adds a badge to one button and takes another off the rail entirely.
 local g_onPanelGroupChanged
 
---The documents-layer panels a maximized tabletop map stays under (its
---raiseBelowClasses, Tabletop.lua): the rails and what they float on the
---layer, the chat preview bubble, and pinned panel windows (David,
---2026-10-24). Every other window stacks with the map by click order.
---presentedDialog is a dialog presented to the players (GameHud), such as
---the Encounter of the Week stage: a player whose client builds the forced
---map after the stage would otherwise be left looking at the map.
-PanelDocument.ABOVE_MAXIMIZED_MAP = {
+--The documents-layer panels every tabletop map or scene window stays under,
+--windowed or maximized (its raiseBelowClasses, Tabletop.lua): the rails and
+--what they float on the layer, the chat preview bubble, and rail panel
+--windows, pinned or not (panelDocumentWindow, PresentPanel; David,
+--2026-10-24/25). Journals and other windows stack with the maps by click
+--order. presentedDialog is a dialog presented to the players (GameHud),
+--such as the Encounter of the Week stage: a player whose client builds the
+--forced map after the stage would otherwise be left looking at the map.
+PanelDocument.ABOVE_MAP_WINDOWS = {
     "iconRail", "iconRailGhost", "iconRailGhostLine", "iconRailCardGhost", "iconRailTrash",
     "iconRailViewChip", "iconRailViewToast", "iconRailToolkitStrip", "chatSpeechBubble",
-    "panelDocumentPinned", "presentedDialog",
+    "panelDocumentWindow", "panelDocumentPinned", "presentedDialog",
 }
 
 function PanelDocument.IsPinned(key)
@@ -9025,6 +9026,8 @@ function PanelDocument:PresentPanel(args)
 
     local dialog = self:PresentDocument(args)
     self._tmp_dialog = dialog
+    --map windows stay under rail panel windows (PanelDocument.ABOVE_MAP_WINDOWS).
+    dialog:SetClass("panelDocumentWindow", true)
     GameHud.instance.documentsPanel:AddChild(dialog)
     --apply the rail-mode window zoom now that the window is attached
     --(pivot writes need an attached panel -- see setWindowScale).
