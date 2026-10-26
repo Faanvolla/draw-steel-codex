@@ -1127,15 +1127,15 @@ local function CreatePresentationBar()
                         end,
                     },
                 }
-                --optional: whether it shows under the game's UI or over it.
-                if presentationInfo.onbelowui ~= nil then
+                --optional: whether it shows over all the game's UI or among its windows.
+                if presentationInfo.onaboveui ~= nil then
                     children[#children+1] = gui.Check{
                         valign = "center",
                         lmargin = 10,
-                        text = "Below UI",
-                        value = presentationInfo.belowui == true,
+                        text = "Above UI",
+                        value = presentationInfo.aboveui == true,
                         change = function(element)
-                            presentationInfo.onbelowui(element.value)
+                            presentationInfo.onaboveui(element.value)
                         end,
                     }
                 end

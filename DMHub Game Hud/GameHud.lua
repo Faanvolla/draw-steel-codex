@@ -1627,7 +1627,7 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
                         if m_presentedDialog ~= nil then
                             --on the documents layer it shares the layer with the map
                             --windows; the class keeps it above a maximized map, which
-                            --can be built after it (PanelDocument.ABOVE_MAXIMIZED_MAP).
+                            --can be built after it (PanelDocument.ABOVE_MAP_WINDOWS).
                             if mapHost == nil then
                                 m_presentedDialog:SetClass("presentedDialog", true)
                             end
@@ -1776,8 +1776,7 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 		},
 
 		children = {
-			--bottom of the stack: the table, and a maximized tabletop scene
-			--shown under the UI (Tabletop.lua).
+			--bottom of the stack: the table (Tabletop.lua).
 			Tabletop.CreateLayer(),
 
             gamehud:CreateAdventureDocumentsManager(),
@@ -1790,7 +1789,6 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 		    Tabletop.MapHudSlot(gamehud:CreateEncounterPrepBar()),
 
 			gamehud:RequireRollListenerPanel(),
-			FullscreenDisplay.Create{belowui = true},
 			--gamehud:CreateSidePanel(),
 			--gamehud:CreateSessionsPanel(),
 			--gamehud:CreateChatPanel(),
@@ -1859,7 +1857,7 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 			gamehud:CreateRollResultPanel(),
 			gamehud.rollDialog,
 
-			FullscreenDisplay.Create{belowui = false},
+			FullscreenDisplay.Create{aboveui = true},
 			--a maximized map or scene window's strip under the app title bar:
 			--chrome, so it is over everything the windows can be under.
 			Tabletop.CreateChromeLayer(),
@@ -1881,6 +1879,10 @@ dmhub.CreateGameHud = function(dialog, tokenInfo)
 	})
 
 	gamehud.parentPanel = parentPanel
+
+	--the scene display not shown over all the UI lies among the windows, as a
+	--maximized map does (FullscreenDisplay.Create).
+	gamehud.documentsPanel:AddChild(FullscreenDisplay.Create{aboveui = false})
 
 	dialog.sheet = parentPanel
 
