@@ -111,7 +111,33 @@ text("builder.confirm.confirm_button", [[Confirm]])
 text("builder.confirm.cancel_button", [[Cancel]])
 
 ----------------------------------------------------------------------------
--- THE HERO BUILDER: the detail pane (the column on the right)
+-- THE HERO BUILDER: the picks pane (the column on the right), listing what
+-- the player has chosen on the current step
+----------------------------------------------------------------------------
+
+--The pane's heading. {step} is the step's name, such as "Class".
+text("builder.picks.heading", [[Your {step}]])
+--Under a choice that has nothing picked yet. Short.
+text("builder.picks.not_chosen", [[Not chosen yet]])
+--Skills & Languages: the headings over what the player picked on that
+--step, and over what the hero already has from other steps. Short.
+text("builder.picks.skills_chosen", [[Skills you chose]])
+text("builder.picks.languages_chosen", [[Languages you chose]])
+text("builder.picks.skills_known", [[Skills you already have]])
+text("builder.picks.languages_known", [[Languages you already speak]])
+--How many more skills (or languages) are still to choose. {count} is the number.
+text("builder.picks.left_to_choose", [[{count} more to choose]])
+--The hero's native language in that list. {language} is its name.
+text("builder.picks.native", [[{language} (native)]])
+--Appearance: the labels, and what they show. Short.
+text("builder.picks.name", [[Name]])
+text("builder.picks.portrait", [[Portrait]])
+text("builder.picks.anthem", [[Anthem]])
+text("builder.picks.chosen", [[Chosen]])
+text("builder.picks.none", [[None]])
+
+----------------------------------------------------------------------------
+-- THE HERO BUILDER: the (i) popups showing an item in full
 ----------------------------------------------------------------------------
 
 --A section heading in a subclass's (or a Conduit domain's) details, over
@@ -206,7 +232,7 @@ text("builder.skills.native_language_missing", [[Choose your native language on 
 --Short: one word.
 text("builder.skills.card.dead", [[dead]])
 
---The details shown on hovering a skill or language card.
+--The details in a skill or language card's (i) popup.
 --{category} is the skill's group, such as Exploration.
 text("builder.skills.detail.category", [[*{category} skill*]])
 text("builder.skills.detail.dead", [[*A dead language: no one speaks it any more, but its writing can still be read.*]])
@@ -243,11 +269,11 @@ text("builder.skills.source.culture", [[your culture]])
 
 --The first card on the page, for taking no complication. Short: a card.
 text("builder.complication.none.card", [[No Complication]])
---The detail pane's heading for it.
+--Its heading, in its (i) popup and in the picks pane.
 text("builder.complication.none.title", [[No Complication]])
---The detail pane while it is the hero's choice.
+--The picks pane while it is the hero's choice.
 text("builder.complication.none.detail", [[Your hero takes no complication.]])
---The detail pane when hovering it while another complication is chosen.
+--Its (i) popup on the card.
 text("builder.complication.none.preview", [[Take no complication. Complications are optional: each gives a benefit and a drawback.]])
 
 ----------------------------------------------------------------------------
