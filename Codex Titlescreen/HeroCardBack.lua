@@ -1188,7 +1188,7 @@ local DESIGN_WIDTH = BACK_WIDTH
 local FLIP_SECONDS = 0.42
 --how much bigger the card is while its back is showing. It grows upward and
 --then rises a further TURNED_RISE of its own height, clear of the screen's foot.
-local TURNED_SCALE = 2
+local TURNED_SCALE = 3
 local TURNED_RISE = 0.25
 
 --Turns the card over: squeezes it edge-on, swaps the faces at the midpoint
