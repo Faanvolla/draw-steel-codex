@@ -2774,6 +2774,9 @@ function EotwBuilder.Open(args)
                         name = args.token.name or "",
                     }, {
                         halign = "center",
+                        --centred in its wrapper: the stats card's uiscale grows
+                        --it about its centre, so top-aligned it pokes out above.
+                        valign = "center",
                         showStats = true,
                         showSkills = false,
                         showResources = false,

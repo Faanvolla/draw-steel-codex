@@ -1632,6 +1632,7 @@ local function CreateHeroCard(entry, opts)
         width = CARD_WIDTH,
         height = cardHeight,
         halign = opts.halign or "right",
+        valign = opts.valign,
         cornerRadius = 8,
         bgimage = "panels/square.png",
         --passPress lets the press through to a draggable host around the card.

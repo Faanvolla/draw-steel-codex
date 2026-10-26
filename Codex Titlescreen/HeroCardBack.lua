@@ -128,7 +128,10 @@ local function Header(tok, c)
             interactable = false,
             Text{
                 text = EotwHeroCard.HeroDisplayName(tok),
+                --a fixed height so a long name shrinks to fit (minFontSize).
+                height = 30,
                 fontSize = 24,
+                minFontSize = 12,
                 bold = true,
                 color = COLOR_TEXT,
                 textWrap = false,
@@ -172,7 +175,7 @@ local function StaminaStrip(c)
     local victories = Try(function() return c:GetVictories() end, 0)
     local heroTokens = Try(function() return c:GetHeroTokens() end, 0)
 
-    local barWidth = INNER_WIDTH - 20
+    local barWidth = INNER_WIDTH - 30
     local function Px(value)
         if max <= 0 then
             return 0
@@ -379,6 +382,28 @@ local function MovementLine(c)
     end
     --"On ground" is the usual state and is left unsaid.
 
+    --the authored movement modes beyond walking, as the tac panel lists them.
+    local modes = {}
+    for mode, modeSpeed in pairs(Try(function() return c:try_get("movementSpeeds", {}) end, {})) do
+        if (tonumber(modeSpeed) or 0) > 0 then
+            modes[#modes+1] = Stat(string.upper(string.sub(mode, 1, 1)) .. string.sub(mode, 2), modeSpeed)
+        end
+    end
+    table.sort(modes)
+
+    local movementLine
+    if #modes > 0 then
+        movementLine = Text{
+            text = "Movement  " .. table.concat(modes, "   "),
+            fontSize = 12,
+            color = COLOR_MUTED,
+            textAlignment = "center",
+            bmargin = 4,
+        }
+    else
+        movementLine = gui.Panel{ width = 1, height = 1, interactable = false }
+    end
+
     return gui.Panel{
         width = "100%",
         height = "auto",
@@ -386,12 +411,13 @@ local function MovementLine(c)
         interactable = false,
         Divider(),
         Text{
-            text = table.concat(parts, "     "),
+            text = table.concat(parts, "   "),
             fontSize = 12,
             color = COLOR_MUTED,
             textAlignment = "center",
             vmargin = 4,
         },
+        movementLine,
         Divider(),
     }
 end
@@ -787,7 +813,7 @@ local function MonsterHeader(tok, c)
             valign = "center",
             flow = "vertical",
             interactable = false,
-            Text{ text = name, fontSize = 24, bold = true, color = COLOR_TEXT, textWrap = false },
+            Text{ text = name, height = 30, fontSize = 24, minFontSize = 12, bold = true, color = COLOR_TEXT, textWrap = false },
             Text{ text = string.upper(monsterType), fontSize = 12, bold = true, color = COLOR_MONSTER, collapsed = monsterType == "" },
             Text{ text = table.concat(parts, " - "), fontSize = 12, color = COLOR_MUTED },
         },
@@ -853,7 +879,7 @@ local function Row(name, meta, tooltip)
         height = "auto",
         flow = "horizontal",
         hpad = 8,
-        vpad = 3,
+        vpad = 1,
         borderBox = true,
         bgimage = "panels/square.png",
         popupPositioning = "panel",
@@ -884,8 +910,11 @@ local function AbilityMeta(ability, kind)
     if string.find(category, "Signature") then
         parts[#parts+1] = string.format("<color=%s>Signature</color>", COLOR_GOLD)
     end
+    --kind "" says the cost is the whole story (malice).
     if kind ~= nil then
-        parts[#parts+1] = kind
+        if kind ~= "" then
+            parts[#parts+1] = kind
+        end
     else
         local action = Try(function() return resources[ability.actionResourceId].name end)
         if action ~= nil then
@@ -925,9 +954,8 @@ local function TraitRow(feature)
     end)
 end
 
---- Every monster ability, trigger, villain action and trait, each its own
---- row so a page can break between any two of them. Each bucket's heading
---- travels with its first entry (see Paginate).
+--- Every monster ability, trigger, villain action, malice ability and trait,
+--- one row each, grouped into buckets that fold under their headings.
 local function MonsterEntries(tok, c)
     local entries = {}
     local abilities, triggers, villainActions = AbilityBuckets(c)
@@ -944,6 +972,18 @@ local function MonsterEntries(tok, c)
     AddBucket("Abilities", abilities, function(ability) return AbilityRow(ability, tok) end)
     AddBucket("Triggers", triggers, function(ability) return AbilityRow(ability, tok, "Triggered") end)
     AddBucket("Villain Actions", villainActions, function(ability) return AbilityRow(ability, tok, "Villain Action") end)
+
+    --malice abilities belong to the monster group, not the creature.
+    local malice = {}
+    pcall(function()
+        for _, ability in ipairs(c:MonsterGroup().maliceAbilities or {}) do
+            malice[#malice+1] = ability
+        end
+    end)
+    table.sort(malice, function(a, b)
+        return (tonumber(a:try_get("resourceNumber")) or 0) < (tonumber(b:try_get("resourceNumber")) or 0)
+    end)
+    AddBucket("Malice", malice, function(ability) return AbilityRow(ability, tok, "") end)
 
     local traits = {}
     pcall(function()
@@ -964,8 +1004,8 @@ local function MonsterEntries(tok, c)
 end
 
 --- A bucket heading (ABILITIES, TRAITS, ...) that folds its rows away. A
---- click tells the back's content, its parent, to fold or unfold the bucket
---- (toggleBucket); the content answers with setFolded, which turns the caret
+--- click tells its parent, the back's scroll list, to fold or unfold the
+--- bucket (toggleBucket); the list answers with setFolded, which turns the caret
 --- and shows how many rows the fold is hiding.
 --- @param title string
 --- @param count number rows in the bucket
@@ -1080,7 +1120,7 @@ local function BuildSections(tok)
                 result[#result+1] = BucketHeading(entry.heading, counts[entry.bucket])
                 info[#info+1] = { heading = true, bucket = entry.bucket }
             end
-            entry.panel.selfStyle.bmargin = 6
+            entry.panel.selfStyle.bmargin = 1
             result[#result+1] = entry.panel
             info[#info+1] = { heading = false, bucket = entry.bucket, name = entry.name }
         end
@@ -1088,59 +1128,9 @@ local function BuildSections(tok)
     return result, info
 end
 
---- Pages -----------------------------------------------------------------------
+--- Footer ----------------------------------------------------------------------
 
---A big monster (a solo has a dozen abilities, villain actions and traits)
---does not fit on one card face, so the back is a stack of pages. The footer
---turns them and names what the next page holds.
-
---room the page title (pages after the first) and the footer take up.
-local PAGE_TITLE_HEIGHT = 26
-local FOOTER_HEIGHT = 46
-
---- Splits the sections into pages that fit. heights[i] is section i's
---- laid-out height with its margin. A page never ends on a bucket heading:
---- the heading moves over with its first entry. A section taller than a
---- whole page gets a page to itself.
---- @return {first: number, last: number}[]
-local function Paginate(heights, info, available)
-    local pages = {}
-    local first = 1
-    local used = 0
-    local limit = available - FOOTER_HEIGHT
-    local i = 1
-    while i <= #heights do
-        if used > 0 and used + heights[i] > limit then
-            local last = i - 1
-            if info[last].heading and last > first then
-                last = last - 1
-            end
-            pages[#pages+1] = { first = first, last = last }
-            first = last + 1
-            used = 0
-            limit = available - FOOTER_HEIGHT - PAGE_TITLE_HEIGHT
-            i = first
-        else
-            used = used + heights[i]
-            i = i + 1
-        end
-    end
-    pages[#pages+1] = { first = first, last = #heights }
-    return pages
-end
-
---- The names of the entries on a page, for the "Next:" line. Rows in a
---- folded bucket are not on the page in any way a reader would see.
-local function PageNames(page, info, folded)
-    local names = {}
-    for i = page.first, page.last do
-        local hiddenByFold = info[i].bucket ~= nil and folded[info[i].bucket] == true
-        if info[i].name ~= nil and info[i].name ~= "" and not hiddenByFold then
-            names[#names+1] = info[i].name
-        end
-    end
-    return table.concat(names, ", ")
-end
+local FOOTER_HEIGHT = 26
 
 local function OpenSheet(charid, element)
     local toggle = rawget(_G, "ToggleCharacterPanelDocument")
@@ -1149,64 +1139,25 @@ local function OpenSheet(charid, element)
     end
 end
 
---- The footer: on a single page, how to turn the card back; on a stack, the
---- page arrows, the page number, what the next page holds and a link to the
---- full sheet (the tac panel).
---- @param content Panel the back's content, which handles "turnPage"
+--- The footer: how to turn the card back, and a link to the full sheet.
 --- @param charid string
 --- @return Panel
-local function CreateFooter(content, charid)
-    local function Arrow(icon, delta)
-        return gui.Panel{
-            classes = {"heroCardPageArrow"},
-            width = 22,
-            height = 22,
-            valign = "center",
-            bgimage = icon,
-            bgcolor = COLOR_SOFT,
-            swallowPress = true,
-            styles = {
-                { selectors = {"heroCardPageArrow", "hover"}, bgcolor = COLOR_GOLD },
-                { selectors = {"heroCardPageArrow", "disabled"}, opacity = 0.2 },
-            },
-            --on click: a handled click stops here instead of turning the card.
-            click = function(element)
-                if element:HasClass("disabled") then
-                    return
-                end
-                audio.FireSoundEvent("Mouse.Click")
-                content:FireEvent("turnPage", delta)
-            end,
-        }
-    end
-
-    local prev = Arrow("phosphor/caret-left-bold.png", -1)
-    local nextArrow = Arrow("phosphor/caret-right-bold.png", 1)
-    local pageLabel = Text{
-        text = "",
-        width = 60,
-        height = "auto",
-        valign = "center",
-        fontSize = 12,
-        bold = true,
-        color = COLOR_TEXT,
-        textAlignment = "center",
-    }
-    local nextLabel = Text{ text = "", fontSize = 11, color = COLOR_MUTED, textWrap = false, bmargin = 3 }
-    local hint = Text{
-        text = "Click to turn the card back over",
-        fontSize = 11,
-        color = "#6c7782",
-        textAlignment = "center",
-    }
-    local pager = gui.Panel{
+local function CreateFooter(charid)
+    return gui.Panel{
+        floating = true,
         width = "100%",
-        height = 24,
+        height = FOOTER_HEIGHT,
+        valign = "bottom",
         flow = "horizontal",
         interactable = false,
-        prev,
-        pageLabel,
-        nextArrow,
+        Text{
+            text = "Click to turn the card back over",
+            width = "auto",
+            valign = "center",
+            fontSize = 11,
+            color = "#6c7782",
+            textWrap = false,
+        },
         gui.Label{
             text = "Full sheet",
             width = "auto",
@@ -1226,31 +1177,6 @@ local function CreateFooter(content, charid)
             end,
         },
     }
-
-    --floating at the card's foot, in the room Paginate keeps free for it.
-    return gui.Panel{
-        floating = true,
-        width = "100%",
-        height = "auto",
-        valign = "bottom",
-        flow = "vertical",
-        interactable = false,
-        showPage = function(element, page, count, nextNames)
-            local single = count <= 1
-            pager:SetClass("collapsed", single)
-            hint:SetClass("collapsed", not single)
-            nextLabel:SetClass("collapsed", single or nextNames == "")
-            if not single then
-                pageLabel.text = string.format("%d / %d", page, count)
-                prev:SetClass("disabled", page <= 1)
-                nextArrow:SetClass("disabled", page >= count)
-                nextLabel.text = string.format("<b>Next:</b> %s", nextNames)
-            end
-        end,
-        nextLabel,
-        pager,
-        hint,
-    }
 end
 
 --- The flip ------------------------------------------------------------------
@@ -1260,16 +1186,33 @@ end
 local DESIGN_WIDTH = BACK_WIDTH
 
 local FLIP_SECONDS = 0.42
+--how much bigger the card is while its back is showing. It grows upward and
+--then rises a further TURNED_RISE of its own height, clear of the screen's foot.
+local TURNED_SCALE = 2
+local TURNED_RISE = 0.25
 
 --Turns the card over: squeezes it edge-on, swaps the faces at the midpoint
 --and opens it out again, lifting slightly as it turns. Driven by hand rather
 --than by a style transition so it runs on the card itself, whose styles
---belong to the host.
-local function AnimateFlip(card, onMidpoint)
+--belong to the host. The card grows from fromScale to toScale as it turns,
+--rising so the growth goes upward (scale is around the card's centre).
+local function AnimateFlip(card, cardHeight, fromScale, toScale, onMidpoint)
     if card.data.heroCardFlipping then
         return
     end
     card.data.heroCardFlipping = true
+    if card.data.heroCardBaseY == nil then
+        card.data.heroCardBaseY = card.selfStyle.y or 0
+    end
+    local baseY = card.data.heroCardBaseY
+    --an enlarged card is pulled back inside the screen and drawn over its
+    --host's other panels.
+    card.constrainToScreen = true
+    card.renderOnTop = true
+    local function Lift(size)
+        local grown = (size - 1) / (TURNED_SCALE - 1)
+        return baseY - (size - 1) * cardHeight / 2 - grown * TURNED_RISE * cardHeight
+    end
     local start = dmhub.Time()
     local swapped = false
     local function Step()
@@ -1282,34 +1225,27 @@ local function AnimateFlip(card, onMidpoint)
             onMidpoint()
         end
         if p >= 1 then
-            --1, not nil: clearing selfStyle.scale leaves the card at scale 0.
-            card.selfStyle.scale = 1
+            --never nil: clearing selfStyle.scale leaves the card at scale 0.
+            card.selfStyle.scale = toScale
+            card.selfStyle.y = Lift(toScale)
+            card.constrainToScreen = toScale ~= 1
+            card.renderOnTop = toScale ~= 1
             card.data.heroCardFlipping = false
             return
         end
         local eased = 0.5 - 0.5 * math.cos(p * math.pi)
         local sx = math.max(0.02, math.abs(math.cos(eased * math.pi)))
-        local lift = 1 + 0.06 * math.sin(p * math.pi)
-        card.selfStyle.scale = {x = sx * lift, y = lift}
+        local grown = fromScale + (toScale - fromScale) * eased
+        local size = grown * (1 + 0.06 * math.sin(p * math.pi))
+        card.selfStyle.scale = {x = sx * size, y = size}
+        card.selfStyle.y = Lift(grown)
         dmhub.Schedule(0.01, Step)
     end
     Step()
 end
 
-local function CreatureName(tok)
-    local name = nil
-    if IsHeroProps(tok.properties) then
-        name = EotwHeroCard.HeroDisplayName(tok)
-    else
-        name = Try(function() return creature.GetTokenDescription(tok) end)
-    end
-    if name == nil or name == "" then
-        name = Try(function() return tok.name end, "")
-    end
-    return name
-end
-
 --- The back face: a layer over the whole card, hidden until it is turned.
+--- What does not fit scrolls; bucket headings fold their rows away.
 --- @param charid string
 --- @param cardWidth number
 --- @param cardHeight number
@@ -1319,58 +1255,34 @@ local function CreateBackFace(charid, cardWidth, cardHeight)
     local designHeight = math.floor(cardHeight / scale)
     local VPAD = 14
 
-    --what the current build put on the back, and which page is showing. The
-    --page survives a rebuild (stamina changing under an open card).
-    local state = {
-        sections = {},
-        info = {},
-        pages = {},
-        page = 1,
-        title = nil,
-        footer = nil,
-        name = "",
-        generation = 0,
-        --measured section heights, unfolded.
-        heights = {},
-        --bucket title -> true while folded. Kept across rebuilds.
-        folded = {},
-    }
+    --bucket title -> true while folded. Kept across rebuilds (stamina
+    --changing under an open card).
+    local folded = {}
+    local sections, info = {}, {}
 
-    local function IsFoldedRow(i)
-        local info = state.info[i]
-        return not info.heading and info.bucket ~= nil and state.folded[info.bucket] == true
-    end
-
-    local function ShowPage()
-        local count = #state.pages
-        if count == 0 then
-            return
-        end
-        state.page = math.max(1, math.min(count, state.page))
-        local current = state.pages[state.page]
-        for i, section in ipairs(state.sections) do
-            section:SetClass("collapsed", i < current.first or i > current.last or IsFoldedRow(i))
-            if state.info[i].heading then
-                section:FireEvent("setFolded", state.folded[state.info[i].bucket] == true)
+    local function ApplyFolds()
+        for i, section in ipairs(sections) do
+            local entry = info[i]
+            if entry.heading then
+                section:FireEvent("setFolded", folded[entry.bucket] == true)
+            elseif entry.bucket ~= nil then
+                section:SetClass("collapsed", folded[entry.bucket] == true)
             end
         end
-        state.title:SetClass("collapsed", state.page == 1)
-        state.title.text = string.format("<b>%s</b>   <color=%s>page %d of %d</color>", state.name, COLOR_MUTED, state.page, count)
-        local nextNames = ""
-        if state.page < count then
-            nextNames = PageNames(state.pages[state.page + 1], state.info, state.folded)
-        end
-        state.footer:FireEvent("showPage", state.page, count, nextNames)
     end
 
-    --pages from the measured heights, with folded rows taking no room.
-    local function Repaginate(available)
-        local heights = {}
-        for i, h in ipairs(state.heights) do
-            heights[i] = cond(IsFoldedRow(i), 0, h)
-        end
-        state.pages = Paginate(heights, state.info, available)
-    end
+    --the bucket headings are its children, so their clicks land here.
+    local scroller = gui.Panel{
+        width = "100%",
+        height = designHeight - VPAD * 2 - FOOTER_HEIGHT,
+        flow = "vertical",
+        vscroll = true,
+        interactable = false,
+        toggleBucket = function(element, bucket)
+            folded[bucket] = not folded[bucket]
+            ApplyFolds()
+        end,
+    }
 
     --laid out at design size and shrunk around its centre (scale, not
     --uiscale: purely visual, so it lands exactly on the card's face).
@@ -1393,58 +1305,16 @@ local function CreateBackFace(charid, cardWidth, cardHeight)
             end
             --monsters wear the enemy red the mockup gave them.
             element.parent.selfStyle.borderColor = cond(IsHeroProps(tok.properties), "#6fa8ffcc", "#b0444acc")
-
-            state.sections, state.info = BuildSections(tok)
-            state.name = CreatureName(tok)
-            state.title = Text{ text = "", fontSize = 13, color = COLOR_TEXT, bmargin = 8 }
-            state.title:SetClass("collapsed", true)
-            state.footer = CreateFooter(element, charid)
-
-            ---@type Panel[]
-            local children = { state.title }
-            for _, section in ipairs(state.sections) do
-                children[#children+1] = section
+            sections, info = BuildSections(tok)
+            --keep clear of the scrollbar along the right edge.
+            for _, section in ipairs(sections) do
+                section.selfStyle.width = "100%-10"
             end
-            children[#children+1] = state.footer
-            --hidden until it is paged: the first layout pass shows every
-            --section at once, running off the bottom of the card.
-            element.selfStyle.opacity = 0
-            element.children = children
-
-            --measure once the new sections have been laid out; a newer
-            --rebuild supersedes this one.
-            state.generation = state.generation + 1
-            local generation = state.generation
-            dmhub.Schedule(0.05, function()
-                if not element.valid or state.generation ~= generation then
-                    return
-                end
-                state.heights = {}
-                for i, section in ipairs(state.sections) do
-                    state.heights[i] = section.renderedHeight + (section.selfStyle.bmargin or 0)
-                end
-                Repaginate(designHeight - VPAD * 2)
-                ShowPage()
-                element.selfStyle.opacity = 1
-            end)
+            scroller.children = sections
+            ApplyFolds()
         end,
-        turnPage = function(element, delta)
-            state.page = state.page + delta
-            ShowPage()
-        end,
-        toggleBucket = function(element, bucket)
-            state.folded[bucket] = not state.folded[bucket]
-            --stay with the heading that was clicked: find its page afresh.
-            Repaginate(designHeight - VPAD * 2)
-            for p, page in ipairs(state.pages) do
-                for i = page.first, page.last do
-                    if state.info[i].heading and state.info[i].bucket == bucket then
-                        state.page = p
-                    end
-                end
-            end
-            ShowPage()
-        end,
+        scroller,
+        CreateFooter(charid),
     }
 
     return gui.Panel{
@@ -1483,7 +1353,6 @@ local function CreateBackFace(charid, cardWidth, cardHeight)
         showBack = function(element, show)
             element:SetClass("turned", show)
             if show then
-                state.page = 1
                 content:FireEvent("refreshBack")
             end
         end,
@@ -1577,7 +1446,7 @@ local function Decorate(cardArgs, charid, cardWidth, cardHeight)
     cardArgs[#cardArgs+1] = CreateFlipButton(charid)
     cardArgs.turnCard = function(element)
         local turned = not backFace:HasClass("turned")
-        AnimateFlip(element, function()
+        AnimateFlip(element, cardHeight, cond(turned, 1, TURNED_SCALE), cond(turned, TURNED_SCALE, 1), function()
             backFace:FireEvent("showBack", turned)
         end)
     end
