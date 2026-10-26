@@ -6227,6 +6227,337 @@ function Encounter.CreateFromTokens(charids)
     return encounter
 end
 
+--Monsters on the plan's map that it does not account for, as charids in map
+--order: Bestiary monsters that are not heroes' allies or summons, not staged
+--or placed by this plan (or spawned by an earlier play of it), and not tagged
+--to another saved plan. Empty unless the plan's map is the one open, since
+--only its tokens are loaded.
+local function MonstersOnMapNotInEncounter(encounter)
+    local mapid = encounter.mapid
+    if mapid == nil or mapid == "" or mapid ~= game.currentMapId then
+        return {}
+    end
+
+    local myId = encounter:try_get("id")
+    local ownPids = {}
+    for _, group in ipairs(encounter.groups) do
+        if group.placementid ~= nil then
+            ownPids[group.placementid] = true
+        end
+    end
+
+    local otherIds = {}
+    local otherPids = {}
+    for id, other in unhidden_pairs(dmhub.GetTable("encounters") or {}) do
+        if id ~= myId then
+            otherIds[id] = true
+            for _, group in ipairs(other:try_get("groups", {})) do
+                if group.placementid ~= nil then
+                    otherPids[group.placementid] = true
+                end
+            end
+        end
+    end
+
+    local charids = {}
+    for _, tok in ipairs(dmhub.allTokens) do
+        local props = tok.properties
+        local monsterish = false
+        pcall(function() monsterish = props ~= nil and props:IsMonster() == true end)
+        if monsterish and not IsPlayerSideToken(tok) and (tok.summonerid == nil or tok.summonerid == "")
+            and tok.bestiaryId ~= nil and assets.monsters[tok.bestiaryId] ~= nil then
+            local pid = props:try_get("encounterPlacementId")
+            local source = props:try_get("encounterSourceId")
+            local claimed = (pid ~= nil and (ownPids[pid] or otherPids[pid]))
+                or (source ~= nil and (source == myId or otherIds[source]))
+            if not claimed then
+                charids[#charids + 1] = tok.charid
+            end
+        end
+    end
+    return charids
+end
+
+--What kind of shared initiative a SplitByInitiative list is on, for its row.
+local function InitiativeListKind(list)
+    local token = list[1].token
+    local key = InitiativeQueue.GetInitiativeId(token)
+    if key == nil or key == token.id then
+        return cond(#list > 1, "Each on its own initiative", "Own initiative")
+    end
+    if token.properties.initiativeGrouping then
+        return "Shared initiative"
+    end
+    return "Minion squad"
+end
+
+local MAP_MONSTERS_MAX_IMAGES = 6
+
+--The builder's "On the Map" card: monsters standing on the plan's map that are
+--not in it (MonstersOnMapNotInEncounter), one row per shared initiative as on
+--the map, each with a button that adds it as a group. Adding goes through
+--adoptTokens -- the same path as dragging the tokens onto the builder -- so the
+--monsters stay where they are as the plan's staged tokens. Polls the map once
+--a second; hidden while there is nothing to add.
+local function CreateMapMonstersSection(args)
+    local encounter = args.encounter
+    local adoptTokens = args.adoptTokens
+
+    local m_signature = nil
+    local m_charids = {}
+
+    local countBadge = gui.Label {
+        classes = { "encounterBadge" },
+        width = "auto",
+        height = "auto",
+        valign = "center",
+        text = "",
+    }
+
+    local rowsPanel = gui.Panel {
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+    }
+
+    local body = gui.Panel {
+        classes = { "featureCardBody" },
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        vpad = 4,
+        borderBox = true,
+        rowsPanel,
+    }
+
+    local card = gui.Panel {
+        classes = { "featureCard", "hidden" },
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        bmargin = 8,
+
+        gui.Panel {
+            classes = { "featureCardHeader", "expanded" },
+            width = "100%",
+            height = 32,
+            flow = "horizontal",
+
+            --the header folds the rows away, for a map crowded with monsters
+            --that belong to no plan.
+            press = function(element)
+                local expanded = not element:HasClass("expanded")
+                element:SetClass("expanded", expanded)
+                body:SetClass("hidden", not expanded)
+            end,
+
+            gui.Label {
+                classes = { "sizeS", "bold" },
+                width = "auto",
+                height = "auto",
+                valign = "center",
+                lmargin = 10,
+                text = "On the Map",
+            },
+
+            gui.Label {
+                classes = { "fgMuted", "sizeXs" },
+                width = "auto",
+                height = "auto",
+                valign = "center",
+                lmargin = 8,
+                text = "not in this encounter",
+            },
+
+            gui.Panel {
+                width = "auto",
+                height = "auto",
+                flow = "horizontal",
+                valign = "center",
+                halign = "right",
+                rmargin = 8,
+
+                countBadge,
+
+                gui.Button {
+                    classes = { "sizeS" },
+                    valign = "center",
+                    lmargin = 8,
+                    text = "Add All",
+                    swallowPress = true,
+                    hover = gui.Tooltip("Add every monster listed here, one group per initiative group."),
+                    press = function(element)
+                        adoptTokens(m_charids, nil)
+                    end,
+                },
+            },
+        },
+
+        body,
+    }
+
+    local function CreateRow(list)
+        local charids = {}
+        local images = {}
+        for i, entry in ipairs(list) do
+            charids[#charids + 1] = entry.token.charid
+            if i <= MAP_MONSTERS_MAX_IMAGES then
+                images[#images + 1] = gui.CreateTokenImage(entry.token, {
+                    interactable = false,
+                    width = 32,
+                    height = 32,
+                    valign = "center",
+                    rmargin = 4,
+                })
+            elseif i == MAP_MONSTERS_MAX_IMAGES + 1 then
+                images[#images + 1] = gui.Label {
+                    classes = { "fgMuted", "sizeXs" },
+                    width = "auto",
+                    height = "auto",
+                    valign = "center",
+                    rmargin = 4,
+                    text = string.format("+%d", #list - MAP_MONSTERS_MAX_IMAGES),
+                }
+            end
+        end
+
+        --a fixed-height row with single-line, auto-width text: percent-wide
+        --labels in an auto-height column measured as wrapping at zero width
+        --and blew each row up to hundreds of pixels tall.
+        return gui.Panel {
+            width = "100%",
+            height = 40,
+            flow = "horizontal",
+            hpad = 10,
+            borderBox = true,
+
+            gui.Panel {
+                width = "auto",
+                height = "auto",
+                flow = "horizontal",
+                valign = "center",
+                children = images,
+            },
+
+            gui.Panel {
+                width = "auto",
+                height = "auto",
+                flow = "vertical",
+                valign = "center",
+                lmargin = 6,
+
+                gui.Label {
+                    classes = { "sizeS" },
+                    width = "auto",
+                    maxWidth = 340,
+                    height = "auto",
+                    textWrap = false,
+                    textOverflow = "ellipsis",
+                    text = DescribeMonsters(list),
+                },
+
+                gui.Label {
+                    classes = { "fgMuted", "sizeXxs" },
+                    width = "auto",
+                    height = "auto",
+                    textWrap = false,
+                    text = InitiativeListKind(list),
+                },
+            },
+
+            gui.Button {
+                classes = { "sizeS" },
+                valign = "center",
+                halign = "right",
+                lmargin = 8,
+                text = "Add Group",
+                hover = gui.Tooltip("Add these monsters to the encounter as an initiative group. They stay where they are, staged with the plan."),
+                press = function(element)
+                    adoptTokens(charids, nil)
+                end,
+            },
+        }
+    end
+
+    --rebuild the rows when the map's unclaimed monsters, or how they share
+    --initiative, have changed since last time (or always, when force is set).
+    local function Update(force)
+        local charids = MonstersOnMapNotInEncounter(encounter)
+        local monsters = DroppableMonsters(charids)
+        local parts = {}
+        for _, entry in ipairs(monsters) do
+            parts[#parts + 1] = entry.token.charid .. "=" .. tostring(InitiativeQueue.GetInitiativeId(entry.token))
+        end
+        local signature = table.concat(parts, ",")
+        if signature == m_signature and not force then
+            return
+        end
+        m_signature = signature
+        m_charids = charids
+
+        card:SetClass("hidden", #monsters == 0)
+        if #monsters == 0 then
+            rowsPanel.children = {}
+            return
+        end
+
+        countBadge.text = string.format("%d monster%s", #monsters, cond(#monsters == 1, "", "s"))
+
+        --shared initiatives first, the monsters on their own last.
+        local shared = {}
+        local solo = {}
+        for _, list in ipairs(SplitByInitiative(monsters)) do
+            local token = list[1].token
+            local key = InitiativeQueue.GetInitiativeId(token)
+            if key == nil or key == token.id then
+                solo[#solo + 1] = list
+            else
+                shared[#shared + 1] = list
+            end
+        end
+        local rows = {}
+        for _, list in ipairs(shared) do
+            rows[#rows + 1] = CreateRow(list)
+        end
+        for _, list in ipairs(solo) do
+            rows[#rows + 1] = CreateRow(list)
+        end
+        rowsPanel.children = rows
+    end
+
+    --the wrapper is never hidden, so it keeps thinking while the card is.
+    --Sized like the wave sections below it, leaving the scrollbar its room.
+    return gui.Panel {
+        width = "100%-14",
+        height = "auto",
+        halign = "left",
+        valign = "top",
+        flow = "vertical",
+
+        thinkTime = 1,
+        think = function(element)
+            if mod.unloaded then
+                return
+            end
+            Update(false)
+        end,
+
+        create = function(element)
+            Update(true)
+        end,
+
+        --monsters were just added, or the plan's map changed.
+        rebuildGroups = function(element)
+            Update(true)
+        end,
+        refreshBuilder = function(element)
+            Update(false)
+        end,
+
+        card,
+    }
+end
+
 -- ===========================================================================
 -- The encounter builder editor
 -- ===========================================================================
@@ -6751,6 +7082,11 @@ function Encounter.Editor(self, options)
                 lmargin = 12,
                 flow = "vertical",
                 vscroll = true,
+
+                CreateMapMonstersSection {
+                    encounter = self,
+                    adoptTokens = AdoptDroppedTokens,
+                },
 
                 CreateWaveSections {
                     encounter = self,
