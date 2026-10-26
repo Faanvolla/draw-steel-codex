@@ -5348,6 +5348,12 @@ ActivatedAbility.RegisterProperty {
 }
 
 ActivatedAbility.RegisterProperty {
+    id = "searchforhidden",
+    name = "Search for Hidden",
+    description = "If true, this ability searches for hidden creatures rather than being an area effect, so it still reaches creatures that are Unaffected By Area (such as a polder in Shadowmeld). Modifiers can test it with Ability.SearchForHidden.",
+}
+
+ActivatedAbility.RegisterProperty {
     id = "forcemovefrominvoker",
     name = "All Force Move From Caster",
     description = "If true, push/pull/slide effects from this ability use the original caster as the source for size-difference calculations (Big Versus Little), rather than this ability's caster. Generally only used within Invoked Abilities",
@@ -5371,6 +5377,16 @@ function ActivatedAbility:TargetPassesFilter(casterToken, targetToken, symbols, 
     --of effect to where the area lands, not to each creature caught in it, which the base
     --filter already checks against the area's origin.
     local isAreaAbility = self:HasKeyword("Area") or self.targetType == "map"
+
+    --"Unaffected By Area" (Shadowmeld): area abilities from anyone, allies included, skip this
+    --creature. Area shapes missing the Area keyword count too. A Search for Hidden ability is
+    --a search, not an area effect, so it still reaches the creature.
+    if (isAreaAbility or self:IsTargetTypeAOE())
+        and (not self:HasProperty("searchforhidden"))
+        and targetToken.properties:CalculateNamedCustomAttribute("Unaffected By Area") > 0 then
+        return false, "Unaffected by area abilities."
+    end
+
     if not isAreaAbility then
         local denialReason = RuleUtils.LineOfEffectDenialReason(casterToken, targetToken)
         if denialReason ~= nil then

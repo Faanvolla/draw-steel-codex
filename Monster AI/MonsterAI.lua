@@ -4669,7 +4669,9 @@ function MonsterAI:FindValidTargetsOfStrike(token, ability, loc, range)
                 ProfEnd(filterProf)
                 if canTarget and enemy.properties:HasNamedCondition("Hidden") and ability:HasKeyword("Strike") then
                     local ignoreRange = token.properties:CalculateNamedCustomAttribute("Ignore Hidden Within Range") or 0
-                    if ignoreRange <= 0 or MonsterAI.TargetDistance(token, enemy) > ignoreRange then
+                    --Shadowmeld: from in front of the wall the enemy melded into, it can be struck.
+                    if (ignoreRange <= 0 or MonsterAI.TargetDistance(token, enemy) > ignoreRange)
+                        and not RuleUtils.WallMeldSeesTarget(token, enemy) then
                         canTarget = false
                     end
                 end

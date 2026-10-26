@@ -14791,6 +14791,10 @@ local function CalculateSpellTargetFocusing(symbols)
                             bypass = true
                         end
                     end
+                    --Shadowmeld: a caster in front of the wall the target melded into can see it.
+                    if (not bypass) and RuleUtils.WallMeldSeesTarget(g_token, targetToken) then
+                        bypass = true
+                    end
                     if not bypass then
                         failReason = "Cannot target a hidden creature with a strike"
                     end
@@ -14812,7 +14816,7 @@ local function CalculateSpellTargetFocusing(symbols)
                 --from it (or from the last one chosen, for a chain), at the proximity range.
                 local targetRange = range
                 local targetProximityOrigin = nil
-                if proximityOrigin ~= nil and not list_contains(g_targetsChosen, targetToken.id) then
+                if proximityOrigin ~= nil and not list_contains(g_targetsChosen, targetToken.charid) then
                     targetProximityOrigin = proximityOrigin
                     rangeSource = proximityOrigin
                     directRangeSource = proximityOrigin
