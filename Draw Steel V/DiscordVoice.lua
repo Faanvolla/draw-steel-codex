@@ -328,8 +328,8 @@ local function IconToggle(args)
     return resultPanel
 end
 
---a labelled slider row.
-local function SliderRow(label, minValue, maxValue, value, onchange)
+--a labelled slider row. labelFormat defaults to a percentage.
+local function SliderRow(label, minValue, maxValue, value, onchange, labelFormat)
     return gui.Panel{
         width = "100%",
         height = 28,
@@ -347,7 +347,7 @@ local function SliderRow(label, minValue, maxValue, value, onchange)
             height = 26,
             sliderWidth = 240,
             labelWidth = 50,
-            labelFormat = "%d%%",
+            labelFormat = labelFormat or "%d%%",
             minValue = minValue,
             maxValue = maxValue,
             round = true,
@@ -581,6 +581,15 @@ function DiscordVoice.CreatePanel()
 
     local s0 = DiscordVoice.Status()
 
+    --the manual threshold in dB (-100 picks up everything, 0 only the loudest),
+    --shown only while automatic sensitivity is off.
+    local m_sensitivity = s0.sensitivity or -60
+    local sensitivityRow = SliderRow("Sensitivity", -100, 0, m_sensitivity, function(value)
+        m_sensitivity = value
+        dmhub.DiscordSetVoiceSensitivity(false, value)
+    end, "%d dB")
+    sensitivityRow:SetClass("collapsed", s0.sensitivityAutomatic ~= false)
+
     local deviceRows = {
         DeviceRow("Microphone", "input"),
         DeviceRow("Speakers", "output"),
@@ -628,13 +637,44 @@ function DiscordVoice.CreatePanel()
         deviceRows[1],
         deviceRows[2],
 
+        --input sensitivity: how loud you must be before your voice is sent.
+        gui.Check{
+            text = "Automatically determine input sensitivity",
+            value = s0.sensitivityAutomatic ~= false,
+            fontSize = 12,
+            tmargin = 4,
+            change = function(element)
+                dmhub.DiscordSetVoiceSensitivity(element.value, m_sensitivity)
+                sensitivityRow:SetClass("collapsed", element.value)
+            end,
+        },
+        sensitivityRow,
+
         gui.Check{
             text = "Noise suppression",
             value = s0.noiseSuppression ~= false,
             fontSize = 12,
-            tmargin = 4,
+            tmargin = 2,
             change = function(element)
                 dmhub.DiscordSetVoiceNoiseSuppression(element.value)
+            end,
+        },
+        gui.Check{
+            text = "Echo cancellation",
+            value = s0.echoCancellation ~= false,
+            fontSize = 12,
+            tmargin = 2,
+            change = function(element)
+                dmhub.DiscordSetVoiceEchoCancellation(element.value)
+            end,
+        },
+        gui.Check{
+            text = "Automatic gain control",
+            value = s0.autoGainControl ~= false,
+            fontSize = 12,
+            tmargin = 2,
+            change = function(element)
+                dmhub.DiscordSetVoiceAutoGainControl(element.value)
             end,
         },
 
