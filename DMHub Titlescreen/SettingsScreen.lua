@@ -6369,6 +6369,23 @@ function CreateSettingsScreen(dialog, args)
 		}
 	end
 
+	--Discord Voice (Draw Steel V/DiscordVoice.lua), in the Audio tab: nil where
+	--that code mod is not loaded (the title screen) or voice is unavailable.
+	local DiscordVoiceSection = function()
+		local voice = rawget(_G, "DiscordVoice")
+		if voice == nil or not voice.SettingsAvailable() then
+			return nil
+		end
+		return gui.Panel{
+			flow = "vertical",
+			width = "100%",
+			height = "auto",
+			tmargin = 12,
+			SettingsHeading("Discord Voice"),
+			voice.CreateSettingsPanel(),
+		}
+	end
+
 	local CreateTab = function(args)
 		if args.dmonly and ((not dmhub.inGame) or (not dmhub.isDM)) then
 			return nil
@@ -7267,11 +7284,16 @@ function CreateSettingsScreen(dialog, args)
 
 					SettingGroup{
 						group = "Audio",
-						build = function() return {
-						SettingsSection("Audio"),
-						CreateGameWideMasterVolumeEditor(),
-						CreateNormalizeLoudnessToggle(),
-						} end,
+						build = function()
+							--the optional editors return nil, so append rather than leave holes.
+							local result = { SettingsSection("Audio") }
+							for _, panel in ipairs{ CreateGameWideMasterVolumeEditor() or false, CreateNormalizeLoudnessToggle() or false, DiscordVoiceSection() or false } do
+								if panel then
+									result[#result+1] = panel
+								end
+							end
+							return result
+						end,
 					},
 
 

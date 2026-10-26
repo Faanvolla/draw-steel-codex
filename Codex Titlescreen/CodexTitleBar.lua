@@ -1389,9 +1389,50 @@ local function CreateConnectivityPanel()
     }
 
     --Discord voice (Draw Steel V/DiscordVoice.lua): a microphone beside the
-    --wifi glyph while voice is on in this game. Click to mute or unmute; when
-    --not in the call it opens the Heroes popout, where voice is set up.
+    --wifi glyph while voice is on in this game. Click to mute or unmute once
+    --in the call; right-click (or click before joining) opens the voice menu.
     local m_micIcon
+
+    --Opens (or dismisses) the voice menu, hung from the left edge of the
+    --whole connectivity plate (the title bar's below-bar popup recipe; see
+    --ShowOverlayMenu).
+    local function ToggleVoiceMenu()
+        local voice = rawget(_G, "DiscordVoice")
+        if voice == nil then
+            return
+        end
+        if m_micIcon.popup ~= nil then
+            m_micIcon.popup = nil
+            return
+        end
+        local plate = g_connectivityPanel or m_micIcon
+        m_micIcon.popupsInheritStyles = true
+        m_micIcon.popupPositioning = plate
+        m_micIcon.popup = gui.Panel{
+            width = "auto",
+            height = "auto",
+            halign = "right",
+            valign = "bottom",
+            gui.Panel{
+                classes = {"bg"},
+                cornerRadius = 10,
+                margin = 4,
+                x = -plate.renderedWidth,
+                width = 340,
+                height = "auto",
+                pad = 12,
+                borderBox = true,
+                valign = "bottom",
+                flow = "vertical",
+                voice.CreateMenu(function()
+                    if m_micIcon.valid then
+                        m_micIcon.popup = nil
+                    end
+                end),
+            },
+        }
+    end
+
     m_micIcon = gui.Panel{
         classes = {"collapsed"},
         width = 20,
@@ -1412,9 +1453,12 @@ local function CreateConnectivityPanel()
             end
             if voice.Status().voice == "connected" then
                 voice.ToggleMuted()
-            elseif g_connectivityPanel ~= nil and g_connectivityPanel.valid then
-                g_connectivityPanel:FireEvent("click")
+            else
+                ToggleVoiceMenu()
             end
+        end,
+        rightClick = function(element)
+            ToggleVoiceMenu()
         end,
     }
 
@@ -1461,7 +1505,7 @@ local function CreateConnectivityPanel()
                 else
                     color = colors.bad
                 end
-                m_micIcon.data.tooltip = string.format("Discord voice: %s\nClick to %s. Push to talk: %s", status, s.muted and "unmute" or "mute", voice.BindingText("pushtotalk"))
+                m_micIcon.data.tooltip = string.format("Discord voice: %s\nClick to %s. Right-click for voice controls.\nPush to talk: %s", status, s.muted and "unmute" or "mute", voice.BindingText("pushtotalk"))
             end
             m_micIcon.bgimage = icon
             m_micIcon.selfStyle.bgcolor = color

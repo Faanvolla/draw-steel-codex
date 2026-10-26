@@ -7,7 +7,9 @@ local mod = dmhub.GetModLoading()
 --Discord call in the background (the engine's DiscordControllerVoice.cs; one
 --Discord lobby per game). The title bar shows a microphone next to the
 --network indicator (CodexTitleBar.lua), and its think drives DiscordVoice.Tick.
---The Heroes popout gets a voice section (HeroesPanel.lua). While someone
+--Right-clicking it opens the voice menu (DiscordVoice.CreateMenu); the full
+--voice settings are a section of Settings > Audio (DiscordVoice.CreateSettingsPanel,
+--placed by SettingsScreen.lua). While someone
 --talks, the token they are acting as shows the "Talk" emote, on every client
 --and only locally (DiscordVoice.IsTokenSpeaking, read by
 --creature:CalculateLoopingEmotes). Which token that is -- their selected token,
@@ -243,7 +245,10 @@ Commands.togglevoicemute = function(str)
 end
 
 ----------------------------------------------------------------------
--- The voice section of the Heroes popout (HeroesPanel.lua places it).
+-- Voice UI: the title bar microphone's menu (DiscordVoice.CreateMenu,
+-- opened by CodexTitleBar.lua on right-click) and the "Discord Voice"
+-- section of Settings > Audio (DiscordVoice.CreateSettingsPanel, placed by
+-- SettingsScreen.lua).
 ----------------------------------------------------------------------
 
 local COLOR_GOOD = "#58b060"
@@ -255,6 +260,44 @@ local COLOR_IDLE = "#7a7a7a"
 
 --shared with the title bar microphone (CodexTitleBar.lua).
 DiscordVoice.colors = { good = COLOR_GOOD, bad = COLOR_BAD, warn = COLOR_WARN, icon = COLOR_ICON, idle = COLOR_IDLE }
+
+--the menu's look: the same quiet rows as the Heroes popout.
+local g_menuStyles = {
+    {
+        selectors = {"voiceName"},
+        fontSize = 14,
+        color = "@fg",
+    },
+    {
+        selectors = {"voiceMuted"},
+        fontSize = 11,
+        color = "@fgMuted",
+    },
+    {
+        selectors = {"voiceSection"},
+        fontSize = 11,
+        bold = true,
+        color = "@fgMuted",
+    },
+    {
+        selectors = {"voiceHairline"},
+        bgimage = "panels/square.png",
+        bgcolor = "@border",
+        opacity = 0.35,
+    },
+    {
+        selectors = {"voiceChip"},
+        bgimage = "panels/square.png",
+        bgcolor = "@bg",
+        borderWidth = 1,
+        borderColor = "@border",
+        cornerRadius = 4,
+    },
+    {
+        selectors = {"voiceChip", "hover"},
+        bgcolor = "@bgAlt",
+    },
+}
 
 --- The key bound to a command, for display ("Not bound" when none).
 --- @param command string
@@ -294,6 +337,75 @@ function DiscordVoice.StatusText()
     return "Not in voice."
 end
 
+--- True when the Discord Voice settings section shows: an admin (voice is a
+--- prototype) in a build with Discord. Unlike Available it ignores the game
+--- setting, because devices, volumes and sensitivity belong to this machine.
+--- @return boolean
+function DiscordVoice.SettingsAvailable()
+    if not dmhub.isAdminAccount then
+        return false
+    end
+    local account = DiscordVoice.Status().account
+    return account ~= "unsupported" and account ~= "off"
+end
+
+--- Opens Settings on the Audio tab, home of the Discord Voice section.
+function DiscordVoice.OpenSettings()
+    dmhub.ShowPlayerSettings{ tab = "Audio" }
+end
+
+--the account / call button for a status: Link Discord, Join voice, Leave voice, or none.
+--- @return string|nil action
+--- @return string text
+local function VoiceAction(s)
+    if s.account == "notlinked" or s.account == "error" then
+        return "link", "Link Discord"
+    elseif s.account == "ready" then
+        if s.voice == "off" then
+            return "join", "Join voice"
+        end
+        return "leave", "Leave voice"
+    end
+    return nil, ""
+end
+
+local function RunVoiceAction(action)
+    if action == "link" then
+        DiscordVoice.Link()
+    elseif action == "join" then
+        DiscordVoice.Join()
+    elseif action == "leave" then
+        DiscordVoice.Leave()
+    end
+end
+
+--a Link / Join / Leave button that follows the status (fire "refreshVoice").
+local function ActionButton(args)
+    local button
+    button = gui.Button{
+        classes = args.classes,
+        text = "",
+        width = "auto",
+        height = "auto",
+        hpad = 12,
+        vpad = 4,
+        borderBox = true,
+        halign = args.halign,
+        valign = "center",
+        data = { action = nil },
+        click = function(element)
+            RunVoiceAction(element.data.action)
+        end,
+        refreshVoice = function(element, s)
+            local action, text = VoiceAction(s)
+            element.data.action = action
+            element.text = text
+            element:SetClass("collapsed", action == nil)
+        end,
+    }
+    return button
+end
+
 --a small square icon button with an on/off look.
 local function IconToggle(args)
     local iconPanel = gui.Panel{
@@ -307,10 +419,10 @@ local function IconToggle(args)
     }
     local resultPanel
     resultPanel = gui.Panel{
-        classes = {"heroChip"},
+        classes = {"voiceChip"},
         width = 28,
         height = 28,
-        rmargin = 6,
+        rmargin = args.rmargin or 6,
         valign = "center",
         hover = function(element)
             gui.Tooltip(element.data.tooltip or "")(element)
@@ -328,127 +440,56 @@ local function IconToggle(args)
     return resultPanel
 end
 
---a labelled slider row. labelFormat defaults to a percentage.
-local function SliderRow(label, minValue, maxValue, value, onchange, labelFormat)
+--mute and deafen buttons that follow the status (fire "refreshVoice").
+local function MuteToggle()
+    return IconToggle{
+        icon = "phosphor/microphone-fill.png",
+        click = function(element)
+            DiscordVoice.ToggleMuted()
+        end,
+    }
+end
+
+local function RefreshMuteToggles(muteToggle, deafenToggle, s)
+    if s.muted then
+        muteToggle:FireEvent("setState", "phosphor/microphone-slash-fill.png", COLOR_BAD, string.format("Muted. Click to unmute. Push to talk: %s", DiscordVoice.BindingText("pushtotalk")))
+    else
+        muteToggle:FireEvent("setState", "phosphor/microphone-fill.png", s.transmitting and COLOR_GOOD or COLOR_ICON, "Mic on. Click to mute.")
+    end
+    if s.deafened then
+        deafenToggle:FireEvent("setState", "phosphor/speaker-slash-fill.png", COLOR_BAD, "Deafened: you hear nobody. Click to hear again.")
+    else
+        deafenToggle:FireEvent("setState", "phosphor/headphones-fill.png", COLOR_ICON, "Click to deafen (hear nobody).")
+    end
+end
+
+--a labelled volume slider for the menu.
+local function MenuSliderRow(label, maxValue, value, onchange)
     return gui.Panel{
         width = "100%",
         height = 28,
         flow = "horizontal",
         gui.Label{
-            classes = {"heroMuted"},
+            classes = {"voiceMuted"},
             fontSize = 12,
             text = label,
-            width = 96,
+            width = 84,
             height = "auto",
             valign = "center",
         },
         gui.Slider{
-            width = 300,
-            height = 26,
-            sliderWidth = 240,
-            labelWidth = 50,
-            labelFormat = labelFormat or "%d%%",
-            minValue = minValue,
+            width = 210,
+            height = 24,
+            sliderWidth = 160,
+            labelWidth = 46,
+            labelFormat = "%d%%",
+            minValue = 0,
             maxValue = maxValue,
             round = true,
             value = value,
             valign = "center",
             change = function(element)
                 onchange(element.value)
-            end,
-        },
-    }
-end
-
---a microphone or speaker chooser; filled in once Discord lists the devices.
-local function DeviceRow(label, kind)
-    local dropdown
-    dropdown = gui.Dropdown{
-        width = 300,
-        height = 26,
-        valign = "center",
-        options = {{ id = "", text = "Loading..." }},
-        idChosen = "",
-        change = function(element)
-            ---@cast element Dropdown
-            local deviceId = element.idChosen --[[@as string]]
-            if deviceId ~= "" then
-                dmhub.DiscordSetAudioDevice(kind, deviceId)
-            end
-        end,
-    }
-    return gui.Panel{
-        width = "100%",
-        height = 30,
-        flow = "horizontal",
-        tmargin = 2,
-        --devices: the table DiscordGetAudioDevices calls back with.
-        devices = function(element, devices)
-            local list = kind == "input" and devices.inputs or devices.outputs
-            local options = {}
-            for _, d in ipairs(list) do
-                options[#options + 1] = { id = d.id, text = d.name }
-            end
-            if #options == 0 then
-                options[1] = { id = "", text = "None found" }
-            end
-            dropdown.options = options
-            dropdown.idChosen = (kind == "input" and devices.input or devices.output) or options[1].id
-        end,
-        gui.Label{
-            classes = {"heroMuted"},
-            fontSize = 12,
-            text = label,
-            width = 96,
-            height = "auto",
-            valign = "center",
-        },
-        dropdown,
-    }
-end
-
---a hotkey row: what it is bound to, and a button to change it.
-local function HotkeyRow(label, command)
-    local keyLabel = gui.Label{
-        fontSize = 12,
-        color = "@fg",
-        text = DiscordVoice.BindingText(command),
-        width = 120,
-        height = "auto",
-        valign = "center",
-    }
-    return gui.Panel{
-        width = "100%",
-        height = 28,
-        flow = "horizontal",
-        gui.Label{
-            classes = {"heroMuted"},
-            fontSize = 12,
-            text = label,
-            width = 96,
-            height = "auto",
-            valign = "center",
-        },
-        keyLabel,
-        gui.Button{
-            classes = {"sizeS"},
-            text = "Set key",
-            width = "auto",
-            height = "auto",
-            hpad = 10,
-            vpad = 2,
-            borderBox = true,
-            valign = "center",
-            click = function(element)
-                element.popup = Keybinds.ShowBindPopup{
-                    command = command,
-                    name = label,
-                    destroy = function()
-                        if keyLabel.valid then
-                            keyLabel.text = DiscordVoice.BindingText(command)
-                        end
-                    end,
-                }
             end,
         },
     }
@@ -468,10 +509,10 @@ local function ParticipantRow(p)
     local children = {
         dot,
         gui.Label{
-            classes = {"heroName"},
+            classes = {"voiceName"},
             fontSize = 13,
             text = p.isSelf and (p.name .. " (you)") or p.name,
-            width = 130,
+            width = 104,
             height = "auto",
             valign = "center",
             textWrap = false,
@@ -480,9 +521,9 @@ local function ParticipantRow(p)
     local muteToggle = nil
     if not p.isSelf then
         children[#children + 1] = gui.Slider{
-            width = 170,
+            width = 152,
             height = 24,
-            sliderWidth = 120,
+            sliderWidth = 104,
             labelWidth = 44,
             labelFormat = "%d%%",
             minValue = 0,
@@ -490,12 +531,16 @@ local function ParticipantRow(p)
             round = true,
             value = p.volume or 100,
             valign = "center",
+            hover = function(element)
+                gui.Tooltip("How loud they are, for you only.")(element)
+            end,
             change = function(element)
                 dmhub.DiscordSetParticipantVolume(p.id, element.value)
             end,
         }
         muteToggle = IconToggle{
             icon = "phosphor/speaker-high-fill.png",
+            rmargin = 0,
             click = function(element)
                 local status = DiscordVoice.Status()
                 for _, q in ipairs(status.participants) do
@@ -526,51 +571,34 @@ local function ParticipantRow(p)
     }
 end
 
---- The voice section for the Heroes popout: status, join/leave and linking,
---- mute and deafen, volumes, devices, noise suppression, hotkeys, and the
---- people in the call. Collapsed while voice is not available in this game.
+local function Hairline()
+    return gui.Panel{
+        classes = {"voiceHairline"},
+        width = "100%",
+        height = 1,
+        vmargin = 6,
+    }
+end
+
+--- The title bar microphone's menu: the status with Link / Join / Leave, mute
+--- and deafen, mic and voice volume, everyone in the call with their own volume
+--- and mute, and a button to the full settings. close dismisses the menu.
+--- @param close fun()
 --- @return Panel
-function DiscordVoice.CreatePanel()
+function DiscordVoice.CreateMenu(close)
     local statusLabel = gui.Label{
-        classes = {"heroName"},
+        classes = {"voiceName"},
         fontSize = 13,
         text = "",
-        width = 250,
+        width = 190,
         height = "auto",
         valign = "center",
         textWrap = true,
     }
 
-    local actionButton = gui.Button{
-        classes = {"sizeS"},
-        text = "",
-        width = "auto",
-        height = "auto",
-        hpad = 12,
-        vpad = 4,
-        borderBox = true,
-        halign = "right",
-        valign = "center",
-        data = { action = nil },
-        click = function(element)
-            local action = element.data.action
-            if action == "link" then
-                DiscordVoice.Link()
-            elseif action == "join" then
-                DiscordVoice.Join()
-            elseif action == "leave" then
-                DiscordVoice.Leave()
-            end
-        end,
-    }
+    local actionButton = ActionButton{ classes = {"sizeS"}, halign = "right" }
 
-    local muteToggle = IconToggle{
-        icon = "phosphor/microphone-fill.png",
-        click = function(element)
-            DiscordVoice.ToggleMuted()
-        end,
-    }
-
+    local muteToggle = MuteToggle()
     local deafenToggle = IconToggle{
         icon = "phosphor/headphones-fill.png",
         click = function(element)
@@ -581,25 +609,10 @@ function DiscordVoice.CreatePanel()
 
     local s0 = DiscordVoice.Status()
 
-    --the manual threshold in dB (-100 picks up everything, 0 only the loudest),
-    --shown only while automatic sensitivity is off.
-    local m_sensitivity = s0.sensitivity or -60
-    local sensitivityRow = SliderRow("Sensitivity", -100, 0, m_sensitivity, function(value)
-        m_sensitivity = value
-        dmhub.DiscordSetVoiceSensitivity(false, value)
-    end, "%d dB")
-    sensitivityRow:SetClass("collapsed", s0.sensitivityAutomatic ~= false)
-
-    local deviceRows = {
-        DeviceRow("Microphone", "input"),
-        DeviceRow("Speakers", "output"),
-    }
-
     local participantsPanel = gui.Panel{
         width = "100%",
         height = "auto",
         flow = "vertical",
-        tmargin = 4,
         data = { rows = {}, key = "" },
     }
 
@@ -617,87 +630,23 @@ function DiscordVoice.CreatePanel()
             muteToggle,
             deafenToggle,
             gui.Label{
-                classes = {"heroMuted"},
-                fontSize = 11,
+                classes = {"voiceMuted"},
                 text = "Mute and deafen apply to every Discord call in Codex.",
-                width = 300,
+                width = 220,
                 height = "auto",
                 valign = "center",
                 textWrap = true,
             },
         },
 
-        SliderRow("Mic volume", 0, 100, s0.inputVolume or 100, function(value)
+        MenuSliderRow("Mic volume", 100, s0.inputVolume or 100, function(value)
             dmhub.DiscordSetVoiceInputVolume(value)
         end),
-        SliderRow("Voice volume", 0, 200, s0.outputVolume or 100, function(value)
+        MenuSliderRow("Voice volume", 200, s0.outputVolume or 100, function(value)
             dmhub.DiscordSetVoiceOutputVolume(value)
         end),
 
-        deviceRows[1],
-        deviceRows[2],
-
-        --input sensitivity: how loud you must be before your voice is sent.
-        gui.Check{
-            text = "Automatically determine input sensitivity",
-            value = s0.sensitivityAutomatic ~= false,
-            fontSize = 12,
-            tmargin = 4,
-            change = function(element)
-                dmhub.DiscordSetVoiceSensitivity(element.value, m_sensitivity)
-                sensitivityRow:SetClass("collapsed", element.value)
-            end,
-        },
-        sensitivityRow,
-
-        gui.Check{
-            text = "Noise suppression",
-            value = s0.noiseSuppression ~= false,
-            fontSize = 12,
-            tmargin = 2,
-            change = function(element)
-                dmhub.DiscordSetVoiceNoiseSuppression(element.value)
-            end,
-        },
-        gui.Check{
-            text = "Echo cancellation",
-            value = s0.echoCancellation ~= false,
-            fontSize = 12,
-            tmargin = 2,
-            change = function(element)
-                dmhub.DiscordSetVoiceEchoCancellation(element.value)
-            end,
-        },
-        gui.Check{
-            text = "Automatic gain control",
-            value = s0.autoGainControl ~= false,
-            fontSize = 12,
-            tmargin = 2,
-            change = function(element)
-                dmhub.DiscordSetVoiceAutoGainControl(element.value)
-            end,
-        },
-
-        HotkeyRow("Push to talk", "pushtotalk"),
-        HotkeyRow("Toggle mute", "togglevoicemute"),
-
         participantsPanel,
-
-        gui.Label{
-            classes = {"heroMuted"},
-            fontSize = 11,
-            text = "Unlink Discord",
-            width = "auto",
-            height = "auto",
-            tmargin = 6,
-            halign = "right",
-            hover = function(element)
-                gui.Tooltip("Sign this Codex account out of Discord voice.")(element)
-            end,
-            click = function(element)
-                DiscordVoice.Unlink()
-            end,
-        },
     }
 
     local resultPanel
@@ -705,62 +654,19 @@ function DiscordVoice.CreatePanel()
         width = "100%",
         height = "auto",
         flow = "vertical",
-        valign = "top",
-        tmargin = 4,
+        styles = ThemeEngine.MergeStyles(g_menuStyles),
 
         create = function(element)
-            if dmhub.DiscordGetAudioDevices(function(devices)
-                if mod.unloaded or not element.valid then
-                    return
-                end
-                for _, row in ipairs(deviceRows) do
-                    row:FireEvent("devices", devices)
-                end
-            end) == false then
-                for _, row in ipairs(deviceRows) do
-                    row:SetClass("collapsed", true)
-                end
-            end
             element:FireEvent("think")
         end,
 
         thinkTime = 0.2,
         think = function(element)
-            local available = DiscordVoice.Available()
-            element:SetClass("collapsed", not available)
-            if not available then
-                return
-            end
             local s = DiscordVoice.Status()
             statusLabel.text = DiscordVoice.StatusText()
-
-            local action, actionText = nil, ""
-            if s.account == "notlinked" or s.account == "error" then
-                action, actionText = "link", "Link Discord"
-            elseif s.account == "ready" then
-                if s.voice == "off" then
-                    action, actionText = "join", "Join voice"
-                else
-                    action, actionText = "leave", "Leave voice"
-                end
-            end
-            actionButton.data.action = action
-            actionButton.text = actionText
-            actionButton:SetClass("collapsed", action == nil)
-
+            actionButton:FireEvent("refreshVoice", s)
             controlsPanel:SetClass("collapsed", s.account ~= "ready")
-
-            local pttKey = DiscordVoice.BindingText("pushtotalk")
-            if s.muted then
-                muteToggle:FireEvent("setState", "phosphor/microphone-slash-fill.png", COLOR_BAD, string.format("Muted. Click to unmute. Push to talk: %s", pttKey))
-            else
-                muteToggle:FireEvent("setState", "phosphor/microphone-fill.png", s.transmitting and COLOR_GOOD or COLOR_ICON, "Mic on. Click to mute.")
-            end
-            if s.deafened then
-                deafenToggle:FireEvent("setState", "phosphor/speaker-slash-fill.png", COLOR_BAD, "Deafened: you hear nobody. Click to hear again.")
-            else
-                deafenToggle:FireEvent("setState", "phosphor/headphones-fill.png", COLOR_ICON, "Click to deafen (hear nobody).")
-            end
+            RefreshMuteToggles(muteToggle, deafenToggle, s)
 
             --rebuild the people rows only when who is in the call changes.
             local ids = {}
@@ -773,8 +679,9 @@ function DiscordVoice.CreatePanel()
                 local rows = {}
                 local children = {}
                 if #s.participants > 0 then
-                    children[1] = gui.Label{
-                        classes = {"heroSection"},
+                    children[1] = Hairline()
+                    children[2] = gui.Label{
+                        classes = {"voiceSection"},
                         text = "In the call",
                         width = "100%",
                         height = 20,
@@ -797,44 +704,421 @@ function DiscordVoice.CreatePanel()
             end
         end,
 
-        gui.Panel{
+        gui.Label{
+            classes = {"voiceSection"},
+            text = "Discord Voice",
             width = "100%",
-            height = "auto",
-            flow = "vertical",
-            gui.Label{
-                classes = {"heroSection"},
-                text = "Voice",
-                width = "100%",
-                height = 20,
-                hpad = 12,
-                borderBox = true,
-                valign = "center",
-            },
-            gui.Panel{
-                classes = {"heroHairline"},
-                width = "100%",
-                height = 1,
-            },
+            height = 20,
+            valign = "center",
         },
 
         gui.Panel{
             width = "100%",
             height = "auto",
-            flow = "vertical",
+            flow = "horizontal",
+            tmargin = 2,
+            statusLabel,
+            actionButton,
+        },
+
+        controlsPanel,
+
+        Hairline(),
+
+        gui.Button{
+            classes = {"sizeS"},
+            text = "Voice Settings...",
+            width = "auto",
+            height = "auto",
             hpad = 12,
-            vpad = 6,
+            vpad = 4,
             borderBox = true,
-
-            gui.Panel{
-                width = "100%",
-                height = "auto",
-                flow = "horizontal",
-                statusLabel,
-                actionButton,
-            },
-
-            controlsPanel,
+            halign = "right",
+            click = function(element)
+                close()
+                DiscordVoice.OpenSettings()
+            end,
         },
+    }
+    return resultPanel
+end
+
+----------------------------------------------------------------------
+-- The Discord Voice section of Settings > Audio.
+----------------------------------------------------------------------
+
+--muted text for notes under settings controls.
+local COLOR_NOTE = "#a0a0a0"
+
+--a Settings row: a label on the left, a control on the right (the settings
+--screen's formRow / form classes).
+local function SettingsRow(label, control, args)
+    args = args or {}
+    return gui.Panel{
+        classes = {"formRow"},
+        width = "90%",
+        height = args.height or "auto",
+        halign = "center",
+        flow = "horizontal",
+        gui.Label{
+            classes = {"form"},
+            width = "50%",
+            valign = args.labelValign or "center",
+            text = label,
+        },
+        control,
+    }
+end
+
+local function SettingsCheck(text, value, onchange)
+    return gui.Panel{
+        classes = {"formRow"},
+        width = "90%",
+        halign = "center",
+        gui.Check{
+            value = value,
+            text = text,
+            change = function(element)
+                onchange(element.value)
+            end,
+        },
+    }
+end
+
+local function SettingsSlider(maxValue, value, onchange)
+    return gui.Slider{
+        width = "45%",
+        height = 30,
+        sliderWidth = 200,
+        labelWidth = 60,
+        labelFormat = "%d%%",
+        minValue = 0,
+        maxValue = maxValue,
+        round = true,
+        value = value,
+        valign = "center",
+        change = function(element)
+            onchange(element.value)
+        end,
+    }
+end
+
+--a microphone or speaker chooser; filled in once Discord lists the devices.
+local function DeviceDropdown(kind)
+    return gui.Dropdown{
+        classes = {"form"},
+        width = "45%",
+        valign = "center",
+        options = {{ id = "", text = "Loading..." }},
+        idChosen = "",
+        change = function(element)
+            ---@cast element Dropdown
+            local deviceId = element.idChosen --[[@as string]]
+            if deviceId ~= "" then
+                dmhub.DiscordSetAudioDevice(kind, deviceId)
+            end
+        end,
+        --devices: the table DiscordGetAudioDevices calls back with.
+        devices = function(element, devices)
+            ---@cast element Dropdown
+            local list = kind == "input" and devices.inputs or devices.outputs
+            local options = {}
+            for _, d in ipairs(list) do
+                options[#options + 1] = { id = d.id, text = d.name }
+            end
+            if #options == 0 then
+                options[1] = { id = "", text = "None found" }
+            end
+            element.options = options
+            element.idChosen = (kind == "input" and devices.input or devices.output) or options[1].id
+        end,
+    }
+end
+
+--a hotkey control: what the command is bound to, and a button to change it.
+local function HotkeyControl(label, command)
+    local keyLabel = gui.Label{
+        fontSize = 16,
+        text = DiscordVoice.BindingText(command),
+        width = 140,
+        height = "auto",
+        valign = "center",
+    }
+    return gui.Panel{
+        width = "45%",
+        height = 30,
+        flow = "horizontal",
+        valign = "center",
+        keyLabel,
+        gui.Button{
+            classes = {"sizeS"},
+            text = "Set Key",
+            width = "auto",
+            height = "auto",
+            hpad = 10,
+            vpad = 2,
+            borderBox = true,
+            valign = "center",
+            click = function(element)
+                element.popup = Keybinds.ShowBindPopup{
+                    command = command,
+                    name = label,
+                    destroy = function()
+                        if keyLabel.valid then
+                            keyLabel.text = DiscordVoice.BindingText(command)
+                        end
+                    end,
+                }
+            end,
+        },
+    }
+end
+
+--The live mic level, drawn under the sensitivity slider's track on the same
+--dB scale (-100 to 0). Manual sensitivity: a tick marks the threshold and the bar
+--is green while you are louder than it. Automatic: green while Discord sends
+--your voice. sensitivity is {automatic = bool, threshold = dB}, kept current
+--by the section.
+local function LevelMeter(sensitivity, trackInset)
+    local fill = gui.Panel{
+        bgimage = "panels/square.png",
+        bgcolor = COLOR_IDLE,
+        width = 1,
+        height = "100%",
+        halign = "left",
+        valign = "center",
+        opacity = 0,
+    }
+    local marker = gui.Panel{
+        bgimage = "panels/square.png",
+        bgcolor = COLOR_ICON,
+        width = 2,
+        height = "100%",
+        halign = "left",
+        valign = "center",
+    }
+    local note = gui.Label{
+        fontSize = 13,
+        color = COLOR_NOTE,
+        text = "",
+        width = "100%",
+        height = "auto",
+        halign = "left",
+        tmargin = 2,
+    }
+    local track = gui.Panel{
+        bgimage = "panels/square.png",
+        bgcolor = "#00000099",
+        width = string.format("100%%-%d", trackInset),
+        height = 8,
+        halign = "left",
+        tmargin = 2,
+        flow = "none",
+        fill,
+        marker,
+
+        thinkTime = 0.05,
+        think = function(element)
+            local width = element.renderedWidth
+            local s = DiscordVoice.Status()
+            local level = dmhub.discordMicLevel
+
+            marker:SetClass("collapsed", sensitivity.automatic)
+            marker.x = math.floor(width * (sensitivity.threshold + 100) / 100) - 1
+
+            if level == nil then
+                fill.selfStyle.opacity = 0
+                if s.voice ~= "connected" then
+                    note.text = "Join voice in a game to test your microphone here."
+                else
+                    note.text = "No sound from your microphone yet."
+                end
+                return
+            end
+
+            local open
+            if sensitivity.automatic then
+                open = s.transmitting
+                note.text = "The bar turns green while your voice is being sent."
+            else
+                open = level >= sensitivity.threshold
+                note.text = "Your voice is sent while the bar passes the marker."
+            end
+            fill.selfStyle.opacity = 1
+            fill.selfStyle.width = math.max(1, math.floor(width * (level + 100) / 100))
+            fill.selfStyle.bgcolor = open and COLOR_GOOD or COLOR_WARN
+        end,
+    }
+    return gui.Panel{
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        track,
+        note,
+    }
+end
+
+--- The Discord Voice section of Settings > Audio: the account (link, join,
+--- leave, unlink), devices, volumes, input sensitivity with a live mic level,
+--- voice processing, and the voice hotkeys. Everything but the account row
+--- waits until signed in to Discord.
+--- @return Panel
+function DiscordVoice.CreateSettingsPanel()
+    local s0 = DiscordVoice.Status()
+
+    local statusLabel = gui.Label{
+        fontSize = 16,
+        text = "",
+        width = "100%",
+        height = "auto",
+        textWrap = true,
+    }
+    local actionButton = ActionButton{ classes = {"sizeS"}, halign = "left" }
+    local unlinkButton = gui.Button{
+        classes = {"sizeS"},
+        text = "Unlink Discord",
+        width = "auto",
+        height = "auto",
+        hpad = 12,
+        vpad = 4,
+        lmargin = 8,
+        borderBox = true,
+        valign = "center",
+        hover = function(element)
+            gui.Tooltip("Sign this Codex account out of Discord voice.")(element)
+        end,
+        click = function(element)
+            DiscordVoice.Unlink()
+        end,
+    }
+
+    local accountRow = SettingsRow("Discord account", gui.Panel{
+        width = "45%",
+        height = "auto",
+        flow = "vertical",
+        valign = "center",
+        statusLabel,
+        gui.Panel{
+            width = "100%",
+            height = "auto",
+            flow = "horizontal",
+            tmargin = 4,
+            actionButton,
+            unlinkButton,
+        },
+    })
+
+    local devices = {
+        DeviceDropdown("input"),
+        DeviceDropdown("output"),
+    }
+    local deviceRows = {
+        SettingsRow("Microphone", devices[1]),
+        SettingsRow("Speakers", devices[2]),
+    }
+
+    --the section's view of the input sensitivity, shared with the meter.
+    local m_sensitivity = {
+        automatic = s0.sensitivityAutomatic ~= false,
+        threshold = s0.sensitivity or -60,
+    }
+    local SENSITIVITY_LABEL_WIDTH = 60
+    local sensitivitySlider = gui.Slider{
+        classes = {cond(m_sensitivity.automatic, "collapsed")},
+        width = "100%",
+        height = 30,
+        sliderWidth = 200,
+        labelWidth = SENSITIVITY_LABEL_WIDTH,
+        labelFormat = "%d dB",
+        minValue = -100,
+        maxValue = 0,
+        round = true,
+        value = m_sensitivity.threshold,
+        valign = "center",
+        change = function(element)
+            m_sensitivity.threshold = element.value
+            dmhub.DiscordSetVoiceSensitivity(false, element.value)
+        end,
+    }
+
+    --hidden until signed in to Discord.
+    local controlsPanel = gui.Panel{
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+
+        deviceRows[1],
+        deviceRows[2],
+
+        SettingsRow("Mic volume", SettingsSlider(100, s0.inputVolume or 100, function(value)
+            dmhub.DiscordSetVoiceInputVolume(value)
+        end)),
+        SettingsRow("Voice volume", SettingsSlider(200, s0.outputVolume or 100, function(value)
+            dmhub.DiscordSetVoiceOutputVolume(value)
+        end)),
+
+        --input sensitivity: how loud you must be before your voice is sent.
+        SettingsCheck("Automatically determine input sensitivity", m_sensitivity.automatic, function(value)
+            m_sensitivity.automatic = value
+            dmhub.DiscordSetVoiceSensitivity(value, m_sensitivity.threshold)
+            sensitivitySlider:SetClass("collapsed", value)
+        end),
+        SettingsRow("Input sensitivity", gui.Panel{
+            width = "45%",
+            height = "auto",
+            flow = "vertical",
+            valign = "center",
+            sensitivitySlider,
+            LevelMeter(m_sensitivity, SENSITIVITY_LABEL_WIDTH + 4),
+        }),
+
+        SettingsCheck("Noise suppression", s0.noiseSuppression ~= false, function(value)
+            dmhub.DiscordSetVoiceNoiseSuppression(value)
+        end),
+        SettingsCheck("Echo cancellation", s0.echoCancellation ~= false, function(value)
+            dmhub.DiscordSetVoiceEchoCancellation(value)
+        end),
+        SettingsCheck("Automatic gain control", s0.autoGainControl ~= false, function(value)
+            dmhub.DiscordSetVoiceAutoGainControl(value)
+        end),
+
+        SettingsRow("Push to talk", HotkeyControl("Push to talk", "pushtotalk")),
+        SettingsRow("Toggle mute", HotkeyControl("Toggle mute", "togglevoicemute")),
+    }
+
+    local resultPanel
+    resultPanel = gui.Panel{
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+
+        create = function(element)
+            if dmhub.DiscordGetAudioDevices(function(list)
+                if mod.unloaded or not element.valid then
+                    return
+                end
+                for _, dropdown in ipairs(devices) do
+                    dropdown:FireEvent("devices", list)
+                end
+            end) == false then
+                for _, row in ipairs(deviceRows) do
+                    row:SetClass("collapsed", true)
+                end
+            end
+            element:FireEvent("think")
+        end,
+
+        thinkTime = 0.2,
+        think = function(element)
+            local s = DiscordVoice.Status()
+            statusLabel.text = DiscordVoice.StatusText()
+            actionButton:FireEvent("refreshVoice", s)
+            unlinkButton:SetClass("collapsed", s.account ~= "ready")
+            controlsPanel:SetClass("collapsed", s.account ~= "ready")
+        end,
+
+        accountRow,
+        controlsPanel,
     }
     return resultPanel
 end

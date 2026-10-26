@@ -1081,9 +1081,6 @@ CreateHeroesPanel = function()
             countLabel,
         },
 
-        --Discord voice controls (DiscordVoice.lua); collapsed unless voice is on in this game.
-        DiscordVoice.CreatePanel(),
-
         gui.Panel {
 
             width = "100%",
