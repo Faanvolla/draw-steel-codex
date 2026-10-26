@@ -3275,11 +3275,16 @@ local function CreateArrangePanel()
 end
 
 --Show the arrangement panel to every player with heroes while the heroes
---are arranging, and take it down when the arrangement ends.
+--are arranging, and take it down when the arrangement ends or combat is
+--already running (Y8US7UC9, EZ5XMXFA: the panel blocked the action bar).
+--An arrangement always ends before the queue is created, so an "arranging"
+--doc with a live queue is stale.
 local function UpdateArrangePanel()
     local state = ArrangeState()
+    local queue = dmhub.initiativeQueue
     local want = (EncounterOfTheWeekGame.IsEotwGame() or m_devEncounter) and state ~= nil
         and state.phase == "arranging" and ArrangeVoterKey() ~= nil
+        and (queue == nil or queue.hidden)
     local shown = m_arrangePanel ~= nil and m_arrangePanel.valid
     if want and not shown then
         if GameHud.instance ~= nil and GameHud.instance.parentPanel ~= nil then
@@ -5542,6 +5547,28 @@ function EncounterOfTheWeekGame.MapScriptHostThink(ctx)
         --stamped independently of the stage flip so a host handover between
         --the flip and the stamp still lifts the players' confinement.
         RecordCombatStarted()
+        --an arrangement still "arranging" now can never finish (ArrangeHostTick
+        --only runs before combat): a queue started before the hold, or a server
+        --reset lost the "done" write. Close it, and drop the held begin() so it
+        --cannot start a second queue.
+        do
+            local ok, err = pcall(function()
+                local arrange = ArrangeState()
+                if arrange == nil or arrange.phase ~= "arranging" then
+                    return
+                end
+                m_arrangeBegin = nil
+                local doc = mod:GetDocumentSnapshot(STATE_DOC_ID)
+                doc:BeginChange()
+                doc.data.arrange.phase = "done"
+                doc.data.arrange.endedAt = dmhub.serverTime
+                doc:CompleteChange("Encounter of the Week: arrangement closed, combat is live", {undoable = false})
+                printf("EotW: closed an arrangement left open after combat began")
+            end)
+            if not ok then
+                printf("EotW: arrangement heal failed: %s", tostring(err))
+            end
+        end
         --surges the montage banked can only be granted with a live queue
         --(they are a clearOutsideOfCombat resource); this is a no-op once
         --the bank is empty.
