@@ -2155,9 +2155,12 @@ function GameHud.CreateEmbeddedRollDialog()
         }
 
         --each landed die, so remote viewers see the same faces the roller does.
+        --The total is the roller's total label as shown (modifiers and any
+        --post-roll edge/bane included), so both sides show the same number.
         if rollState == "finished" and m_rollInfo ~= nil then
             dialogState.dice = RollDiceFaces.Collect(m_rollInfo)
             dialogState.diceStyle = RollDiceFaces.Style(m_rollInfo)
+            dialogState.total = tonumber(m_rollTotalLabel ~= nil and m_rollTotalLabel.valid and m_rollTotalLabel.text or nil)
         end
 
         if extraFields ~= nil then

@@ -1389,8 +1389,12 @@ local function CreateFlipButton(charid)
                 selectors = {"heroCardFlip", "parent:hover"},
                 hidden = 0,
             },
+            --"hover" sits only on the panel under the pointer, so on the
+            --button the card loses it: without hidden = 0 here the button
+            --hides, the card is hovered again, and it flickers.
             {
                 selectors = {"heroCardFlip", "hover"},
+                hidden = 0,
                 borderColor = COLOR_GOLD,
                 scale = 1.15,
             },

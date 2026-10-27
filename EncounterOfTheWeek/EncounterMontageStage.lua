@@ -2966,23 +2966,46 @@ local function SetPortraitFrom(element, tok, aspect, keepBottom)
         return
     end
     element.bgimage = portrait
-    element.selfStyle.bgcolor = "white"
-    local rect = nil
-    if keepBottom ~= nil then
-        --frame a taller crop, then trim its bottom band so the shown part
-        --keeps the panel's aspect.
-        pcall(function() rect = tok:GetPortraitRectForAspect(aspect * (1 - keepBottom), portrait) end)
-        if rect ~= nil then
-            local y1 = rect.y1 + (rect.y2 - rect.y1) * keepBottom
-            if y1 < keepBottom then
-                y1 = keepBottom
+    --GetPortraitRectForAspect answers the whole image (0,0,1,1) until the
+    --image is loaded, which would stretch it into the panel. Stay invisible
+    --and crop once the panel has the image (bgimageWidth is -1 until then).
+    element.selfStyle.bgcolor = "#00000000"
+    local function Crop()
+        local rect = nil
+        if keepBottom ~= nil then
+            --frame a taller crop, then trim its bottom band so the shown part
+            --keeps the panel's aspect.
+            pcall(function() rect = tok:GetPortraitRectForAspect(aspect * (1 - keepBottom), portrait) end)
+            if rect ~= nil then
+                local y1 = rect.y1 + (rect.y2 - rect.y1) * keepBottom
+                local y2 = rect.y2
+                if y1 < keepBottom then
+                    --the crop sits on the image's bottom edge: slide it up
+                    --rather than trimming more, which would squash it.
+                    --(It always fits: the crop is never taller than the image.)
+                    y2 = y2 + keepBottom - y1
+                    y1 = keepBottom
+                end
+                rect = { x1 = rect.x1, y1 = y1, x2 = rect.x2, y2 = y2 }
             end
-            rect = { x1 = rect.x1, y1 = y1, x2 = rect.x2, y2 = rect.y2 }
+        else
+            pcall(function() rect = tok:GetPortraitRectForAspect(aspect, portrait) end)
         end
-    else
-        pcall(function() rect = tok:GetPortraitRectForAspect(aspect, portrait) end)
+        element.selfStyle.imageRect = rect
+        element.selfStyle.bgcolor = "white"
     end
-    element.selfStyle.imageRect = rect
+    local giveUpAt = dmhub.Time() + 20
+    local function WaitForImage()
+        if mod.unloaded or not element.valid or element.bgimage ~= portrait then
+            return
+        end
+        if element.bgimageWidth ~= nil and element.bgimageWidth > 0 then
+            Crop()
+        elseif dmhub.Time() < giveUpAt then
+            dmhub.Schedule(0.05, WaitForImage)
+        end
+    end
+    WaitForImage()
 end
 
 --One figure on the stage: the hero (args.charid) or a scene character,

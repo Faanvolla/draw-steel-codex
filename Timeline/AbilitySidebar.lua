@@ -94,6 +94,23 @@ local function ShouldShareAbility(token)
     return IsTokenOnCurrentTurn(token)
 end
 
+--Identity of a shared ability card: which ability, cast by which token. The
+--cast often swaps in a copy of the same ability (targeting -> casting), so this
+--compares guid rather than object identity; name covers abilities with no guid.
+---@param ability any
+---@param casterTokenId string|nil
+---@return string
+local function AbilityShareKey(ability, casterTokenId)
+    if ability == nil then
+        return ""
+    end
+    local guid = nil
+    local name = nil
+    pcall(function() name = ability.name end)
+    pcall(function() guid = ability:try_get("guid") end)
+    return string.format("%s|%s|%s", tostring(casterTokenId), tostring(guid), tostring(name))
+end
+
 -- Write the current sharing data to the shared document.
 local function WriteAbilityShare()
     if g_sharingData == nil then
@@ -760,6 +777,21 @@ local function CreateReadOnlyRollInfo(shareData)
         end
     end
 
+    -- The roll's total with modifiers, as the roller's dialog shows it.
+    if ds.rollState == "finished" and ds.total ~= nil then
+        sections[#sections+1] = gui.Label{
+            halign = "center",
+            textAlignment = "center",
+            width = "auto",
+            height = "auto",
+            fontSize = 28,
+            bold = true,
+            color = "white",
+            vmargin = 2,
+            text = string.format("Total: %s", tostring(math.tointeger(ds.total) or ds.total)),
+        }
+    end
+
     -- Power roll tier table with dice animation support.
     -- Uses gui.Table / gui.TableRow to match the interactive power table
     -- in MCDMAbilityRollBehavior.lua so that style selectors ("row" and
@@ -1193,6 +1225,10 @@ local g_remoteLastSection = nil
 -- the dice event subscriptions on the tier table).
 local g_remoteLastRollState = nil
 
+-- AbilityShareKey of the card the remote display is showing. The incremental
+-- update only swaps the roll, so a new key means the card must be rebuilt.
+local g_remoteAbilityKey = nil
+
 ----------------------------------------------------------------------
 -- Movable / pinnable ability card
 --
@@ -1613,11 +1649,15 @@ local function RefreshRemoteAbilityDisplay(displayPanel, shareData)
 
     local ability = shareData.ability
     local casterToken = dmhub.GetTokenById(shareData.casterTokenId)
+    local abilityKey = AbilityShareKey(ability, shareData.casterTokenId)
 
-    -- If the remote display is already showing for this user, do an
-    -- incremental update: replace the embedded roll info and update
-    -- section highlighting without rebuilding the full ability tooltip.
-    if g_remoteDisplayUserId == shareData.userid and g_remoteAbilityPanel ~= nil and g_remoteAbilityPanel.valid then
+    -- If the remote display is already showing this user's card for the same
+    -- ability, do an incremental update: replace the embedded roll info and
+    -- update section highlighting without rebuilding the full ability tooltip.
+    -- A different ability falls through to a full rebuild, or the old card's
+    -- title would stay up around the new ability's roll.
+    if g_remoteDisplayUserId == shareData.userid and g_remoteAbilityKey == abilityKey
+        and g_remoteAbilityPanel ~= nil and g_remoteAbilityPanel.valid then
         -- Rebuild the roll info panel when data changes, EXCEPT during
         -- "rolling" where the tier table has live dice event
         -- subscriptions that would be destroyed by a rebuild.
@@ -1740,6 +1780,7 @@ local function RefreshRemoteAbilityDisplay(displayPanel, shareData)
     displayPanel.children = { cardWrapper }
     g_remoteDisplayUserId = shareData.userid
     g_remoteAbilityPanel = abilityPanel
+    g_remoteAbilityKey = abilityKey
 end
 
 --The grey banner pinned to the top of the ability card whenever the local
@@ -3052,6 +3093,34 @@ function CharacterPanel.HighlightAbilitySection(options)
         and ShouldShareAbility(options.caster)
     then
         BeginAbilitySharing(options.caster, g_displayedAbility)
+    elseif g_sharingData ~= nil and g_displayedAbility ~= nil then
+        --A different ability took over the card while a share was still live
+        --(DisplayAbility keeps sharing across a card swap, and the share is only
+        --cleared once no card is up). Seen live: Black Ash Teleport's hide card
+        --was still showing when the hero began Eviscerate, so the table saw
+        --Eviscerate's roll under "Caster May Hide And Gain A Surge". Re-point
+        --the share at the new ability and drop the old roll's state. This sets
+        --the fields in place instead of calling BeginAbilitySharing again,
+        --which would start a second heartbeat loop.
+        local caster = options.caster or g_sharingToken
+        local casterId = (caster ~= nil and caster.valid) and caster.charid or g_sharingData.casterTokenId
+        if AbilityShareKey(g_displayedAbility, casterId) ~= AbilityShareKey(g_sharingData.ability, g_sharingData.casterTokenId) then
+            if caster ~= nil and caster.valid and (caster.charid == g_sharingData.casterTokenId or ShouldShareAbility(caster)) then
+                g_sharingToken = caster
+                g_sharingData = {
+                    casterTokenId = caster.charid,
+                    ability = g_displayedAbility,
+                    userid = dmhub.loginUserid,
+                }
+                if spine.setCurrentCastingToken ~= nil then
+                    spine.setCurrentCastingToken(caster)
+                end
+            else
+                --Not ours to share (another token, off its turn): stop
+                --broadcasting the old ability rather than leave it up.
+                ClearAbilityShare()
+            end
+        end
     end
 
     -- Update the shared document with the new section.
