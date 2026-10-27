@@ -5420,6 +5420,36 @@ mod.shared.ShowDownloadShareDialog = function(options)
 		favoriteIcon,
 	}
 
+	local uninstallButton = gui.Panel{
+		classes = {"iconButton", "withDanger", "collapsed"},
+		width = 40,
+		height = 40,
+		halign = "right",
+		tmargin = 40,
+		bgimage = "icons/icon_tool/icon_tool_44.png",
+
+		press = function(element)
+			gui.ModalMessage{
+				title = "Uninstall Module",
+				message = "Uninstalling this module will remove all its compendium content from your game. Any maps or characters imported will remain and have to be manually deleted. If any compendium content from this module is being used in your game, uninstalling the module may result in instability.",
+				options = {
+					{
+						text = "Uninstall",
+						execute = function()
+							local mod = moduleDetailedDisplay.data.moduleInfo
+							mod:Uninstall{}
+						end,
+					},
+					{
+						text = "Cancel",
+						execute = function()
+						end,
+					},
+				}
+			}
+		end,
+	}
+
 	local statsPanel = gui.Panel{
 		classes = {"hidden"},
 		floating = true,
@@ -5433,6 +5463,7 @@ mod.shared.ShowDownloadShareDialog = function(options)
 		installCountPanel,
 		upvoteCountPanel,
 		favoritePanel,
+		uninstallButton,
 	}
 
 	local m_moduleErrors = {}
@@ -5441,7 +5472,6 @@ mod.shared.ShowDownloadShareDialog = function(options)
 	local m_installing = false
 
 	local installLabel
-	local uninstallButton
 
 	local installButton =
 		gui.Button{
@@ -5494,33 +5524,6 @@ mod.shared.ShowDownloadShareDialog = function(options)
 				installLabel:FireEvent("think")
 			end,
 		}
-	
-	uninstallButton = gui.Button{
-		classes = {"deleteButton", "collapsed"},
-		width = 16,
-		height = 16,
-
-		press = function(element)
-			gui.ModalMessage{
-				title = "Uninstall Module",
-				message = "Uninstalling this module will remove all its compendium content from your game. Any maps or characters imported will remain and have to be manually deleted. If any compendium content from this module is being used in your game, uninstalling the module may result in instability.",
-				options = {
-					{
-						text = "Uninstall",
-						execute = function()
-							local mod = moduleDetailedDisplay.data.moduleInfo
-							mod:Uninstall{}
-						end,
-					},
-					{
-						text = "Cancel",
-						execute = function()
-						end,
-					},
-				}
-			}
-		end,
-	}
 
 	--"Get this with a membership" for a premium module a creator includes with
 	--their Patreon. Those modules are listed for everyone, patron or not (see
@@ -5848,7 +5851,7 @@ mod.shared.ShowDownloadShareDialog = function(options)
 				if mod.installedVersion ~= mod.latestVersion and mod.installationBandwidthInKBytes > dmhub.uploadQuotaRemaining/1024 then
 					installButton:SetClass("collapsed", true)
 					element.text = "Not enough bandwidth to install"
-					uninstallButton:SetClass("collapsed", true)
+					uninstallButton:SetClass("collapsed", mod.installedVersion == nil)
 					return
 				end
 
@@ -5861,7 +5864,7 @@ mod.shared.ShowDownloadShareDialog = function(options)
 				end
 
 				if mod.installedVersion ~= mod.latestVersion then
-					uninstallButton:SetClass("collapsed", true)
+					uninstallButton:SetClass("collapsed", false)
 					installButton:SetClass("collapsed", false)
 					installButton.text = "Update"
 					element.text = string.format("Version %s is installed", mod.installedVersion, mod.latestVersion)
@@ -6079,7 +6082,6 @@ mod.shared.ShowDownloadShareDialog = function(options)
 			halign = "right",
 			valign = "bottom",
 			installLabel,
-			uninstallButton,
 		},
 		installButton,
 	}
