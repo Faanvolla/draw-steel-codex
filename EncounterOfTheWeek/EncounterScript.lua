@@ -1192,6 +1192,92 @@ function EncounterScript.DescribeRevealZones(zone)
     return T("script.reveal_zones", { zones = shown })
 end
 
+--Who a Monster AI line applies to, when it names no one in particular.
+local g_aiBehaviorEveryone = {
+    ["every monster"] = true, ["all monsters"] = true, ["monsters"] = true,
+    ["every enemy"] = true, ["all enemies"] = true, ["enemies"] = true,
+    ["every creature"] = true, ["all creatures"] = true,
+    ["everyone"] = true, ["all"] = true, ["all of them"] = true,
+}
+
+--A "Monster AI:" line under "# Encounter" switches one of the Monster AI's
+--behavior modules (MonsterAI:RegisterBehavior: "Bully", "Avoid Opportunity
+--Attacks") on or off for this fight, for every monster or the ones named:
+--  "Bully on"                                       (every monster)
+--  "Avoid Opportunity Attacks off for Goblin Sniper"
+--  "turn on Bully for Goblin Sniper and Goblin Spinecleaver"
+--A name matches a token's name, a token named "<name> <anything>", or a
+--monster's bestiary type, as for bystanders. Later lines win over earlier ones.
+--Returns { kind = "aibehavior", behavior = "Bully", enabled = true,
+--names = { "Goblin Sniper" } } (names nil = every monster) or nil.
+function EncounterScript.ParseAIBehaviorInstruction(text)
+    local body = trim(text or "")
+    body = trim((string.gsub(body, "%.$", "")))
+    local state = nil
+    for _, verb in ipairs({ "turn", "switch" }) do
+        for _, s in ipairs({ "on", "off" }) do
+            local prefix = verb .. " " .. s .. " "
+            if state == nil and string.sub(lower(body), 1, #prefix) == prefix then
+                state = s
+                body = trim(string.sub(body, #prefix + 1))
+            end
+        end
+    end
+    local whoText = nil
+    local forPos = string.find(lower(body), " for ", 1, true)
+    if forPos ~= nil then
+        whoText = trim(string.sub(body, forPos + 5))
+        body = trim(string.sub(body, 1, forPos - 1))
+    end
+    if state == nil then
+        for _, s in ipairs({ "on", "off" }) do
+            local suffix = " " .. s
+            if state == nil and #body > #suffix and string.sub(lower(body), -#suffix) == suffix then
+                state = s
+                body = trim(string.sub(body, 1, #body - #suffix))
+            end
+        end
+    end
+    if state == nil or body == "" then
+        return nil
+    end
+    local names = nil
+    if whoText ~= nil then
+        local lw = lower(whoText)
+        lw = string.gsub(lw, "^the%s+", "")
+        if not g_aiBehaviorEveryone[lw] then
+            names = {}
+            local work = string.gsub(whoText, "%s+[aA][nN][dD]%s+", ",")
+            for part in string.gmatch(work, "[^,]+") do
+                local name = trim(part)
+                name = string.gsub(name, "^[Tt]he%s+", "")
+                if name ~= "" then
+                    names[#names + 1] = name
+                end
+            end
+            if #names == 0 then
+                return nil
+            end
+        end
+    end
+    return { kind = "aibehavior", behavior = body, enabled = state == "on", names = names }
+end
+
+--Is this label one that starts a Monster AI line ("Monster AI: Bully on")?
+function EncounterScript.IsAIBehaviorLabel(label)
+    local l = lower(trim(label or ""))
+    return l == "monster ai" or l == "ai"
+end
+
+--One line describing a parsed Monster AI line, for the validator and dumps.
+function EncounterScript.DescribeAIBehavior(ins)
+    local who = "every monster"
+    if ins.names ~= nil then
+        who = table.concat(ins.names, ", ")
+    end
+    return string.format("%s %s for %s", tostring(ins.behavior), cond(ins.enabled, "on", "off"), who)
+end
+
 --A setup instruction under "# Encounter" (the paragraph after its label):
 --  "Place 4 Snare Trap objects in Trap zones and delete other Trap zones"
 --  "Place one Pit object in the Pit zones"
@@ -3594,6 +3680,8 @@ function EncounterScript.Parse(text)
                     local instruction
                     if lower(trim(label)) == "victory" then
                         instruction = EncounterScript.ParseVictoryInstruction(rest)
+                    elseif EncounterScript.IsAIBehaviorLabel(label) then
+                        instruction = EncounterScript.ParseAIBehaviorInstruction(rest)
                     else
                         instruction = EncounterScript.ParseSetupInstruction(rest)
                     end
@@ -5242,6 +5330,8 @@ function EncounterScript.Describe(parse)
                     line("  setup %s: bystanders (no initiative): %s", ins.label, table.concat(ins.names, ", "))
                 elseif ins.kind == "victory" then
                     line("  %s: %s", ins.label, EncounterScript.DescribeVictory(ins) or "?")
+                elseif ins.kind == "aibehavior" then
+                    line("  setup %s: %s", ins.label, EncounterScript.DescribeAIBehavior(ins))
                 else
                     line("  setup %s: UNRECOGNIZED '%s'", ins.label, ins.text)
                 end

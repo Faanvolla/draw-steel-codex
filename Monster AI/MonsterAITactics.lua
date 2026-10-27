@@ -148,3 +148,43 @@ MonsterAI:RegisterTactic{
         end
     end,
 }
+
+--Behavior modules (MonsterAI:RegisterBehavior in MonsterAI.lua) ---------------
+--Each is off unless its `monsters` list names the monster type, or an
+--Encounter of the Week script switches it ("Monster AI: Bully on for Goblin
+--Sniper"; see the eotw skill's script reference).
+
+--Bully: prefers the enemies with the smallest share of their Stamina left.
+--A target at full Stamina gets nothing; one at 0 or below (dying) gets
+--bullyMaxEdges. It also cancels TargetStaminaBias, the usual slight lean
+--toward healthy targets, so only weakness counts. An edge is worth 0.1 of
+--a target's score, so 6 edges make a dying hero worth 1.6 targets.
+MonsterAI.bullyMaxEdges = 6
+
+MonsterAI:RegisterBehavior{
+    id = "Bully",
+    aliases = {"Bullies", "Bullying"},
+    description = "Prefers to attack the enemies with the smallest share of their Stamina left, more strongly the closer they are to 0.",
+    monsters = {},
+    targetEdges = function(self, token, tokenLoc, enemy, ability)
+        if enemy.isObject or enemy.properties == nil or token:IsFriend(enemy) then
+            return nil
+        end
+        local maxStamina = enemy.properties:MaxHitpoints()
+        if maxStamina <= 0 then
+            return nil
+        end
+        local share = math.max(0, math.min(1, enemy.properties:CurrentHitpoints()/maxStamina))
+        return MonsterAI.bullyMaxEdges*(1 - share) - MonsterAI.TargetStaminaBias(enemy)/0.1
+    end,
+}
+
+--Avoid Opportunity Attacks: the work is in MonsterAI.lua (OpportunityAttackers,
+--ChooseAvoidingOpportunityAttacks); the size of the penalty is
+--MonsterAI.opportunityAttackPenalty.
+MonsterAI:RegisterBehavior{
+    id = MonsterAI.avoidOpportunityAttacksBehavior,
+    aliases = {"Avoids Opportunity Attacks", "Avoid OAs", "Avoids OAs"},
+    description = "Will not walk away from an adjacent enemy who could make an opportunity attack, unless the plan that does is worth far more than any that does not.",
+    monsters = {},
+}

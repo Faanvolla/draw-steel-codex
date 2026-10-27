@@ -722,6 +722,10 @@ text("herocard.heroic_resource.fallback", [[Heroic Resource]])
 text("herocard.recoveries.tooltip_count", [[<b>Recoveries: {current} / {max}</b>]])
 text("herocard.recoveries.tooltip_value", [[Recovery Value: {value} Stamina]])
 
+--The tooltip on the small "+" beside the recoveries circle (montage, narrative
+--and prep screens only). {amount} is the Stamina one Recovery gives.
+text("herocard.recoveries.spend_tooltip", [[Spend a Recovery: regain {amount} Stamina]])
+
 --The tooltip on the blue brain badge. {count} is a number.
 text("herocard.intelligence.tooltip", [[{count} Intelligence earned, to spend before the fight]])
 

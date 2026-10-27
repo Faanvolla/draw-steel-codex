@@ -1,6 +1,6 @@
 local mod = dmhub.GetModLoading()
 
---Encounter of the Week: the words of the town -- the Encounter of the Week screen, the town map and its locations, the party lobby, the Hero's Guild and Graveyard, the Blue Fish Inn, downtime, leads and the Arcane Market.
+--Encounter of the Week: the words of the town -- the Encounter of the Week screen, the town map and its locations, the party lobby, the Hero's Guild and Graveyard, the Blue Fish Inn, downtime, leads, the Arcane Market and the Town Hall.
 --
 --HOW TO EDIT THIS FILE (for writers)
 --
@@ -97,6 +97,14 @@ text("eotw.locations.construction.tagline", [[The town comes together to build t
 text("eotw.locations.hall.label", [[Hall of Heroes]])
 text("eotw.locations.hall.title", [[The Hall of Heroes]])
 text("eotw.locations.hall.tagline", [[Every party that has conquered an Encounter of the Week is remembered here.]])
+--The Town Hall, while the town is still building it.
+text("eotw.locations.town_hall_site.label", [[Town Hall Site]])
+text("eotw.locations.town_hall_site.title", [[The Town Hall Site]])
+text("eotw.locations.town_hall_site.tagline", [[Blackbottom needs a place to gather, argue and decide. Lend a hand and raise the Town Hall!]])
+--The Town Hall, once it is built.
+text("eotw.locations.town_hall.label", [[Town Hall]])
+text("eotw.locations.town_hall.title", [[The Town Hall]])
+text("eotw.locations.town_hall.tagline", [[Where the people of Blackbottom have their say. Vote on the questions put to the town, or raise a petition of your own.]])
 
 --Why a location will not open (shown when it is clicked while locked).
 --While the town is still listing the player's heroes:
@@ -922,6 +930,17 @@ text("downtime.projects.build_hall.blurb_maxed", [[The Hall of Heroes stands com
 text("downtime.projects.build_hall.complete_banner", [[The Hall of Heroes!]])
 text("downtime.projects.build_hall.complete_subtitle", [[Blackbottom built it together. Its doors are open to every hero.]])
 
+--Build the Town Hall (the whole town's second project, at the Town Hall Site).
+text("downtime.projects.build_town_hall.title", [[Build the Town Hall]])
+--Where it is worked on, as in "Go to the Town Hall Site to work on it."
+text("downtime.projects.build_town_hall.place", [[the Town Hall Site]])
+text("downtime.projects.build_town_hall.benefit", [[The Town Hall opens for the whole town]])
+text("downtime.projects.build_town_hall.blurb", [[All of Blackbottom builds this together: every Downtime Activity spent contributes to the total.]])
+text("downtime.projects.build_town_hall.blurb_maxed", [[The Town Hall stands complete.]])
+--The banner when it is completed.
+text("downtime.projects.build_town_hall.complete_banner", [[The Town Hall!]])
+text("downtime.projects.build_town_hall.complete_subtitle", [[Blackbottom built it together. Come and have your say.]])
+
 ----------------------------------------------------------------------------
 -- PROJECTS: the Start a Project dialog
 ----------------------------------------------------------------------------
@@ -969,6 +988,10 @@ text("downtime.card.no_downtime", [[None of your heroes have Downtime Activities
 --The Construction's card, above the Hall of Heroes project.
 text("downtime.construction.intro", [[Build the Hall of Heroes where the works and deeds of the heroes of Blackbottom shall be recorded!]])
 text("downtime.construction.community", [[Come together to build the Hall of Heroes! When completed, the Hall of Heroes will be open for all to see the great deeds and works of Blackbottom's heroes.]])
+
+--The Town Hall Site's card, above the Build the Town Hall project.
+text("downtime.town_hall_site.intro", [[Build the Town Hall, decide the future of Blackbottom!]])
+text("downtime.town_hall_site.community", [[Come together to build the Town Hall! A place for the Council to meet and decide the important matters facing the town.]])
 
 ----------------------------------------------------------------------------
 -- PROJECTS: the project roll dialog
@@ -1134,6 +1157,46 @@ text("downtime.lines.hall.late_frustrated_3", [[If the architect changes the spi
 text("downtime.lines.hall.done_1", [[The last stone is set. The Hall of Heroes stands!]])
 text("downtime.lines.hall.done_2", [[The doors swing open, and the whole town cheers. We built this.]])
 text("downtime.lines.hall.done_3", [[Let every deed be written here. The Hall of Heroes is complete!]])
+
+----------------------------------------------------------------------------
+-- PROJECTS: what heroes say after a roll on Build the Town Hall
+----------------------------------------------------------------------------
+
+--Chosen the same way as the Arcane Market's lines above.
+text("downtime.lines.town_hall.early_hopeful_1", [[The surveyors have marked out the ground. It's going to be big.]])
+text("downtime.lines.town_hall.early_hopeful_2", [[I talked three merchants into donating timber. Persuasion is a trade too.]])
+text("downtime.lines.town_hall.early_hopeful_3", [[The first beam is up, and nobody has argued about it. Yet.]])
+text("downtime.lines.town_hall.early_neutral_1", [[We spent the morning deciding where the front door goes. Then the afternoon.]])
+text("downtime.lines.town_hall.early_neutral_2", [[Hauled bricks. Stacked bricks. Counted bricks.]])
+text("downtime.lines.town_hall.early_neutral_3", [[The plans have been redrawn twice. The ground does not care.]])
+text("downtime.lines.town_hall.early_frustrated_1", [[A committee was formed to decide on the committee room. It has not met.]])
+text("downtime.lines.town_hall.early_frustrated_2", [[Someone moved the surveyor's stakes in the night. We start again.]])
+text("downtime.lines.town_hall.early_frustrated_3", [[The guilds cannot agree whose stone to use, so we used none.]])
+
+text("downtime.lines.town_hall.mid_hopeful_1", [[The debating floor is laid. You can already hear the echoes of arguments to come.]])
+text("downtime.lines.town_hall.mid_hopeful_2", [[A crowd gathered to watch us raise the bell tower. Some even helped.]])
+text("downtime.lines.town_hall.mid_hopeful_3", [[The clerk's office has walls now. And a desk. The clerk is delighted.]])
+text("downtime.lines.town_hall.mid_neutral_1", [[More scaffolding, more stone. The hall grows a little every day.]])
+text("downtime.lines.town_hall.mid_neutral_2", [[We built the public gallery. It has very good acoustics for heckling.]])
+text("downtime.lines.town_hall.mid_neutral_3", [[The benches are going in. Hard ones, so the meetings stay short.]])
+text("downtime.lines.town_hall.mid_frustrated_1", [[The bell cracked on the way up. Now it only rings flat.]])
+text("downtime.lines.town_hall.mid_frustrated_2", [[A petition went around to change the color of the doors. The doors are not built.]])
+text("downtime.lines.town_hall.mid_frustrated_3", [[The canal rose overnight and the cellar is now a pond with ambitions.]])
+
+text("downtime.lines.town_hall.late_hopeful_1", [[The great doors are hung. Blackbottom will have its say at last.]])
+text("downtime.lines.town_hall.late_hopeful_2", [[They carved the town's crest over the entrance. It looks almost dignified.]])
+text("downtime.lines.town_hall.late_hopeful_3", [[The voting urns are polished and ready. Nearly there!]])
+text("downtime.lines.town_hall.late_neutral_1", [[Sweeping, polishing, sweeping again. The end is in sight.]])
+text("downtime.lines.town_hall.late_neutral_2", [[Just the finishing touches left. The clerks keep adding more.]])
+text("downtime.lines.town_hall.late_neutral_3", [[The notice board is up. Someone has already pinned a complaint to it.]])
+text("downtime.lines.town_hall.late_frustrated_1", [[The roof leaks right over the speaker's podium. Of course it does.]])
+text("downtime.lines.town_hall.late_frustrated_2", [[So close, and the clock tower runs backwards. Up the ladder again.]])
+text("downtime.lines.town_hall.late_frustrated_3", [[If one more councilor asks for a bigger chair...]])
+
+--The roll that completes it.
+text("downtime.lines.town_hall.done_1", [[The last tile is set. The Town Hall stands!]])
+text("downtime.lines.town_hall.done_2", [[The bell rings out over the canals. Blackbottom has a voice.]])
+text("downtime.lines.town_hall.done_3", [[Let the town gather and decide. The Town Hall is complete!]])
 
 ----------------------------------------------------------------------------
 -- LEADS: carousing at the Blue Fish Inn, and the conversations that tell a
@@ -1345,6 +1408,190 @@ text("market.shop.hint_done", [[The stalls change after this hero's next encount
 --The button at the bottom, and the tooltip on the X in the corner.
 text("market.shop.close_button", [[Close]])
 text("market.shop.close_tooltip", [[Close]])
+
+----------------------------------------------------------------------------
+-- TRIBUTE TO THE BUILDERS: who worked on a community project (the Hall of
+-- Heroes, the Town Hall), shown while it is built and after
+----------------------------------------------------------------------------
+
+--The small button under the project, and on the finished building. Short.
+text("tribute.button", [[Tribute to the Builders]])
+--The dialog's title. The project's name is shown under it.
+text("tribute.title", [[Tribute to the Builders]])
+text("tribute.loading", [[Reading the town's records...]])
+text("tribute.error", [[The town's records could not be read.]])
+--When no one has worked on it yet.
+text("tribute.empty", [[No one has worked on it yet. The cornerstone is still waiting to be laid!]])
+--The first builder.
+text("tribute.cornerstone", [[The Cornerstone]])
+text("tribute.cornerstone_subtitle", [[The first to lend a hand]])
+--The builder whose roll finished it (shown once it is complete).
+text("tribute.capstone", [[The Capstone]])
+text("tribute.capstone_subtitle", [[The hand that finished it]])
+--Under a builder's name in those boxes. {hero} is the hero who did the work,
+--{when} like "3 days ago".
+text("tribute.stone_detail", [[with {hero}, {when}]])
+--Under the boxes. {builders} and {points} are the counts below.
+text("tribute.summary", [[{builders} have given {points}.]])
+text("tribute.builder_count.one", [[{count} builder]])
+text("tribute.builder_count.other", [[{count} builders]])
+text("tribute.points.one", [[{count} Project Point]])
+text("tribute.points.other", [[{count} Project Points]])
+--The heading over the ranked list.
+text("tribute.ranked_heading", [[The Builders]])
+--When the list is cut short. {count} is how many more there are.
+text("tribute.more_builders.one", [[...and {count} more builder]])
+text("tribute.more_builders.other", [[...and {count} more builders]])
+--The tooltip on a builder: this heading, then one line per hero.
+text("tribute.heroes_heading", [[Their heroes:]])
+text("tribute.hero_line.one", [[{hero}: {count} point]])
+text("tribute.hero_line.other", [[{hero}: {count} points]])
+--A builder whose name the town did not keep (from before it kept names).
+text("tribute.unknown_player", [[A forgotten builder]])
+--A hero whose name is gone (removed by the moderators).
+text("tribute.unknown_hero", [[a hero now gone]])
+--The dialog's button. Short: a button.
+text("tribute.close_button", [[Close]])
+
+----------------------------------------------------------------------------
+-- THE TOWN HALL: town votes and petitions (Codex Titlescreen/EotwTownHall.lua)
+----------------------------------------------------------------------------
+
+--The two tabs at the top of the Town Hall's card. Short: tabs.
+text("townhall.tabs.votes", [[Town Votes]])
+text("townhall.tabs.petitions", [[Petitions]])
+--While a board is being read.
+text("townhall.loading", [[Loading...]])
+--Shown (and given as the reason) when the player has no town hero, so
+--cannot vote or petition.
+text("townhall.need_hero", [[You need a hero in Blackbottom to vote or raise a petition. Visit the Hero's Guild.]])
+--Shown when the town is offline.
+text("townhall.error.not_connected", [[Not connected to the town.]])
+
+--THE TOWN VOTES BOARD
+--The line at the top of the board.
+text("townhall.votes.intro", [[The council holds votes. Shape the future of Blackbottom by voting wisely!]])
+--When there are no votes at all.
+text("townhall.votes.empty", [[No questions have been put to the town yet.]])
+--Beside a choice once the results are shown. {count} is how many voted
+--for it, {percent} its share of all votes (a whole number).
+text("townhall.votes.tally", [[{count} ({percent}%)]])
+--Tooltips on a choice the player can vote for.
+text("townhall.votes.vote_tooltip", [[Vote for this.]])
+text("townhall.votes.your_choice_tooltip", [[Your vote. Pick another choice to change it.]])
+--How many have voted. {count} is the number.
+text("townhall.votes.voters.one", [[{count} vote]])
+text("townhall.votes.voters.other", [[{count} votes]])
+--The same while the results are hidden from the player (they have not
+--voted). {voters} is the line above.
+text("townhall.votes.footer_hidden", [[{voters} - vote to see the results]])
+--The line under the choices. {voters} is one of the lines above, {closes}
+--one of the closing lines below.
+text("townhall.votes.footer", [[{voters}  |  {closes}]])
+--When the vote closes.
+text("townhall.votes.closed", [[Voting has closed]])
+text("townhall.votes.no_end", [[Open until the council closes it]])
+text("townhall.votes.closes_soon", [[Closes within the hour]])
+text("townhall.votes.closes_hours.one", [[Closes in {count} hour]])
+text("townhall.votes.closes_hours.other", [[Closes in {count} hours]])
+text("townhall.votes.closes_days.one", [[Closes in {count} day]])
+text("townhall.votes.closes_days.other", [[Closes in {count} days]])
+--Who put the question. {name} is their name, {when} like "3 days ago".
+text("townhall.votes.posted_by", [[Put to the town by {name}, {when}]])
+
+--THE PETITIONS BOARD
+--The line at the top of the board.
+text("townhall.petitions.intro", [[Anyone in Blackbottom may raise a petition. Vote the ones you support up and the ones you oppose down; the council answers the petitions the town cares about most.]])
+--The two boards. Short: tabs.
+text("townhall.petitions.board_open", [[Open]])
+text("townhall.petitions.board_answered", [[Answered]])
+--The sort choices. Short.
+text("townhall.petitions.sort_label", [[Sort:]])
+text("townhall.petitions.sort_top", [[Most Support]])
+text("townhall.petitions.sort_new", [[Newest]])
+--The button that opens the new-petition dialog. Short: a button.
+text("townhall.petitions.post_button", [[Raise a Petition]])
+--Under the tabs. {count} is how many open petitions the player has, {max}
+--how many they may have.
+text("townhall.petitions.my_open", [[Your open petitions: {count} of {max}]])
+--When the player already has as many open petitions as allowed. {max} is
+--the limit.
+text("townhall.petitions.limit_reached", [[You already have {max} open petitions. Wait for one to be answered, or withdraw one, before raising another.]])
+--When a board is empty.
+text("townhall.petitions.empty_open", [[No petitions are open. Raise one!]])
+text("townhall.petitions.empty_answered", [[The council has not answered any petitions yet.]])
+--The button at the bottom of a long board. Short: a button.
+text("townhall.petitions.more_button", [[Show More]])
+--Under a petition's title. {name} is who raised it, {when} like "3 days
+--ago". The second is for the player's own.
+text("townhall.petitions.byline", [[Raised by {name}, {when}]])
+text("townhall.petitions.byline_mine", [[Raised by you, {when}]])
+--Under the score. {up} and {down} are the vote counts.
+text("townhall.petitions.tally", [[{up} for / {down} against]])
+--Tooltips on the vote buttons.
+text("townhall.petitions.upvote_tooltip", [[Support this petition.]])
+text("townhall.petitions.downvote_tooltip", [[Oppose this petition.]])
+text("townhall.petitions.unvote_tooltip", [[Take back your vote.]])
+text("townhall.petitions.closed_tooltip", [[This petition has been answered; voting is closed.]])
+--Over the council's answer. {name} is who answered, {when} like "a day ago".
+text("townhall.petitions.response_heading", [[The council's response ({name}, {when}):]])
+--The button on the player's own open petition. Short: a button.
+text("townhall.petitions.withdraw_button", [[Withdraw]])
+
+--A button that needs a second click shows this after the first. Short.
+text("townhall.dialog.confirm_click", [[Click to confirm]])
+--Every Town Hall dialog's cancel button. Short: a button.
+text("townhall.dialog.cancel_button", [[Cancel]])
+
+--THE RAISE A PETITION DIALOG
+text("townhall.post_petition.title", [[Raise a Petition]])
+text("townhall.post_petition.intro", [[Ask the council for something the town needs. Keep it short and clear so others can vote on it.]])
+text("townhall.post_petition.title_heading", [[What do you ask for?]])
+text("townhall.post_petition.title_placeholder", [[e.g. Lamps along the canal docks]])
+text("townhall.post_petition.body_heading", [[Why?]])
+text("townhall.post_petition.body_placeholder", [[Explain your petition...]])
+--Under the text boxes.
+text("townhall.post_petition.public_note", [[Everyone in Blackbottom can read your petition, with your name on it. You can withdraw it until the council answers.]])
+--Shown in red when something is missing.
+text("townhall.post_petition.need_title", [[Give your petition a title.]])
+text("townhall.post_petition.need_body", [[Say what your petition asks for and why.]])
+--The dialog's button. Short: a button.
+text("townhall.post_petition.post_button", [[Raise Petition]])
+
+--FOR THE COUNCIL (admins only): putting a question to the town, closing
+--and removing votes, and answering or removing petitions.
+text("townhall.votes.post_button", [[Put a Question to the Town]])
+text("townhall.votes.close_button", [[Close Vote]])
+text("townhall.votes.delete_button", [[Delete Vote]])
+text("townhall.petitions.answer_button", [[Answer]])
+text("townhall.petitions.edit_answer_button", [[Edit Answer]])
+text("townhall.petitions.remove_button", [[Remove]])
+--The Put a Question to the Town dialog.
+text("townhall.post_vote.title", [[Put a Question to the Town]])
+text("townhall.post_vote.intro", [[Players may vote. They will see the results once they have voted.]])
+text("townhall.post_vote.question_heading", [[Question]])
+text("townhall.post_vote.question_placeholder", [[e.g. Where should the next expedition go?]])
+text("townhall.post_vote.details_heading", [[Details (optional)]])
+text("townhall.post_vote.details_placeholder", [[Anything players should know before they vote...]])
+--{max} is the most choices a vote may have.
+text("townhall.post_vote.choices_heading", [[Choices (2 to {max}; leave the rest blank)]])
+--Inside each empty choice box. {number} is 1, 2, 3...
+text("townhall.post_vote.choice_placeholder", [[Choice {number}]])
+text("townhall.post_vote.duration_heading", [[Voting closes]])
+--The choices in the Voting closes dropdown.
+text("townhall.post_vote.duration_none", [[When I close it]])
+text("townhall.post_vote.duration_days.one", [[After {count} day]])
+text("townhall.post_vote.duration_days.other", [[After {count} days]])
+--Shown in red when something is missing.
+text("townhall.post_vote.need_question", [[Write the question first.]])
+text("townhall.post_vote.need_choices", [[A vote needs at least two choices.]])
+text("townhall.post_vote.post_button", [[Put to the Town]])
+--The Answer dialog.
+text("townhall.answer.title", [[Answer the Petition]])
+text("townhall.answer.intro", [[Your answer closes the petition to voting and is shown on it for everyone, with your name.]])
+text("townhall.answer.placeholder", [[The council's response...]])
+text("townhall.answer.need_response", [[Write a response first.]])
+text("townhall.answer.send_button", [[Send Answer]])
 
 ----------------------------------------------------------------------------
 -- MODERATION: a warning or ban from the town's moderators

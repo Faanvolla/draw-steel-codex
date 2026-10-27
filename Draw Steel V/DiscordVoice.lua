@@ -1,10 +1,11 @@
 local mod = dmhub.GetModLoading()
 
---Discord voice chat in a game. PROTOTYPE: admins only for now.
+--Discord voice chat in a game. PROTOTYPE: only admins can switch it on.
 --
---A Director who is an admin switches on the game setting "Discord Voice". In
---that game every admin who has linked their Discord account joins the game's
---Discord call in the background (the engine's DiscordControllerVoice.cs; one
+--A Director who is an admin switches on the game setting "Discord Voice" (only
+--admins see it); an Encounter of the Week game an admin hosts has it switched
+--on at setup (EncounterOfTheWeek.lua). In a game with it on, everyone who has
+--linked their Discord account joins the game's Discord call in the background (the engine's DiscordControllerVoice.cs; one
 --Discord lobby per game). The title bar shows a microphone next to the
 --network indicator (CodexTitleBar.lua), and its think drives DiscordVoice.Tick.
 --Right-clicking it opens the voice menu (DiscordVoice.CreateMenu); the full
@@ -36,7 +37,7 @@ local ANNOUNCE_REFRESH_SECONDS = 20
 local g_setting = setting{
     id = "discordvoice",
     description = "Discord Voice",
-    help = "Prototype: people in this game talk to each other over Discord voice. Admins only for now.",
+    help = "Prototype: everyone in this game can talk to each other over Discord voice. Only admins see this setting.",
     storage = "game",
     section = "game",
     editor = "check",
@@ -74,14 +75,16 @@ function DiscordVoice.Status()
     return g_status
 end
 
---- True when voice is on for this user in this game: an admin, in a real game
+--the Discord Voice setting is on in the real game we are in (any user, any build).
+local function VoiceOnInThisGame()
+    return dmhub.inGame and (not dmhub.isLobbyGame) and g_setting:Get() == true
+end
+
+--- True when voice is on for this user in this game: anyone in a real game
 --- with the Discord Voice setting on, in a build with Discord available.
 --- @return boolean
 function DiscordVoice.Available()
-    if (not dmhub.inGame) or dmhub.isLobbyGame or (not dmhub.isAdminAccount) then
-        return false
-    end
-    if g_setting:Get() ~= true then
+    if not VoiceOnInThisGame() then
         return false
     end
     local account = DiscordVoice.Status().account
@@ -337,12 +340,12 @@ function DiscordVoice.StatusText()
     return "Not in voice."
 end
 
---- True when the Discord Voice settings section shows: an admin (voice is a
---- prototype) in a build with Discord. Unlike Available it ignores the game
---- setting, because devices, volumes and sensitivity belong to this machine.
+--- True when the Discord Voice settings section shows, in a build with Discord:
+--- for an admin always (devices, volumes and sensitivity belong to this
+--- machine, not the game), for anyone else while in a game with voice on.
 --- @return boolean
 function DiscordVoice.SettingsAvailable()
-    if not dmhub.isAdminAccount then
+    if not (dmhub.isAdminAccount or VoiceOnInThisGame()) then
         return false
     end
     local account = DiscordVoice.Status().account
@@ -1008,6 +1011,20 @@ function DiscordVoice.CreateSettingsPanel()
         },
     })
 
+    --the Discord Voice game setting, for an admin hosting this game. It is
+    --here as well as in Settings > Game because a directorless game's host
+    --(every Encounter of the Week game) has no Game tab.
+    local canSwitchGameVoice = dmhub.isAdminAccount and dmhub.isDMOrPlayerHost and dmhub.inGame and not dmhub.isLobbyGame
+    local gameVoiceCheck = gui.Check{
+        value = g_setting:Get() == true,
+        text = "Voice in this game (for everyone in it)",
+        change = function(element)
+            if element.value ~= (g_setting:Get() == true) then
+                g_setting:Set(element.value)
+            end
+        end,
+    }
+
     local devices = {
         DeviceDropdown("input"),
         DeviceDropdown("output"),
@@ -1115,8 +1132,18 @@ function DiscordVoice.CreateSettingsPanel()
             actionButton:FireEvent("refreshVoice", s)
             unlinkButton:SetClass("collapsed", s.account ~= "ready")
             controlsPanel:SetClass("collapsed", s.account ~= "ready")
+            --follow changes made elsewhere (the Game tab, another session).
+            if canSwitchGameVoice and gameVoiceCheck.value ~= (g_setting:Get() == true) then
+                gameVoiceCheck.value = g_setting:Get() == true
+            end
         end,
 
+        gui.Panel{
+            classes = {"formRow", cond(not canSwitchGameVoice, "collapsed")},
+            width = "90%",
+            halign = "center",
+            gameVoiceCheck,
+        },
         accountRow,
         controlsPanel,
     }

@@ -4896,6 +4896,8 @@ local function CreateHeroColumn(hero)
             --so these cards carry the characteristics and skills the roster's
             --do not.
             showStats = true,
+            --out of combat a hero may spend a Recovery whenever they like.
+            spendRecovery = true,
             click = function(element, openCharacterPanel)
                 local mode = DragMode(charid)
                 if mode ~= nil then
@@ -5869,6 +5871,7 @@ local function CreateNarrativeHeroColumn(hero, section)
             halign = "center",
             draggable = individual and EncounterNarrative.LocalUserCanChooseFor(charid),
             showStats = true,
+            spendRecovery = true,
             click = function(element, openCharacterPanel)
                 if individual and EncounterNarrative.LocalUserCanChooseFor(charid) then
                     audio.FireSoundEvent("Mouse.Click")
@@ -6533,6 +6536,7 @@ local function CreatePrepHeroColumn(hero)
         card = hud.CreateHeroCard({ charid = hero.charid, mine = false, name = hero.name }, {
             halign = "center",
             showStats = true,
+            spendRecovery = true,
         })
     else
         card = gui.Label{ width = 132, height = 176, text = hero.name, bgimage = "panels/square.png", bgcolor = "#333333" }
@@ -7221,10 +7225,19 @@ EncounterMontageStage.CreateScriptStage = CreateScriptStage
 --  choice     = optional { text, note, onChoose }: a second, first-placed
 --               button (a series' "Continue to Part 2"); onChoose runs before
 --               onContinue. note is a line shown above the buttons.
+--               With stay = true the choice does not leave: its button
+--               turns into busyText and the player waits on this screen (the
+--               party going on together) until the caller closes it; the
+--               other button still takes them home. chosen = true opens it
+--               already chosen. status() is polled for the line above the
+--               buttons (nil keeps the note). With no text there is no choice
+--               button at all: the player waits on this screen, as if stayed.
+--Returns the screen.
 function EncounterMontageStage.ShowStoryScreen(args)
     local section = args.section
     local defeat = args.outcome == "defeat"
     local m_continued = false
+    local m_stayed = false
 
     local scene = nil
     if args.script ~= nil then
@@ -7276,20 +7289,41 @@ function EncounterMontageStage.ShowStoryScreen(args)
     local buttons = button
     local choice = args.choice
     if choice ~= nil then
+        local function ShowStayed(element)
+            m_stayed = true
+            element.text = choice.busyText or choice.text
+            element:SetClass("disabled", true)
+        end
+        --a choice with no text has no button: this player waits for someone
+        --else to decide (the series host), so the screen stays like a
+        --stayed one until the caller closes it.
+        if choice.text == nil then
+            m_stayed = true
+        end
         local choiceButton = gui.Button{
-            text = choice.text,
+            classes = {cond(choice.text == nil, "collapsed", nil)},
+            text = choice.text or "",
             valign = "top",
             tmargin = 18,
             rmargin = 16,
             width = 320,
             height = 48,
             fontSize = 22,
+            create = function(element)
+                if choice.stay and choice.chosen then
+                    ShowStayed(element)
+                end
+            end,
             click = function(element)
-                if m_continued then
+                if m_continued or m_stayed then
                     return
                 end
                 audio.FireSoundEvent("Mouse.Click")
                 pcall(choice.onChoose)
+                if choice.stay then
+                    ShowStayed(element)
+                    return
+                end
                 element:SetClass("disabled", true)
                 Continue()
             end,
@@ -7310,6 +7344,19 @@ function EncounterMontageStage.ShowStoryScreen(args)
                 height = "auto",
                 halign = "center",
                 tmargin = 14,
+                thinkTime = 0.5,
+                think = function(element)
+                    if choice.status == nil then
+                        return
+                    end
+                    local text = nil
+                    pcall(function() text = choice.status() end)
+                    text = text or choice.note or ""
+                    if element.text ~= text then
+                        element.text = text
+                    end
+                    element:SetClass("collapsed", text == "")
+                end,
             },
             gui.Panel{
                 width = "auto",
@@ -7382,6 +7429,10 @@ function EncounterMontageStage.ShowStoryScreen(args)
 
         captureEscape = true,
         escape = function(element)
+            --waiting for the party: Escape must not send the player home.
+            if m_stayed then
+                return
+            end
             Continue()
         end,
 
@@ -7391,8 +7442,13 @@ function EncounterMontageStage.ShowStoryScreen(args)
             end
         end,
 
-        --closed by anything else (a HUD rebuild): the player still goes home.
+        --closed by anything else (a HUD rebuild): the player still goes home,
+        --unless they are staying for the next part (the caller closes the
+        --screen when it starts).
         destroy = function(element)
+            if m_stayed then
+                return
+            end
             Continue()
         end,
     }

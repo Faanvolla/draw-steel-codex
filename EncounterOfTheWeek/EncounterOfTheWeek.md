@@ -120,6 +120,7 @@ The per-hero Victory award is not yet seen. See "Challenge Mode".
 | Change | Files | State |
 |---|---|---|
 | **Beastheart companions deploy at the start** (2026-10-24, user direction; see "Beastheart companions" under "Start-zone confinement"): a beastheart's companion is summoned onto the free Start-zone tile nearest its hero when the hero is placed | core `Draw Steel Beastheart/DSBeastheart.lua` (new `creature:SummonCompanionAt(beastheartToken, destination)`; the Call button's `CallCompanion` now calls it), `EncounterOfTheWeek.lua` (`EncounterOfTheWeekGame.DeployMyCompanions` -- a table field because the file is at the 200-local limit; called after `UnstackPlacedHeroes` in `SetupOnArrival` and after `PlaceMyHeroes` in `TestArrival`; End Test also deletes companions summoned by the hero copies) | luac + typing clean. NOT run in the app (needs a RESTART; no Beastheart in the authoring game yet). Check: an authoring test with a Beastheart puts the companion in the Start zone, owned by the player and sharing the hero's initiative entry; it can move inside the confinement; End Test removes it; a resume does not re-summon a dead companion; a Large companion fits. UNCOMMITTED |
+| **Spend a Recovery out of combat** (2026-10-26, user direction): on the montage, narrative and prep stages a hero may spend a Recovery freely (no action; it is not combat). A small green "+" sits beside the recoveries circle on the stage's hero cards, shown only while the local user controls the hero (`canControlAsUser`, falling back to `canControl`), the hero is below max Stamina and has a Recovery left, and is not dead. Pressing it heals Recovery-value Stamina and spends one Recovery (`ModifyProperties`, undoable). The narrative stage covers the screen before a fight and its "Draw steel!" screen. Hero cards everywhere else (roster, town, tabletop) do not get the button | core `Codex Titlescreen/EotwHeroCard.lua` (new `opts.spendRecovery`; `SpendableRecovery`, `CreateSpendRecoveryButton`, `eotwSpendRecovery` styles; `CreateStaminaRow` shrinks the bar 17 px while the button shows), `Codex Titlescreen/EotwTextHeroes.lua` (`herocard.recoveries.spend_tooltip`); `EncounterMontageStage.lua` (`spendRecovery = true` on the montage, narrative and prep hero cards) | luac + typing clean. NOT run in the app (needs a RESTART). Check: the "+" shows on a hurt hero you control and not at full Stamina, at 0 Recoveries, or on another player's hero; pressing it heals and the circle counts down; the button and its narrower bar look right on the card; no click falls through to the card's select / character panel. UNCOMMITTED |
 | **Spending Hero Tokens** (2026-10-22, user direction; see "Hero Token spends"): the Hero Tokens pool cell opens a spend menu on the local player's hero's turn (1 token: 2 surges; 2 tokens: Recovery-value Stamina), and the character panel's Hero Token icon opens the same menu in every game | core `Draw Steel Core Rules/DSResources.lua` (`CharacterResource.HeroTokenSpendOptions`, `HeroTokenSpendMenuEntries`), `Draw Steel Core Rules/MCDMCharacterPanel.lua` (`TacPanel.HeroTokenBox` icon press + tooltip line); `EncounterOfTheWeekHud.lua` (`SpendingHero`, `CanSpendHeroTokens`, the cell's `spendable` class, `refreshPools`/`press`, tooltip hint), `EncounterText.lua` (`hud.pool.herotokens.spend_hint`) | luac + typing + `uitext_check` clean. VERIFIED live 2026-10-22 in the Dwarvish Bandits authoring test (`1e3c159e`, player host, strict rules, High Elf Tactician's turn): outline + tooltip hint; the menu hangs under the cell (`popupPositioning = "panel"`, tooltip cleared on press); Gain 2 Surges took 1 token and gave 2 surges; with 1 token only the surge row showed; Regain 11 Stamina took 2 tokens and healed 25 -> 33; at 0 tokens the cell did not open; at full Stamina only the surge row. As Director (strict off) the character panel's token icon listed both, the Stamina row greyed "already at full Stamina", and Gain 2 Surges worked. NOT seen: a turn other than the hero's (the cell should not open), multi-client. The save-side "Succeed Instead" needed no change: VERIFIED live 2026-10-22 in an authoring test (a failed save vs Slowed showed the button under strict rolls; it spent 1 token and ended Slowed). UNCOMMITTED |
 | **Complication trinkets in the builder** (2026-10-21; see "Treasure-granting complications"): Secret Twin / Amnesia's trinket pick now actually gives the trinket (worn while a slot is free), swaps it on a re-pick, and takes it back when the pick or complication changes; also on joining the roster, including titlescreen recruits | `Codex Titlescreen/EotwBuild.lua` (`SyncTreasureGrants`, `Modify`, `Unchoose`, `RowOptions`), `Codex Titlescreen/EotwRoster.lua` (`JoinRoster`, `RecruitTitlescreenHero`), `Draw Steel Modifiers/ModifierGrantTreasure.lua` (`prompt` field) | luac + typing clean; in the git folder; app restarted. VERIFIED over MCP on in-memory heroes: pick / swap / same pick / unpick / switch to Amnesia / Fill / No Complication, and a trinket worn in `trinket1` that the swap replaced. NOT clicked through on the builder screen; the roster join and titlescreen recruit paths NOT run. The later Gold-only trinket filter (`RegisterOptionFilter`, `EnsureGoldTreasureFilter`) is luac + typing clean but NOT run (needs an app RESTART): expect 5 options on Secret Twin (Color Cloak Blue/Yellow/Red, Hellcharger Helm, Gecko Gloves; not Precious Collar). The Secret Twin assassin (respite d10 -> banner -> montage threat -> outcome clears the mark; `EotwDowntime.lua`, `FullscreenDisplay.lua`, `EncounterMontage.lua`, `EncounterScript.lua`, `EncounterOfTheWeek.lua`, `EotwRoster.lua`) is luac + typing clean and the snippet parse was checked with the bundled interpreter (951 parser checks still pass), but NOTHING of it has run in the app. To test: force `math.random` or set `eotwAssassinPending` on a Secret Twin hero; take a respite (banner and portrait); enter a game with a montage (threat card mid-arrival, 4d6 dice for the hero's player, damage lands); come home (mark cleared). UNCOMMITTED |
 | **Auto-equip treasure** (2026-10-19, user direction; see "Treasure goes home"): an equippable treasure a hero gains in a game (montage/narrative reward, delve or map chest, hand-over) is worn at once when there is a free slot, by the EotW hero sheet's rules; treasure arriving home in town is equipped the same way; the haul hand-over can give a worn find | `EncounterOfTheWeek/EncounterOfTheWeek.lua` (`AutoEquipTreasure`, host, from `MapScriptHostThink`; state doc `autoEquip`, cleared by `ClearTestArrival`), `EncounterOfTheWeek/EncounterMontage.lua` (`GrantItem` with a negative quantity goes through `GiveItem`, which unequips; `HeldQuantity` for the hand-over check), `Codex Titlescreen/EotwHeroSheetData.lua` (`EotwHeroSheet.EquipInPlace`), `Codex Titlescreen/EotwRoster.lua` (`ApplyOutcome` equips each treasure) | luac + typing clean; deployed; needs an app RESTART; NOT run. To test: win a trinket in a montage (it shows in a trinket slot on the hero sheet), loot a map chest (equipped within ~0.5s), take one off (it stays off), a hero at the leveled cap of 3 (stays in the bag), hand an equipped find to another hero (it moves and is worn there), and the town roster hero wearing it after the outcome lands |
@@ -411,7 +412,7 @@ export). Text from an encounter's own script document is not in them.
 
 | File | Holds |
 |---|---|
-| `Codex Titlescreen/EotwTextTown.lua` | the EotW screen, town map and locations, lobby/parties, Gate/Pits, debrief, welcome, survey, Steam invites, Hero's Guild, Graveyard, Hall of Heroes, the Blue Fish Inn, downtime, leads, the Arcane Market |
+| `Codex Titlescreen/EotwTextTown.lua` | the EotW screen, town map and locations, lobby/parties, Gate/Pits, debrief, welcome, survey, Steam invites, Hero's Guild, Graveyard, Hall of Heroes, the Blue Fish Inn, downtime, leads, the Arcane Market, the Town Hall (its admin dialogs too) |
 | `Codex Titlescreen/EotwTextHeroes.lua` | the hero builder, hero sheet, hero card |
 | `EncounterOfTheWeek/EncounterText.lua` | in-game: arrival, the stage, montages, narratives, Tactical Preparation, the HUD, presence/hosting, victory notes, parser-generated effect prose (`script.`) |
 | `EncounterOfTheWeek/EncounterAuthoringText.lua` | the Montage/Encounter/Script Builders, the validator, the authoring test, parser warnings (`author.script.`), edit messages (`author.script_edit.`) |
@@ -838,6 +839,66 @@ graveyard.
   - City: `hall-record` / `list-hall` / `get-hall-entry`, table `city_hall`,
     `/city/hallRev` (see `cloudflare-game-server/CLAUDE.md`). Needs a worker
     deploy before it does anything.
+- **The Town Hall** (BUILT 2026-10-26; server unit + end-to-end smoke
+  tested and DEPLOYED TO STAGING only; UI seen in the harness over fixture
+  data, NOT run against a live city). A second community building, built
+  exactly like the Hall of Heroes, then home to town votes and petitions.
+  Decided with the user 2026-10-26:
+  - **Construction.** Its own map node from day one (independent of the Hall
+    of Heroes): the **Town Hall Site** (hammer icon) until the community
+    project **Build the Town Hall** (`build-town-hall`, scope `community`,
+    4000 points, one completion, `autoStart`; Might, Reason or Presence;
+    Architecture, Lead, Persuade, Society) completes, then the **Town Hall**
+    (scroll icon). Completing it sets `unlocks.townHall` for every account.
+    The swap-and-beckon on completion is the Hall's, now shared
+    (`BuildingReveal` in `EncounterOfTheWeek.lua`).
+  - **Art:** the built Town Hall plays Czepeku Scenes' "Court of Justice"
+    (Original Day) 30s 1080p loop over its first frame (core image assets
+    uploaded 2026-10-26: video `9fdf38ac-0d7b-407a-8fd6-f595e5f88d05`, still
+    `636a931d-8c2d-481b-ac52-96584f04438b`, Czepeku credit; source
+    `C:/dev/eotw/art/town-hall-court-of-justice-day.webm`). **Still
+    placeholders:** the building site reuses the Hall of Heroes'
+    Construction still (`TOWN_HALL_SCENES` in `EncounterOfTheWeek.lua`), and
+    the map spot (0.6, 0.3), between the Gate and the Proving Pits, is
+    unchecked against the art.
+  - **Town Votes** ("issues"): only city admins (`CITY_ADMINS`) post them
+    (question, optional details, 2-6 choices, closes after N days or when an
+    admin closes it); admins can also close or delete one. Every account
+    with a town hero (living or fallen) casts one ballot, changeable until it
+    closes. Tallies are hidden from a player until they have voted (admins
+    always see them; everyone once it closes); the voter count always shows.
+    Open votes list first, newest first (the latest 50).
+  - **Petitions:** any account with a town hero posts one (title 3-100
+    chars, text up to 1500), at most **3 open** at once. Everyone with a
+    hero votes up / down / none, one vote per account, while it is open.
+    Boards: Open / Answered, sorted Most Support (up minus down) or Newest.
+    An admin may **answer** a petition (closes it to voting with an official
+    response and their name; the answer can be edited) or **remove** it; the
+    author may **withdraw** their own while it is open.
+  - Ballots and petitions are refused until the Town Hall is built and to
+    banned accounts (`BANNED_ACTIONS`); admins may post votes before it is
+    built, so it can open with questions waiting.
+  - Client: `Codex Titlescreen/EotwTownHall.lua` (global `EotwTownHall`,
+    registered in Codex Titlescreen after `EotwRoster`), `EotwTownHall.Panel`
+    is the built Town Hall's card; `EotwDowntime.TownHallConstructionPanel`
+    the site's; `EotwRoster.TownHallBuilt()`. The open panel watches
+    `/city/townHallRev` and re-reads its board when it changes. All text is
+    in `EotwTextTown.lua` (`eotw.locations.town_hall*`,
+    `downtime.projects.build_town_hall.*`, `downtime.town_hall_site.*`,
+    `downtime.lines.town_hall.*`, `townhall.*` -- the admin dialogs too).
+  - City: `list-issues`, `vote-issue`, `list-petitions`, `post-petition`,
+    `vote-petition`, `delete-petition`; admin `post-issue`, `close-issue`,
+    `delete-issue`, `answer-petition`. Tables `city_issues`,
+    `city_issue_votes`, `city_petitions`, `city_petition_votes`;
+    `/city/townHallRev`. Tests: `test/city-core.test.ts` ("the Town Hall")
+    and `test/city-townhall-smoke.ts` (`wrangler dev --env staging --var
+    CITY_ADMINS:smoke-admin`).
+  - **Not done:** release deploy; live test in the town (needs the staging
+    city's DO to pick up the new code, i.e. hibernate once, and an admin on
+    the staging server); no Discord card for new votes/petitions (project
+    milestone cards do name "the Town Hall"); `dev-reset-account` and
+    `scrub-hero` leave Town Hall votes and petitions alone; no comments on
+    petitions.
 
 ## Locations on the map
 
@@ -851,6 +912,7 @@ already has natural homes (fractions of the 6160x4480 canvas):
 | **Town Gate** | the walled city gate, top centre (~0.53, 0.13) | labeled "City Gate" on the source map |
 | **Graveyard** | the green churchyard beside the Cathedral (~0.31, 0.85) | |
 | **Hall of Heroes** | placeholder (0.33, 0.2), between the Inn and the Gate | BUILT 2026-10-21, not run; spot not yet checked against the art |
+| **Town Hall** | placeholder (0.6, 0.3), between the Gate and the Proving Pits | BUILT 2026-10-26 (staging only); spot and art are placeholders |
 | **Hero's Guild** | the small walled green island with a lone building in the canal (0.44, 0.42) | chosen when building (2026-10-02); the Safe House block (~0.54, 0.60) was the alternative |
 | **Blue Fish Inn** | the canal-side building west of the Guild (0.235, 0.455); moved 2026-10-11 (user direction) from the "Drunken Fool" tavern (0.335, 0.575), which the hero cards along the bottom covered | BUILT 2026-10-10 (Downtime); hidden until heroes first come home, then revealed once (2026-10-11, see "The inn's reveal") |
 | **Arcane Market** | the shop the "Front and Back" label points at (0.695, 0.18) | BUILT 2026-10-10; since 2026-10-11 hidden until the player finds it (see "Leads") |
@@ -2277,6 +2339,109 @@ As built:
   `victory`, before (and whatever happens to) the debrief dialog; the answer's
   list goes to `EotwRoster.SetPracticeWins` and the boards re-render. The
   debrief's vote goes to the series' bare key.
+
+### Going straight on in the same game (BUILT 2026-10-26; live-tested in the Proving Pits)
+
+User direction (2026-10-26): going home to Blackbottom and forming a new
+party between parts was awkward. When the next part plays on the **same
+map**, the party stays in the game and goes straight on to it, with no town,
+no new party and no survey between parts. Returning to town stays an option.
+Decisions:
+- **The host chooses for the whole party** (user direction 2026-10-26, which
+  replaced a first build where each player chose). The host sees "Continue to
+  Part N" on the victory screen's panel ("{part} lies ahead") and on the
+  Conclusion screen; pressing it starts the next part at once for everyone
+  still in the game, whatever screen they are on (a member's held victory
+  screen is closed, `DSVictoryScreen.DismissHeld`). Everyone else sees "{host}
+  chooses whether the party goes straight on" and no Continue button.
+- **Going home**: the host's Return to Blackbottom ends the game as before;
+  the others' Conclusion screens then say "{host} has returned to
+  Blackbottom" and they press their own Return. Any other player may go home
+  alone with their Return button before the host decides: their heroes are
+  deleted from the game for the next part, they leave `expectedUsers`, and
+  their own client took their part's results home. Offline or abandoned
+  players are left out the same way.
+- **A party with no hero standing** gets no in-game offer (the old town
+  handoff shows); a player whose own heroes all fell goes on with the party
+  as a spectator (and can leave).
+- **No respite between parts**: heroes keep Stamina and Recoveries spent.
+  Malice resets to 0 and the Hero Tokens are reseeded to the party size, as a
+  new game for the part would. A hero who fell stays fallen (buried with the
+  part won); a dying hero goes on.
+- **A next part with its own part map still goes through the town** (only
+  same-map continuation is built).
+
+As built (`EncounterOfTheWeek.lua`, all on the `Series` table: the file is at
+the 200-local ceiling):
+- **Run ids.** Each part played in one game is its own run: the game's id for
+  the first, then `"<gameid>-part<n>"` (`Series.RunId()`, state doc `runId`).
+  Everything the City or town does once per game uses it: pending outcomes
+  (key and `gameid`), `offer-outcomes`, the pending debrief, the Hall of Heroes
+  entry (its seconds count from `partStartSeconds`, its rounds skip
+  `priorBattles`), and the analytics run (`EotwAnalytics.SetRunId`;
+  `HasOpenRun` / `CloseRun` / `ReconcileRuns` treat `<gameid>-part<n>` as the
+  game's). `GAME_ID_REGEX` already allows it, so the City needed no change.
+  The survey and `eotw:concludedgame` stay on the real game id.
+- **Choices**: one document per player, `eotwnext-<userid>` `{key, choice,
+  at}` (`Series.ChooseContinue`, `ChoiceOf`). Only the host's "continue"
+  starts the part (`Series.ContinueTick` -> `StartNextPart(offered,
+  PartyGoingOn(key))`); a member's "home" (written by `LeaveForTown`) only
+  leaves them out, and the host's "home" is what members' `WaitingText`
+  reports.
+- **The conclusion** (`UpdateEncounterConclusion`): outcomes and absent offers
+  as before; then, when `Series.ContinuesHere(nextPart)`, it sets
+  `Series.offered` and defers what only a departure does
+  (`Series.ConcludeForTown`: debrief, survey, analytics end, concludedgame,
+  leave-game) to `Series.LeaveForTown`, which also writes the "home" choice.
+  Otherwise it behaves as before. With no Conclusion text the screen still
+  shows (`encounter.series_next.no_story`).
+- **Story screen** (`EncounterMontageStage.ShowStoryScreen`): `choice.stay`,
+  `chosen`, `busyText`, `status()`; a choice with no `text` has no button (a
+  member's); a stayed or buttonless screen is not ended by destroy or Escape,
+  and is returned so the caller can close it. Going home after a deferred
+  conclusion waits up to 4 s for the lobby to answer `leave-game` (a host's
+  leave lost to `LeaveGame` left the party's record in the town; seen and
+  fixed 2026-10-26).
+- **The host's start** (`Series.ContinueTick` from the 1s driver ->
+  `StartNextPart` -> `StartNextPartNow`): the story so far plus the part just
+  won (`CarriedStory`), the heroes going on / buried / removed,
+  `EncounterMontage.ResetTest({keepHeroes = true})` (new option: the reset no
+  longer heals), the state doc rewritten for the new part (key, runId,
+  `seriesContinue {from, fromRunId, to}`, expectedUsers, arrived, the combat,
+  arrival-item, award and analytics stamps cleared) with no yield between the
+  reset and that write, then `SeedSeriesStory`, `ApplyPlayRegion`,
+  `MoveStrayHeroesIntoPlay` and companions beside their heroes, numheroes and
+  `SeedHeroTokens`, `BeginOpeningMontage`, and the map script attached fresh.
+- **Every client** (`Series.OnNewPart`, on a `runId` change): closes the
+  analytics run, resets its end-of-encounter flags, closes the story screen,
+  re-centres the camera; in the Proving Pits it sends `record-practice-win`
+  for the part just won (the town's debrief would have); at the Gate it stamps
+  `alreadyCompleted` for the new part from `list-heroes` (no party record
+  carries it here).
+- **Resume**: a game that went on (`seriesContinue` set) keeps its stamped key
+  over the lobby record's, keeps its recorded `expectedUsers`, and does not
+  re-stamp completions from the arrival's hero list. `OutcomesFor` and the
+  Hall skip `buriedHeroes`.
+- **Town** (`EotwRoster.ApplyPendingOutcomes`): one outcome per hero at a time
+  (two parts' outcomes would push the hero from the same revision); an
+  earlier part's pending outcome loses its `wounds` when a later part records
+  the hero's.
+
+Live-tested 2026-10-26 (one player, Proving Pits, Aixco Hollow, monsters
+killed by script): Part 1 won -> Conclusion -> Continue -> Part 2 set up in
+the same game in about a second (region, start tiles, wounds kept, 4 Hero
+Tokens, run id `-part2`, no debrief or survey queued, practice win sent) ->
+Part 2 won -> the victory panel's button -> Part 3 the same -> Part 3 won ->
+home: one debrief, for Part 3. Host-decides, same day, with a second
+(non-host, heroless) player window: the member's victory panel and
+Conclusion screen show "{host} chooses..." and no Continue; the host's
+Continue took the member from their Conclusion screen into Part 2, and from
+their still-open victory screen into Part 3. **Not tested**: a member with
+heroes of their own (their heroes moving, a member going home and their
+heroes leaving), the members' "host has returned" line, the Gate (pending
+outcomes per part, `alreadyCompleted` from `list-heroes`, Hall entries), a
+resume mid-part, a montage opening a later part (the published Aixco Hollow
+v2 has none; the 2026-10-26 Part 2 montage is in the authoring game only).
 
 ## City (`cloudflare-game-server`)
 

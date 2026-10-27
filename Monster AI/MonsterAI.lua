@@ -25,6 +25,8 @@ MonsterAI.squadCallLines = {
 MonsterAI.squadAnswerLines = {"Raaah!", "Get 'em!", "Together!", "Hyaaah!", "Now!", "Yes, boss!"}
 MonsterAI.abilities = {}
 MonsterAI.tactics = {}
+MonsterAI.behaviors = {} --switchable behavior modules (RegisterBehavior).
+MonsterAI.behaviorSources = {} --per-encounter behavior switches (RegisterBehaviorSource).
 MonsterAI.maliceAbilities = {}
 MonsterAI.villainActions = {}
 MonsterAI.deferredTriggerLog = {}
@@ -1589,6 +1591,7 @@ local g_aiLogCategoryNames = {
     ["Malice Abilities"] = "Malice Ability",
     ["Villain Actions"] = "Villain Action",
     ["Tactics"] = "Tactic",
+    ["Behaviors"] = "Behavior",
 }
 
 local function AILogText(value)
@@ -2329,6 +2332,183 @@ function creature:MoveToLocPermitted(loc)
     return true
 end
 
+--Avoid Opportunity Attacks ---------------------------------------------------
+--A creature with this behavior (RegisterBehavior in MonsterAITactics.lua) plans
+--its moves so it does not walk out of an adjacent enemy's reach, unless the
+--plan that does is worth far more than the best one that does not.
+--
+--It is an estimate made from where the creature starts and where it ends: an
+--enemy it starts next to and does not end next to gets an opportunity attack.
+--It does not see a route that leaves and comes back, or one that walks past
+--an enemy it did not start next to.
+MonsterAI.avoidOpportunityAttacksBehavior = "Avoid Opportunity Attacks"
+--What each provoked opportunity attack costs a plan, in move score (a standard
+--signature move scores 1.0, a free strike 0.2).
+MonsterAI.opportunityAttackPenalty = 0.8
+--The same for a minion squad member's strike position, in squad planning cost,
+--where a square of movement costs 10 and a target edge is worth 5. An
+--opportunity attack kills a minion, so this outweighs any detour it can make.
+MonsterAI.squadOpportunityAttackPenalty = 100
+
+--- The enemies who could make an opportunity attack if this creature walked
+--- out of their reach now, or nil when there are none or it does not have the
+--- Avoid Opportunity Attacks behavior. Mirrors the observer checks in
+--- creature:OnMove (Creature.lua) and the token HUD's preview.
+--- @param token CharacterToken
+--- @return CharacterToken[]|nil
+function MonsterAI:OpportunityAttackers(token)
+    if not MonsterAI.HasBehavior(token, MonsterAI.avoidOpportunityAttacksBehavior) then
+        return nil
+    end
+    local mover = self:GetMovementToken(token)
+    if mover == nil or not mover.valid or mover.properties == nil then
+        return nil
+    end
+    local memo = self:PlanningMemo()
+    local key = token.charid .. "@" .. mover.loc.str
+    local cached = memo.opportunityAttackers[key]
+    if cached ~= nil then
+        return cached or nil
+    end
+
+    local moverImmune = (mover.properties:CalculateNamedCustomAttribute("Immunity from Opportunity Attack") or 0) > 0
+    local result = {}
+    for _,enemy in ipairs(self:try_get("enemyTokens", {})) do
+        if self.TokenIsLiveCombatant(enemy) and not enemy:IsFriend(mover)
+            and MonsterAI.TargetDistance(mover, enemy) <= 1 then
+            local p = enemy.properties
+            local anyMovement = (p:CalculateNamedCustomAttribute("Opportunity Attack On Any Movement") or 0) > 0
+            if (not moverImmune or anyMovement)
+                and p:try_get("_tmp_grabbedby") ~= mover.charid
+                and p:CanUseTriggeredAbilities()
+                and p:CanMakeOpportunityAttacks()
+                and not p:HasBanesOnGenericFreeStrike(mover)
+                and p:CanOpportunityAttack(enemy, mover) then
+                result[#result+1] = enemy
+            end
+        end
+    end
+    if #result == 0 then
+        memo.opportunityAttackers[key] = false
+        return nil
+    end
+    memo.opportunityAttackers[key] = result
+    return result
+end
+
+--- How many opportunity attacks a move ending at loc provokes: one for each
+--- of `attackers` (from OpportunityAttackers) the creature is no longer next to.
+--- @param token CharacterToken
+--- @param loc Loc|nil
+--- @param attackers CharacterToken[]|nil
+--- @return integer
+function MonsterAI:OpportunityAttacksProvokedAt(token, loc, attackers)
+    if attackers == nil or loc == nil or self:MovementTokenIsAtLoc(token, loc) then
+        return 0
+    end
+    local mover = self:GetMovementToken(token)
+    local count = 0
+    for _,enemy in ipairs(attackers) do
+        if self:TargetDistanceFromLoc(mover, enemy, loc) > 1 then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+--- Choose a move for a creature avoiding opportunity attacks. Moves are scored
+--- twice: first from only the squares that provoke nothing, then from every
+--- square. The second pass's plan is taken only when it ends on a square that
+--- provokes and still beats the first pass after paying
+--- opportunityAttackPenalty for each attack. Otherwise the safe squares stay
+--- in force while the chosen move executes, so it cannot re-plan onto one
+--- that provokes. Returns what ScoreMoves returns.
+--- @param token CharacterToken
+--- @param attackers CharacterToken[]
+--- @param scoreMoves fun(): table, table|nil, table|nil
+--- @return table bestScore
+--- @return table|nil bestMove
+--- @return table|nil synthesizedMove
+function MonsterAI:ChooseAvoidingOpportunityAttacks(token, attackers, scoreMoves)
+    local allPaths = self.paths
+    local safePaths = {}
+    for key,info in pairs(allPaths or {}) do
+        if (info.provokes or self:OpportunityAttacksProvokedAt(token, info.loc, attackers)) == 0 then
+            safePaths[key] = info
+        end
+    end
+
+    local attackerTargets = {}
+    for _,enemy in ipairs(attackers) do
+        attackerTargets[#attackerTargets+1] = {token = enemy}
+    end
+    local context = {}
+    for key,value in pairs(self:try_get("_tmp_aiLogContext") or {}) do
+        context[key] = value
+    end
+    local function SetPass(name)
+        local passContext = {}
+        for key,value in pairs(context) do
+            passContext[key] = value
+        end
+        passContext.oaPass = name
+        self:SetLogContext(token, passContext)
+    end
+
+    self:LogDecision("AVOID OPPORTUNITY ATTACKS", {
+        targets = self.TargetsLogName(attackerTargets),
+        reason = "scoring moves from squares that provoke nothing, then from every square",
+    })
+
+    SetPass("safe")
+    self.paths = safePaths
+    self._tmp_oaSafeOnly = token.charid
+    local ok, safeScore, safeMove, safeSynthesized = pcall(scoreMoves)
+    self.paths = allPaths
+    self._tmp_oaSafeOnly = nil
+    if not ok then
+        self:SetLogContext(token, context)
+        error(safeScore)
+    end
+
+    SetPass("any")
+    local riskyScore, riskyMove, riskySynthesized = scoreMoves()
+    self:SetLogContext(token, context)
+
+    --a pass's choice, by the caller's rule: the synthesized move only when it
+    --scores strictly higher than the best registered one.
+    local function Choice(score, move, synthesized)
+        if synthesized ~= nil and synthesized.score > score.score then
+            return synthesized.score, synthesized.loc
+        end
+        return score.score, move ~= nil and score.loc or nil
+    end
+    local safeValue = Choice(safeScore, safeMove, safeSynthesized)
+    local riskyValue, riskyLoc = Choice(riskyScore, riskyMove, riskySynthesized)
+    local provokes = self:OpportunityAttacksProvokedAt(token, riskyLoc, attackers)
+    local penalized = riskyValue - MonsterAI.opportunityAttackPenalty*provokes
+
+    if provokes > 0 and penalized > safeValue then
+        self:LogDecision("AVOID OPPORTUNITY ATTACKS", {
+            score = penalized,
+            to = self.LocLogName(riskyLoc),
+            result = string.format("provokes %d: worth %.3f before the penalty, beats the best safe plan (%.3f)",
+                provokes, riskyValue, safeValue),
+        })
+        return riskyScore, riskyMove, riskySynthesized
+    end
+
+    self:LogDecision("AVOID OPPORTUNITY ATTACKS", {
+        score = safeValue,
+        result = provokes > 0
+            and string.format("stays safe: the plan that provokes %d is worth %.3f after the penalty", provokes, penalized)
+            or "stays safe: no better plan provokes",
+    })
+    self.paths = safePaths
+    self._tmp_oaSafeOnly = token.charid
+    return safeScore, safeMove, safeSynthesized
+end
+
 function MonsterAI:CalculateMovementPaths(token, movementAllowanceDecis, flags)
     local movementToken = self:GetMovementToken(token)
     local prof = ProfBegin("engine: CalculatePathfindingArea")
@@ -2385,6 +2565,27 @@ function MonsterAI:CalculateMovementPaths(token, movementAllowanceDecis, flags)
             end
             numPaths = numPaths - #offPostKeys
             self:PlanningMemo().holdActive[token.charid] = true
+        end
+    end
+
+    --Avoid Opportunity Attacks: mark what ending on each square provokes. While
+    --this creature's moves are limited to safe squares
+    --(ChooseAvoidingOpportunityAttacks), the squares that provoke are dropped.
+    local attackers = self:OpportunityAttackers(token)
+    if attackers ~= nil then
+        local safeOnly = self:try_get("_tmp_oaSafeOnly") == token.charid
+        local provokingKeys = {}
+        for key,pathInfo in pairs(paths) do
+            pathInfo.provokes = self:OpportunityAttacksProvokedAt(token, pathInfo.loc, attackers)
+            if pathInfo.provokes > 0 then
+                provokingKeys[#provokingKeys+1] = key
+            end
+        end
+        if safeOnly then
+            for _,key in ipairs(provokingKeys) do
+                paths[key] = nil
+            end
+            numPaths = numPaths - #provokingKeys
         end
     end
 
@@ -3453,6 +3654,8 @@ function MonsterAI:PlayTurnCoroutine(initiativeid)
                         })
 
                         local result = self:FindAndExecuteMove()
+                        --a move limited to safe squares is done with them.
+                        self._tmp_oaSafeOnly = nil
                         ProfPhaseEnd(cyclePhase, tostring(result))
                         self:LogDecision("MOVE CYCLE FINISHED", {
                             result = result,
@@ -4447,6 +4650,8 @@ function MonsterAI:PlanningMemo()
             chargeProbes = {},
             --a LuaChargeRouteCache, made when the first charge is probed.
             chargeRoutes = false,
+            --"charid@loc" -> OpportunityAttackers' answer (false for none).
+            opportunityAttackers = {},
             --charid -> true once a path search kept that holder on its post.
             holdActive = {},
         }
@@ -4935,6 +5140,8 @@ function MonsterAI:FindSquadMemberStrikeOptions(squadMember, ability, reserved)
                 and not self.SquadOptionIsFree(reserved, offsets, destLoc, target.charge)
             local cost = info.cost
             cost = cost - target.edges * 5 --we love to get edges
+            --Avoid Opportunity Attacks (CalculateMovementPaths marks provokes).
+            cost = cost + (info.provokes or 0)*MonsterAI.squadOpportunityAttackPenalty
             if target.charge ~= nil then
                 --if charging, prefer to move in line with the charge
                 local deltaMove = {x = target.charge.x - squadMember.token.loc.x, y = target.charge.y - squadMember.token.loc.y}
@@ -6262,6 +6469,10 @@ function MonsterAI.MoveMatchesMonster(token, move, includeDisabled)
         --minion signatures cannot be disabled.
         includeDisabled = true
     end
+    if move.behavior then
+        --behaviors are off unless switched on (see RegisterBehavior).
+        return MonsterAI.HasBehavior(token, move.id, includeDisabled)
+    end
     local monster_type = token.properties:try_get("monster_type", "")
     if not includeDisabled then
         if move.disabledForMonsters ~= nil and move.disabledForMonsters[monster_type] then
@@ -6446,8 +6657,12 @@ function MonsterAI:FindAdvancePlan(token, paths)
     local reachable = {}
     local canMove = false
     for _,info in pairs(paths) do
-        reachable[info.loc.xyfloorOnly.str] = info
-        if info.cost > 0 then canMove = true end
+        --advancing is never worth an opportunity attack to a creature that
+        --avoids them (CalculateMovementPaths marks provokes).
+        if (info.provokes or 0) == 0 then
+            reachable[info.loc.xyfloorOnly.str] = info
+            if info.cost > 0 then canMove = true end
+        end
     end
     if not canMove then return nil end
     local best = nil
@@ -7258,6 +7473,7 @@ function MonsterAI:FindAndExecuteMove()
     --before each RunYieldingFunction below (ProfEnd is safe to repeat).
     local chooseProf = ProfBegin("choose move")
     self._tmp_moveFailure = nil
+    self._tmp_oaSafeOnly = nil
     local token = self.token
     local searchContext = {}
     for key,value in pairs(self:try_get("_tmp_aiLogContext") or {}) do
@@ -7281,8 +7497,6 @@ function MonsterAI:FindAndExecuteMove()
     end
 
     local abilities = self.abilities
-    local bestScore = {score = 0}
-    local bestMove = nil
     local failedMoves = self:try_get("_tmp_failedMoves", {})
     self._tmp_failedMoves = failedMoves
 
@@ -7335,140 +7549,156 @@ function MonsterAI:FindAndExecuteMove()
         return g_moveResultNone
     end
 
-    for _,moveid in ipairs(self:MovesInScoringOrder()) do
-        local move = self.moves[moveid]
-        local registeredForMonster = self.MoveMatchesMonster(token, move, true)
-        local matchesMonster = registeredForMonster and self.MoveMatchesMonster(token, move)
+    --Scores every registered move and the synthesized fallback against
+    --self.paths. Run twice for a creature avoiding opportunity attacks
+    --(ChooseAvoidingOpportunityAttacks).
+    local function ScoreMoves()
+        local bestScore = {score = 0}
+        local bestMove = nil
+        for _,moveid in ipairs(self:MovesInScoringOrder()) do
+            local move = self.moves[moveid]
+            local registeredForMonster = self.MoveMatchesMonster(token, move, true)
+            local matchesMonster = registeredForMonster and self.MoveMatchesMonster(token, move)
 
-        local usingAbilities = {}
-        if registeredForMonster and failedMoves[moveid] then
-            matchesMonster = false
-            self:SetMoveLogContext(token, move)
-            self:LogDecision("MOVE REJECTED", {
-                ability = self.AbilitiesLogName(move.abilities),
-                reason = "move failed earlier during this actor's turn",
-            })
-        elseif registeredForMonster and not matchesMonster then
-            self:SetMoveLogContext(token, move)
-            self:LogDecision("MOVE REJECTED", {
-                ability = self.AbilitiesLogName(move.abilities),
-                reason = "disabled for this monster in the Monster AI panel",
-            })
-        elseif matchesMonster and move.abilities ~= nil then
-            for i=1,#move.abilities do
-                local ability = FindAbilityByName(abilities, move.abilities[i])
-                if ability == nil then
-                    self:SetMoveLogContext(token, move)
-                    self:LogDecision("MOVE REJECTED", {
-                        ability = move.abilities[i],
-                        reason = "required ability is not present on the actor",
-                    })
-                    matchesMonster = false
-                    break
+            local usingAbilities = {}
+            if registeredForMonster and failedMoves[moveid] then
+                matchesMonster = false
+                self:SetMoveLogContext(token, move)
+                self:LogDecision("MOVE REJECTED", {
+                    ability = self.AbilitiesLogName(move.abilities),
+                    reason = "move failed earlier during this actor's turn",
+                })
+            elseif registeredForMonster and not matchesMonster then
+                self:SetMoveLogContext(token, move)
+                self:LogDecision("MOVE REJECTED", {
+                    ability = self.AbilitiesLogName(move.abilities),
+                    reason = "disabled for this monster in the Monster AI panel",
+                })
+            elseif matchesMonster and move.abilities ~= nil then
+                for i=1,#move.abilities do
+                    local ability = FindAbilityByName(abilities, move.abilities[i])
+                    if ability == nil then
+                        self:SetMoveLogContext(token, move)
+                        self:LogDecision("MOVE REJECTED", {
+                            ability = move.abilities[i],
+                            reason = "required ability is not present on the actor",
+                        })
+                        matchesMonster = false
+                        break
+                    end
+
+                    local affordProf = ProfBegin("CanAfford")
+                    local canAfford = ability:CanAfford(token)
+                    ProfEnd(affordProf)
+                    if not canAfford then
+                        self:SetMoveLogContext(token, move)
+                        self:LogDecision("MOVE REJECTED", {
+                            ability = ability.name,
+                            action = self.AbilityActionLogName(ability),
+                            reason = AIAbilityUnavailableReason(token, ability),
+                        })
+                        self:LogMove(self.token.properties.monster_type, moveid, "Could not afford", {onlyIfEmpty = true})
+                        matchesMonster = false
+                        break
+                    end
+
+                    usingAbilities[#usingAbilities+1] = ability
                 end
-
-                local affordProf = ProfBegin("CanAfford")
-                local canAfford = ability:CanAfford(token)
-                ProfEnd(affordProf)
-                if not canAfford then
-                    self:SetMoveLogContext(token, move)
-                    self:LogDecision("MOVE REJECTED", {
-                        ability = ability.name,
-                        action = self.AbilityActionLogName(ability),
-                        reason = AIAbilityUnavailableReason(token, ability),
-                    })
-                    self:LogMove(self.token.properties.monster_type, moveid, "Could not afford", {onlyIfEmpty = true})
-                    matchesMonster = false
-                    break
-                end
-
-                usingAbilities[#usingAbilities+1] = ability
             end
-        end
 
-        --A move only replaces the best when it scores strictly higher.
-        if matchesMonster and move.maxScore ~= nil and move.maxScore <= bestScore.score then
-            ProfCount("moves skipped: cannot beat best")
-            self:SetMoveLogContext(token, move)
-            self:LogDecision("MOVE SKIPPED", {
-                ability = self.AbilitiesLogName(usingAbilities),
-                score = move.maxScore,
-                reason = string.format("its maximum score cannot beat the best so far (%.3f)", bestScore.score),
-            })
-            self:LogMove(self.token.properties.monster_type, moveid,
-                string.format("Skipped: cannot beat %.2f", bestScore.score), {onlyIfEmpty = true})
-            matchesMonster = false
-        end
-
-        if matchesMonster then
-            self:SetMoveLogContext(token, move)
-            self:LogDecision("MOVE SCORING", {
-                ability = self.AbilitiesLogName(usingAbilities),
-                action = self.AbilityActionsLogName(usingAbilities),
-                result = "all required abilities are present and affordable",
-            })
-            local scoreProf = ProfBegin("score: " .. tostring(moveid))
-            --Score functions often return only {score, loc}, so the strike
-            --planner's chosen targets are captured here for the preview.
-            local strikePlans = {}
-            self._tmp_strikePlans = strikePlans
-            local ok, score, scoringReason = pcall(
-                move.score, move, self, token,
-                usingAbilities[1], usingAbilities[2], usingAbilities[3])
-            self._tmp_strikePlans = nil
-            ProfEnd(scoreProf)
-            if not ok then
-                failedMoves[moveid] = true
-                self:LogDecision("MOVE ERROR", {
+            --A move only replaces the best when it scores strictly higher.
+            if matchesMonster and move.maxScore ~= nil and move.maxScore <= bestScore.score then
+                ProfCount("moves skipped: cannot beat best")
+                self:SetMoveLogContext(token, move)
+                self:LogDecision("MOVE SKIPPED", {
                     ability = self.AbilitiesLogName(usingAbilities),
-                    reason = "scoring failed: " .. tostring(score),
-                    result = "move quarantined for this actor",
+                    score = move.maxScore,
+                    reason = string.format("its maximum score cannot beat the best so far (%.3f)", bestScore.score),
                 })
                 self:LogMove(self.token.properties.monster_type, moveid,
-                    "Scoring failed: " .. tostring(score))
-            elseif type(score) == "table" and type(score.score) == "number" then
-                self:LogMove(self.token.properties.monster_type, moveid, string.format("Score: %.2f", score.score))
-                self:LogDecision("MOVE CANDIDATE", {
+                    string.format("Skipped: cannot beat %.2f", bestScore.score), {onlyIfEmpty = true})
+                matchesMonster = false
+            end
+
+            if matchesMonster then
+                self:SetMoveLogContext(token, move)
+                self:LogDecision("MOVE SCORING", {
                     ability = self.AbilitiesLogName(usingAbilities),
                     action = self.AbilityActionsLogName(usingAbilities),
-                    score = score.score,
-                    plan = self.ScoringPlanLogName(score),
-                    result = score.score > 0 and "legal candidate" or "non-positive score",
+                    result = "all required abilities are present and affordable",
                 })
-            else
-                self:LogMove(self.token.properties.monster_type, moveid, "Could not make move", {onlyIfEmpty = true})
-                self:LogDecision("MOVE REJECTED", {
-                    ability = self.AbilitiesLogName(usingAbilities),
-                    reason = scoringReason or (score == nil
-                        and "score callback returned no legal plan"
-                        or "score callback returned no numeric score"),
-                })
-            end
-            if type(score) == "table" and type(score.score) == "number"
-                and score.score > bestScore.score then
-                score.usingAbilities = usingAbilities
-                score.strikePlans = strikePlans
-                bestScore = score
-                bestMove = move
+                local scoreProf = ProfBegin("score: " .. tostring(moveid))
+                --Score functions often return only {score, loc}, so the strike
+                --planner's chosen targets are captured here for the preview.
+                local strikePlans = {}
+                self._tmp_strikePlans = strikePlans
+                local ok, score, scoringReason = pcall(
+                    move.score, move, self, token,
+                    usingAbilities[1], usingAbilities[2], usingAbilities[3])
+                self._tmp_strikePlans = nil
+                ProfEnd(scoreProf)
+                if not ok then
+                    failedMoves[moveid] = true
+                    self:LogDecision("MOVE ERROR", {
+                        ability = self.AbilitiesLogName(usingAbilities),
+                        reason = "scoring failed: " .. tostring(score),
+                        result = "move quarantined for this actor",
+                    })
+                    self:LogMove(self.token.properties.monster_type, moveid,
+                        "Scoring failed: " .. tostring(score))
+                elseif type(score) == "table" and type(score.score) == "number" then
+                    self:LogMove(self.token.properties.monster_type, moveid, string.format("Score: %.2f", score.score))
+                    self:LogDecision("MOVE CANDIDATE", {
+                        ability = self.AbilitiesLogName(usingAbilities),
+                        action = self.AbilityActionsLogName(usingAbilities),
+                        score = score.score,
+                        plan = self.ScoringPlanLogName(score),
+                        result = score.score > 0 and "legal candidate" or "non-positive score",
+                    })
+                else
+                    self:LogMove(self.token.properties.monster_type, moveid, "Could not make move", {onlyIfEmpty = true})
+                    self:LogDecision("MOVE REJECTED", {
+                        ability = self.AbilitiesLogName(usingAbilities),
+                        reason = scoringReason or (score == nil
+                            and "score callback returned no legal plan"
+                            or "score callback returned no numeric score"),
+                    })
+                end
+                if type(score) == "table" and type(score.score) == "number"
+                    and score.score > bestScore.score then
+                    score.usingAbilities = usingAbilities
+                    score.strikePlans = strikePlans
+                    bestScore = score
+                    bestMove = move
+                end
             end
         end
+
+        local synthesizedMove = nil
+        if not self:try_get("_tmp_synthesizedPlanningFailed", false) then
+            local synthesizedOk, synthesizedResult = pcall(
+                self.FindBestSynthesizedAbilityMove, self,
+                token, abilities, self:GetClaimedAbilityNames(token))
+            if synthesizedOk then
+                synthesizedMove = synthesizedResult
+            else
+                self._tmp_synthesizedPlanningFailed = true
+                self:LogDecision("MOVE ERROR", {
+                    move = "Synthesized Abilities",
+                    reason = "planning failed: " .. tostring(synthesizedResult),
+                    result = "synthesized moves quarantined for this actor",
+                })
+            end
+        end
+        return bestScore, bestMove, synthesizedMove
     end
 
-    local synthesizedMove = nil
-    if not self:try_get("_tmp_synthesizedPlanningFailed", false) then
-        local synthesizedOk, synthesizedResult = pcall(
-            self.FindBestSynthesizedAbilityMove, self,
-            token, abilities, self:GetClaimedAbilityNames(token))
-        if synthesizedOk then
-            synthesizedMove = synthesizedResult
-        else
-            self._tmp_synthesizedPlanningFailed = true
-            self:LogDecision("MOVE ERROR", {
-                move = "Synthesized Abilities",
-                reason = "planning failed: " .. tostring(synthesizedResult),
-                result = "synthesized moves quarantined for this actor",
-            })
-        end
+    local bestScore, bestMove, synthesizedMove
+    local attackers = self:OpportunityAttackers(token)
+    if attackers == nil then
+        bestScore, bestMove, synthesizedMove = ScoreMoves()
+    else
+        bestScore, bestMove, synthesizedMove = self:ChooseAvoidingOpportunityAttacks(token, attackers, ScoreMoves)
     end
     if synthesizedMove ~= nil and synthesizedMove.score > bestScore.score then
         local moveid = SynthesizedMoveId(synthesizedMove.ability)
@@ -8174,6 +8404,7 @@ MonsterAI.AbilityCategories = {
     "Maneuvers",
     "Villain Actions",
     "Tactics",
+    "Behaviors",
 }
 
 local g_abilityCategoryOrder = {}
@@ -8276,7 +8507,8 @@ function MonsterAI:Analysis()
                 end
 
                 for moveid,move in pairs(self.tactics) do
-                    if self.MoveMatchesMonster(tok, move, true) then
+                    --behaviors with target edges sit in tactics too; listed below.
+                    if not move.behavior and self.MoveMatchesMonster(tok, move, true) then
                         resultEntry.moves[#resultEntry.moves+1] = {
                             monsterType = monsterType,
                             id = moveid,
@@ -8284,6 +8516,19 @@ function MonsterAI:Analysis()
                             category = move.category,
                             abilities = {},
                             enabled = move.enabled ~= false,
+                        }
+                    end
+                end
+
+                for behaviorid,behavior in pairs(self.behaviors) do
+                    if self.HasBehavior(tok, behaviorid, true) then
+                        resultEntry.moves[#resultEntry.moves+1] = {
+                            monsterType = monsterType,
+                            id = behaviorid,
+                            description = behavior.description,
+                            category = behavior.category,
+                            abilities = {},
+                            enabled = true,
                         }
                     end
                 end
@@ -8332,7 +8577,7 @@ function MonsterAI:SetTargetsForExpectedPrompt(options)
 end
 
 function MonsterAI:IsMoveEnabledForMonster(monsterType, id)
-    local move = self.moves[id] or self.tactics[id] or self.maliceAbilities[id] or self.villainActions[id]
+    local move = self.moves[id] or self.tactics[id] or self.behaviors[id] or self.maliceAbilities[id] or self.villainActions[id]
     if move ~= nil then
         if move.disabledForMonsters ~= nil and move.disabledForMonsters[monsterType] then
             return false
@@ -8343,7 +8588,7 @@ function MonsterAI:IsMoveEnabledForMonster(monsterType, id)
 end
 
 function MonsterAI:SetMoveEnabledForMonster(monsterType, id, enabled)
-    local move = self.moves[id] or self.tactics[id] or self.maliceAbilities[id] or self.villainActions[id]
+    local move = self.moves[id] or self.tactics[id] or self.behaviors[id] or self.maliceAbilities[id] or self.villainActions[id]
     if move ~= nil then
         move.disabledForMonsters = move.disabledForMonsters or {}
         move.disabledForMonsters[monsterType] = not enabled
@@ -8422,6 +8667,134 @@ end
 function MonsterAI:RegisterTactic(args)
     args.category = "Tactics"
     self.tactics[args.id] = args
+end
+
+--Behavior modules ------------------------------------------------------------
+--A behavior is a switchable piece of a monster's personality ("Bully", "Avoid
+--Opportunity Attacks"). Unlike a tactic it is OFF unless switched on: by the
+--monster types its registration lists (`monsters`, or `allMonsters = true`),
+--or by a behavior source such as an Encounter of the Week script.
+--
+--  MonsterAI:RegisterBehavior{
+--      id = "Bully",
+--      description = "...",
+--      aliases = {"bullies"},      --other names a script may use
+--      monsters = {"Gnoll Marauder"},
+--      targetEdges = function(self, token, tokenLoc, enemy, ability) ... end,
+--  }
+--
+--`targetEdges` (optional) works exactly like a tactic's `score`: edges added to
+--each strike target. A behavior without it is read by the core through
+--MonsterAI.HasBehavior(token, id).
+
+--- @class MonsterAIBehavior
+--- @field id string
+--- @field description string
+--- @field aliases? string[]
+--- @field monsters? string[]
+--- @field allMonsters? boolean
+--- @field targetEdges? fun(ai: MonsterAI, token: CharacterToken, tokenLoc: Loc, enemy: CharacterToken, ability: ActivatedAbility): number|nil
+--- @field disabledForMonsters? table<string, boolean>
+--- @field category? string Set by RegisterBehavior: "Behaviors".
+--- @field behavior? boolean Set by RegisterBehavior; marks the tactic entry as a behavior.
+--- @field registeredAt? string Set by RegisterBehavior: "file.lua:line".
+--- @field score? fun(ai: MonsterAI, token: CharacterToken, tokenLoc: Loc, enemy: CharacterToken, ability: ActivatedAbility): number|nil Set by RegisterBehavior from targetEdges.
+
+--- @param args MonsterAIBehavior
+function MonsterAI:RegisterBehavior(args)
+    args.category = "Behaviors"
+    args.behavior = true
+    args.registeredAt = RegistrationCallSite()
+    self.behaviors[args.id] = args
+    if args.targetEdges ~= nil then
+        --a behavior with target edges runs through the tactic machinery, so
+        --every strike planner and free strike already picks it up.
+        args.score = args.targetEdges
+        self.tactics[args.id] = args
+    end
+end
+
+--Lower-cased letters and digits only, so "Avoid Opportunity Attacks." and
+--"avoid opportunity-attacks" name the same behavior.
+local function BehaviorKey(name)
+    return (string.gsub(string.lower(tostring(name or "")), "[^%a%d]", ""))
+end
+
+--- The registered behavior a script or command names (its id or an alias,
+--- ignoring case, spaces and punctuation), or nil.
+--- @param name string
+--- @return MonsterAIBehavior|nil
+function MonsterAI.FindBehavior(name)
+    local key = BehaviorKey(name)
+    for id,behavior in pairs(MonsterAI.behaviors) do
+        if BehaviorKey(id) == key then
+            return behavior
+        end
+        for _,alias in ipairs(behavior.aliases or {}) do
+            if BehaviorKey(alias) == key then
+                return behavior
+            end
+        end
+    end
+    return nil
+end
+
+--- Add a source of per-encounter behavior switches. `fn(token, behaviorId)`
+--- returns true (on), false (off) or nil (no opinion). When several sources
+--- answer, the one registered last wins. Re-registering an id replaces it.
+--- @param id string
+--- @param fn fun(token: CharacterToken, behaviorId: string): boolean|nil
+function MonsterAI.RegisterBehaviorSource(id, fn)
+    for i,source in ipairs(MonsterAI.behaviorSources) do
+        if source.id == id then
+            MonsterAI.behaviorSources[i] = {id = id, fn = fn}
+            return
+        end
+    end
+    MonsterAI.behaviorSources[#MonsterAI.behaviorSources+1] = {id = id, fn = fn}
+end
+
+local function BehaviorSourceSetting(token, behaviorId)
+    local result = nil
+    for _,source in ipairs(MonsterAI.behaviorSources) do
+        local ok, setting = pcall(source.fn, token, behaviorId)
+        if ok and setting ~= nil then
+            result = setting == true
+        end
+    end
+    return result
+end
+
+--- Is this behavior on for this creature? Behavior sources (an encounter's
+--- script) decide first, then the registration's monster types. The Monster AI
+--- panel's per-type switch can still turn it off unless includeDisabled.
+--- @param token CharacterToken
+--- @param behaviorId string
+--- @param includeDisabled? boolean
+--- @return boolean
+function MonsterAI.HasBehavior(token, behaviorId, includeDisabled)
+    local behavior = MonsterAI.behaviors[behaviorId]
+    if behavior == nil or token == nil or not token.valid or token.properties == nil then
+        return false
+    end
+    local monsterType = token.properties:try_get("monster_type", "")
+    local on = BehaviorSourceSetting(token, behaviorId)
+    if on == nil then
+        on = behavior.allMonsters == true
+        for _,listed in ipairs(behavior.monsters or {}) do
+            if listed == monsterType then
+                on = true
+                break
+            end
+        end
+    end
+    if not on then
+        return false
+    end
+    if not includeDisabled and behavior.disabledForMonsters ~= nil and behavior.disabledForMonsters[monsterType] then
+        return false
+    end
+    return true
 end
 
 --- /testai support: drive the AI machinery for a single named ability on the

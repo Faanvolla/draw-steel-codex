@@ -290,6 +290,34 @@ local HALL_SCENE = {
     tagline = T("eotw.locations.hall.tagline"),
 }
 
+--The Town Hall, which the town also builds together (Build the Town Hall,
+--EotwDowntime.lua): a building site, then the Town Hall's votes and
+--petitions (EotwTownHall.lua). Built, it plays Czepeku Scenes' "Court of
+--Justice" (Original Day) 30s 1080p loop over its first frame (core image
+--assets uploaded 2026-10-26; source C:/dev/eotw/art/town-hall-*). The
+--building site still reuses the Hall of Heroes' Construction still.
+local TOWN_HALL_VIDEO = "9fdf38ac-0d7b-407a-8fd6-f595e5f88d05"
+local TOWN_HALL_ART = "636a931d-8c2d-481b-ac52-96584f04438b" --the video's first frame, 1920x1080
+CreatorCredit.RegisterArt(TOWN_HALL_VIDEO, "czepeku")
+CreatorCredit.RegisterArt(TOWN_HALL_ART, "czepeku")
+local TOWN_HALL_SCENES = {
+    site = {
+        art = CONSTRUCTION_ART,
+        aspect = 16 / 9,
+        focusX = 0.5,
+        title = T("eotw.locations.town_hall_site.title"),
+        tagline = T("eotw.locations.town_hall_site.tagline"),
+    },
+    built = {
+        art = TOWN_HALL_ART,
+        video = TOWN_HALL_VIDEO,
+        aspect = 16 / 9,
+        focusX = 0.5,
+        title = T("eotw.locations.town_hall.title"),
+        tagline = T("eotw.locations.town_hall.tagline"),
+    },
+}
+
 --The town's locations, as fractions of the map image (so they survive a
 --re-export at another size). open(ctx) runs on click; locked(ctx) returns
 --the reason the location is closed, or nil; hidden(ctx), if given, takes the
@@ -454,6 +482,21 @@ local CITY_LOCATIONS = {
         --replaced by OpenLocation each time it opens.
         scene = CONSTRUCTION_SCENE,
         open = function(ctx) ctx.OpenHall() end,
+    },
+    --The Town Hall's building site until the town has built it
+    --(EotwRoster.TownHallBuilt); then the Town Hall: town votes and
+    --petitions. Open to all, even with no hero yet (taking part needs one).
+    {
+        id = "townhall",
+        label = function(ctx) return cond(EotwRoster.TownHallBuilt(), T("eotw.locations.town_hall.label"), T("eotw.locations.town_hall_site.label")) end,
+        icon = function(ctx) return cond(EotwRoster.TownHallBuilt(), "phosphor/scroll-fill.png", "phosphor/hammer-fill.png") end,
+        --PLACEHOLDER spot, between the Gate and the Proving Pits: check it
+        --against the art.
+        x = 0.6,
+        y = 0.3,
+        --replaced by OpenLocation each time it opens.
+        scene = TOWN_HALL_SCENES.site,
+        open = function(ctx) ctx.OpenTownHall() end,
     },
 }
 
@@ -2418,6 +2461,13 @@ function EncounterOfTheWeek.CodexMenuItems()
             end,
         },
         {
+            text = "Community Projects...",
+            icon = "phosphor/hammer-fill.png",
+            click = function()
+                EncounterOfTheWeek.ShowProjectsDialog()
+            end,
+        },
+        {
             text = "Moderation...",
             icon = "phosphor/shield-star-fill.png",
             click = function()
@@ -2425,6 +2475,265 @@ function EncounterOfTheWeek.CodexMenuItems()
             end,
         },
     }
+end
+
+--Admin: set how far each community project (the Hall of Heroes, the Town
+--Hall) has got, on the server this town is connected to only (the City's
+--admin-set-project). Points at the goal complete it; Reset forgets it.
+--Nothing is posted to Discord. The town re-lists on the City's projectsRev.
+function EncounterOfTheWeek.ShowProjectsDialog()
+    if m_screen == nil or not m_screen.valid then
+        return
+    end
+
+    local dlg
+    local listPanel
+    local statusLabel
+
+    local SetStatus = function(text, isError)
+        if statusLabel ~= nil and statusLabel.valid then
+            statusLabel.text = text or ""
+            statusLabel.selfStyle.color = cond(isError, "#ff8888", Styles.textColor)
+        end
+    end
+
+    local Load
+    --Send one change, then show the new state.
+    local Apply = function(title, args)
+        SetStatus("Saving " .. title .. "...")
+        CityRequest("admin-set-project", args, function(ok, result)
+            if not ok then
+                SetStatus("Could not change " .. title .. ": " .. tostring(result), true)
+                return
+            end
+            SetStatus(title .. " saved.")
+            pcall(EotwDowntime.RefreshProjects)
+            Load()
+        end)
+    end
+
+    local Rebuild = function(projects)
+        if listPanel == nil or not listPanel.valid then
+            return
+        end
+        local rows = {}
+        for _, project in ipairs(projects) do
+            local def = EotwDowntime.PROJECTS[project.projectid]
+            local title = def ~= nil and def.title or project.projectid
+            local maxed = project.maxed == true
+            local goal = tonumber(project.goal) or 0
+            local points = tonumber(project.points) or 0
+            local stateText = cond(maxed, "Complete", string.format("%d / %d points (%d%%)", points, goal,
+                cond(goal > 0, math.floor(points * 100 / math.max(1, goal)), 0)))
+            local pointsInput
+            pointsInput = gui.Input{
+                text = tostring(cond(maxed, 0, points)),
+                fontSize = 16,
+                width = 90,
+                height = 30,
+                valign = "center",
+                characterLimit = 6,
+            }
+            rows[#rows+1] = gui.Panel{
+                width = "100%",
+                height = "auto",
+                flow = "vertical",
+                vmargin = 8,
+                gui.Label{
+                    text = title,
+                    fontSize = 20,
+                    bold = true,
+                    color = Styles.textColor,
+                    width = "100%",
+                    height = "auto",
+                },
+                gui.Label{
+                    text = stateText,
+                    fontSize = 15,
+                    color = "#e6dcc6",
+                    width = "100%",
+                    height = "auto",
+                },
+                gui.Panel{
+                    width = "100%",
+                    height = "auto",
+                    flow = "horizontal",
+                    tmargin = 4,
+                    gui.Label{
+                        text = "Points:",
+                        fontSize = 15,
+                        color = Styles.textColor,
+                        width = "auto",
+                        height = "auto",
+                        valign = "center",
+                        rmargin = 6,
+                    },
+                    pointsInput,
+                    gui.Button{
+                        text = "Set Points",
+                        fontSize = 15,
+                        width = 120,
+                        height = 32,
+                        hmargin = 6,
+                        valign = "center",
+                        click = function(element)
+                            local value = math.floor(tonumber(pointsInput.text) or -1)
+                            if value < 0 then
+                                SetStatus("Points must be a whole number of 0 or more.", true)
+                                return
+                            end
+                            --a set below the goal reopens a finished project.
+                            Apply(title, { projectid = project.projectid, completions = 0, points = value })
+                        end,
+                    },
+                    gui.Button{
+                        text = "Mark Complete",
+                        fontSize = 15,
+                        width = 140,
+                        height = 32,
+                        hmargin = 6,
+                        valign = "center",
+                        classes = { cond(maxed, "disabled", nil) },
+                        click = function(element)
+                            if maxed then
+                                return
+                            end
+                            Apply(title, { projectid = project.projectid, completions = tonumber(project.maxCompletions) or 1 })
+                        end,
+                    },
+                    gui.Button{
+                        text = "Reset",
+                        fontSize = 15,
+                        width = 100,
+                        height = 32,
+                        hmargin = 6,
+                        valign = "center",
+                        data = { confirming = false },
+                        resetConfirm = function(element)
+                            element.data.confirming = false
+                            element.text = "Reset"
+                        end,
+                        click = function(element)
+                            if not element.data.confirming then
+                                element.data.confirming = true
+                                element.text = "Confirm?"
+                                element:ScheduleEvent("resetConfirm", 4)
+                                return
+                            end
+                            Apply(title, { projectid = project.projectid, reset = true })
+                        end,
+                    },
+                },
+            }
+        end
+        if #rows == 0 then
+            rows[1] = gui.Label{ text = "The town has no community projects.", fontSize = 16, color = Styles.textColor, width = "100%", height = "auto" }
+        end
+        listPanel.children = rows
+    end
+
+    Load = function()
+        CityRequest("list-projects", { scope = "community" }, function(ok, result)
+            if dlg == nil or not dlg.valid then
+                return
+            end
+            if not ok then
+                SetStatus("Could not load the projects: " .. tostring(result), true)
+                return
+            end
+            local projects = {}
+            for _, p in pairs(type(result) == "table" and result.projects or {}) do
+                if type(p) == "table" then
+                    projects[#projects+1] = p
+                end
+            end
+            table.sort(projects, function(a, b) return tostring(a.projectid) < tostring(b.projectid) end)
+            Rebuild(projects)
+        end)
+    end
+
+    local serverName = cond(EotwRoster.CityOptions().staging == true, "staging", "release")
+    dlg = gui.Panel{
+        floating = true,
+        width = 720,
+        height = "auto",
+        halign = "center",
+        valign = "center",
+        bgimage = "panels/square.png",
+        bgcolor = "#111111ff",
+        borderWidth = 2,
+        borderColor = Styles.textColor,
+        flow = "vertical",
+        pad = 16,
+        borderBox = true,
+        styles = { Styles.Default },
+
+        captureEscape = true,
+        escapePriority = EscapePriority.EXIT_MODAL_DIALOG,
+        escape = function(element)
+            element:DestroySelf()
+        end,
+
+        gui.Label{
+            text = "Community Projects",
+            fontSize = 32,
+            bold = true,
+            color = Styles.textColor,
+            width = "auto",
+            height = "auto",
+            halign = "center",
+            vmargin = 8,
+        },
+        gui.Label{
+            text = string.format("Changes apply to the <b>%s</b> server only, and post nothing to Discord. Points at the goal complete a project.", serverName),
+            fontSize = 15,
+            color = Styles.textColor,
+            width = "100%",
+            height = "auto",
+            textAlignment = "center",
+            textWrap = true,
+            vmargin = 4,
+        },
+        gui.Panel{
+            width = "100%",
+            height = "auto",
+            maxHeight = 600,
+            vscroll = true,
+            flow = "vertical",
+            vmargin = 8,
+            rpad = 12,
+            borderBox = true,
+            create = function(element)
+                listPanel = element
+            end,
+        },
+        gui.Label{
+            text = "Loading the projects...",
+            fontSize = 16,
+            color = Styles.textColor,
+            width = "100%",
+            height = "auto",
+            minHeight = 22,
+            textAlignment = "center",
+            create = function(element)
+                statusLabel = element
+            end,
+        },
+        gui.Button{
+            text = "Close",
+            fontSize = 20,
+            width = 140,
+            height = 42,
+            halign = "center",
+            vmargin = 8,
+            click = function(element)
+                dlg:DestroySelf()
+            end,
+        },
+    }
+
+    m_screen:AddChild(dlg)
+    Load()
 end
 
 --Admin: the community encounter modules and their standing in the pool, with
@@ -7531,6 +7840,8 @@ CreateScreen = function(args)
     local m_marketScene = nil
     --the Construction or the Hall of Heroes, whichever was opened.
     local m_hallScene = nil
+    --the Town Hall's building site or the Town Hall, whichever was opened.
+    local m_townHallScene = nil
     local gateScene = nil
     local dangerScene = nil
     local locationHost = nil
@@ -7577,6 +7888,9 @@ CreateScreen = function(args)
         end,
         OpenHall = function()
             OpenLocation("hall")
+        end,
+        OpenTownHall = function()
+            OpenLocation("townhall")
         end,
     }
 
@@ -8558,7 +8872,7 @@ CreateScreen = function(args)
     end
 
     --Re-list the projects whenever the City says a community one changed
-    --(/city/projectsRev): someone in town worked on the Hall of Heroes.
+    --(/city/projectsRev): someone in town worked on the Hall of Heroes or the Town Hall.
     local m_projectsRevSeen = nil
     local WatchCommunityProjects = function()
         local conn = EotwRoster.Connection()
@@ -8572,47 +8886,54 @@ CreateScreen = function(args)
         end
     end
 
-    --The moment the town finishes the Hall of Heroes: an open Construction
-    --becomes the Hall (after the builders' banner has had its moment), and
-    --the node beckons once the player is back on the map. Already built when
-    --the town opened, nothing plays.
-    local m_hallBuilt = nil
-    local m_hallSwapScheduled = false
-    local RevealHall = function()
-        if EotwRoster.GetHeroes() == nil then
-            return
-        end
-        local built = EotwRoster.HallBuilt()
-        if built and m_hallBuilt == false then
-            if m_locationId == "hall" and not m_hallSwapScheduled then
-                m_hallSwapScheduled = true
-                dmhub.Schedule(4, function()
-                    m_hallSwapScheduled = false
-                    if mod.unloaded or m_locationId ~= "hall" or CityLocation("hall").scene == HALL_SCENE then
-                        return
-                    end
-                    CloseLocation()
-                    OpenLocation("hall")
-                end)
-            end
-            if m_locationId ~= nil then
+    --The moment the town finishes a community building (the Hall of Heroes,
+    --the Town Hall): its open building site becomes the building (after the
+    --builders' banner has had its moment), and the node beckons once the
+    --player is back on the map. Already built when the town opened, nothing
+    --plays. Returns the function the town's think calls.
+    local function BuildingReveal(locId, isBuilt, builtScene)
+        local wasBuilt = nil
+        local swapScheduled = false
+        return function()
+            if EotwRoster.GetHeroes() == nil then
                 return
             end
-            local node = m_nodePanels["hall"]
-            for i = 0, 2 do
-                dmhub.Schedule(0.5 + i * 1.5, function()
-                    if mod.unloaded or node == nil or not node.valid then
-                        return
-                    end
-                    local halo = node:Get("eotwTownHalo-hall")
-                    if halo ~= nil then
-                        halo:PulseClass("beckon")
-                    end
-                end)
+            local built = isBuilt()
+            if built and wasBuilt == false then
+                if m_locationId == locId and not swapScheduled then
+                    swapScheduled = true
+                    dmhub.Schedule(4, function()
+                        swapScheduled = false
+                        if mod.unloaded or m_locationId ~= locId or CityLocation(locId).scene == builtScene then
+                            return
+                        end
+                        CloseLocation()
+                        OpenLocation(locId)
+                    end)
+                end
+                --still in a location: keep wasBuilt false so the node
+                --beckons once the player is back on the map.
+                if m_locationId ~= nil then
+                    return
+                end
+                local node = m_nodePanels[locId]
+                for i = 0, 2 do
+                    dmhub.Schedule(0.5 + i * 1.5, function()
+                        if mod.unloaded or node == nil or not node.valid then
+                            return
+                        end
+                        local halo = node:Get("eotwTownHalo-" .. locId)
+                        if halo ~= nil then
+                            halo:PulseClass("beckon")
+                        end
+                    end)
+                end
             end
+            wasBuilt = built
         end
-        m_hallBuilt = built
     end
+    local RevealHall = BuildingReveal("hall", EotwRoster.HallBuilt, HALL_SCENE)
+    local RevealTownHall = BuildingReveal("townhall", EotwRoster.TownHallBuilt, TOWN_HALL_SCENES.built)
 
     ---- locations: full-screen scenes over the map ----
 
@@ -9132,6 +9453,10 @@ CreateScreen = function(args)
             m_hallScene:DestroySelf()
         end
         m_hallScene = nil
+        if m_townHallScene ~= nil and m_townHallScene.valid then
+            m_townHallScene:DestroySelf()
+        end
+        m_townHallScene = nil
         m_locationId = nil
         ApplyLocationMode()
     end
@@ -9197,6 +9522,18 @@ CreateScreen = function(args)
                 m_hallScene = LocationScene(loc, 820, EotwDowntime.ConstructionPanel(resultPanel))
             end
             locationHost:AddChild(m_hallScene)
+            EotwRoster.Refresh()
+        elseif id == "townhall" then
+            --the building site until the town has built it, then the Town Hall.
+            local loc = CityLocation("townhall")
+            if EotwRoster.TownHallBuilt() then
+                loc.scene = TOWN_HALL_SCENES.built
+                m_townHallScene = LocationScene(loc, 980, EotwTownHall.Panel(resultPanel))
+            else
+                loc.scene = TOWN_HALL_SCENES.site
+                m_townHallScene = LocationScene(loc, 820, EotwDowntime.TownHallConstructionPanel(resultPanel))
+            end
+            locationHost:AddChild(m_townHallScene)
             EotwRoster.Refresh()
         end
         ApplyLocationMode()
@@ -9712,6 +10049,7 @@ CreateScreen = function(args)
                 RevealFoundLocations()
                 WatchCommunityProjects()
                 RevealHall()
+                RevealTownHall()
                 --the beta survey waits for the inn's reveal to finish.
                 if not m_innRevealActive then
                     MaybeShowSurvey()

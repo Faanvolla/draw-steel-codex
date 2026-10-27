@@ -5103,6 +5103,7 @@ function creature:ShowCharacteristicRollDialog(attrid)
     local rollType = "test_power_roll"
     local roll = string.format("2d10 + %d", self:GetAttribute(attrid):Modifier())
     local modifiers = self:GetModifiersForPowerRoll(roll, rollType, { attribute = attrid })
+    CharacterModifier.MarkSkilledRollerDecides(modifiers)
 
     local syntheticAbility = ActivatedAbility.Create{ isTest = true, name = title }
 

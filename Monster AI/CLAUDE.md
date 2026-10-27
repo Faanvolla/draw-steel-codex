@@ -382,6 +382,41 @@ A **tactic** is a passive scoring modifier that adjusts the edge count when eval
 - `id`, `description`
 - `score(self, token, tokenLoc, enemy, ability)` -- returns a number (typically 0 or 1) added to the target's edge score, or `nil`
 
+#### Behavior modules (`MonsterAI:RegisterBehavior{}`)
+
+A **behavior** is a switchable piece of a monster's personality. Unlike a
+tactic it is **off** unless switched on: by the monster types in its
+`monsters` list (or `allMonsters = true`), or by a behavior source. The two
+built in, registered at the bottom of `MonsterAITactics.lua` with empty
+`monsters` lists, are:
+
+- **Bully**: `targetEdges` adds up to `MonsterAI.bullyMaxEdges` (6) edges to a
+  target as its share of Stamina falls to 0 (dying counts as 0), and cancels
+  `TargetStaminaBias`. A behavior with `targetEdges` is also stored in
+  `tactics`, so every strike planner, squad and free strike uses it.
+  Area planners that score targets without edges do not see it.
+- **Avoid Opportunity Attacks**: when the creature starts next to enemies who
+  could make an opportunity attack (`ai:OpportunityAttackers`, mirroring the
+  checks in `creature:OnMove`), `FindAndExecuteMove` scores every move twice
+  (`ChooseAvoidingOpportunityAttacks`): from only the squares that provoke
+  nothing, then from every square. The second plan wins only when its
+  destination provokes and it still scores higher after paying
+  `MonsterAI.opportunityAttackPenalty` (0.8) per attack. A safe choice keeps
+  the safe squares for the move's execution (`_tmp_oaSafeOnly`, honored by
+  `CalculateMovementPaths`). `CalculateMovementPaths` marks each square's
+  `provokes`; the advance fallback skips squares that provoke, and minion
+  squads add `squadOpportunityAttackPenalty` (100) per attack to a
+  position's cost. It is an estimate from start and end squares: a route that
+  walks past an enemy it did not start next to is not seen.
+
+`MonsterAI.HasBehavior(token, id)` answers whether it is on: behavior sources
+first (the last one with an answer wins), then the `monsters` list; the panel's
+per-type switch can still turn it off. `MonsterAI.RegisterBehaviorSource(id,
+fn)` adds a source; Encounter of the Week registers `"eotw"`, which reads the
+script's `Monster AI:` lines. `MonsterAI.FindBehavior(name)` matches an id or
+alias ignoring case and punctuation. Run
+`../dependencies/lua/bin/lua.exe tests/ai_behavior_modules_test.lua`.
+
 #### 5. Trigger handlers (`MonsterAI:RegisterTrigger{}`)
 
 A **trigger handler** decides whether the AI accepts or dismisses a specific optional triggered ability. Registrations can match `abilityGuids`, `abilities`, or the displayed trigger name in `triggers`. Adding `monsters` makes an ability-name or trigger-name registration monster-specific. Matching priority is GUID, monster-qualified ability name, generic ability name, monster-qualified trigger name, then generic trigger name. Trigger names are read through `ActiveTrigger:GetText()`, which also supports power-roll triggers.

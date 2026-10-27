@@ -34,6 +34,7 @@ local DEFAULT_CODE = {
     "Codex Titlescreen/EotwMarket.lua",
     "Codex Titlescreen/EotwModeration.lua",
     "Codex Titlescreen/EotwRoster.lua",
+    "Codex Titlescreen/EotwTownHall.lua",
     "EncounterOfTheWeek/EncounterMontage.lua",
     "EncounterOfTheWeek/EncounterMontageBuilder.lua",
     "EncounterOfTheWeek/EncounterMontageStage.lua",

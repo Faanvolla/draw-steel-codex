@@ -815,6 +815,7 @@ function GameHud.CreateEmbeddedRollDialog()
     --- @field failsRequirement nil|boolean
     --- @field modFromTarget nil|boolean
     --- @field isAfterRoll nil|boolean
+    --- @field rollerDecides nil|boolean the rules cannot tell whether it applies (Skilled on a test that names no skill), so the roller chooses even under Strictly Enforce Rolls. See CharacterModifier.MarkSkilledRollerDecides.
 
     --- One target row of a multi-target roll.
     --- @class EmbeddedRollMultiTarget
@@ -4037,8 +4038,10 @@ function GameHud.CreateEmbeddedRollDialog()
                         --Strictly Enforce Rolls: the panel lists what applied to
                         --this roll, so the modifiers the rules did NOT apply are
                         --not offered at all. (The ones that did are still built,
-                        --read-only, below.)
-                        if m_strictRolls and not ischecked then
+                        --read-only, below.) A rollerDecides chip is the
+                        --exception: only the roller can say whether it applies.
+                        local strictChip = m_strictRolls and not mod.rollerDecides
+                        if strictChip and not ischecked then
                             goto continue
                         end
 
@@ -4224,7 +4227,7 @@ function GameHud.CreateEmbeddedRollDialog()
                             classes = classes,
                             text = text,
                             value = ischecked,
-                            readOnly = m_strictRolls,
+                            readOnly = strictChip,
                             hmargin = 2,
                             mod = mod,
                             eye = spoilerEye,

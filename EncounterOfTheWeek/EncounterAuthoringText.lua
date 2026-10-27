@@ -1020,6 +1020,8 @@ text("author.validator.problems.no_characteristic", [['{attr}' names no characte
 text("author.validator.problems.not_a_skill", [['{skill}' is not a skill name; it adds nothing to the roll]])
 text("author.validator.problems.option_problem", [[{where}: option '{option}' -- {problem}]])
 text("author.validator.problems.setup_not_understood", [[{where}: setup instruction '{text}' is not understood]])
+--{behavior} is the name the line gave, {known} the Monster AI's behavior names.
+text("author.validator.problems.unknown_ai_behavior", [[{where}: '{behavior}' is not a Monster AI behavior (known: {known})]])
 
 --The Names section: every item, monster, object and zone the script names,
 --and whether the game can find it. {name} is the name as written.
@@ -1050,6 +1052,8 @@ text("author.validator.report.setup_place", [[setup {label}: place {qty} x '{obj
 text("author.validator.report.setup_place_delete", [[setup {label}: place {qty} x '{object}' in {zone} zones, delete the other {zone} zones]])
 text("author.validator.report.setup_bystanders", [[setup {label}: bystanders (no initiative): {names}]])
 text("author.validator.report.setup_unrecognized", [[setup {label}: UNRECOGNIZED '{text}']])
+--A "Monster AI:" line. {text} reads like "Bully on for Goblin Sniper".
+text("author.validator.report.setup_ai_behavior", [[setup {label}: {text}]])
 --Reinforcements. {name} is the group's name, {schedule} when they arrive
 --(the game describes it), {zone} a zone type, {count} how many encounter
 --islands, {text} a line they shout. [[encounter]] is a journal tag and

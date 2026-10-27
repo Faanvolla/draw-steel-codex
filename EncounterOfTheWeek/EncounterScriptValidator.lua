@@ -308,6 +308,17 @@ local function Report(parse)
                 Row(1, "rule", "%s", T("author.validator.report.setup_bystanders", { label = tostring(ins.label), names = table.concat(ins.names or {}, ", ") }))
             elseif ins.kind == "victory" then
                 Row(1, "rule", "%s: %s", ins.label, EncounterScript.DescribeVictory(ins) or "?")
+            elseif ins.kind == "aibehavior" then
+                Row(1, "rule", "%s", T("author.validator.report.setup_ai_behavior", { label = tostring(ins.label), text = EncounterScript.DescribeAIBehavior(ins) }))
+                local monsterAI = rawget(_G, "MonsterAI")
+                if monsterAI ~= nil and monsterAI.FindBehavior(ins.behavior) == nil then
+                    local known = {}
+                    for id, _ in pairs(monsterAI.behaviors) do
+                        known[#known + 1] = id
+                    end
+                    table.sort(known)
+                    Problem("%s", T("author.validator.problems.unknown_ai_behavior", { where = tostring(EncounterScript.LineLabel(parse, ins.line)), behavior = tostring(ins.behavior), known = table.concat(known, ", ") }))
+                end
             else
                 Row(1, "flavourUnknown", "%s", T("author.validator.report.setup_unrecognized", { label = tostring(ins.label), text = tostring(ins.text) }))
                 Problem("%s", T("author.validator.problems.setup_not_understood", { where = tostring(EncounterScript.LineLabel(parse, ins.line)), text = tostring(ins.text) }))

@@ -230,6 +230,84 @@ EotwDowntime.PROJECTS = {
             },
         },
     },
+    --The second COMMUNITY project, built at its own site (4000 points, in
+    --city-core.ts); completing it opens the Town Hall's votes and petitions.
+    ["build-town-hall"] = {
+        id = "build-town-hall",
+        scope = "community",
+        title = T("downtime.projects.build_town_hall.title"),
+        icon = "phosphor/hammer-fill.png",
+        location = "townhall",
+        locationName = T("downtime.projects.build_town_hall.place"),
+        characteristics = { "mgt", "rea", "prs" },
+        skills = { "Architecture", "Lead", "Persuade", "Society" },
+        benefit = T("downtime.projects.build_town_hall.benefit"),
+        completeBanner = { text = T("downtime.projects.build_town_hall.complete_banner"), subtitle = T("downtime.projects.build_town_hall.complete_subtitle") },
+        blurb = function(state)
+            if state ~= nil and state.maxed then
+                return T("downtime.projects.build_town_hall.blurb_maxed")
+            end
+            return T("downtime.projects.build_town_hall.blurb")
+        end,
+        rollLines = {
+            early = {
+                hopeful = {
+                    T("downtime.lines.town_hall.early_hopeful_1"),
+                    T("downtime.lines.town_hall.early_hopeful_2"),
+                    T("downtime.lines.town_hall.early_hopeful_3"),
+                },
+                neutral = {
+                    T("downtime.lines.town_hall.early_neutral_1"),
+                    T("downtime.lines.town_hall.early_neutral_2"),
+                    T("downtime.lines.town_hall.early_neutral_3"),
+                },
+                frustrated = {
+                    T("downtime.lines.town_hall.early_frustrated_1"),
+                    T("downtime.lines.town_hall.early_frustrated_2"),
+                    T("downtime.lines.town_hall.early_frustrated_3"),
+                },
+            },
+            mid = {
+                hopeful = {
+                    T("downtime.lines.town_hall.mid_hopeful_1"),
+                    T("downtime.lines.town_hall.mid_hopeful_2"),
+                    T("downtime.lines.town_hall.mid_hopeful_3"),
+                },
+                neutral = {
+                    T("downtime.lines.town_hall.mid_neutral_1"),
+                    T("downtime.lines.town_hall.mid_neutral_2"),
+                    T("downtime.lines.town_hall.mid_neutral_3"),
+                },
+                frustrated = {
+                    T("downtime.lines.town_hall.mid_frustrated_1"),
+                    T("downtime.lines.town_hall.mid_frustrated_2"),
+                    T("downtime.lines.town_hall.mid_frustrated_3"),
+                },
+            },
+            late = {
+                hopeful = {
+                    T("downtime.lines.town_hall.late_hopeful_1"),
+                    T("downtime.lines.town_hall.late_hopeful_2"),
+                    T("downtime.lines.town_hall.late_hopeful_3"),
+                },
+                neutral = {
+                    T("downtime.lines.town_hall.late_neutral_1"),
+                    T("downtime.lines.town_hall.late_neutral_2"),
+                    T("downtime.lines.town_hall.late_neutral_3"),
+                },
+                frustrated = {
+                    T("downtime.lines.town_hall.late_frustrated_1"),
+                    T("downtime.lines.town_hall.late_frustrated_2"),
+                    T("downtime.lines.town_hall.late_frustrated_3"),
+                },
+            },
+            done = {
+                T("downtime.lines.town_hall.done_1"),
+                T("downtime.lines.town_hall.done_2"),
+                T("downtime.lines.town_hall.done_3"),
+            },
+        },
+    },
 }
 
 --A Draw Steel test's tier from a 2d10 roll: 11 or less, 12-16, 17+, and a
@@ -2599,6 +2677,227 @@ function EotwDowntime.ProjectSidePanel(host, projectid, width)
     }
 end
 
+--- Tribute to the Builders ------------------------------------------------------
+
+--Text shown as typed: rich-text tags in a player's name are not applied.
+local function PlainName(text)
+    return "<noparse>" .. string.gsub(tostring(text or ""), "</?[nN][oO][pP][aA][rR][sS][eE]>", "") .. "</noparse>"
+end
+
+--A builder's name, or the stand-in for rolls made before names were kept.
+local function BuilderName(name)
+    if type(name) ~= "string" or name == "" then
+        return T("tribute.unknown_player")
+    end
+    return PlainName(name)
+end
+
+local function BuilderHeroName(name)
+    if type(name) ~= "string" or name == "" then
+        return T("tribute.unknown_hero")
+    end
+    return PlainName(name)
+end
+
+--The cornerstone or capstone: who placed it, with which hero, and when.
+local function StoneBox(heading, subtitle, stone)
+    return gui.Panel{
+        width = "48%",
+        height = "auto",
+        flow = "vertical",
+        halign = "center",
+        hmargin = 6,
+        bgimage = "panels/square.png",
+        bgcolor = "#d9b56a1c",
+        borderWidth = 1,
+        borderColor = "#d9b56a66",
+        cornerRadius = 8,
+        pad = 12,
+        borderBox = true,
+        gui.Label{ text = heading, fontSize = 20, bold = true, color = GOLD, width = "100%", height = "auto", textAlignment = "center" },
+        gui.Label{ text = subtitle, fontSize = 14, italics = true, color = DIM, width = "100%", height = "auto", textAlignment = "center" },
+        gui.Label{ text = BuilderName(stone.name), fontSize = 22, bold = true, color = TEXT, width = "100%", height = "auto", textAlignment = "center", tmargin = 6 },
+        gui.Label{
+            text = T("tribute.stone_detail", { hero = BuilderHeroName(stone.heroName), when = DescribeServerTimestamp(stone.at) }),
+            fontSize = 14,
+            color = DIM,
+            width = "100%",
+            height = "auto",
+            textAlignment = "center",
+        },
+    }
+end
+
+--One ranked builder: place, name and points; hovering lists their heroes.
+local function BuilderRow(rank, builder)
+    local lines = { T("tribute.heroes_heading") }
+    for _, hero in ipairs(builder.heroes or {}) do
+        lines[#lines+1] = TP("tribute.hero_line", tonumber(hero.points) or 0, { hero = BuilderHeroName(hero.name) })
+    end
+    local mine = builder.userid == dmhub.loginUserid
+    return gui.Panel{
+        width = "100%",
+        height = "auto",
+        flow = "horizontal",
+        bgimage = "panels/square.png",
+        bgcolor = cond(mine, "#2a2418cc", "#ffffff0a"),
+        styles = {
+            { selectors = {"hover"}, bgcolor = cond(mine, "#3a3220dd", "#ffffff18") },
+        },
+        cornerRadius = 6,
+        hpad = 10,
+        vpad = 6,
+        borderBox = true,
+        vmargin = 2,
+        hover = gui.Tooltip(table.concat(lines, "\n")),
+        gui.Label{ text = string.format("#%d", rank), fontSize = 17, bold = true, color = cond(rank <= 3, GOLD, DIM), width = 54, height = "auto", valign = "center" },
+        gui.Label{ text = BuilderName(builder.name), fontSize = 17, bold = mine, color = TEXT, width = "100%-190", height = "auto", valign = "center" },
+        gui.Label{ text = TP("tribute.points", tonumber(builder.points) or 0), fontSize = 16, color = TEXT, width = 130, height = "auto", valign = "center", textAlignment = "right" },
+    }
+end
+
+--The Tribute to the Builders for a project: its cornerstone (the first
+--roll), its capstone once complete (the roll that finished it), and every
+--builder ranked by Project Points. Read from the City's
+--list-project-builders. host mounts the dialog.
+function EotwDowntime.ShowTribute(host, projectid)
+    local project = EotwDowntime.PROJECTS[projectid]
+    local body = nil
+    local dlg
+    local function Show(children)
+        if body ~= nil and body.valid then
+            body.children = children
+        end
+    end
+    dlg = gui.Panel{
+        floating = true,
+        width = 760,
+        height = "auto",
+        halign = "center",
+        valign = "center",
+        bgimage = "panels/square.png",
+        bgcolor = "#14110dff",
+        borderWidth = 2,
+        borderColor = "#8c7a55",
+        cornerRadius = 10,
+        flow = "vertical",
+        pad = 24,
+        borderBox = true,
+        styles = { Styles.Default },
+        captureEscape = true,
+        escapePriority = EscapePriority.EXIT_MODAL_DIALOG,
+        escape = function(element)
+            element:DestroySelf()
+        end,
+        gui.Label{ text = T("tribute.title"), fontSize = 30, bold = true, color = TEXT, width = "100%", height = "auto", textAlignment = "center" },
+        gui.Label{ text = project ~= nil and project.title or "", fontSize = 18, italics = true, color = DIM, width = "100%", height = "auto", textAlignment = "center", bmargin = 10 },
+        gui.Panel{
+            width = "100%",
+            height = "auto",
+            flow = "vertical",
+            create = function(element)
+                body = element
+                Show{ gui.Label{ text = T("tribute.loading"), fontSize = 18, color = DIM, width = "100%", height = "auto", textAlignment = "center", vmargin = 20 } }
+            end,
+        },
+        gui.Button{
+            text = T("tribute.close_button"),
+            fontSize = 18,
+            width = 180,
+            height = 40,
+            halign = "center",
+            tmargin = 12,
+            click = function()
+                dlg:DestroySelf()
+            end,
+        },
+    }
+    host:AddChild(dlg)
+
+    local conn = EotwRoster.Connection()
+    if conn == nil or not conn.connected then
+        Show{ gui.Label{ text = T("tribute.error"), fontSize = 18, color = RED, width = "100%", height = "auto", textAlignment = "center", vmargin = 20 } }
+        return
+    end
+    conn:Request{
+        action = "list-project-builders",
+        args = { projectid = projectid },
+        success = function(result)
+            if mod.unloaded or dlg == nil or not dlg.valid then
+                return
+            end
+            local builders = result.builders or {}
+            if #builders == 0 then
+                Show{ gui.Label{ text = T("tribute.empty"), fontSize = 18, color = DIM, width = "100%", height = "auto", textAlignment = "center", vmargin = 20 } }
+                return
+            end
+            ---@type Panel[]
+            local stones = {}
+            if type(result.cornerstone) == "table" then
+                stones[#stones+1] = StoneBox(T("tribute.cornerstone"), T("tribute.cornerstone_subtitle"), result.cornerstone)
+            end
+            if type(result.capstone) == "table" then
+                stones[#stones+1] = StoneBox(T("tribute.capstone"), T("tribute.capstone_subtitle"), result.capstone)
+            end
+            ---@type Panel[]
+            local rows = {}
+            for i, builder in ipairs(builders) do
+                rows[#rows+1] = BuilderRow(i, builder)
+            end
+            local more = (tonumber(result.builderCount) or #builders) - #builders
+            if more > 0 then
+                rows[#rows+1] = gui.Label{ text = TP("tribute.more_builders", more), fontSize = 15, italics = true, color = DIM, width = "100%", height = "auto", textAlignment = "center", vmargin = 4 }
+            end
+            Show{
+                gui.Panel{ width = "100%", height = "auto", flow = "horizontal", halign = "center", children = stones },
+                gui.Label{
+                    text = T("tribute.summary", { builders = TP("tribute.builder_count", tonumber(result.builderCount) or #builders), points = TP("tribute.points", tonumber(result.totalPoints) or 0) }),
+                    fontSize = 16,
+                    color = TEXT,
+                    width = "100%",
+                    height = "auto",
+                    textAlignment = "center",
+                    vmargin = 10,
+                },
+                gui.Label{ text = T("tribute.ranked_heading"), fontSize = 18, bold = true, color = GOLD, width = "100%", height = "auto", bmargin = 4 },
+                gui.Panel{
+                    width = "100%",
+                    height = "auto",
+                    maxHeight = 420,
+                    flow = "vertical",
+                    vscroll = true,
+                    rpad = 10,
+                    borderBox = true,
+                    children = rows,
+                },
+            }
+        end,
+        error = function(message)
+            printf("EotW town: could not list the builders of %s: %s", projectid, tostring(message))
+            if not mod.unloaded then
+                Show{ gui.Label{ text = T("tribute.error"), fontSize = 18, color = RED, width = "100%", height = "auto", textAlignment = "center", vmargin = 20 } }
+            end
+        end,
+    }
+end
+
+--The small "Tribute to the Builders" button under a community project, and
+--on the building it became.
+function EotwDowntime.TributeButton(host, projectid)
+    return gui.Button{
+        text = T("tribute.button"),
+        fontSize = 15,
+        width = 240,
+        height = 32,
+        halign = "center",
+        tmargin = 10,
+        click = function()
+            audio.FireSoundEvent("Mouse.Click")
+            EotwDowntime.ShowTribute(host, projectid)
+        end,
+    }
+end
+
 --- the Construction (the Hall of Heroes being built) --------------------------
 
 --The Construction scene's card: what is being built, and the town's shared
@@ -2627,6 +2926,36 @@ function EotwDowntime.ConstructionPanel(host)
             bmargin = 16,
         },
         EotwDowntime.ProjectCard(host, "build-hall-of-heroes"),
+        EotwDowntime.TributeButton(host, "build-hall-of-heroes"),
+    }
+end
+
+--The Town Hall's building site: the same, for the town's shared project
+--Build the Town Hall.
+function EotwDowntime.TownHallConstructionPanel(host)
+    return gui.Panel{
+        width = "100%",
+        height = "auto",
+        flow = "vertical",
+        gui.Label{
+            text = T("downtime.town_hall_site.intro"),
+            fontSize = 20,
+            italics = true,
+            color = TEXT,
+            width = "100%",
+            height = "auto",
+            bmargin = 12,
+        },
+        gui.Label{
+            text = T("downtime.town_hall_site.community"),
+            fontSize = 15,
+            color = DIM,
+            width = "100%",
+            height = "auto",
+            bmargin = 16,
+        },
+        EotwDowntime.ProjectCard(host, "build-town-hall"),
+        EotwDowntime.TributeButton(host, "build-town-hall"),
     }
 end
 

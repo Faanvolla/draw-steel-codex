@@ -105,6 +105,26 @@ text("encounter.series_next.button", [[Continue to {part}]])
 --Above the buttons on the Conclusion screen.
 text("encounter.series_next.story_note", [[{part} is open until your heroes take a respite.]])
 
+--When the next part plays on the same map, the party goes straight on in the
+--same game instead, and the game's host decides for everyone. The victory
+--screen's panel; the host sees body_here and the button, everyone else
+--body_member ({host} is the host's name) and no button.
+text("encounter.series_next.title_here", [[{part} lies ahead]])
+text("encounter.series_next.body_here", [[You choose for the party: go straight on, or return to Blackbottom after the story.]])
+text("encounter.series_next.body_member", [[{host} chooses whether the party goes straight on.]])
+--On the Conclusion screen, above the buttons: the host's, then everyone else's.
+text("encounter.series_next.story_note_here", [[Choose for the party: go straight on to {part}, or return to Blackbottom to rest.]])
+text("encounter.series_next.story_note_member", [[{host} chooses whether the party goes straight on to {part}.]])
+--The Conclusion screen when the script has no Conclusion text.
+text("encounter.series_next.no_story", [[The way on to {part} lies open.]])
+--The host's Continue button once pressed, and the line above it.
+text("encounter.series_next.waiting_button", [[Setting out...]])
+text("encounter.series_next.starting", [[{part} is about to begin.]])
+--Everyone else's line once the host chose to go home instead.
+text("encounter.series_next.host_went_home", [[{host} has returned to Blackbottom. The party goes no further.]])
+--When the host's name is not known.
+text("encounter.series_next.host_fallback", [[The host]])
+
 ----------------------------------------------------------------------------
 -- FOR ENCOUNTER AUTHORS: testing an encounter (Game menu > Test Encounter)
 ----------------------------------------------------------------------------

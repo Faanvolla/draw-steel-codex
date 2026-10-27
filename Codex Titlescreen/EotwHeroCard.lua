@@ -458,6 +458,38 @@ local g_heroCardRules = {
         textAlignment = "center",
         textWrap = false,
     },
+    --the "+" that spends a Recovery (CreateSpendRecoveryButton): a green
+    --disc the size of the recoveries circle, brighter on hover.
+    {
+        selectors = {"eotwSpendRecovery"},
+        width = 14,
+        height = 14,
+        valign = "center",
+        halign = "left",
+        rmargin = 3,
+        cornerRadius = 7,
+        bgimage = "panels/square.png",
+        bgcolor = "#2f7d3acc",
+        border = 1,
+        borderColor = "#9fe3a8cc",
+    },
+    {
+        selectors = {"eotwSpendRecovery", "hover"},
+        bgcolor = "#3fa64dff",
+        borderColor = "#ffffffff",
+    },
+    {
+        selectors = {"eotwSpendRecoveryLabel"},
+        fontSize = 13,
+        bold = true,
+        color = "#ffffff",
+        width = "100%",
+        height = "100%",
+        halign = "center",
+        valign = "center",
+        textAlignment = "center",
+        textWrap = false,
+    },
     {
         selectors = {"eotwSurgeIcon"},
         width = 12,
@@ -904,11 +936,80 @@ local function CreateRecoveriesCircle(charid)
     }
 end
 
+--Can the local user spend one of this hero's Recoveries right now? They
+--must control the hero, be below max Stamina and have a Recovery left.
+--Returns the Stamina it would give, or nil.
+local function SpendableRecovery(tok)
+    if tok == nil or not tok.valid or tok.properties == nil or IsCardHeroDead(tok) then
+        return nil
+    end
+    local mine = nil
+    pcall(function() mine = tok.canControlAsUser end)
+    if mine == nil then
+        pcall(function() mine = tok.canControl end)
+    end
+    if mine ~= true then
+        return nil
+    end
+    local amount = nil
+    pcall(function()
+        local c = tok.properties
+        local id = CharacterResource.recoveryResourceId
+        local left = (c:GetResources()[id] or 0) - (c:GetResourceUsage(id, "long") or 0)
+        if left > 0 and c:CurrentHitpoints() < c:MaxHitpoints() then
+            amount = c:RecoveryAmount()
+        end
+    end)
+    return amount
+end
+
+--The small "+" beside the recoveries circle: spends one Recovery to regain
+--Recovery-value Stamina, no action needed (EotW montages and the screens
+--before a fight). Collapsed whenever SpendableRecovery says no; barHolder
+--gives up the button's room while it shows.
+local function CreateSpendRecoveryButton(charid, barHolder)
+    return gui.Panel{
+        classes = {"eotwSpendRecovery", "collapsed"},
+        refreshCard = function(element)
+            local show = SpendableRecovery(dmhub.GetCharacterById(charid)) ~= nil
+            if show ~= not element:HasClass("collapsed") then
+                element:SetClass("collapsed", not show)
+                barHolder.selfStyle.width = cond(show, "100%-36", "100%-19")
+            end
+        end,
+        linger = function(element)
+            local amount = SpendableRecovery(dmhub.GetCharacterById(charid))
+            if amount ~= nil then
+                gui.Tooltip(T("herocard.recoveries.spend_tooltip", { amount = string.format("%d", amount) }))(element)
+            end
+        end,
+        press = function(element)
+            local tok = dmhub.GetCharacterById(charid)
+            if SpendableRecovery(tok) == nil then
+                return
+            end
+            ---@cast tok -nil
+            audio.FireSoundEvent("Mouse.Click")
+            tok:ModifyProperties{
+                description = "Use Recovery",
+                execute = function()
+                    local props = tok.properties
+                    props:Heal(props:RecoveryAmount(), "Use Recovery")
+                    props:ConsumeResource(CharacterResource.recoveryResourceId, "long", 1, "Used Recovery")
+                end,
+            }
+            element:FireEvent("refreshCard")
+        end,
+        gui.Label{ classes = {"eotwSpendRecoveryLabel"}, text = "+", interactable = false },
+    }
+end
+
 --The hero card's stamina row: the recoveries circle on the left, the
 --stamina bar filling the rest. The bar keeps firing staminaLost /
 --staminaGained up through this row to the card. noRecoveries drops the
---circle (a monster or NPC card: they have no recoveries).
-local function CreateStaminaRow(charid, noRecoveries)
+--circle (a monster or NPC card: they have no recoveries). spendRecovery
+--adds the "+" that spends one (CreateSpendRecoveryButton).
+local function CreateStaminaRow(charid, noRecoveries, spendRecovery)
     if noRecoveries then
         return gui.Panel{
             width = "100%",
@@ -919,6 +1020,19 @@ local function CreateStaminaRow(charid, noRecoveries)
             CreateStaminaBar(charid),
         }
     end
+    local barHolder = gui.Panel{
+        width = "100%-19",
+        height = "auto",
+        valign = "center",
+        interactable = false,
+        CreateStaminaBar(charid),
+    }
+    ---@type Panel[]
+    local children = { CreateRecoveriesCircle(charid) }
+    if spendRecovery then
+        children[#children+1] = CreateSpendRecoveryButton(charid, barHolder)
+    end
+    children[#children+1] = barHolder
     return gui.Panel{
         width = "100%",
         height = 16,
@@ -926,14 +1040,7 @@ local function CreateStaminaRow(charid, noRecoveries)
         halign = "center",
         valign = "center",
         interactable = false,
-        CreateRecoveriesCircle(charid),
-        gui.Panel{
-            width = "100%-19",
-            height = "auto",
-            valign = "center",
-            interactable = false,
-            CreateStaminaBar(charid),
-        },
+        children = children,
     }
 end
 
@@ -1428,6 +1535,10 @@ end
 --              cards show the characteristics but not the skills.
 --  showResources  the heroic resource row under the stamina bar (default
 --              true). The town has no use for it outside an encounter.
+--  spendRecovery  a small "+" beside the recoveries circle that spends one
+--              Recovery for Stamina, shown only while the local user controls
+--              a hurt hero with a Recovery left (the EotW montage, narrative
+--              and prep stages: out of combat, so it costs no action)
 --  showDowntime   the hammer chip with the hero's unspent Downtime
 --              Activities (the town's cards; see CreateDowntimeBadge)
 --  noRecoveries   no recoveries circle beside the stamina bar (a monster or
@@ -1539,7 +1650,7 @@ local function CreateHeroCard(entry, opts)
     if showSkills then
         overlayChildren[#overlayChildren+1] = CreateSkillsLine(charid)
     end
-    overlayChildren[#overlayChildren+1] = CreateStaminaRow(charid, opts.noRecoveries)
+    overlayChildren[#overlayChildren+1] = CreateStaminaRow(charid, opts.noRecoveries, opts.spendRecovery == true)
     if showResources then
         overlayChildren[#overlayChildren+1] = CreateResourceRow(charid)
     end

@@ -283,6 +283,8 @@ function RollCheck:GetModifiers(creature, rollRequest)
                     mod.hint.result = true
                 end
             end
+        elseif skill == nil and self.type == "test_power_roll" then
+            CharacterModifier.MarkSkilledRollerDecides(result)
         end
         return result
 	elseif self.type == "opposed_power_roll" then
@@ -488,6 +490,7 @@ end
 local g_timelineRollTypes = {
     opposed_power_roll = true,
     resistance_power_roll = true,
+    test_power_roll = true,
 }
 
 --Wraps the old floating dialog so callers can treat both dialogs the same way.
@@ -531,14 +534,47 @@ local function ShowTimelinePrompt(check, dialogParams)
 
     --cardAbility: a roll whose `ability` option feeds modifier filters (a
     --resistance roll) passes the card to show separately.
+    local cardToken = casterToken
+    local cardAbility = checkOptions.cardAbility or checkOptions.ability
+
+    --A test with no ability behind it (the Director's Request Roll dialog) is
+    --shown like a characteristic clicked on the character panel: a synthetic
+    --test card for the creature rolling (creature:ShowCharacteristicRollDialog).
+    --A roller that is not on the map has no card, so it keeps the old dialog.
+    local rollerToken = nil
+    if cardAbility == nil and check.type == "test_power_roll" then
+        rollerToken = dmhub.LookupToken(dialogParams.creature)
+        if rollerToken == nil then
+            return nil
+        end
+        cardToken = rollerToken
+        cardAbility = ActivatedAbility.Create{ isTest = true, name = dialogParams.description }
+    end
+
     local mount = CharacterPanel.EmbedPromptRollDialog{
-        token = casterToken,
-        ability = checkOptions.cardAbility or checkOptions.ability,
+        token = cardToken,
+        ability = cardAbility,
+        renderAsAbility = rollerToken ~= nil,
     }
 
     if mount == nil or mount.dialog == nil or not mount.dialog.valid
        or mount.dialog.data == nil or mount.dialog.data.ShowDialog == nil then
         return nil
+    end
+
+    --The roller as its own single target, as on the character panel: the
+    --post-roll edge/bane -> tier refresh only runs for a roll with targets.
+    if rollerToken ~= nil then
+        dialogParams.multitargets = {
+            {
+                token = rollerToken,
+                boons = 0,
+                banes = 0,
+                modifiers = dialogParams.modifiers,
+                triggers = {},
+            },
+        }
+        dialogParams.targetCreature = dialogParams.creature
     end
 
     --The Timeline roller shows no title of its own, so hand it the same two
@@ -616,6 +652,8 @@ local function ShowTimelinePrompt(check, dialogParams)
         dialogParams.cancelRoll = origCancel
         dialogParams.promptHeader = nil
         dialogParams.delay = nil
+        dialogParams.multitargets = nil
+        dialogParams.targetCreature = nil
         Teardown()
         return nil
     end

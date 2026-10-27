@@ -490,6 +490,17 @@ Trap: Place 4 Snare Trap objects in Trap zones and delete the other Trap zones.
   the Monster AI never targets them, and they do not count as monsters to
   defeat. Pair it with an Encounter Script on the `[[encounter]]` (e.g. a
   hostage rescue) for what happens to them.
+- **Monster AI behaviors**: `Monster AI: Bully on`, `Monster AI: Avoid
+  Opportunity Attacks off for Goblin Sniper`, `Monster AI: turn on Bully for
+  Goblin Sniper and Goblin Spinecleaver` (the label may also be `AI:`). Each
+  line switches one of the Monster AI's behavior modules on or off for this
+  fight, for every monster (no `for`, or `for every monster`) or the ones named
+  (token name, `<name> 2`, or bestiary type, as for bystanders). Later lines win
+  over earlier ones, so `... on` then `... off for Goblin Sniper` means
+  everyone but the snipers. Behaviors: **Bully** (goes after the heroes with
+  the smallest share of their Stamina left) and **Avoid Opportunity Attacks**
+  (won't walk away from an adjacent hero unless it gains a lot by it). The
+  validator flags a behavior name it does not know.
 - **Arranging the heroes**: when the heroes win the initiative (the die, or
   `you win initiative` / `you surprise the enemy`), the fight pauses after the
   Draw Steel banner so players can move their heroes anywhere in the start

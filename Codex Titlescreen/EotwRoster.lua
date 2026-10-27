@@ -485,6 +485,16 @@ function EotwRoster.HallBuilt()
     return state ~= nil and (tonumber(state.completions) or 0) >= 1
 end
 
+--Has the town finished building the Town Hall (the community project Build
+--the Town Hall)? Until then its place on the map is a building site.
+function EotwRoster.TownHallBuilt()
+    if m_unlocks ~= nil and m_unlocks.townHall == true then
+        return true
+    end
+    local state = EotwDowntime.GetProject("build-town-hall")
+    return state ~= nil and (tonumber(state.completions) or 0) >= 1
+end
+
 --The lead ids this account has learned, as a set; empty while not listed.
 function EotwRoster.LearnedLeads()
     local result = {}
@@ -972,10 +982,19 @@ ApplyPendingOutcomes = function()
     end
     local revs = GetRevs()
     local _, mine = LoadPendingOutcomes()
+    --one outcome per hero at a time: each pushes the hero, and two pushes
+    --from the same revision collide (a series played on in one game leaves
+    --one outcome per part). The next goes once the re-list comes back.
+    local heroBusy = {}
+    for key, entry in pairs(mine) do
+        if m_outcomeBusy[key] and type(entry) == "table" and type(entry.heroid) == "string" then
+            heroBusy[entry.heroid] = true
+        end
+    end
     for key, entry in pairs(mine) do
         if type(entry) ~= "table" or type(entry.heroid) ~= "string" or type(entry.gameid) ~= "string" then
             SetOutcomeStage(key, nil)
-        elseif not m_outcomeBusy[key] and (m_outcomeFailures[key] or 0) < MAX_OUTCOME_ATTEMPTS then
+        elseif not m_outcomeBusy[key] and not heroBusy[entry.heroid] and (m_outcomeFailures[key] or 0) < MAX_OUTCOME_ATTEMPTS then
             if EotwRoster.FindHero(entry.heroid) == nil then
                 printf("EotW town: hero %s is no longer in the roster; dropping its outcome", entry.heroid)
                 SetOutcomeStage(key, nil)
@@ -983,6 +1002,7 @@ ApplyPendingOutcomes = function()
                 local tok = dmhub.GetCharacterById(entry.heroid)
                 local hero = EotwRoster.FindHero(entry.heroid)
                 if tok ~= nil and hero ~= nil and revs[entry.heroid] == hero.rev and not m_importing[entry.heroid] and not m_promoting[entry.heroid] then
+                    heroBusy[entry.heroid] = true
                     ApplyOutcome(key, entry, tok)
                 end
             end
@@ -3396,10 +3416,10 @@ function EotwRoster.HallPanel(host)
                 end,
             },
             --the tab and sort strips above take about 100 (more if the
-            --tabs wrap onto a second row).
+            --tabs wrap onto a second row), the tribute button below 45.
             gui.Panel{
                 width = "100%",
-                height = "100%-110",
+                height = "100%-155",
                 flow = "vertical",
                 vscroll = true,
                 rpad = 12,
@@ -3410,6 +3430,8 @@ function EotwRoster.HallPanel(host)
                     Rebuild()
                 end,
             },
+            --who built the Hall (the community project it was).
+            EotwDowntime.TributeButton(host, "build-hall-of-heroes"),
         },
     }
 end

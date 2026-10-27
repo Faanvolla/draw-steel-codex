@@ -2436,4 +2436,38 @@ Coming soon to a theater near you
     check(prose.part ~= nil and prose.part.comingSoon == nil, "other prose starting 'Coming soon' is a note")
 end)()
 
+--- "Monster AI:" lines switch Monster AI behavior modules for the fight.
+;(function()
+    local P = EncounterScript.ParseAIBehaviorInstruction
+    local ins = P("Bully on")
+    check(ins ~= nil and ins.kind == "aibehavior" and ins.behavior == "Bully" and ins.enabled and ins.names == nil, "behavior on for every monster")
+    ins = P("Avoid Opportunity Attacks off for Goblin Sniper.")
+    check(ins ~= nil and ins.behavior == "Avoid Opportunity Attacks" and not ins.enabled and #ins.names == 1 and ins.names[1] == "Goblin Sniper", "behavior off for one monster type")
+    ins = P("turn on Bully for the Goblin Sniper and Goblin Spinecleaver")
+    check(ins ~= nil and ins.enabled and ins.behavior == "Bully" and #ins.names == 2 and ins.names[1] == "Goblin Sniper" and ins.names[2] == "Goblin Spinecleaver", "turn on ... for two names")
+    ins = P("Switch off Bully for every monster")
+    check(ins ~= nil and not ins.enabled and ins.names == nil, "switch off for every monster")
+    check(P("Bully") == nil, "no on/off is not understood")
+    check(P("on") == nil, "no behavior is not understood")
+    local script = EncounterScript.Parse([==[
+# Encounter
+
+Monster AI: Bully on for Goblin Sniper
+AI: Avoid Opportunity Attacks on
+
+[[encounter]]
+]==])
+    local setup = script.beats[1].setup
+    check(#script.warnings == 0, "Monster AI lines parse clean: " .. table.concat(script.warnings, " | "))
+    check(#setup == 2 and setup[1].kind == "aibehavior" and setup[1].label == "Monster AI" and setup[2].kind == "aibehavior" and setup[2].names == nil, "Monster AI lines on the encounter beat")
+    local unknown = EncounterScript.Parse([==[
+# Encounter
+
+Monster AI: be scary
+
+[[encounter]]
+]==])
+    check(#unknown.warnings > 0 and unknown.beats[1].setup[1].kind == "unknown", "a Monster AI line with no on/off warns")
+end)()
+
 print(string.format("encounter_script_test: %d checks passed", passed))

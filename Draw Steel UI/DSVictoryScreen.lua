@@ -64,6 +64,23 @@ function DSVictoryScreen.RegisterProceedOverride(override)
     g_proceedOverride = override
 end
 
+-- The HUD's live (non-replay) screen, for DismissHeld.
+local g_liveScreen = nil
+
+-- Close a HELD screen (shown, outcome already gone from the queue, waiting for
+-- the local Proceed) without a Proceed press. Encounter of the Week uses it
+-- when the host takes the party straight on to the next part. Does nothing
+-- when no screen is held.
+function DSVictoryScreen.DismissHeld()
+    local screen = g_liveScreen
+    if screen == nil or not screen.valid or not screen.data.held then
+        return
+    end
+    screen.data.held = false
+    screen.data.shown = false
+    screen:FireEvent("hideVictory")
+end
+
 -- True when a shown screen must survive the outcome leaving the queue and
 -- wait for the local Proceed press instead (see holdUntilLocalProceed).
 local function HoldUntilLocalProceed()
@@ -3722,6 +3739,9 @@ function DSVictoryScreen.Create(options)
     end
 
     rootPanel = gui.Panel(rootArgs)
+    if replay == nil then
+        g_liveScreen = rootPanel
+    end
 
     -- Re-resolve the cascade when the user switches theme / color scheme so the
     -- whole victory screen recolors live. (A short-lived replay keeps the theme

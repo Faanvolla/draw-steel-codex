@@ -42,6 +42,7 @@ end
 MonsterAI = {
     try_get = try_get,
     squadMoveStagger = 0.2,
+    squadOpportunityAttackPenalty = 100,
     TokenIsLiveCombatant = function(t) return t ~= nil and t.valid end,
     TokenLogName = function(t) return t.name end,
     LocLogName = function(loc) return loc and loc.str or "nil" end,

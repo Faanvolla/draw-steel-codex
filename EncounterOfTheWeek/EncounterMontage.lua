@@ -6874,7 +6874,11 @@ end
 --within a second with a fresh record, so its run-once watermarks and
 --stage start clean and the script plays again from beat 1. Refuses while
 --combat is running (end it first).
-function EncounterMontage.ResetTest()
+--options.keepHeroes: leave the heroes' wounds alone (a series party going
+--straight on to its next part in the same game takes no respite).
+---@param options? {keepHeroes: boolean}
+function EncounterMontage.ResetTest(options)
+    options = options or {}
     EncounterMontage.StopDevDriver()
     EncounterMontage.Hide()
 
@@ -6943,7 +6947,7 @@ function EncounterMontage.ResetTest()
             entry.richEncounter:UploadDocument()
         end
         CharacterResource.SetMalice(0, "Montage test reset")
-        for _, hero in ipairs(EncounterMontage.Heroes()) do
+        for _, hero in ipairs(cond(options.keepHeroes, {}, EncounterMontage.Heroes())) do
             local token = hero.token
             token:ModifyProperties{
                 description = "Montage test reset",
