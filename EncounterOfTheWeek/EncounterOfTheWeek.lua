@@ -3131,7 +3131,7 @@ local function UpdateDirectorUIHatch()
 end
 
 --- arranging the heroes -------------------------------------------------
---When a montage decides the initiative (no die is rolled), the Draw Steel
+--Once the initiative is decided (by a montage, or by the die), the Draw Steel
 --banner announces it and then HOLDS the start of combat: the party may move
 --their heroes anywhere inside the start zone (plus any zone a clause
 --unlocked) before the first turn. Each player presses Ready; when every
@@ -3218,8 +3218,8 @@ function EncounterOfTheWeekGame.SetArrangeReady(ready)
     doc:CompleteChange("Encounter of the Week: heroes arranged", {undoable = false})
 end
 
---The banner resolved: hold for the arrangement, whichever side won. Only
---passed when no die was rolled (see StartEncounterCombat).
+--The banner resolved: hold for the arrangement, whichever side won (see
+--StartEncounterCombat).
 local function HoldForArrangement(heroesWin, begin)
     m_arrangeBegin = begin
     local doc = mod:GetDocumentSnapshot(STATE_DOC_ID)
@@ -3631,10 +3631,25 @@ function EncounterOfTheWeekGame.PlayArea()
         area.region = entry.encounter:GetRegion()
         area.startLocs = Encounter.StartLocsOnCurrentMap(entry.encounter:GetHeroStartLocs())
     end)
+    --A member cannot read the map's journal folder, where the encounter
+    --lives, so it uses the copy the host shared (Series.SharePlayArea).
+    local shared = nil
+    if area.encounter == nil then
+        pcall(function()
+            local stamp = mod:GetDocumentSnapshot(STATE_DOC_ID).data.playArea
+            if type(stamp) == "table" and stamp.mapid == mapid and stamp.part == part then
+                shared = stamp
+                if type(stamp.region) == "table" and stamp.region.x1 ~= nil then
+                    area.region = { x1 = stamp.region.x1, y1 = stamp.region.y1, x2 = stamp.region.x2, y2 = stamp.region.y2 }
+                end
+                area.startLocs = Encounter.StartLocsOnCurrentMap(stamp.startLocs)
+            end
+        end)
+    end
     --an encounter not found yet is never cached: a freshly installed module's
     --documents land after its map, and a cached miss would place the heroes
     --at the camera even once they had arrived (BBNAFSHD).
-    if area.encounter ~= nil then
+    if area.encounter ~= nil or shared ~= nil then
         m_playArea = area
     else
         m_playArea = nil
@@ -3656,8 +3671,30 @@ end
 --the rest of the map. The core restores the original bounds only when told
 --(hold) -- an EotW game is thrown away afterwards; an authoring test puts
 --them back at its end (ReleasePlayRegion).
+--Host: copy the play area's region and start tiles into the state doc. Only
+--the host can read the encounter (it lives in the map's journal folder), so
+--without this a member's heroes land at its camera with no start area to
+--see or move in. Written before RecordSetupReady, which members wait for.
+---@param area EotwPlayArea
+function Series.SharePlayArea(area)
+    if area.encounter == nil then
+        return
+    end
+    local region = area.region
+    local doc = mod:GetDocumentSnapshot(STATE_DOC_ID)
+    doc:BeginChange()
+    doc.data.playArea = {
+        mapid = area.mapid,
+        part = area.part,
+        region = region ~= nil and { x1 = region.x1, y1 = region.y1, x2 = region.x2, y2 = region.y2 } or nil,
+        startLocs = DeepCopy(area.encounter:GetHeroStartLocs()),
+    }
+    doc:CompleteChange("Encounter of the Week: the play area", {undoable = false})
+end
+
 local function ApplyPlayRegion()
     local area = EncounterOfTheWeekGame.PlayArea()
+    pcall(Series.SharePlayArea, area)
     if area.region == nil or area.encounter == nil then
         return
     end
@@ -4741,12 +4778,12 @@ local function StartEncounterCombat(sides, options)
         immediateResult = options.forceResult
     end
 
-    --When a montage decided the initiative (no die), the heroes get the
-    --arrangement pause whether they won or lost, so they can still use a
-    --start zone the montage opened. When the die is rolled they arrange (still
-    --confined to the start area) while the banner waits for someone to roll.
+    --Once the initiative is decided -- by a montage or by the die -- the
+    --heroes get the arrangement pause whether they won or lost: they place
+    --themselves in the start area (and any zone a montage opened) knowing who
+    --acts first, then press Ready.
     local holdBeforeQueue = nil
-    if immediateResult ~= nil and not options.noArrange then
+    if not options.noArrange then
         holdBeforeQueue = HoldForArrangement
     end
 
@@ -4850,9 +4887,9 @@ local function RecoverLostCombatStart(sides)
     local outcome = nil
     pcall(function() outcome = Encounter.DrawSteelRollOutcome(sides.playerTokens) end)
     if outcome ~= nil then
-        --the die was rolled; no arrangement, as for any rolled initiative.
+        --the die was rolled: keep its side, and still let the heroes arrange.
         printf("EotW: combat never started after the Draw Steel roll; starting it now with the %s first", outcome)
-        StartEncounterCombat(sides, { forceResult = outcome, noArrange = true })
+        StartEncounterCombat(sides, { forceResult = outcome })
     else
         printf("EotW: combat never started; showing the Draw Steel banner again")
         StartEncounterCombat(sides)
@@ -5784,7 +5821,23 @@ function EncounterOfTheWeekGame.MapScriptHostThink(ctx)
     --end of the game knows what treasure they won.
     pcall(EnsureArrivalItems)
 
-    --a montage decided the initiative and the heroes are arranging: the held
+    --Once per part, a few seconds after the last player arrived (so their own
+    --placement repairs have settled): any hero still off the start tiles is
+    --moved onto them. The host's arrival-time repair ran before members landed.
+    local strayKey = tostring(dmhub.gameid) .. "|" .. tostring(EncounterOfTheWeekGame.ActivePart())
+    if Series.strayRepairKey ~= strayKey then
+        Series.strayRepairAt = Series.strayRepairAt or dmhub.Time()
+        if dmhub.Time() - Series.strayRepairAt >= 5 then
+            Series.strayRepairKey = strayKey
+            Series.strayRepairAt = nil
+            local ok, err = pcall(MoveStrayHeroesIntoPlay)
+            if not ok then
+                printf("EotW: stray hero repair failed: %s", tostring(err))
+            end
+        end
+    end
+
+    --the heroes are arranging after the initiative was decided: the held
     --combat starts from here once they are ready.
     local arranging, arrangeResult = pcall(ArrangeHostTick)
     if not arranging then

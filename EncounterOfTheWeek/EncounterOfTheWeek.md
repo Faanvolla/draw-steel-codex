@@ -2210,7 +2210,16 @@ per part and what the Gate's unlock reads.
   (`m_arrivalKey`, for a member placing heroes before the host's stamp), else 1.
 - `EncounterOfTheWeekGame.PlayArea()` (cached 2 s, keyed by map + part):
   `{region, startLocs, encounter}` from the active island's encounter.
-  `InPlayRegion(x, y)`.
+  `InPlayRegion(x, y)`. Only the host can read the encounter (its script
+  documents live in the map's journal folder, a Director/host root), so
+  `ApplyPlayRegion` first calls `Series.SharePlayArea`, which copies the
+  region and raw start tiles into `eotwstate.playArea = {mapid, part, region,
+  startLocs}`; a member's `PlayArea()` uses that copy (no `encounter`) when it
+  finds no encounter itself. Before 2026-10-26 members had no start tiles, so
+  on a map with no painted Start zone (Aixco Hollow) their heroes were pasted
+  at the camera, with no outline or confinement. Backstop: the host's
+  pre-combat tick runs `MoveStrayHeroesIntoPlay` once per part, 5 s after the
+  whole party has arrived (`Series.strayRepairKey`).
 - The host's setup calls `ApplyPlayRegion()` right after `RecordEncounterMap`
   and before any hero lands: `Encounter.ApplyRegion(encounter, {hold = true,
   anyMap = true})`. **Core change** (`MCDMEncounter.lua`): `ApplyRegion` takes
@@ -5006,14 +5015,12 @@ Start zone, or a full one, the companion lands beside the hero (possibly
 outside the confinement). The authoring test does the same, and End Test
 removes the companions with the hero copies.
 
-**Arranging the heroes (BUILT 2026-10-04, untested).** The phase only
-happens when there is **no initiative roll**: a montage outcome hands the
-heroes the initiative ("you win initiative", "you surprise the enemy"). When
-the die is rolled there is no phase: the banner waits for a player to roll, and
-the heroes arrange themselves (inside the start area) before rolling.
-`StartEncounterCombat` passes `holdBeforeQueue` only when `immediateResult ==
-"heroes"` (decided 2026-10-05). In the no-roll case the Draw Steel banner still
-announces the win, but the initiative queue is not created yet. Core hook:
+**Arranging the heroes (BUILT 2026-10-04, untested).** The phase happens
+once the initiative is decided, won or lost: by a montage outcome ("you win
+initiative", "you surprise the enemy") or, since 2026-10-26 (David's ask), by
+the Draw Steel roll. `StartEncounterCombat` passes `holdBeforeQueue` unless
+`noArrange` (only the lost-`begin` restart sets it). The Draw Steel banner
+announces the result, but the initiative queue is not created yet. Core hook:
 `Encounter.StartCombatWithTokens{ holdBeforeQueue = fn(heroesWin, begin) }`
 (`DSInitiativeRoll.lua`; the banner's queue creation is now the local
 `CreateCombatQueue(heroesWin)`, and `begin()` runs it once). EotW passes
