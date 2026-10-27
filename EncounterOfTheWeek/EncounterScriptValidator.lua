@@ -700,6 +700,33 @@ end
 --Build the report body for one document id. Returns the list of children.
 local g_coverageParty = nil
 
+--Only a warning: Proving Pits wins never reach a hero, so a module is reviewed before it joins the Town Gate.
+local CHALLENGE_LIMIT = 3
+
+--The largest if the fight has several [[encounter]] islands; a script's mid-fight ctx:SetVictories can't be seen from here.
+---@param docid string
+---@return integer|nil
+local function OpeningFightVictories(docid)
+    local victories = nil
+    pcall(function()
+        local doc = (dmhub.GetTable("documents") or {})[docid]
+        local script = EncounterMontage.LoadScript(docid, DocumentMap(doc))
+        if script == nil or script.parse == nil then
+            return
+        end
+        for _, beat in ipairs(script.parse.beats or {}) do
+            for _, island in ipairs(beat.islands or {}) do
+                local encounter = EncounterReinforcements.IslandEncounter(script, island)
+                if encounter ~= nil then
+                    local islandVictories = math.max(0, math.floor(tonumber(encounter:try_get("victories", 1)) or 1))
+                    victories = math.max(victories or 0, islandVictories)
+                end
+            end
+        end
+    end)
+    return victories
+end
+
 function EncounterScriptValidator.BuildReport(docid, partyid)
     local children = {}
     local parse = LoadDocument(docid)
@@ -714,6 +741,11 @@ function EncounterScriptValidator.BuildReport(docid, partyid)
         if not check.ok then
             problems[#problems + 1] = check.text
         end
+    end
+    local victories = OpeningFightVictories(docid)
+    local challengeVictories = victories ~= nil and victories + EncounterOfTheWeekGame.CHALLENGE_VICTORIES or nil
+    if challengeVictories ~= nil and challengeVictories > CHALLENGE_LIMIT then
+        problems[#problems + 1] = T("author.validator.report.victories_high", { challenge = challengeVictories, limit = CHALLENGE_LIMIT })
     end
 
     children[#children + 1] = gui.Label{
@@ -737,6 +769,11 @@ function EncounterScriptValidator.BuildReport(docid, partyid)
     if not parse.hasEncounterTag then
         children[#children + 1] = RowLabel{ depth = 0, class = "problem",
             text = T("author.validator.report.no_encounter_island") }
+    end
+
+    if victories ~= nil then
+        children[#children + 1] = RowLabel{ depth = 0, class = "note",
+            text = TP("author.validator.report.victories", victories, { challenge = challengeVictories }) }
     end
 
     --one part of a series ("# Part N"): played after the part before it,

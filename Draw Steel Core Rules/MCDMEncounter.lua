@@ -5356,6 +5356,9 @@ EncounterScript.starterTemplate = [==[
 --                               removes it); creatures float up/settle with it
 --   ctx:GetWaterLevel()     the map water level, or nil
 --   ctx:DeployWave(waveid)  deploy one of the encounter's reinforcement waves
+--   ctx:SetVictories(n)     change how many Victories winning is worth (the
+--                               builder's "Victories awarded"); set it before
+--                               the victory condition is met
 --   ctx:EnsureButton{...}   add a custom button to the Encounter Actions strip
 --   ctx:DismissButton(id)   remove a custom button
 --   ctx:Log(text)           print to the console
@@ -6044,6 +6047,7 @@ local function MakeReadContext(liveEncounter, instance, def)
     ctx.SetWaterLevel = NotAllowed
     ctx.GetWaterLevel = function(_) return Encounter.GetWaterLevel() end
     ctx.DeployWave = NotAllowed
+    ctx.SetVictories = NotAllowed
     ctx.EnsureButton = NotAllowed
     ctx.DismissButton = NotAllowed
     ctx.IsLive = function() return false end
@@ -6205,6 +6209,29 @@ local function MakeHostContext(instance)
             return false
         end
         liveEncounter:DeployWave(waveid, q)
+        dmhub:UploadInitiativeQueue()
+        return true
+    end
+
+    --The award reads live.victories after the victory screen shows, so a script must set it before winning.
+    ctx.SetVictories = function(_, amount)
+        local victories = tonumber(amount)
+        if victories == nil then
+            return false
+        end
+        victories = math.max(0, math.floor(victories))
+        local queue = dmhub.initiativeQueue
+        if queue == nil or queue.hidden then
+            return false
+        end
+        local liveEncounter = queue:try_get("liveEncounter")
+        if type(liveEncounter) ~= "table" then
+            return false
+        end
+        if liveEncounter:try_get("victories", 1) == victories then
+            return true
+        end
+        liveEncounter.victories = victories
         dmhub:UploadInitiativeQueue()
         return true
     end

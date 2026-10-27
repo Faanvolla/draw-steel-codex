@@ -5132,11 +5132,21 @@ all three, appended at the end (text-storage keys `zA`..`zF`). The user's
 Town Gate text said "sort"; it was written as "sought".
 
 **The Victory award.**
-- One Victory per won encounter (`ENCOUNTER_VICTORIES`), awarded by the host
-  through the core `DSVictoryScreen.AwardVictories(live, amount,
-  exemptions)` -- the same code the Director's Award button now runs --
-  elevated, so it can write every player's heroes. Every client plays the
-  usual icon drop.
+- A won encounter is worth the opening fight's **"Victories awarded"**
+  (encounter builder, `Encounter.victories`, default 1; read from
+  `live.victories` by `EncounterVictories`). Until 2026-10-27 this was a
+  hard-coded 1 (`ENCOUNTER_VICTORIES`). An Encounter Script can change it
+  mid-fight with `ctx:SetVictories(n)` (e.g. 2 for the better ending); it
+  must do so before the victory condition is met. Challenge Mode adds one.
+  The validator panel shows the number and warns (only warns) when a
+  Challenge Mode win would be worth more than 3: Proving Pits wins never
+  reach a hero, so a module is looked at before it joins the Town Gate.
+  A hero who already won the encounter still gets 0, whatever ending they
+  reach this time (the City records completion, not the amount).
+- Awarded by the host through the core `DSVictoryScreen.AwardVictories(live,
+  amount, exemptions)` -- the same code the Director's Award button now
+  runs -- elevated, so it can write every player's heroes. Every client
+  plays the usual icon drop.
 - **Exemptions** (`live.victoryExemptions = {[charid] = note}`): a hero who
   died gets nothing and no note (user decision: no Victory for the dead);
   a hero who already won this encounter gets "Already Completed" in grey

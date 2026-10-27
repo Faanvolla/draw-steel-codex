@@ -510,6 +510,13 @@ Trap: Place 4 Snare Trap objects in Trap zones and delete the other Trap zones.
 - **Encounter Scripts** on the `[[encounter]]` (the encounter builder's
   Scripts section, or `EncounterScriptInstance` in Lua) run on the EotW host
   and may replace the victory condition and add a defeat condition.
+- **Victories**: a win is worth the encounter builder's "Victories awarded"
+  on the opening `[[encounter]]` (default 1; Challenge Mode adds one; a hero
+  who already won the encounter gets none). To make an ending worth more, an
+  Encounter Script calls `ctx:SetVictories(2)` BEFORE its victory condition
+  is met (the award reads the number a few seconds after the victory screen
+  appears). The validator shows the number and warns when a Challenge Mode
+  win would be worth more than 3.
 - The **first** `[[encounter]]` island is the start-of-combat fight; its monsters
   spawn behind the stage at their saved positions, scaled to the party size,
   then the stage dissolves and Draw Steel begins.

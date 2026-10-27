@@ -1004,6 +1004,10 @@ text("author.validator.report.part_first_titled", [[Part 1: {title} of a series:
 text("author.validator.report.part_later", [[Part {number} of a series: the town offers it once Part {previous} is won]])
 text("author.validator.report.part_later_titled", [[Part {number}: {title} of a series: the town offers it once Part {previous} is won]])
 text("author.validator.report.part_no_region", [[this part's encounter has no region, so heroes can walk into the other parts' areas: draw one in the encounter builder, then load it into the island]])
+--{count} is the builder's "Victories awarded", {challenge} the Challenge Mode total, {limit} the warning threshold.
+text("author.validator.report.victories.one", [[winning is worth {count} Victory ({challenge} in Challenge Mode)]])
+text("author.validator.report.victories.other", [[winning is worth {count} Victories ({challenge} in Challenge Mode)]])
+text("author.validator.report.victories_high", [[a Challenge Mode win is worth {challenge} Victories, more than {limit}: lower "Victories awarded" in the encounter builder unless you mean it]])
 
 --Section headings of the report.
 text("author.validator.report.problems_heading", [[Problems]])

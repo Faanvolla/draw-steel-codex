@@ -1490,9 +1490,21 @@ end
 
 --- coming home ---------------------------------------------------------
 
---The Victories a won encounter is worth, to each hero who has not won it
---before (DSVictoryScreen.AwardVictories on the host; the town write-back).
-local ENCOUNTER_VICTORIES = 1
+--The encounter builder's "Victories awarded", read at award time because a script can change it mid-fight (ctx:SetVictories).
+---@param live? LiveEncounter
+---@return integer
+local function EncounterVictories(live)
+    local victories = 1
+    pcall(function()
+        if live == nil then
+            live = dmhub.initiativeQueue:try_get("liveEncounter")
+        end
+        if type(live) == "table" then
+            victories = tonumber(live:try_get("victories", 1)) or 1
+        end
+    end)
+    return math.max(0, math.floor(victories))
+end
 
 --"victory" or "defeat": the outcome this client saw on the victory screen.
 local m_outcomeKind = nil
@@ -1516,17 +1528,21 @@ local function AlreadyCompletedHeroes()
     return result
 end
 
---The Victories this hero's win is worth: one the first time; in Challenge
---Mode one more for the challenge's first win -- both at once for a hero who
---never won the normal mode, and nothing for one who has won the challenge.
+--The extra Victory Challenge Mode is worth; the script validator reads it too.
+EncounterOfTheWeekGame.CHALLENGE_VICTORIES = 1
+
+--The Victories this hero's win is worth: the encounter's Victories the first
+--time; in Challenge Mode one more for the challenge's first win -- both at
+--once for a hero who never won the normal mode, and nothing for one who has
+--won the challenge.
 function EncounterOfTheWeekGame.VictoryAward(charid)
-    --the extra Victory Challenge Mode is worth.
-    local CHALLENGE_VICTORIES = 1
+    local CHALLENGE_VICTORIES = EncounterOfTheWeekGame.CHALLENGE_VICTORIES
     if AlreadyCompletedHeroes()[charid] then
         return 0
     end
+    local encounterVictories = EncounterVictories()
     if not EncounterOfTheWeekGame.IsChallenge() then
-        return ENCOUNTER_VICTORIES
+        return encounterVictories
     end
     --heroes whose owners' town says they won the normal mode (data.completedNormal).
     local wonNormal = false
@@ -1537,7 +1553,7 @@ function EncounterOfTheWeekGame.VictoryAward(charid)
     if wonNormal then
         return CHALLENGE_VICTORIES
     end
-    return ENCOUNTER_VICTORIES + CHALLENGE_VICTORIES
+    return encounterVictories + CHALLENGE_VICTORIES
 end
 
 --After hero placement: stamp which of MY heroes the town says already won
@@ -1621,7 +1637,7 @@ local function AutoAwardVictories(live, now)
     --elevated: the award writes every player's heroes, and the host is a
     --player in an EotW game.
     ElevateToHostPermissions()
-    local ok, err = pcall(DSVictoryScreen.AwardVictories, live, ENCOUNTER_VICTORIES, exemptions, amounts)
+    local ok, err = pcall(DSVictoryScreen.AwardVictories, live, EncounterVictories(live), exemptions, amounts)
     DropHostPermissions()
     if not ok then
         printf("EotW: the Victory award failed: %s", tostring(err))
