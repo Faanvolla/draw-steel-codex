@@ -2205,14 +2205,29 @@ function B.CreateWindow(session, close)
         children[#children + 1] = Row({
             gui.Label{ classes = { "mbFieldLabel" }, width = "auto", height = "auto", valign = "center", rmargin = 8, text = title or T("author.montage_builder.table.title") },
             TextBox(t.name, function(text)
-                Commit(T("author.montage_builder.status.renamed_table"), E.SetLine(parse, t.line, string.format("|%s: %s", trim((string.gsub(E.LineText(text), ":", ""))), t.dice)))
+                Commit(T("author.montage_builder.status.renamed_table"), E.SetLine(parse, t.line, string.format("|%s: %s", trim((string.gsub(E.LineText(text), ":", ""))), E.TableHeaderValue(t.dice, t.mystery))))
             end, { width = 220, height = 24 }),
             TextBox(t.dice, function(text)
-                Commit(T("author.montage_builder.status.changed_table_dice"), E.SetLine(parse, t.line, string.format("|%s: %s", t.name, E.LineText(text))))
+                --typing "1d6 (Mystery)" here works too; don't add the tag twice.
+                local _, typedMystery = EncounterScript.TableHeaderDice(text)
+                Commit(T("author.montage_builder.status.changed_table_dice"), E.SetLine(parse, t.line, string.format("|%s: %s", t.name, E.TableHeaderValue(text, t.mystery and not typedMystery))))
             end, { width = 70, height = 24 }),
             gui.Panel{ width = 8, height = 1 },
             ConfirmButton(T("author.montage_builder.table.delete"), DeleteTable),
         }, { fit = true })
+        --No tick box on a delve chest: its rows are always "???".
+        if entry == nil or entry.section ~= "chest" then
+            children[#children + 1] = gui.Check{
+                classes = { "sizeXs" },
+                width = 400,
+                height = 24,
+                text = T("author.montage_builder.table.mystery"),
+                value = t.mystery == true,
+                change = function(element)
+                    Commit(T("author.montage_builder.status.changed_table_mystery"), E.SetLine(parse, t.line, string.format("|%s: %s", t.name, E.TableHeaderValue(t.dice, element.value))))
+                end,
+            }
+        end
         for _, row in ipairs(t.rows or {}) do
             local r = row
             local range = cond(r.lo == r.hi, tostring(r.lo), string.format("%d-%d", r.lo, r.hi))

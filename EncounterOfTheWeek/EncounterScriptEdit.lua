@@ -371,10 +371,22 @@ function E.RollLines(roll)
     return lines
 end
 
---table = { name, dice = "1d6", rows = { {lo, hi, text} } }
+--Must stay in the form EncounterScript.TableHeaderDice parses, or the table silently stops being one.
+---@param dice string
+---@param mystery boolean|nil
+---@return string
+function E.TableHeaderValue(dice, mystery)
+    local value = E.LineText(dice)
+    if mystery then
+        value = value .. " (Mystery)"
+    end
+    return value
+end
+
+--table = { name, dice = "1d6", mystery = nil|true, rows = { {lo, hi, text} } }
 function E.TableLines(t)
     local name = string.gsub(E.LineText(t.name), ":", "")
-    local lines = { string.format("|%s: %s", trim(name), E.LineText(t.dice or "1d6")) }
+    local lines = { string.format("|%s: %s", trim(name), E.TableHeaderValue(t.dice or "1d6", t.mystery)) }
     for _, row in ipairs(t.rows or {}) do
         local range = tostring(row.lo)
         if row.hi ~= nil and row.hi ~= row.lo then

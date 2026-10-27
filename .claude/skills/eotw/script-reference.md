@@ -257,6 +257,21 @@ roll nobody makes within 45 seconds is rolled by the host. A hidden
 roll block (a blank line between them is still tidier). A `roll on` that
 names no table of its entry warns.
 
+**Mystery tables.** Add `(Mystery)` after the dice to hide a treasure table's
+rows until they are won, like a delve chest:
+
+```
+|Grave Goods: 1d6 (Mystery)
+|1-3: You gain 1 Healing Potion
+|4-6: +1 hero token
+```
+
+Rows the party has never landed on read `???` on the dice card; when the dice
+land on a new row, it types its prize in. Rows stay known for the rest of the
+game. The name stays `Grave Goods`, so `roll on Grave Goods` still finds it.
+Leave the tag off tables the players should read before rolling, such as
+damage tables. In the montage builder it is the "Mystery" tick box on a table.
+
 **Knacks: riders, secret options, knack versions.** Reward what makes each hero
 different. The full vocabulary, the perks the montage plays by their real
 rules, and the authoring STANDARD are in `EncounterOfTheWeek/KNACKS_REFERENCE.md`

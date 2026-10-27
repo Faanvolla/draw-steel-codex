@@ -6038,7 +6038,7 @@ montage.consumeSeq                     -- bumped by every item use (see "Consuma
 initiative, surprised = {party, enemy}, noSurprise, surges = { [heroCharid] = n }
 zoneSetup, revealZones, zonesRevealed, unlocked, intelligence, intelligenceByHero,
 intelligenceLog,
-chestSeen, stageDismissAt
+chestSeen, stageDismissAt        -- chestSeen also holds "(Mystery)" tables ("table:<entry id>:<table key>")
 reinforcements = { arrived = { ["<sectionId>-r<round>"] = {round, at, island, count} },
                    spawned = { charid, ... } }
 ```
@@ -6252,6 +6252,23 @@ The grammar is in the /eotw skill's `script-reference.md`; in short:
   and landed count. Hidden clauses, delve obstacles, chest rows and
   narratives still roll silently on the host. Verified live 2026-10-17
   (Flotsam x2, Rising Waters 1d3 x4, the 45s fallback).
+- **Mystery tables (2026-10-27, dev-approved).** `|Grave Goods: 1d6 (Mystery)`
+  (`EncounterScript.TableHeaderDice`, case-insensitive; the name and key stay
+  "Grave Goods") sets `tableRoll.mystery`. Its rows read `???` on the
+  `DiceCard` until the party first lands on them, like a delve chest; damage
+  tables simply leave the tag off. Seen rows share `data.chestSeen`, under
+  `EncounterMontage.MysteryTableSeenKey(entryId, tableKey)` =
+  `"table:<entry id>:<table key>"` (kept by the dev reset). The host marks a
+  row in `LandMysteryRoll` as each die lands (`diceRolled` and the 45 s
+  fallback), setting `r.newReveal` / `r.landedAt`; the stage then holds `???`
+  for `CHEST_REVEAL_DELAY` and types the row in (`TableRowPanel`, shared with
+  `ChestCard`). Because `m.dice` normally closes the moment the last die
+  lands, `DiceAllIn` keeps it up until `d.holdUntil`
+  (`MYSTERY_REVEAL_HOLD_SECONDS` = 4 after a new reveal, the stage's reveal window) and `HostTick`
+  resumes it then; tables without a new reveal resume at once as before.
+  Hidden `{roll on ...}` clauses roll on the host with no card and mark
+  nothing. The montage builder shows a "Mystery" tick box on entry tables and
+  keeps the tag when the table is renamed or its dice change.
 - **Riders**: `movement` (climb = `IsClimber`, fly/swim/burrow speed > 0,
   teleport) and `wealth` (`CalculateNamedCustomAttribute("Wealth") >= N`)
   requirement kinds; `(Round N)` in a rider label (`rider.round`) gates it on

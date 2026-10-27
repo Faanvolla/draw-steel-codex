@@ -134,9 +134,10 @@
 --                  -- surges banked by "at the start of the next combat you
 --                     gain N surges", paid out (and cleared) by
 --                     ApplyPendingCombatBoons when combat starts.
---  data.chestSeen = nil | { [delve MatchKey] = { ["lo-hi"] = true } }
---                  -- the rows of each delve's chest table the party has
---                     landed on; the rest read "???" (EncounterMontage.ChestRowSeen).
+--  data.chestSeen = nil | { [delve MatchKey or "table:<entry id>:<table key>"] = { ["lo-hi"] = true } }
+--                  -- the rows of each delve's chest table (and each montage
+--                     "(Mystery)" table) the party has landed on; the rest
+--                     read "???" (EncounterMontage.ChestRowSeen / MysteryRowSeen).
 --                     Deliberately NOT cleared by a reset: what the party has
 --                     learned about the treasure stays learned.
 --  data.zoneSetup, data.revealZones, data.zonesRevealed
@@ -168,6 +169,8 @@ local PARDON_ROLL_SECONDS = 300
 --how long a montage dice roll (a table roll, a hero's share of "loses 1d3
 --recoveries") waits on its player before the host rolls it for them.
 local DICE_ROLL_SECONDS = 45
+--Matches the stage's CHEST_REVEAL_WINDOW; covers the pause and type-in of rows up to ~150 characters.
+local MYSTERY_REVEAL_HOLD_SECONDS = 4
 
 --- the document ------------------------------------------------------------
 
@@ -4073,18 +4076,72 @@ local function ChestRowKey(row)
     return string.format("%d-%d", row.lo or 0, row.hi or 0)
 end
 
-function EncounterMontage.ChestRowSeen(delveName, row)
-    local seen = nil
-    pcall(function() seen = mod:GetDocumentSnapshot(DOC_ID).data.chestSeen end)
-    local forDelve = seen ~= nil and seen[EncounterScript.MatchKey(delveName or "")] or nil
-    return forDelve ~= nil and forDelve[ChestRowKey(row)] == true
+--"table:" keeps these keys apart from delve chests, which share chestSeen keyed by delve name.
+function EncounterMontage.MysteryTableSeenKey(entryId, tableKey)
+    return string.format("table:%s:%s", tostring(entryId), tostring(tableKey))
 end
 
-local function MarkChestRowSeen(doc, delveName, row)
-    local key = EncounterScript.MatchKey(delveName or "")
+--Reads the data it is given: the host passes the document it is changing, the stage reads the snapshot.
+local function RowSeenIn(data, seenKey, row)
+    local forKey = data ~= nil and data.chestSeen ~= nil and data.chestSeen[seenKey] or nil
+    return forKey ~= nil and forKey[ChestRowKey(row)] == true
+end
+
+local function SnapshotData()
+    local data = nil
+    pcall(function() data = mod:GetDocumentSnapshot(DOC_ID).data end)
+    return data
+end
+
+function EncounterMontage.ChestRowSeen(delveName, row)
+    return RowSeenIn(SnapshotData(), EncounterScript.MatchKey(delveName or ""), row)
+end
+
+function EncounterMontage.MysteryRowSeen(entryId, tableKey, row)
+    return RowSeenIn(SnapshotData(), EncounterMontage.MysteryTableSeenKey(entryId, tableKey), row)
+end
+
+local function MarkRowSeen(doc, seenKey, row)
     doc.data.chestSeen = doc.data.chestSeen or {}
-    doc.data.chestSeen[key] = doc.data.chestSeen[key] or {}
-    doc.data.chestSeen[key][ChestRowKey(row)] = true
+    doc.data.chestSeen[seenKey] = doc.data.chestSeen[seenKey] or {}
+    doc.data.chestSeen[seenKey][ChestRowKey(row)] = true
+end
+
+--Records whether a landed die's mystery row is new (the stage types new ones in), then marks it seen.
+local function LandMysteryRoll(doc, beat, openDice, roll)
+    if roll.kind ~= "table" or roll.total == nil then
+        return
+    end
+    local entry = EncounterScript.FindEntry(beat, openDice.entryId)
+    local tableRoll = entry ~= nil and (entry.tables or {})[roll.tableKey] or nil
+    if tableRoll == nil or not tableRoll.mystery then
+        return
+    end
+    local row = EncounterScript.ChestRow(tableRoll, roll.total)
+    if row == nil then
+        return
+    end
+    local seenKey = EncounterMontage.MysteryTableSeenKey(openDice.entryId, roll.tableKey)
+    roll.newReveal = not RowSeenIn(doc.data, seenKey, row)
+    roll.landedAt = dmhub.serverTime
+    MarkRowSeen(doc, seenKey, row)
+end
+
+--A fresh "???" reveal delays the resume to m.dice.holdUntil, which HostTick checks; otherwise resume now.
+local function DiceAllIn(m, doc, beat, heroes)
+    local openDice = m.dice
+    local holdUntil = nil
+    for _, roll in ipairs(openDice.rolls or {}) do
+        if roll.newReveal then
+            local untilTime = (tonumber(roll.landedAt) or 0) + MYSTERY_REVEAL_HOLD_SECONDS
+            holdUntil = math.max(holdUntil or 0, untilTime)
+        end
+    end
+    if holdUntil ~= nil and holdUntil > dmhub.serverTime then
+        openDice.holdUntil = holdUntil
+        return
+    end
+    ResumeDice(m, doc, beat, heroes)
 end
 
 local function ChestInterval(delve)
@@ -5717,7 +5774,7 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
         if rowIndex ~= nil then
             local row = rows[rowIndex]
             t.chest.newReveal = not EncounterMontage.ChestRowSeen(t.delve.name, row)
-            MarkChestRowSeen(doc, t.delve.name, row)
+            MarkRowSeen(doc, EncounterScript.MatchKey(t.delve.name or ""), row)
         end
         t.status = "chestlanded"
         return string.format("%s's chest roll lands on %d", t.heroName or "A hero", total)
@@ -5799,6 +5856,7 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
                 end
                 local lo, hi = DiceRange(r.dice)
                 r.total = math.max(lo, math.min(hi, math.floor(tonumber(req.total) or lo)))
+                LandMysteryRoll(doc, beat, d, r)
                 local line = string.format("%s rolls %d (%s, %s)", tostring(r.heroName), r.total, tostring(r.label), tostring(r.dice))
                 local all = true
                 for _, other in ipairs(d.rolls) do
@@ -5807,7 +5865,7 @@ local function HandleRequest(m, doc, userid, req, beat, heroes)
                     end
                 end
                 if all then
-                    ResumeDice(m, doc, beat, heroes)
+                    DiceAllIn(m, doc, beat, heroes)
                 end
                 return line
             end
@@ -6230,17 +6288,22 @@ function EncounterMontage.HostTick(script, beat, beatIndex)
         end
     end
 
-    --dice nobody rolls: the host rolls them, and the wait is over.
-    if m.dice ~= nil then
+    if m.dice ~= nil and m.dice.holdUntil ~= nil then
+        if dmhub.serverTime >= m.dice.holdUntil then
+            ResumeDice(m, doc, beat, heroes)
+        end
+    elseif m.dice ~= nil then
+        --dice nobody rolls: the host rolls them, and the wait is over.
         local age = dmhub.serverTime - (tonumber(m.dice.openedAt) or dmhub.serverTime)
         if age >= DICE_ROLL_SECONDS then
             for _, r in ipairs(m.dice.rolls or {}) do
                 if r.total == nil then
                     r.total = RollDiceExpression(r.dice)
+                    LandMysteryRoll(doc, beat, m.dice, r)
                     printf("EotW montage: nobody rolled %s for %s; the host rolled %d", tostring(r.label), tostring(r.heroName), r.total)
                 end
             end
-            ResumeDice(m, doc, beat, heroes)
+            DiceAllIn(m, doc, beat, heroes)
         end
     end
 

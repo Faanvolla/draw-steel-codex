@@ -327,6 +327,7 @@ text("author.montage_builder.outcome.help_knowstamina", [[The party learns the S
 text("author.montage_builder.table.title", [[Dice table]])
 text("author.montage_builder.table.row_placeholder", [[What this row gives]])
 text("author.montage_builder.table.add_row", [[+ Row]])
+text("author.montage_builder.table.mystery", [[Mystery: rows read ??? until the dice land on them]])
 --Deletes the whole table (also on its right-click menu). Short: a button.
 text("author.montage_builder.table.delete", [[Delete table]])
 
@@ -547,6 +548,7 @@ text("author.montage_builder.status.deleted_knack_version", [[Deleted a knack ve
 --Dice tables.
 text("author.montage_builder.status.renamed_table", [[Renamed a dice table.]])
 text("author.montage_builder.status.changed_table_dice", [[Changed a table's dice.]])
+text("author.montage_builder.status.changed_table_mystery", [[Changed whether a table's rows are a mystery.]])
 text("author.montage_builder.status.edited_table_row", [[Edited a table row.]])
 text("author.montage_builder.status.added_table_row", [[Added a table row.]])
 text("author.montage_builder.status.removed_table_row", [[Removed a table row.]])

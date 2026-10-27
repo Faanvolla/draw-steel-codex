@@ -1729,6 +1729,7 @@ do
     local tinkerer = montage.rounds[1].entries[1]
     local wares = tinkerer.tables["tinkerer's wares"]
     check(wares ~= nil and wares.dice == "1d6" and #wares.rows == 2, "an entry's own dice table")
+    check(not wares.mystery, "a table without (Mystery) shows its rows")
     check(#tinkerer.options[1].roll.tiers == 4 and #tinkerer.options[1].roll.riders == 1, "the table header ends the roll block")
     check(script.beats[2].setup[1].kind == "bystanders", "bystander instruction on the encounter beat")
 
@@ -1740,6 +1741,39 @@ do
         end
     end
     check(warned, "rolling on a missing table warns")
+end
+
+do
+    local mystery = EncounterScript.Parse(table.concat({
+        "# Montage", "", "## Opportunity: The Riddle Statues", "", "### Search the statues", "",
+        "|Search Test: Reason (Search)",
+        "|You fail",
+        "|Roll on Statue Hoard",
+        "|Roll twice on Statue Hoard",
+        "|Statue Hoard: 1d3 (Mystery)",
+        "|1: You gain 1 Healing Potion",
+        "|2-3: +1 hero token",
+        "",
+        "|Hard Labour: 1d6",
+        "|1-6: You lose 2 stamina",
+        "",
+    }, "\n"))
+    check(#mystery.warnings == 0, "a mystery table parses clean: " .. table.concat(mystery.warnings, " | "))
+    local statues = mystery.beats[1].rounds[1].entries[1]
+    local hoard = statues.tables["statue hoard"]
+    check(hoard ~= nil and hoard.mystery == true and hoard.dice == "1d3" and hoard.name == "Statue Hoard" and #hoard.rows == 2, "a mystery table")
+    --3 written tiers plus the automatic critical.
+    check(#statues.options[1].roll.tiers == 4 and statues.options[1].roll.critAuto, "a mystery table header ends the roll block")
+    local labour = statues.tables["hard labour"]
+    check(labour ~= nil and not labour.mystery, "a plain table beside it stays plain")
+
+    local anyCaseDice, anyCaseMystery = EncounterScript.TableHeaderDice("1D6 (mystery)")
+    check(anyCaseDice == "1d6" and anyCaseMystery == true, "the tag is not case sensitive")
+    local plainDice, plainMystery = EncounterScript.TableHeaderDice(" 2d6 ")
+    check(plainDice == "2d6" and plainMystery == false, "plain dice")
+    check(EncounterScript.TableHeaderDice("1d6 (Secret)") == nil, "an unknown tag is not a table")
+    check(EncounterScript.TableHeaderDice("Might (Lift)") == nil, "a test's characteristic is not a table")
+    check(EncounterScript.TableHeaderDice(nil) == nil, "no value")
 end
 
 --- knacks: secret options, free options, knack versions, the vocabulary ------

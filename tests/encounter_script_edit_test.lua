@@ -282,6 +282,14 @@ local tableEntry = ParseOne({ "## Opportunity: Tinkerer", "", "### Browse", "", 
     table.unpack(E.TableLines({ name = "Wares", dice = "1d6", rows = { { lo = 1, hi = 2, text = "You gain 1 Healing Potion" }, { lo = 3, hi = 6, text = "+1 hero token" } } })) })
 local wares = (tableEntry.tables or {})[EncounterScript.MatchKey("Wares")]
 check(wares ~= nil and #wares.rows == 2 and wares.rows[2].lo == 3 and wares.rows[2].hi == 6, "table lines round trip")
+check(not wares.mystery, "a plain table is not a mystery")
+
+local hoardLines = E.TableLines({ name = "Hoard", dice = "1d3", mystery = true, rows = { { lo = 1, hi = 3, text = "You gain 1 Healing Potion" } } })
+check(hoardLines[1] == "|Hoard: 1d3 (Mystery)", "a mystery table's header keeps its tag")
+local hoardEntry = ParseOne({ "## Opportunity: Statues", "", "### Search", "", "|You roll on Hoard", "", table.unpack(hoardLines) })
+local hoard = (hoardEntry.tables or {})[EncounterScript.MatchKey("Hoard")]
+check(hoard ~= nil and hoard.mystery == true and hoard.dice == "1d3" and #hoard.rows == 1, "mystery table lines round trip")
+check(E.TableHeaderValue("2d6", false) == "2d6" and E.TableHeaderValue("2d6", true) == "2d6 (Mystery)", "table header value")
 
 --- scene step forms ------------------------------------------------------------------
 

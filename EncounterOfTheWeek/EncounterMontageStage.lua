@@ -2831,6 +2831,52 @@ local function TurnSignature(m)
     }, "|")
 end
 
+--reveal.elapsed (seconds since the landing) lets a card rebuilt mid-reveal carry on instead of restarting.
+---@param row table
+---@param shown string
+---@param reveal {full: string, elapsed: number}|nil
+---@param classes string[]|nil
+---@return Panel
+local function TableRowPanel(row, shown, reveal, classes)
+    local range = cond(row.lo == row.hi, tostring(row.lo), string.format("%d-%d", row.lo, row.hi))
+    local extraClasses = classes or {}
+    local textLabel = gui.Label{ classes = Classes("eotwTierText", table.unpack(extraClasses)), text = shown, interactable = false }
+    local panel = gui.Panel{
+        width = "100%",
+        height = "auto",
+        flow = "horizontal",
+        vmargin = 1,
+        interactable = false,
+        gui.Label{ classes = Classes("eotwTierRange", table.unpack(extraClasses)), text = range, interactable = false },
+        textLabel,
+        think = function(element)
+            local r = element.data.reveal
+            if r == nil then
+                element.thinkTime = nil
+                return
+            end
+            local now = dmhub.Time()
+            if now < r.start then
+                return
+            end
+            local n = math.floor((now - r.start) * SCENE_TYPE_CPS)
+            if n >= r.total then
+                textLabel.text = r.full
+                element.data.reveal = nil
+                element.thinkTime = nil
+            else
+                textLabel.text = RevealText(r.full, n)
+            end
+        end,
+    }
+    panel.data = {}
+    if reveal ~= nil then
+        panel.data.reveal = { full = reveal.full, total = VisibleLength(reveal.full), start = dmhub.Time() + CHEST_REVEAL_DELAY - (reveal.elapsed or 0) }
+        panel.thinkTime = 0.03
+    end
+    return panel
+end
+
 --The montage dice that are out (m.dice: a table roll, a recovery loss),
 --one line per roll with its result once it lands, and for a table roll the
 --table itself with the rows the dice landed on lit.
@@ -2862,28 +2908,35 @@ local function DiceCard(m, beat)
     if tableRoll ~= nil then
         local lit = {}
         local any = false
+        local revealing = {}
         for _, r in ipairs(d.rolls or {}) do
             if r.kind == "table" and r.total ~= nil then
                 local row = EncounterScript.ChestRow(tableRoll, r.total)
                 if row ~= nil then
                     lit[row] = true
                     any = true
+                    local elapsed = dmhub.serverTime - (tonumber(r.landedAt) or 0)
+                    if r.newReveal and elapsed < CHEST_REVEAL_WINDOW then
+                        revealing[row] = elapsed
+                    end
                 end
             end
         end
         for _, row in ipairs(tableRoll.rows or {}) do
-            local range = cond(row.lo == row.hi, tostring(row.lo), string.format("%d-%d", row.lo, row.hi))
             local landed = lit[row] == true
             local dim = any and not landed
-            children[#children + 1] = gui.Panel{
-                width = "100%",
-                height = "auto",
-                flow = "horizontal",
-                vmargin = 1,
-                interactable = false,
-                gui.Label{ classes = Classes("eotwTierRange", landed and "landed", dim and "dim"), text = range, interactable = false },
-                gui.Label{ classes = Classes("eotwTierText", landed and "landed", dim and "dim"), text = EncounterScript.VisibleText(row.text), interactable = false },
-            }
+            local full = EncounterScript.VisibleText(row.text)
+            local shown = full
+            local reveal = nil
+            if tableRoll.mystery then
+                if revealing[row] ~= nil then
+                    reveal = { full = full, elapsed = revealing[row] }
+                end
+                if reveal ~= nil or not EncounterMontage.MysteryRowSeen(d.entryId, tableKey, row) then
+                    shown = "???"
+                end
+            end
+            children[#children + 1] = TableRowPanel(row, shown, reveal, Classes(landed and "landed", dim and "dim"))
         end
     end
     return gui.Panel{
@@ -3633,51 +3686,19 @@ local function CreateSceneStage()
         }
         local rowPanels = {}
         for i, row in ipairs(chestTable.rows or {}) do
-            local range = cond(row.lo == row.hi, tostring(row.lo), string.format("%d-%d", row.lo, row.hi))
             local full = EncounterScript.VisibleText(row.text)
             --only a client that watched the landing plays the reveal; a
             --late joiner sees it settled.
-            local reveal = landedIndex == i and c.newReveal == true
-                and dmhub.serverTime - (tonumber(c.landedAt) or 0) < CHEST_REVEAL_WINDOW
+            local reveal = nil
+            if landedIndex == i and c.newReveal == true
+                and dmhub.serverTime - (tonumber(c.landedAt) or 0) < CHEST_REVEAL_WINDOW then
+                reveal = { full = full, elapsed = 0 }
+            end
             local text = full
-            if reveal or not EncounterMontage.ChestRowSeen(delveName, row) then
+            if reveal ~= nil or not EncounterMontage.ChestRowSeen(delveName, row) then
                 text = "???"
             end
-            local textLabel = gui.Label{ classes = {"eotwTierText"}, text = text, interactable = false }
-            local panel = gui.Panel{
-                width = "100%",
-                height = "auto",
-                flow = "horizontal",
-                vmargin = 1,
-                interactable = false,
-                gui.Label{ classes = {"eotwTierRange"}, text = range, interactable = false },
-                textLabel,
-                think = function(element)
-                    local r = element.data.reveal
-                    if r == nil then
-                        element.thinkTime = nil
-                        return
-                    end
-                    local now = dmhub.Time()
-                    if now < r.start then
-                        return
-                    end
-                    local n = math.floor((now - r.start) * SCENE_TYPE_CPS)
-                    if n >= r.total then
-                        textLabel.text = r.full
-                        element.data.reveal = nil
-                        element.thinkTime = nil
-                    else
-                        textLabel.text = RevealText(r.full, n)
-                    end
-                end,
-            }
-            panel.data = {}
-            if reveal then
-                panel.data.reveal = { full = full, total = VisibleLength(full), start = dmhub.Time() + CHEST_REVEAL_DELAY }
-                panel.thinkTime = 0.03
-            end
-            rowPanels[i] = panel
+            rowPanels[i] = TableRowPanel(row, text, reveal)
         end
 
         --light one row (nil = none) and dim the rest.

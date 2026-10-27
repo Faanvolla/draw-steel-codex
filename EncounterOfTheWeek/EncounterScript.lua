@@ -4220,7 +4220,7 @@ function EncounterScript.Parse(text)
             --a power roll block: "|Name: Attr" then 3-4 "|tier" lines
             FlushParagraph()
             local name, attr = string.match(line, "^|([^|]+): ([^|]+)$")
-            local dice = attr ~= nil and string.match(trim(attr), "^(%d*[dD]%d+)$") or nil
+            local dice, mystery = EncounterScript.TableHeaderDice(attr)
             --what the line belongs to: the knack being read, else the option.
             local holder = knack or option
             --"|Allow: you can fly" outside a roll block: a rider of the
@@ -4266,7 +4266,7 @@ function EncounterScript.Parse(text)
             elseif name ~= nil and dice ~= nil then
                 --"|Treasure: 1d6" then one "|1-2: result" row per range: a
                 --table rolled on with plain dice (a delve's chest).
-                local tableRoll = { name = trim(name), dice = lower(dice), rows = {}, line = i }
+                local tableRoll = { name = trim(name), dice = dice, mystery = mystery, rows = {}, line = i }
                 local j = i + 1
                 while j <= #lines do
                     local rowText = string.match(trim(lines[j]), "^|([^|]*)$")
@@ -4328,7 +4328,7 @@ function EncounterScript.Parse(text)
                     end
                     --"|Tinkerer's Wares: 1d6" starts a dice table, even with
                     --no blank line between it and the roll above.
-                    if string.match(trim(tierText), "^[^|]+:%s*%d*[dD]%d+%s*$") ~= nil then
+                    if EncounterScript.TableHeaderDice(string.match(trim(tierText), "^[^|]+:%s*(.-)$")) ~= nil then
                         break
                     end
                     --"|Edge: you speak Caelian" is a rider, not a tier
@@ -5091,6 +5091,27 @@ function EncounterScript.ChestRow(tableRoll, total)
         end
     end
     return nil
+end
+
+--Any tag but "(Mystery)" returns nil, so "1d6 (Foo)" is not taken for a table.
+---@param attr string|nil
+---@return string|nil dice
+---@return boolean mystery
+function EncounterScript.TableHeaderDice(attr)
+    if attr == nil then
+        return nil, false
+    end
+    local dice, tag = string.match(trim(attr), "^(%d*[dD]%d+)%s*(.-)$")
+    if dice == nil then
+        return nil, false
+    end
+    if tag == "" then
+        return lower(dice), false
+    end
+    if lower(tag) == "(mystery)" then
+        return lower(dice), true
+    end
+    return nil, false
 end
 
 --- outcome icons --------------------------------------------------------------
